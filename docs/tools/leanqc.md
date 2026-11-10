@@ -134,8 +134,17 @@ FastQC-Rust 1.1.1; leanqc before its switch to the zlib-rs decoder):
 | Truncated plain FASTQ | accepted (as FastQC) | refused |
 
 Most of the remaining time difference was the gzip decoder: FastQC-Rust uses zlib-rs, and leanqc
-used miniz_oxide. leanqc now uses zlib-rs too (about 12% faster on one file, identical output); a
-clean side-by-side on a GitHub runner is on the [roadmap](../roadmap.md).
+used miniz_oxide. leanqc now uses zlib-rs too (about 12% faster on one file, identical output).
+
+The same comparison on a GitHub runner (ubuntu-latest, median of 3, leanqc with zlib-rs; the
+`qc-speed` job of the validation workflow, 2026-11-10):
+
+| | FastQC 0.12.1 (Docker) | FastQC-Rust 1.1.1 | leanqc |
+|---|---|---|---|
+| 1 file, 1 thread | 5.43 s, 306 MB | 1.24 s, 31 MB | 1.34 s, 13 MB |
+| 4 files, 4 threads | 9.50 s, 1,204 MB | 2.05 s, 104 MB | 1.93 s, 41 MB |
+
+FastQC's time includes about 0.5 s of container start; its memory is the container's cgroup peak.
 
 ## Known gaps
 
