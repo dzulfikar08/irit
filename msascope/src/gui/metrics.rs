@@ -70,7 +70,7 @@ pub const HEADER_H: f32 = RULER_H + CONS_H + IDENT_H + GAPS_H;
 /// Names are drawn once rows are at least this tall.
 pub const NAME_ROW_MIN: f64 = 8.0;
 /// Letters are drawn once cells are at least this wide and tall.
-pub const LETTER_W: f64 = 8.0;
+pub const LETTER_W: f64 = 7.0;
 pub const LETTER_H: f64 = 10.0;
 /// Hover outlines are drawn once cells are at least this big.
 pub const HOVER_MIN: f64 = 3.0;

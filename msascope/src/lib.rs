@@ -9,6 +9,7 @@ pub mod synth;
 pub mod view;
 
 use alphabet::{Alphabet, Kind};
+use anyhow::Context as _;
 use matrix::Matrix;
 
 pub struct Alignment {
@@ -46,6 +47,9 @@ pub struct Loaded {
     pub stats: stats::ColumnStats,
     pub pyramid: pyramid::Pyramid,
     pub timings: Timings,
+    /// File format, and whether the file was gzipped.
+    pub format: parse::Format,
+    pub gzip: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -62,6 +66,7 @@ impl Loaded {
 
     /// [`Loaded::open`] with the residue type given instead of guessed (`--type`).
     pub fn open_as(path: &std::path::Path, ty: Option<alphabet::SeqType>) -> anyhow::Result<Self> {
+        let (format, gzip) = parse::sniff(path).with_context(|| format!("reading {}", path.display()))?;
         let t = std::time::Instant::now();
         let aln = parse::load_as(path, ty)?;
         let parse = t.elapsed();
@@ -71,10 +76,20 @@ impl Loaded {
         let t = std::time::Instant::now();
         let pyramid = pyramid::Pyramid::build(&aln, &stats.consensus);
         let timings = Timings { parse, stats: stats_t, pyramid: t.elapsed() };
-        Ok(Loaded { aln, stats, pyramid, timings })
+        Ok(Loaded { aln, stats, pyramid, timings, format, gzip })
     }
 
-    /// One-line summary for the terminal and status bar.
+    /// Load time in seconds (parse + column summaries + pyramid).
+    pub fn load_secs(&self) -> f64 {
+        (self.timings.parse + self.timings.stats + self.timings.pyramid).as_secs_f64()
+    }
+
+    /// Memory held for the alignment: residues plus pyramid, in bytes.
+    pub fn bytes(&self) -> usize {
+        self.aln.matrix.bytes() + self.pyramid.bytes()
+    }
+
+    /// One-line summary for the terminal.
     pub fn summary(&self) -> String {
         let kind = self.aln.alpha.name;
         format!(

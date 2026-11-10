@@ -48,6 +48,38 @@ const SAMPLE: usize = 64 << 10;
 
 type Reader<'a> = Box<dyn BufRead + 'a>;
 
+impl Format {
+    pub fn name(self) -> &'static str {
+        match self {
+            Format::Fasta => "FASTA",
+            Format::Clustal => "Clustal",
+            Format::Stockholm => "Stockholm",
+        }
+    }
+}
+
+/// The format of a file and whether it is gzipped, from its first few kilobytes.
+pub fn sniff(path: &Path) -> Result<(Format, bool)> {
+    let mut f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut head = vec![0u8; 4096];
+    let n = f.read(&mut head)?;
+    let gz = n >= 2 && head[..2] == [0x1f, 0x8b];
+    if gz {
+        let mut d = flate2::read::MultiGzDecoder::new(File::open(path)?);
+        let mut n = 0;
+        while n < head.len() {
+            match d.read(&mut head[n..])? {
+                0 => break,
+                k => n += k,
+            }
+        }
+        head.truncate(n);
+    } else {
+        head.truncate(n);
+    }
+    Ok((detect_format(&head)?, gz))
+}
+
 /// Load an alignment, decompressing gzip transparently.
 pub fn load(path: &Path) -> Result<Alignment> {
     load_as(path, None)
