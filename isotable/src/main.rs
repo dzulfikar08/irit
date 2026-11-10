@@ -43,6 +43,13 @@ struct Cli {
     #[arg(long, value_delimiter = ',')]
     require: Option<Vec<String>>,
 
+    /// Failed FastQC modules (and the matching leanqc checks) that make a sample `warn`,
+    /// comma-separated, by FastQC or leanqc name; `all` or `none`. Default: Per base sequence
+    /// quality, Per sequence quality scores, Per base N content, Adapter Content. Every failed
+    /// module is still listed in `fastqc_fails`.
+    #[arg(long, value_delimiter = ',')]
+    fastqc_grade: Option<Vec<String>>,
+
     #[command(flatten)]
     limits: Limits,
 }
@@ -116,6 +123,70 @@ const REQUIREMENTS: &[(&str, &[&str], &str)] = &[
     ("amr", &["amr_genes"], "AMRFinderPlus result"),
 ];
 
+/// FastQC modules and the leanqc check that looks at the same thing (`None`: leanqc has none).
+const MODULES: &[(&str, Option<&str>)] = &[
+    ("Basic Statistics", None),
+    ("Per base sequence quality", Some("Per-position quality")),
+    ("Per tile sequence quality", Some("Per-tile quality")),
+    ("Per sequence quality scores", Some("Per-read quality")),
+    ("Per base sequence content", Some("Per-position base content")),
+    ("Per sequence GC content", Some("Per-read GC")),
+    ("Per base N content", Some("N content")),
+    ("Sequence Length Distribution", Some("Read length")),
+    ("Sequence Duplication Levels", Some("Duplication")),
+    ("Overrepresented sequences", Some("Overrepresented sequences")),
+    ("Adapter Content", Some("Adapter content")),
+    ("Kmer Content", None),
+];
+
+/// Modules graded by default: the ones whose failure means poor reads. The others (base
+/// composition, duplication, tiles, GC shape, k-mers...) routinely fail on healthy libraries
+/// (random-hexamer bias in the first bases, high coverage of a small genome, a bad tile).
+const DEFAULT_GRADE: &[&str] = &["Per base sequence quality", "Per sequence quality scores", "Per base N content", "Adapter Content"];
+
+/// Which failed FastQC modules and leanqc checks count towards the grade (lowercased names).
+struct Graded {
+    all: bool,
+    fastqc: BTreeSet<String>,
+    leanqc: BTreeSet<String>,
+}
+
+impl Graded {
+    fn fastqc(&self, module: &str) -> bool {
+        self.all || self.fastqc.contains(&module.to_ascii_lowercase())
+    }
+    fn leanqc(&self, check: &str) -> bool {
+        self.all || self.leanqc.contains(&check.to_ascii_lowercase())
+    }
+}
+
+fn graded(given: Option<&[String]>) -> Result<Graded> {
+    let defaults: Vec<String> = DEFAULT_GRADE.iter().map(|s| s.to_string()).collect();
+    let given = given.unwrap_or(&defaults);
+    let mut g = Graded { all: false, fastqc: BTreeSet::new(), leanqc: BTreeSet::new() };
+    for t in given.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        match t.to_ascii_lowercase().as_str() {
+            "all" => g.all = true,
+            "none" => {}
+            want => {
+                let Some((f, l)) =
+                    MODULES.iter().find(|(f, l)| f.eq_ignore_ascii_case(want) || l.is_some_and(|l| l.eq_ignore_ascii_case(want)))
+                else {
+                    bail!(
+                        "--fastqc-grade {t}: unknown; use all, none, or FastQC module names: {}",
+                        MODULES.iter().map(|(f, _)| *f).collect::<Vec<_>>().join(", ")
+                    );
+                };
+                g.fastqc.insert(f.to_ascii_lowercase());
+                if let Some(l) = l {
+                    g.leanqc.insert(l.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    Ok(g)
+}
+
 /// One field of one sample: a value and the files it came from, or disagreeing values.
 #[derive(Debug, Clone)]
 enum Cell {
@@ -144,10 +215,11 @@ struct Row {
     cells: BTreeMap<&'static str, Cell>,
     /// fastp reports, kept apart: identical copies count once, distinct runs are pooled.
     fastp: Vec<Record>,
-    /// leanqc failed checks per read file.
-    leanqc: BTreeMap<String, String>,
-    /// FastQC reports per read file (a zip and its extracted folder are two reports of one file).
-    fastqc: BTreeMap<String, Vec<Record>>,
+    /// leanqc failed checks per read file; `[raw reads, trimmed reads]`.
+    leanqc: [BTreeMap<String, String>; 2],
+    /// FastQC reports per report (a zip and its sibling extracted folder are one key);
+    /// `[raw reads, trimmed reads]`.
+    fastqc: [BTreeMap<String, Vec<Record>>; 2],
     notes: Vec<String>,
 }
 
@@ -158,10 +230,15 @@ const COLUMNS: &[(&str, &str)] = &[
     ("q30_trimmed", "q30_trimmed"),
     ("duplication", "duplication"),
     ("leanqc_fails", "leanqc_fails"),
+    ("leanqc_trimmed_fails", "leanqc_trimmed_fails"),
     ("fastqc_sequences", "fastqc_sequences"),
     ("fastqc_gc", "fastqc_gc"),
     ("fastqc_fails", "fastqc_fails"),
     ("fastqc_warns", "fastqc_warns"),
+    ("fastqc_trimmed_sequences", "fastqc_trimmed_sequences"),
+    ("fastqc_trimmed_gc", "fastqc_trimmed_gc"),
+    ("fastqc_trimmed_fails", "fastqc_trimmed_fails"),
+    ("fastqc_trimmed_warns", "fastqc_trimmed_warns"),
     ("kraken_top", "kraken_top_species"),
     ("kraken_top_pct", "kraken_top_pct"),
     ("contigs", "contigs"),
@@ -186,6 +263,7 @@ fn main() -> Result<()> {
         None => Vec::new(),
     };
     let required = requirements(cli.require.as_deref(), cli.mode)?;
+    let grade_list = graded(cli.fastqc_grade.as_deref())?;
     let (records, seen, skipped) = parse::scan(&cli.dirs)?;
     if records.is_empty() {
         bail!("no recognised tool outputs under the given folders");
@@ -209,7 +287,7 @@ fn main() -> Result<()> {
 
     let mut counts: BTreeMap<Status, usize> = BTreeMap::new();
     for (sample, row) in &rows {
-        let (status, reasons) = grade(row, &cli.limits, cli.mode, &required);
+        let (status, reasons) = grade(row, &cli.limits, cli.mode, &required, &grade_list);
         *counts.entry(status).or_default() += 1;
         let cells: Vec<String> = present.iter().map(|(k, _)| row.cells.get(k).map(Cell::show).unwrap_or_default()).collect();
         out.push_str(&format!("{sample}\t{}\t{}\t{}\n", status.name(), reasons.join("; "), cells.join("\t")));
@@ -273,8 +351,14 @@ type Joined = (BTreeMap<String, Row>, BTreeSet<(String, String)>, BTreeSet<Strin
 fn join(records: Vec<Record>, sheet: &[String]) -> Joined {
     // Without a sheet, a read file's mate suffix goes only if the other mate's report is there
     // and no other tool uses the unstripped name as a sample.
-    let read_names: BTreeSet<String> =
-        records.iter().filter(|r| r.kind == Kind::ReadFile).map(|r| parse::base_name(&r.raw_name)).collect();
+    // Trimmed read files (`x_1.fastp.fastq.gz`, `x_1_val_1.fq.gz`) are matched under the name of
+    // the read file they came from, and kept apart from the raw reads' evidence.
+    let untrimmed = |r: &Record| if r.kind == Kind::ReadFile { parse::untrimmed(&r.raw_name) } else { None };
+    let read_names: BTreeSet<String> = records
+        .iter()
+        .filter(|r| r.kind == Kind::ReadFile)
+        .map(|r| untrimmed(r).unwrap_or_else(|| parse::base_name(&r.raw_name)))
+        .collect();
     let other_names: BTreeSet<String> =
         records.iter().filter(|r| r.kind != Kind::ReadFile).map(|r| parse::base_name(&r.raw_name)).collect();
     let strip_mate = |raw: &str| {
@@ -286,7 +370,10 @@ fn join(records: Vec<Record>, sheet: &[String]) -> Joined {
     let mut joins = BTreeSet::new();
     let mut unmatched = BTreeSet::new();
     for r in records {
-        let (sample, how) = parse::match_sample(&r.raw_name, r.kind, sheet, strip_mate(&r.raw_name));
+        let trimmed = untrimmed(&r);
+        let name = trimmed.clone().unwrap_or_else(|| r.raw_name.clone());
+        let t = usize::from(trimmed.is_some());
+        let (sample, how) = parse::match_sample(&name, r.kind, sheet, strip_mate(&name));
         match how {
             How::Exact => {}
             How::Unmatched => {
@@ -299,10 +386,10 @@ fn join(records: Vec<Record>, sheet: &[String]) -> Joined {
         let row = rows.entry(sample).or_default();
         match r.tool {
             "fastp" => row.fastp.push(r),
-            "FastQC" => row.fastqc.entry(r.raw_name.clone()).or_default().push(r),
+            "FastQC" => row.fastqc[t].entry(report_key(&r.source)).or_default().push(r),
             "leanqc" => {
                 for (_, v) in r.fields {
-                    row.leanqc.insert(r.raw_name.clone(), v.show());
+                    row.leanqc[t].insert(r.raw_name.clone(), v.show());
                 }
             }
             _ => {
@@ -316,6 +403,15 @@ fn join(records: Vec<Record>, sheet: &[String]) -> Joined {
         rows.entry(s.clone()).or_default();
     }
     (rows, joins, unmatched)
+}
+
+/// A FastQC report's identity: `dir/x_fastqc.zip` and `dir/x_fastqc/fastqc_data.txt` are both
+/// `dir/x_fastqc` (the zip and the folder `fastqc --extract` leaves beside it); reports anywhere
+/// else are different reports, even when they name the same read file.
+fn report_key(source: &str) -> String {
+    let p = std::path::Path::new(source);
+    let key = if p.file_name().is_some_and(|n| n == "fastqc_data.txt") { p.parent().unwrap_or(p).to_path_buf() } else { p.with_extension("") };
+    key.display().to_string()
 }
 
 /// Set a single-valued field; a different value from another file makes it a conflict.
@@ -338,13 +434,17 @@ fn put(cells: &mut BTreeMap<&'static str, Cell>, k: &'static str, v: Value, sour
 fn finish(mut rows: BTreeMap<String, Row>, mode: Mode) -> BTreeMap<String, Row> {
     for row in rows.values_mut() {
         pool_fastp(row);
-        if !row.leanqc.is_empty() {
-            let fails: BTreeSet<&str> = row.leanqc.values().flat_map(|f| f.split(',')).filter(|s| !s.is_empty()).collect();
-            let sources = row.leanqc.keys().cloned().collect();
-            let value = Value::Text(fails.into_iter().collect::<Vec<_>>().join(","));
-            row.cells.insert("leanqc_fails", Cell::One { value, sources });
+        for (t, key) in ["leanqc_fails", "leanqc_trimmed_fails"].into_iter().enumerate() {
+            let files = &row.leanqc[t];
+            if !files.is_empty() {
+                let fails: BTreeSet<&str> = files.values().flat_map(|f| f.split(',')).filter(|s| !s.is_empty()).collect();
+                let sources = files.keys().cloned().collect();
+                let value = Value::Text(fails.into_iter().collect::<Vec<_>>().join(","));
+                row.cells.insert(key, Cell::One { value, sources });
+            }
         }
-        merge_fastqc(row);
+        merge_fastqc(row, false);
+        merge_fastqc(row, true);
         if mode == Mode::Mag
             && let (Some(c), Some(x)) = (num(row, "completeness"), num(row, "contamination"))
         {
@@ -354,13 +454,35 @@ fn finish(mut rows: BTreeMap<String, Row>, mode: Mode) -> BTreeMap<String, Row> 
     rows
 }
 
+/// The column a FastQC field goes to, for raw or trimmed reads.
+fn fastqc_key(k: &'static str, trimmed: bool) -> &'static str {
+    match (k, trimmed) {
+        (_, false) => k,
+        ("fastqc_sequences", true) => "fastqc_trimmed_sequences",
+        ("fastqc_gc", true) => "fastqc_trimmed_gc",
+        ("fastqc_fails", true) => "fastqc_trimmed_fails",
+        ("fastqc_warns", true) => "fastqc_trimmed_warns",
+        _ => k,
+    }
+}
+
 /// FastQC reports of a sample's read files (R1 and R2, lanes): sequences add up, %GC is weighted
-/// by sequences, failed and warned modules are merged. Several reports of one read file (the zip
-/// and its extracted folder) must agree; if they don't, the fields that differ are conflicts.
-fn merge_fastqc(row: &mut Row) {
-    let files = std::mem::take(&mut row.fastqc);
+/// by sequences, failed and warned modules are merged. A zip and its sibling extracted folder are
+/// one report and must agree; if they don't, the fields that differ are conflicts. Raw and
+/// trimmed reads go to separate columns.
+fn merge_fastqc(row: &mut Row, trimmed: bool) {
+    let files = std::mem::take(&mut row.fastqc[usize::from(trimmed)]);
     if files.is_empty() {
         return;
+    }
+    let mut by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (key, reports) in &files {
+        if let Some(r) = reports.first() {
+            by_name.entry(r.raw_name.as_str()).or_default().push(key.as_str());
+        }
+    }
+    for (name, keys) in by_name.iter().filter(|(_, k)| k.len() > 1) {
+        row.notes.push(format!("FastQC reports {} name the same read file ({name}) but are separate reports; counted as separate read files", keys.join(", ")));
     }
     let mut per_file: Vec<BTreeMap<&'static str, Value>> = Vec::new();
     let mut sources = Vec::new();
@@ -379,7 +501,7 @@ fn merge_fastqc(row: &mut Row) {
                     values.insert(k, value);
                 }
                 conflict => {
-                    row.cells.insert(k, conflict);
+                    row.cells.insert(fastqc_key(k, trimmed), conflict);
                 }
             }
         }
@@ -413,7 +535,7 @@ fn merge_fastqc(row: &mut Row) {
         out.push((k, Value::Text(modules.into_iter().collect::<Vec<_>>().join(","))));
     }
     for (k, v) in out {
-        row.cells.entry(k).or_insert(Cell::One { value: v, sources: sources.clone() });
+        row.cells.entry(fastqc_key(k, trimmed)).or_insert(Cell::One { value: v, sources: sources.clone() });
     }
 }
 
@@ -598,7 +720,7 @@ fn mimag(completeness: f64, contamination: f64) -> &'static str {
     }
 }
 
-fn grade(row: &Row, l: &Limits, mode: Mode, required: &[&str]) -> (Status, Vec<String>) {
+fn grade(row: &Row, l: &Limits, mode: Mode, required: &[&str], graded: &Graded) -> (Status, Vec<String>) {
     let mut worst = Status::Pass;
     let mut why = Vec::new();
     let mut flag = |s: Status, msg: String| {
@@ -629,13 +751,18 @@ fn grade(row: &Row, l: &Limits, mode: Mode, required: &[&str]) -> (Status, Vec<S
     if let Some(q) = num(row, "q30_trimmed").filter(|q| *q < l.min_q30) {
         flag(Status::Warn, format!("Q30 {q:.1}% < {:.0}%", l.min_q30));
     }
-    if let Some(f) = row.cells.get("leanqc_fails").map(Cell::show).filter(|f| !f.is_empty()) {
-        flag(Status::Warn, format!("leanqc failed {f}"));
-    }
-    // Separate evidence from leanqc, shown as its own reason; the status is the worst either way,
-    // so a problem both tools see still makes one `warn`.
-    if let Some(f) = row.cells.get("fastqc_fails").map(Cell::show).filter(|f| !f.is_empty()) {
-        flag(Status::Warn, format!("FastQC failed {f}"));
+    // Read QC: only the graded modules count, from the trimmed reads' reports when there are
+    // any (those reads went on to assembly), else from the raw reads'. FastQC is separate evidence
+    // from leanqc, shown as its own reason; the status is the worst either way, so a problem both
+    // tools see still makes one `warn`.
+    for (tool, raw, trimmed) in [("leanqc", "leanqc_fails", "leanqc_trimmed_fails"), ("FastQC", "fastqc_fails", "fastqc_trimmed_fails")] {
+        let counts = |m: &str| if tool == "leanqc" { graded.leanqc(m) } else { graded.fastqc(m) };
+        let (key, what) = if row.cells.contains_key(trimmed) { (trimmed, " (trimmed reads)") } else { (raw, "") };
+        let Some(Cell::One { value: Value::Text(f), .. }) = row.cells.get(key) else { continue };
+        let fails: Vec<&str> = f.split(',').filter(|m| !m.is_empty() && counts(m)).collect();
+        if !fails.is_empty() {
+            flag(Status::Warn, format!("{tool}{what} failed {}", fails.join(",")));
+        }
     }
     if let Some(c) = num(row, "contigs") {
         let c = c as u64;
@@ -724,15 +851,27 @@ mod tests {
     }
 
     fn table(root: &Path, sheet: &[&str], mode: Mode, require: Option<&[&str]>) -> BTreeMap<String, (Status, Vec<String>, Row)> {
+        table_graded(root, sheet, mode, require, None)
+    }
+
+    fn table_graded(
+        root: &Path,
+        sheet: &[&str],
+        mode: Mode,
+        require: Option<&[&str]>,
+        grade_list: Option<&[&str]>,
+    ) -> BTreeMap<String, (Status, Vec<String>, Row)> {
         let sheet: Vec<String> = sheet.iter().map(|s| s.to_string()).collect();
         let require: Option<Vec<String>> = require.map(|r| r.iter().map(|s| s.to_string()).collect());
         let required = requirements(require.as_deref(), mode).unwrap();
+        let grade_list: Option<Vec<String>> = grade_list.map(|g| g.iter().map(|s| s.to_string()).collect());
+        let graded = graded(grade_list.as_deref()).unwrap();
         let (records, _, _) = parse::scan(&[root.to_path_buf()]).unwrap();
         let (rows, _, _) = join(records, &sheet);
         finish(rows, mode)
             .into_iter()
             .map(|(k, row)| {
-                let (s, why) = grade(&row, &limits(), mode, &required);
+                let (s, why) = grade(&row, &limits(), mode, &required, &graded);
                 (k, (s, why, row))
             })
             .collect()
@@ -936,7 +1075,7 @@ mod tests {
         // Graded as a conflict.
         let mut row = Row { fastp: vec![a, b, c], ..Default::default() };
         pool_fastp(&mut row);
-        assert_eq!(grade(&row, &limits(), Mode::Isolate, &["reads"]).0, Status::Conflict);
+        assert_eq!(grade(&row, &limits(), Mode::Isolate, &["reads"], &graded(None).unwrap()).0, Status::Conflict);
     }
 
     #[cfg(unix)]
@@ -1060,16 +1199,136 @@ mod tests {
     fn leanqc_and_fastqc_on_one_sample_are_both_reported_once_each() {
         let t = tempfile::tempdir().unwrap();
         fastqc_fixtures(t.path());
-        let lq = |f: &str| format!(r#"{{"file":"{f}","checks":[{{"name":"Adapters","status":"fail"}}]}}"#);
+        let lq = |f: &str| format!(r#"{{"file":"{f}","checks":[{{"name":"Adapter content","status":"fail"}}]}}"#);
         write(t.path(), "ERR044595_1M_1_leanqc.json", &lq("ERR044595_1M_1.fastq.gz"));
         write(t.path(), "ERR044595_1M_2_leanqc.json", &lq("ERR044595_1M_2.fastq.gz"));
         let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
         assert_eq!(rows.keys().collect::<Vec<_>>(), ["ERR044595_1M"]);
         let (status, why, row) = &rows["ERR044595_1M"];
         assert_eq!(*status, Status::Warn, "{why:?}");
-        assert_eq!(cell(row, "leanqc_fails"), "Adapters");
+        assert_eq!(cell(row, "leanqc_fails"), "Adapter content");
         assert_eq!(why.len(), 2, "{why:?}");
-        assert!(why[0].contains("leanqc failed Adapters") && why[1].contains("FastQC failed"), "{why:?}");
+        assert!(why[0].contains("leanqc failed Adapter content") && why[1].contains("FastQC failed"), "{why:?}");
+    }
+
+    /// An extracted FastQC folder `<dir>/` for read file `file`, with `n` sequences and these
+    /// modules failed (all others pass).
+    fn fqc(root: &Path, dir: &str, file: &str, n: u64, fails: &[&str]) {
+        write(root, &format!("{dir}/fastqc_data.txt"), &format!("##FastQC\t0.12.1\n>>Basic Statistics\tpass\nFilename\t{file}\nTotal Sequences\t{n}\n%GC\t50\n>>END_MODULE\n"));
+        let summary: String = MODULES
+            .iter()
+            .map(|(m, _)| format!("{}\t{m}\t{file}\n", if fails.contains(m) { "FAIL" } else { "PASS" }))
+            .collect();
+        write(root, &format!("{dir}/summary.txt"), &summary);
+    }
+
+    #[test]
+    fn only_quality_modules_grade_by_default() {
+        // Per base sequence content, duplication and tiles fail on healthy Illumina libraries.
+        let t = tempfile::tempdir().unwrap();
+        let noisy = ["Per base sequence content", "Sequence Duplication Levels", "Per tile sequence quality"];
+        fqc(t.path(), "S_1_fastqc", "S_1.fastq.gz", 1000, &noisy);
+        fqc(t.path(), "S_2_fastqc", "S_2.fastq.gz", 1000, &noisy);
+        let lq = |f: &str, check: &str| format!(r#"{{"file":"{f}","checks":[{{"name":"{check}","status":"fail"}}]}}"#);
+        write(t.path(), "S_1_leanqc.json", &lq("S_1.fastq.gz", "Per-position base content"));
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
+        let (status, why, row) = &rows["S"];
+        assert_eq!(*status, Status::Pass, "{why:?}");
+        assert_eq!(cell(row, "fastqc_fails"), "Per base sequence content,Per tile sequence quality,Sequence Duplication Levels");
+        assert_eq!(cell(row, "leanqc_fails"), "Per-position base content");
+
+        let rows = table_graded(t.path(), &[], Mode::Isolate, Some(&["none"]), Some(&["all"]));
+        let (status, why, _) = &rows["S"];
+        assert_eq!(*status, Status::Warn, "{why:?}");
+        assert!(why.iter().any(|w| w == "warn: leanqc failed Per-position base content"), "{why:?}");
+        // One name grades the FastQC module and the matching leanqc check.
+        let rows = table_graded(t.path(), &[], Mode::Isolate, Some(&["none"]), Some(&["per base sequence content"]));
+        let why = &rows["S"].1;
+        assert_eq!(why, &["warn: leanqc failed Per-position base content", "warn: FastQC failed Per base sequence content"]);
+
+        // Quality and adapters do grade; `none` turns read-QC grading off.
+        fqc(t.path(), "S_2_fastqc", "S_2.fastq.gz", 1000, &["Adapter Content", "Per base sequence content"]);
+        write(t.path(), "S_2_leanqc.json", &lq("S_2.fastq.gz", "Per-read quality"));
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
+        let (status, why, _) = &rows["S"];
+        assert_eq!(*status, Status::Warn, "{why:?}");
+        assert_eq!(why, &["warn: leanqc failed Per-read quality", "warn: FastQC failed Adapter Content"]);
+        assert_eq!(table_graded(t.path(), &[], Mode::Isolate, Some(&["none"]), Some(&["none"]))["S"].0, Status::Pass);
+        assert!(graded(Some(&["Kmer".to_string()])).is_err());
+    }
+
+    #[test]
+    fn same_read_file_name_in_two_folders_is_two_reports() {
+        // Generic names (`reads_1.fastq.gz`) in two run folders: not one file's zip and folder.
+        let t = tempfile::tempdir().unwrap();
+        for d in ["A", "B"] {
+            fqc(t.path(), &format!("{d}/reads_1_fastqc"), "reads_1.fastq.gz", 1000, &[]);
+            fqc(t.path(), &format!("{d}/reads_2_fastqc"), "reads_2.fastq.gz", 1000, &[]);
+        }
+        let p = t.path().join("B/reads_1_fastqc/fastqc_data.txt");
+        std::fs::write(&p, std::fs::read_to_string(&p).unwrap().replace("Total Sequences\t1000", "Total Sequences\t900")).unwrap();
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
+        let (status, why, row) = &rows["reads"];
+        assert_eq!(*status, Status::Pass, "{why:?}");
+        assert_eq!(cell(row, "fastqc_sequences"), "3900");
+        assert!(row.notes.iter().any(|n| n.contains("reads_1.fastq.gz") && n.contains("separate reports")), "{:?}", row.notes);
+        assert_eq!(report_key("x/S_1_fastqc.zip"), report_key("x/S_1_fastqc/fastqc_data.txt"));
+        assert_ne!(report_key("x/S_1_fastqc.zip"), report_key("y/S_1_fastqc/fastqc_data.txt"));
+    }
+
+    #[test]
+    fn truncated_fastqc_zip_is_skipped() {
+        let t = tempfile::tempdir().unwrap();
+        fastqc_fixtures(t.path());
+        let zip = std::fs::read(t.path().join("ERR044595_1M_1_fastqc.zip")).unwrap();
+        std::fs::write(t.path().join("ERR064912_1_fastqc.zip"), &zip[..zip.len() / 2]).unwrap();
+        let (records, seen, skipped) = parse::scan(&[t.path().to_path_buf()]).unwrap();
+        assert_eq!((records.len(), seen["FastQC"]), (2, 2));
+        assert!(skipped.iter().any(|s| s.contains("ERR064912_1_fastqc.zip") && s.contains("unreadable FastQC")), "{skipped:?}");
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["ERR044595_1M"]);
+    }
+
+    #[test]
+    fn trimmed_read_reports_join_the_sample_in_their_own_columns() {
+        let t = tempfile::tempdir().unwrap();
+        fqc(t.path(), "raw/S_1_fastqc", "S_1.fastq.gz", 1000, &["Adapter Content"]);
+        fqc(t.path(), "raw/S_2_fastqc", "S_2.fastq.gz", 1000, &["Adapter Content"]);
+        fqc(t.path(), "fastp/S_1.fastp_fastqc", "S_1.fastp.fastq.gz", 900, &[]);
+        fqc(t.path(), "fastp/S_2.fastp_fastqc", "S_2.fastp.fastq.gz", 900, &[]);
+        for sheet in [&[][..], &["S"][..]] {
+            let rows = table(t.path(), sheet, Mode::Isolate, Some(&["none"]));
+            assert_eq!(rows.keys().collect::<Vec<_>>(), ["S"], "sheet {sheet:?}");
+            let (status, why, row) = &rows["S"];
+            // Raw and trimmed are never added up; the trimmed reads' reports grade.
+            assert_eq!((cell(row, "fastqc_sequences"), cell(row, "fastqc_trimmed_sequences")), ("2000".into(), "1800".into()));
+            assert_eq!((cell(row, "fastqc_fails"), cell(row, "fastqc_trimmed_fails")), ("Adapter Content".into(), String::new()));
+            assert_eq!(*status, Status::Pass, "{why:?}");
+        }
+        // Trim Galore's `_val_N` and a failure in the trimmed reads.
+        let t = tempfile::tempdir().unwrap();
+        fqc(t.path(), "S_1_val_1_fastqc", "S_1_val_1.fq.gz", 900, &["Per base sequence quality"]);
+        fqc(t.path(), "S_2_val_2_fastqc", "S_2_val_2.fq.gz", 900, &[]);
+        let rows = table(t.path(), &["S"], Mode::Isolate, Some(&["none"]));
+        let (status, why, row) = &rows["S"];
+        assert_eq!(cell(row, "fastqc_trimmed_sequences"), "1800");
+        assert!(!row.cells.contains_key("fastqc_sequences"));
+        assert_eq!(*status, Status::Warn);
+        assert_eq!(why, &["warn: FastQC (trimmed reads) failed Per base sequence quality"]);
+    }
+
+    #[test]
+    fn lanes_merge_only_with_a_sheet() {
+        let t = tempfile::tempdir().unwrap();
+        for lane in ["L001", "L002"] {
+            for m in ["R1", "R2"] {
+                fqc(t.path(), &format!("S_{lane}_{m}_001_fastqc"), &format!("S_{lane}_{m}_001.fastq.gz"), 1000, &[]);
+            }
+        }
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["S_L001", "S_L002"]);
+        let rows = table(t.path(), &["S"], Mode::Isolate, Some(&["none"]));
+        assert_eq!(cell(&rows["S"].2, "fastqc_sequences"), "4000");
     }
 
     #[test]
