@@ -15,6 +15,12 @@ Measured against FastQC 0.12.1 on 1 million reads: **2.5 s and 16 MB of RAM** ag
 
 ## Install
 
+Download the archive for your system from the [latest release](https://github.com/dzulfikar08/leanbio/releases/latest)
+(Linux x86_64/ARM64, macOS Intel/Apple Silicon, Windows), unpack it and put the binaries on your
+`PATH`. The Linux builds are statically linked and run on old distributions too.
+
+Or build with Rust:
+
 ```sh
 cargo install --git https://github.com/dzulfikar08/leanbio sheetgen leanqc isotable dblock
 ```
