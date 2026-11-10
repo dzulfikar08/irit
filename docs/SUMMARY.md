@@ -6,6 +6,7 @@
 
 - [sheetgen: sample sheets](tools/sheetgen.md)
 - [leanqc: read quality control](tools/leanqc.md)
+- [isotable: one row per sample](tools/isotable.md)
 - [dblock: reference databases](tools/dblock.md)
 
 # Results

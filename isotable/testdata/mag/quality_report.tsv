@@ -1,0 +1,6 @@
+Name	Completeness	Contamination	Completeness_Model_Used	Translation_Table_Used	Additional_Notes
+bin.1	97.5	1.2	Gradient Boost (General Model)	11	None
+bin.2	72.0	3.1	Gradient Boost (General Model)	11	None
+bin.3	64.0	0.8	Neural Network (Specific Model)	11	None
+bin.4	38.0	2.0	Neural Network (Specific Model)	11	None
+bin.5	92.0	12.5	Gradient Boost (General Model)	11	None
