@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (2026-11-10)
+
+### Fixed
+- **macOS: the command-line tools aborted at launch** with "Library not loaded:
+  /opt/homebrew/opt/xz/lib/liblzma.5.dylib" (or "different Team IDs" where Homebrew's xz is
+  installed). The 0.2.0 builds linked the build machine's Homebrew liblzma, which a signed binary
+  can't load and most Macs don't have. xz support is now built in, and the release fails if a macOS
+  binary links anything outside the system libraries.
+
+### msaview
+- **Try a sample** button: opens a synthetic 2,000 × 3,000 nucleotide alignment, so there is
+  something to look at before you have a file.
 
 ### dblock
 - `tar.zst` archives (long-window ones too), in both download and streaming modes.

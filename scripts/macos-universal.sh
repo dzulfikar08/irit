@@ -27,5 +27,9 @@ for b in "$@"; do
     "$root/target/aarch64-apple-darwin/release/$b" "$root/target/x86_64-apple-darwin/release/$b"
   archs="$(lipo -archs "$out/$b")"
   case "$archs" in *arm64*x86_64*|*x86_64*arm64*) ;; *) echo "error: $b is not universal: $archs" >&2; exit 1 ;; esac
+  # A signed binary with the hardened runtime may only load system libraries; anything else
+  # (e.g. Homebrew's liblzma picked up by a -sys crate's pkg-config) aborts at launch on users' Macs.
+  foreign="$(otool -L "$out/$b" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/usr/lib/|/System/)' || true)"
+  if [ -n "$foreign" ]; then echo "error: $b links non-system libraries:" >&2; echo "$foreign" >&2; exit 1; fi
   echo "$out/$b: $archs"
 done

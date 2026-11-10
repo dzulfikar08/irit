@@ -55,3 +55,12 @@ curl -s https://data.gtdb.ecogenomic.org/releases/release232/232.0/MD5SUM.txt | 
 
 `dblock` keeps GTDB's published checksum in its catalog and refuses the file until one of the two
 is updated. Status: reported 2026-11-10 as [Ecogenomics/GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726).
+
+## gPlace: identical to pplacer, and an OOM kill before the `--max_memory` check
+
+[cmc-aau/gPlace#5](https://github.com/cmc-aau/gPlace/issues/5) (2026-11-10). Shares the
+[gPlace checks](gplace-checks.md): placements identical to pplacer for 59 genomes on the R232 ar53
+and bac120 backbone trees, and the `--max_memory` floors (1.9G on class tree 8, 5.2G on the full
+bac120 tree). It also reports that on the full tree gPlace loads about 4.8 GiB before checking
+`--max_memory`, so a hard memory limit below that kills it instead of printing "needs --max_memory
+5.1G". Summary on [GTDBTk#728](https://github.com/Ecogenomics/GTDBTk/issues/728#issuecomment-6769095352).
