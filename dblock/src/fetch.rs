@@ -16,9 +16,14 @@
 //! A catalog entry may `keep` only some folders of its archive (the rest is read for the
 //! checksum but never written) and may name `verify_dirs`: folders whose GTDB-Tk folder hash
 //! must match, checked before the folder takes its final name.
+//!
+//! A multi-part entry is several archives unpacked into the same temporary folder. In download
+//! mode every part is downloaded and checked first (each resumable on its own, kept under
+//! `.partial/` until all are good), then all are unpacked; in stream mode they are streamed one
+//! after another. Either way the folder takes its final name only once every part has passed.
 
-use crate::catalog::{Entry, Format, human};
-use crate::project::{self, Locked};
+use crate::catalog::{Entry, Format, Source, human};
+use crate::project::{self, Locked, LockedPart};
 use anyhow::{Context, Result, bail};
 use md5::{Digest, Md5};
 use sha1::Sha1;
@@ -55,9 +60,22 @@ pub fn target_dir(store: &Path, e: &Entry) -> PathBuf {
     store.join(&e.id)
 }
 
-fn partial_path(store: &Path, e: &Entry) -> PathBuf {
-    let name = e.urls[0].rsplit('/').next().unwrap_or(&e.id);
-    store.join(".partial").join(format!("{}--{name}.part", e.id))
+fn partial_path(store: &Path, e: &Entry, src: &Source) -> PathBuf {
+    store.join(".partial").join(format!("{}--{}.part", e.id, src.name))
+}
+
+/// Largest zstd window the decoder accepts, as a power of two. libzstd refuses frames with a
+/// window above 2^27 (128 MiB) unless told otherwise; `zstd --long=28` and up need more. This
+/// only raises the limit: memory used is the window the archive actually declares.
+#[cfg(target_pointer_width = "64")]
+const ZSTD_WINDOW_LOG_MAX: u32 = 31;
+#[cfg(not(target_pointer_width = "64"))]
+const ZSTD_WINDOW_LOG_MAX: u32 = 30;
+
+fn zstd_reader<R: io::BufRead>(r: R) -> Result<zstd::stream::read::Decoder<'static, R>> {
+    let mut d = zstd::stream::read::Decoder::with_buffer(r).context("starting the zstd decoder")?;
+    d.window_log_max(ZSTD_WINDOW_LOG_MAX).context("setting the zstd window limit")?;
+    Ok(d)
 }
 
 /// What the store holds for a database.
@@ -200,7 +218,9 @@ pub fn prune_tmp(store: &Path, id: &str) {
 pub fn plan(store: &Path, e: &Entry, opts: &Opts) -> Result<Plan> {
     fs::create_dir_all(store).with_context(|| format!("creating {}", store.display()))?;
     let free = fs4::available_space(store).with_context(|| format!("checking free space on {}", store.display()))?;
-    let resumable = fs::metadata(partial_path(store, e)).map(|m| m.len()).unwrap_or(0);
+    // Per part, at most its size counts (a bigger leftover is emptied before downloading).
+    let resumable: u64 =
+        e.sources().iter().map(|src| fs::metadata(partial_path(store, e, src)).map(|m| m.len().min(src.size)).unwrap_or(0)).sum();
     let stored = e.on_disk();
     let full = if e.format == Format::File { e.size } else { e.size + stored };
     let can_stream = e.format != Format::File;
@@ -212,7 +232,7 @@ pub fn plan(store: &Path, e: &Entry, opts: &Opts) -> Result<Plan> {
         return Ok(Plan { mode: Mode::Stream, free, need: stored, resumable: 0 });
     }
     if free + resumable >= full + MARGIN {
-        return Ok(Plan { mode: Mode::DownloadThenExtract, free, need: full - resumable.min(e.size), resumable });
+        return Ok(Plan { mode: Mode::DownloadThenExtract, free, need: full - resumable, resumable });
     }
     if can_stream && free >= stored + MARGIN {
         return Ok(Plan { mode: Mode::Stream, free, need: stored, resumable: 0 });
@@ -242,32 +262,89 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
         .with_context(|| format!("creating a temporary folder in {}", parent.display()))?;
     let tmp = tmp_dir.path();
 
-    let mut last_err = None;
-    let mut used_url = None;
-    for url in &e.urls {
-        let r = match plan.mode {
-            Mode::DownloadThenExtract => download_then_extract(store, e, url, tmp, opts),
-            Mode::Stream => stream_extract(e, url, tmp),
-        };
-        match r {
-            Ok(()) => {
-                used_url = Some(url.clone());
-                break;
-            }
-            Err(err) => {
-                eprintln!("  {url}: {err:#}");
-                // A checksum mismatch is the data, not the mirror: don't hide it behind a retry.
-                if err.to_string().contains("checksum") {
-                    return Err(err);
+    let sources = e.sources();
+    let mut used = Vec::with_capacity(sources.len());
+    match plan.mode {
+        Mode::DownloadThenExtract => {
+            // Every archive first, so a failure in one part leaves the others resumable.
+            let mut downloaded = Vec::with_capacity(sources.len());
+            for src in &sources {
+                if sources.len() > 1 {
+                    eprintln!("  part {} of {}: {} ({})", used.len() + 1, sources.len(), src.name, human(src.size));
                 }
-                last_err = Some(err);
-                fs::remove_dir_all(tmp)?;
-                fs::create_dir(tmp)?;
+                let url = with_mirrors(src, |url| download_verify(store, e, src, url))?;
+                downloaded.push(partial_path(store, e, src));
+                used.push(url);
+            }
+            for (src, part) in sources.iter().zip(&downloaded) {
+                if e.format == Format::File {
+                    fs::rename(part, tmp.join(&src.name)).or_else(|_| fs::copy(part, tmp.join(&src.name)).map(|_| ()))?;
+                    let _ = fs::remove_file(part);
+                    continue;
+                }
+                eprintln!("  unpacking {}", src.name);
+                unpack(e.format, File::open(part)?, tmp, &e.keep)?;
+            }
+            if e.format != Format::File {
+                for part in &downloaded {
+                    if opts.keep_archive {
+                        let keep = store.join("archives");
+                        fs::create_dir_all(&keep)?;
+                        fs::rename(part, keep.join(part.file_name().unwrap().to_string_lossy().trim_end_matches(".part")))?;
+                    } else {
+                        fs::remove_file(part)?;
+                    }
+                }
+            }
+        }
+        Mode::Stream => {
+            for (i, src) in sources.iter().enumerate() {
+                if sources.len() > 1 {
+                    eprintln!("  part {} of {}: {} ({})", i + 1, sources.len(), src.name, human(src.size));
+                }
+                let mut last_err = None;
+                let mut ok = None;
+                for url in &src.urls {
+                    match stream_extract(e, src, url, tmp) {
+                        Ok(()) => {
+                            ok = Some(url.clone());
+                            break;
+                        }
+                        Err(err) => {
+                            eprintln!("  {url}: {err:#}");
+                            // A checksum mismatch is the data, not the mirror. And once earlier
+                            // parts are unpacked, a half-streamed part can't be taken back out.
+                            if err.to_string().contains("checksum") || sources.len() > 1 {
+                                return Err(err);
+                            }
+                            last_err = Some(err);
+                            fs::remove_dir_all(tmp)?;
+                            fs::create_dir(tmp)?;
+                        }
+                    }
+                }
+                let Some(url) = ok else {
+                    return Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no URL worked")));
+                };
+                used.push(url);
             }
         }
     }
-    let Some(url) = used_url else {
-        return Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no URL worked")));
+    let url = if e.is_multi_part() { e.base_url.clone().unwrap_or_else(|| used[0].clone()) } else { used[0].clone() };
+    let parts: Vec<LockedPart> = if e.is_multi_part() {
+        sources
+            .iter()
+            .zip(&used)
+            .map(|(src, url)| LockedPart {
+                file: src.name.clone(),
+                url: url.clone(),
+                bytes: src.size,
+                md5: src.md5.clone(),
+                sha256: src.sha256.clone(),
+            })
+            .collect()
+    } else {
+        Vec::new()
     };
 
     // Errors from here on drop `tmp_dir`, so nothing is kept.
@@ -312,6 +389,7 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
         licence: e.licence.clone(),
         non_commercial: e.non_commercial,
         verify_dirs: e.verify_dirs.clone(),
+        parts,
     };
     // The marker goes in before the rename, so a folder under the final name is always complete.
     project::write_marker(tmp, &locked)?;
@@ -345,34 +423,99 @@ fn get(url: &str, from: u64) -> Result<(ureq::http::Response<ureq::Body>, bool)>
     Ok((resp, partial))
 }
 
-fn download_then_extract(store: &Path, e: &Entry, url: &str, tmp: &Path, opts: &Opts) -> Result<()> {
-    let part = partial_path(store, e);
+/// Try a source's URLs in order until one downloads and checks out; returns the URL used.
+/// A checksum mismatch stops at once: a mirror serving the same bad file wouldn't fix it.
+fn with_mirrors(src: &Source, mut f: impl FnMut(&str) -> Result<()>) -> Result<String> {
+    let mut last_err = None;
+    for url in &src.urls {
+        match f(url) {
+            Ok(()) => return Ok(url.clone()),
+            Err(err) => {
+                eprintln!("  {url}: {err:#}");
+                if err.to_string().contains("checksum") {
+                    return Err(err);
+                }
+                last_err = Some(err);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no URL worked")))
+}
+
+/// MD5, and SHA-256 when the catalog gives one, over the same bytes.
+struct Hashes {
+    md5: Md5,
+    sha256: Option<Sha256>,
+}
+
+impl Hashes {
+    fn new(src: &Source) -> Self {
+        Hashes { md5: Md5::new(), sha256: src.sha256.as_ref().map(|_| Sha256::new()) }
+    }
+
+    fn update(&mut self, b: &[u8]) {
+        self.md5.update(b);
+        if let Some(h) = &mut self.sha256 {
+            h.update(b);
+        }
+    }
+
+    /// `Ok(md5)` if size and hashes match the source, else the "checksum mismatch" description.
+    fn check(self, src: &Source, got: u64) -> std::result::Result<String, String> {
+        let md5 = hex(&self.md5.finalize());
+        let sha = self.sha256.map(|h| hex(&h.finalize()));
+        let mut wrong = Vec::new();
+        if got != src.size {
+            wrong.push(format!("{got} bytes, expected {}", src.size));
+        }
+        if md5 != src.md5 {
+            wrong.push(format!("md5 {md5}, expected {}", src.md5));
+        }
+        if let (Some(got), Some(want)) = (&sha, &src.sha256)
+            && got != want
+        {
+            wrong.push(format!("sha256 {got}, expected {want}"));
+        }
+        if wrong.is_empty() { Ok(md5) } else { Err(wrong.join("; ")) }
+    }
+}
+
+/// Which archive a message is about: the entry, or the entry and the part.
+fn label(e: &Entry, src: &Source) -> String {
+    if e.is_multi_part() { format!("{} (part {})", e.id, src.name) } else { e.id.clone() }
+}
+
+/// Download one archive to `.partial/` (resuming what an earlier run left) and check it.
+/// On success the checked file stays there for the caller to unpack.
+fn download_verify(store: &Path, e: &Entry, src: &Source, url: &str) -> Result<()> {
+    let part = partial_path(store, e, src);
     fs::create_dir_all(part.parent().unwrap())?;
     let mut have = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
-    if have > e.size {
+    if have > src.size {
         // A different file was left here: empty it, or its tail would survive the new download.
         fs::OpenOptions::new().write(true).open(&part)?.set_len(0)?;
         have = 0;
     }
 
-    let mut hasher = Md5::new();
+    let mut hasher = Hashes::new(src);
     if have > 0 {
-        eprintln!("  resuming at {} of {}; re-reading what's there to keep the checksum honest", human(have), human(e.size));
+        let what = if have == src.size { "already downloaded" } else { "resuming" };
+        eprintln!("  {what}: {} of {}; re-reading what's there to keep the checksum honest", human(have), human(src.size));
         let mut f = File::open(&part)?;
         hash_reader(&mut (&mut f).take(have), &mut hasher)?;
     }
-    if have < e.size {
+    if have < src.size {
         let (resp, partial) = get(url, have)?;
         let mut file = fs::OpenOptions::new().create(true).write(true).truncate(false).open(&part)?;
         if have > 0 && !partial {
             eprintln!("  server ignored the resume request; starting over");
             have = 0;
-            hasher = Md5::new();
+            hasher = Hashes::new(src);
             file.set_len(0)?;
         }
         file.seek(io::SeekFrom::Start(have))?;
         let mut body = resp.into_body().into_reader();
-        let mut progress = Progress::new(e.size, have);
+        let mut progress = Progress::new(src.size, have);
         let mut buf = vec![0u8; 1 << 20];
         loop {
             let n = body.read(&mut buf).context("download interrupted; run `dblock fetch` again to resume")?;
@@ -388,60 +531,42 @@ fn download_then_extract(store: &Path, e: &Entry, url: &str, tmp: &Path, opts: &
     }
 
     let got = fs::metadata(&part)?.len();
-    let md5 = hex(&hasher.finalize());
-    if got != e.size || md5 != e.md5 {
-        let _ = fs::remove_file(&part);
-        bail!(
-            "checksum mismatch for {}: got {} bytes with md5 {md5}, expected {} bytes with md5 {} ({}). \
-             The partial file was deleted; fetch again, and if it repeats the publisher may have replaced the file.",
-            e.id,
-            got,
-            e.size,
-            e.md5,
-            e.md5_source
-        );
+    match hasher.check(src, got) {
+        Ok(md5) => {
+            let sha = if src.sha256.is_some() { " and sha256" } else { "" };
+            eprintln!("  checksum ok (md5 {md5}{sha})");
+            Ok(())
+        }
+        Err(wrong) => {
+            let _ = fs::remove_file(&part);
+            bail!(
+                "checksum mismatch for {}: got {wrong} ({}). \
+                 The partial file was deleted; fetch again, and if it repeats the publisher may have replaced the file.",
+                label(e, src),
+                e.md5_source
+            );
+        }
     }
-    eprintln!("  checksum ok ({md5})");
-
-    if e.format == Format::File {
-        let name = url.rsplit('/').next().unwrap_or(&e.id);
-        fs::rename(&part, tmp.join(name)).or_else(|_| fs::copy(&part, tmp.join(name)).map(|_| ()))?;
-        let _ = fs::remove_file(&part);
-        return Ok(());
-    }
-    eprintln!("  unpacking");
-    unpack(e.format, File::open(&part)?, tmp, &e.keep)?;
-    if opts.keep_archive {
-        let keep = store.join("archives");
-        fs::create_dir_all(&keep)?;
-        fs::rename(&part, keep.join(part.file_name().unwrap().to_string_lossy().trim_end_matches(".part")))?;
-    } else {
-        fs::remove_file(&part)?;
-    }
-    Ok(())
 }
 
-fn stream_extract(e: &Entry, url: &str, tmp: &Path) -> Result<()> {
+fn stream_extract(e: &Entry, src: &Source, url: &str, tmp: &Path) -> Result<()> {
     eprintln!("  streaming: unpacking while downloading, so the archive never touches the disk (not resumable)");
     let (resp, _) = get(url, 0)?;
-    let mut reader = HashingReader { inner: resp.into_body().into_reader(), hasher: Md5::new(), progress: Progress::new(e.size, 0) };
-    unpack_stream(e.format, &mut reader, tmp, &e.keep)?;
+    let mut reader = HashingReader { inner: resp.into_body().into_reader(), hasher: Hashes::new(src), progress: Progress::new(src.size, 0) };
+    // A corrupt stream usually fails here, in the decoder, before the checksum can be compared.
+    unpack_stream(e.format, &mut reader, tmp, &e.keep)
+        .with_context(|| format!("{} is corrupt or cut short (unpacking failed while streaming). Nothing was kept", label(e, src)))?;
     // tar stops at its end marker; hash any padding after it so the MD5 covers the whole file.
     io::copy(&mut reader, &mut io::sink())?;
     let HashingReader { hasher, progress, .. } = reader;
     progress.done();
-    let md5 = hex(&hasher.finalize());
-    if progress.done_bytes != e.size || md5 != e.md5 {
-        bail!(
-            "checksum mismatch for {}: streamed {} bytes with md5 {md5}, expected {} bytes with md5 {}. Nothing was kept.",
-            e.id,
-            progress.done_bytes,
-            e.size,
-            e.md5
-        );
+    match hasher.check(src, progress.done_bytes) {
+        Ok(md5) => {
+            eprintln!("  checksum ok ({md5})");
+            Ok(())
+        }
+        Err(wrong) => bail!("checksum mismatch for {}: streamed {wrong}. Nothing was kept.", label(e, src)),
     }
-    eprintln!("  checksum ok ({md5})");
-    Ok(())
 }
 
 fn unpack(format: Format, src: impl Read, dest: &Path, keep: &[String]) -> Result<()> {
@@ -450,6 +575,7 @@ fn unpack(format: Format, src: impl Read, dest: &Path, keep: &[String]) -> Resul
         Format::TarGz => tar_unpack(flate2::read::MultiGzDecoder::new(src), dest, keep),
         Format::TarXz => tar_unpack(liblzma::read::XzDecoder::new_multi_decoder(src), dest, keep),
         Format::TarBz2 => tar_unpack(bzip2::read::MultiBzDecoder::new(src), dest, keep),
+        Format::TarZst => tar_unpack(zstd_reader(src)?, dest, keep),
         Format::File => unreachable!("plain files are not unpacked"),
     }
 }
@@ -469,6 +595,11 @@ fn unpack_stream<R: Read>(format: Format, src: &mut R, dest: &Path, keep: &[Stri
         }
         Format::TarBz2 => {
             let mut d = bzip2::read::MultiBzDecoder::new(io::BufReader::new(&mut *src));
+            tar_unpack(&mut d, dest, keep)?;
+            io::copy(&mut d, &mut io::sink())?;
+        }
+        Format::TarZst => {
+            let mut d = zstd_reader(io::BufReader::new(&mut *src))?;
             tar_unpack(&mut d, dest, keep)?;
             io::copy(&mut d, &mut io::sink())?;
         }
@@ -635,7 +766,7 @@ pub fn check_dirs(root: &Path, want: &BTreeMap<String, String>) -> Result<Vec<St
 
 struct HashingReader<R> {
     inner: R,
-    hasher: Md5,
+    hasher: Hashes,
     progress: Progress,
 }
 
@@ -648,7 +779,7 @@ impl<R: Read> Read for HashingReader<R> {
     }
 }
 
-fn hash_reader(r: &mut impl Read, h: &mut Md5) -> Result<()> {
+fn hash_reader(r: &mut impl Read, h: &mut Hashes) -> Result<()> {
     let mut buf = vec![0u8; 1 << 20];
     loop {
         let n = r.read(&mut buf)?;
@@ -1148,7 +1279,7 @@ mod tests {
         let (url, _) = serve(body.clone());
         let e = entry(&url, &md5, body.len(), "dir");
         let store = tempfile::tempdir().unwrap();
-        let part = partial_path(store.path(), &e);
+        let part = partial_path(store.path(), &e, &e.sources()[0]);
         fs::create_dir_all(part.parent().unwrap()).unwrap();
         fs::write(&part, vec![b'x'; body.len() * 3]).unwrap();
         obtain(store.path(), &e, &opts()).unwrap();
@@ -1469,5 +1600,228 @@ mod tests {
         let err = format!("{:#}", obtain(store.path(), &e, &opts()).unwrap_err());
         assert!(err.contains("2 files match"), "{err}");
         assert!(!store.path().join("mydb").exists());
+    }
+
+    /// A `.tar.zst` of the given files, compressed with a 2^28 window: above libzstd's default
+    /// decoder limit (2^27), like `zstd --long=28`. Plain `zstd -d` refuses it without `--long=28`.
+    fn zst_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut enc = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+        enc.long_distance_matching(true).unwrap();
+        enc.window_log(28).unwrap();
+        let mut tar = tar::Builder::new(enc);
+        for (name, body) in files {
+            let mut h = tar::Header::new_gnu();
+            h.set_path(name).unwrap();
+            h.set_size(body.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append(&h, *body).unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn tar_zst_with_a_long_window_unpacks() {
+        let body = zst_archive(&[("db/a.txt", b"hello"), ("db/b.txt", b"world")]);
+        // The archive really needs the raised limit: a default decoder refuses it.
+        let mut plain = zstd::stream::read::Decoder::new(&body[..]).unwrap();
+        assert!(io::copy(&mut plain, &mut io::sink()).is_err(), "default decoder accepted a 2^28 window");
+        let md5 = hex(&Md5::digest(&body));
+        for stream in [false, true] {
+            let (url, _) = serve(body.clone());
+            let mut e = entry(&url, &md5, body.len(), "dir");
+            e.format = Format::TarZst;
+            let store = tempfile::tempdir().unwrap();
+            let (l, _) = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false })
+                .unwrap_or_else(|err| panic!("stream={stream}: {err:#}"));
+            assert_eq!(listing(&target_dir(store.path(), &e)), ["db/a.txt", "db/b.txt"], "stream={stream}");
+            assert_eq!((l.files, l.bytes), (2, 10));
+        }
+    }
+
+    /// HTTP server for several files by path, honouring `Range: bytes=N-`. Records each request
+    /// as `path` or `path@N` for a range request.
+    fn serve_files(files: Vec<(String, Vec<u8>)>) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/rel", listener.local_addr().unwrap());
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = log.clone();
+        let files = Arc::new(files);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (files, seen) = (files.clone(), seen.clone());
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut first = String::new();
+                    reader.read_line(&mut first).unwrap();
+                    let path = first.split_whitespace().nth(1).unwrap_or("").rsplit('/').next().unwrap_or("").to_string();
+                    let mut from = 0usize;
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                        if let Some(v) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
+                            from = v.trim().trim_end_matches('-').parse().unwrap_or(0);
+                        }
+                        line.clear();
+                    }
+                    seen.lock().unwrap().push(if from > 0 { format!("{path}@{from}") } else { path.clone() });
+                    let mut stream = stream;
+                    let Some((_, body)) = files.iter().find(|(n, _)| *n == path) else {
+                        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        return;
+                    };
+                    let head = if from > 0 {
+                        format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {from}-{}/{}\r\nConnection: close\r\n\r\n",
+                            body.len() - from,
+                            body.len() - 1,
+                            body.len()
+                        )
+                    } else {
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
+                    };
+                    stream.write_all(head.as_bytes()).unwrap();
+                    let _ = stream.write_all(&body[from..]);
+                });
+            }
+        });
+        (base, log)
+    }
+
+    /// Three `.tar.zst` parts that all unpack under `rel/`, like the GTDB placement mirror.
+    fn three_parts() -> Vec<(String, Vec<u8>)> {
+        vec![
+            ("p-core.tar.zst".into(), zst_archive(&[("rel/markers/a.hmm", b"AAA"), ("rel/masks/m.txt", b"MM")])),
+            ("p-split.tar.zst".into(), zst_archive(&[("rel/split/s1", &[b's'; 3000][..]), ("rel/split/s2", b"S2")])),
+            ("p-tree.tar.zst".into(), zst_archive(&[("rel/pplacer/tree", b"TREE")])),
+        ]
+    }
+
+    /// A multi-part catalog entry for `parts` (as served at `base`), loaded through the catalog
+    /// so URLs, size and the combined MD5 are filled in the way `dblock` does it.
+    fn multi_entry(dir: &Path, base: &str, parts: &[(String, Vec<u8>)], sha256: bool) -> Entry {
+        let parts: Vec<_> = parts
+            .iter()
+            .map(|(name, body)| {
+                let mut p = serde_json::json!({"file": name, "size": body.len(), "md5": hex(&Md5::digest(body))});
+                if sha256 {
+                    p["sha256"] = hex(&Sha256::digest(body)).into();
+                }
+                p
+            })
+            .collect();
+        let json = serde_json::json!([{
+            "id": "mydb", "name": "t", "version": "1", "tool": "t", "format": "tar.zst", "base_url": base,
+            "parts": parts, "extracted": 100, "md5_source": "test", "env": "MYDB", "compat": null,
+            "licence": "x", "verify_dirs": {"rel/markers": hex(&Sha1::digest(b"AAA"))}
+        }]);
+        let cat = dir.join("cat.json");
+        fs::write(&cat, json.to_string()).unwrap();
+        let entries = crate::catalog::load(Some(&cat)).unwrap();
+        crate::catalog::find(&entries, "mydb").unwrap().clone()
+    }
+
+    #[test]
+    fn multi_part_entry_unpacks_into_one_folder_in_both_modes() {
+        let files = three_parts();
+        let want = ["rel/markers/a.hmm", "rel/masks/m.txt", "rel/pplacer/tree", "rel/split/s1", "rel/split/s2"];
+        for stream in [false, true] {
+            let (base, log) = serve_files(files.clone());
+            let dir = tempfile::tempdir().unwrap();
+            let e = multi_entry(dir.path(), &base, &files, true);
+            assert_eq!(e.size, files.iter().map(|(_, b)| b.len() as u64).sum::<u64>());
+            let store = dir.path().join("store");
+            let (l, _) = obtain(&store, &e, &Opts { force_stream: stream, keep_archive: false })
+                .unwrap_or_else(|err| panic!("stream={stream}: {err:#}"));
+            assert_eq!(listing(&target_dir(&store, &e)), want, "stream={stream}");
+            assert_eq!(l.files, 5);
+            assert_eq!(l.archive_bytes, e.size);
+            assert_eq!(l.archive_md5, e.md5);
+            assert_eq!(l.parts.len(), 3);
+            assert_eq!(l.parts[1].file, "p-split.tar.zst");
+            assert_eq!(l.parts[1].url, format!("{base}/p-split.tar.zst"));
+            assert!(l.parts.iter().all(|p| p.sha256.is_some()));
+            assert!(l.data_path.ends_with("mydb/rel"), "{}", l.data_path);
+            assert_eq!(log.lock().unwrap().len(), 3, "one request per part");
+            // Archives are removed once unpacked, and the store reuses the folder next time.
+            assert!(fs::read_dir(store.join(".partial")).map(|d| d.count() == 0).unwrap_or(true));
+            let (again, reused) = obtain(&store, &e, &opts()).unwrap();
+            assert!(reused && again.manifest_md5 == l.manifest_md5);
+            // The lock file round-trips the parts.
+            let mut lock = project::Lock::default();
+            lock.upsert(l.clone());
+            lock.save(dir.path()).unwrap();
+            assert_eq!(project::Lock::load(dir.path()).unwrap().databases[0].parts, l.parts);
+        }
+    }
+
+    #[test]
+    fn corrupt_part_keeps_nothing_and_the_rest_resumes() {
+        let good = three_parts();
+        let mut bad = good.clone();
+        // Same size, one byte flipped: only the checksums can tell.
+        let last = bad[1].1.len() - 1;
+        bad[1].1[last] ^= 0xff;
+        for sha256 in [true, false] {
+            let (base, log) = serve_files(bad.clone());
+            let dir = tempfile::tempdir().unwrap();
+            let e = multi_entry(dir.path(), &base, &good, sha256);
+            let store = dir.path().join("store");
+            let err = format!("{:#}", obtain(&store, &e, &opts()).unwrap_err());
+            assert!(err.contains("checksum mismatch for mydb (part p-split.tar.zst)"), "{err}");
+            assert!(err.contains("md5") && err.contains("sha256") == sha256, "{err}");
+            assert!(!target_dir(&store, &e).exists(), "kept a database with a corrupt part");
+            assert!(!store.join(".tmp").exists(), "temporary folder left behind");
+            assert_eq!(*log.lock().unwrap(), ["p-core.tar.zst", "p-split.tar.zst"], "stopped at the bad part");
+            // The good part stays downloaded; the bad one is deleted.
+            let sources = e.sources();
+            assert!(partial_path(&store, &e, &sources[0]).is_file());
+            assert!(!partial_path(&store, &e, &sources[1]).exists());
+
+            // Streamed: also nothing kept.
+            let err = format!("{:#}", obtain(&store, &e, &Opts { force_stream: true, keep_archive: false }).unwrap_err());
+            assert!(err.contains("part p-split.tar.zst") && err.contains("Nothing was kept"), "{err}");
+            assert!(!target_dir(&store, &e).exists());
+        }
+
+        // Fixed upstream: the next fetch re-reads part 1 from disk instead of downloading it,
+        // resumes part 2 from where an interrupted download stopped, and gets part 3.
+        let (base, log) = serve_files(good.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let e = multi_entry(dir.path(), &base, &good, true);
+        let store = dir.path().join("store");
+        let sources = e.sources();
+        fs::create_dir_all(store.join(".partial")).unwrap();
+        fs::write(partial_path(&store, &e, &sources[0]), &good[0].1).unwrap();
+        fs::write(partial_path(&store, &e, &sources[1]), &good[1].1[..100]).unwrap();
+        let p = plan(&store, &e, &opts()).unwrap();
+        assert_eq!(p.resumable, good[0].1.len() as u64 + 100);
+        let (l, _) = obtain(&store, &e, &opts()).unwrap();
+        assert_eq!(*log.lock().unwrap(), ["p-split.tar.zst@100", "p-tree.tar.zst"]);
+        assert_eq!(l.files, 5);
+        assert!(check_dirs(&target_dir(&store, &e), &e.verify_dirs).unwrap().is_empty());
+    }
+
+    #[test]
+    fn multi_part_folder_hash_mismatch_keeps_nothing() {
+        let files = three_parts();
+        let (base, _) = serve_files(files.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = multi_entry(dir.path(), &base, &files, true);
+        e.verify_dirs.insert("rel/pplacer".into(), "0".repeat(40));
+        let store = dir.path().join("store");
+        let err = format!("{:#}", obtain(&store, &e, &opts()).unwrap_err());
+        assert!(err.contains("folder hash mismatch") && err.contains("rel/pplacer"), "{err}");
+        assert!(!target_dir(&store, &e).exists());
+    }
+
+    #[test]
+    fn plan_sums_the_parts() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = three_parts();
+        let mut e = multi_entry(dir.path(), "http://127.0.0.1:9/x", &files, false);
+        e.extracted = 1_000;
+        let p = plan(&dir.path().join("store"), &e, &opts()).unwrap();
+        assert_eq!(p.need, e.size + 1_000);
+        assert_eq!(e.on_disk(), 1_000);
     }
 }

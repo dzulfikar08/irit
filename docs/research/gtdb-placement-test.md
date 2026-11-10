@@ -196,6 +196,13 @@ What a laptop route still needs:
      full download, but only 7.4 GB of disk.
 
    `dblock` could offer the last as a `gtdbtk-r232-placement` entry right away.
+
+   **Done (2026-11-10):** the placement folders are on an unofficial, unmodified mirror,
+   [`dzulfikar08/irit-data` release `gtdbtk-r232-placement-v1`](https://github.com/dzulfikar08/irit-data/releases/tag/gtdbtk-r232-placement-v1)
+   (12 `.tar.zst` parts, 280 MB, GTDB data under CC BY-SA 4.0), and `dblock add
+   gtdbtk-r232-placement` (or `gtdbtk-r232-placement-lite`, 175 MB, without the full bacterial
+   tree) fetches them and checks them against GTDB-Tk's `REF_HASHES`. See
+   [dblock](../tools/dblock.md#gtdbtk-r232-placement-and--lite-gtdb-placement-data-from-a-mirror).
 3. **The ANI screen (85.2 GB).** This is now the only part that doesn't fit. Without it,
    classifications stop at genus for genomes of known species. That is the case where most users
    want a species name. Routes:
