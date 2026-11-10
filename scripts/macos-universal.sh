@@ -29,7 +29,8 @@ for b in "$@"; do
   case "$archs" in *arm64*x86_64*|*x86_64*arm64*) ;; *) echo "error: $b is not universal: $archs" >&2; exit 1 ;; esac
   # A signed binary with the hardened runtime may only load system libraries; anything else
   # (e.g. Homebrew's liblzma picked up by a -sys crate's pkg-config) aborts at launch on users' Macs.
-  foreign="$(otool -L "$out/$b" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/usr/lib/|/System/)' || true)"
+  # Dependency lines are tab-indented; the others are per-architecture headers.
+  foreign="$(otool -L "$out/$b" | awk '/^\t/ {print $1}' | grep -Ev '^(/usr/lib/|/System/)' || true)"
   if [ -n "$foreign" ]; then echo "error: $b links non-system libraries:" >&2; echo "$foreign" >&2; exit 1; fi
   echo "$out/$b: $archs"
 done
