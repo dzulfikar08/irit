@@ -518,9 +518,9 @@ fn tar_unpack(r: impl Read, dest: &Path, keep: &[String]) -> Result<()> {
         {
             bail!(
                 "symlink `{}` -> `{}` points outside the kept folders ({}); it would be left dangling. Add its target to the entry's `keep`",
-                path.display(),
-                target.display(),
-                keep.iter().map(|k| k.display().to_string()).collect::<Vec<_>>().join(", ")
+                archive_path(&path),
+                archive_path(&target),
+                keep.iter().map(|k| archive_path(k)).collect::<Vec<_>>().join(", ")
             );
         }
         // A hard link's target is an archive path; one outside `keep` was never written.
@@ -530,9 +530,9 @@ fn tar_unpack(r: impl Read, dest: &Path, keep: &[String]) -> Result<()> {
         {
             bail!(
                 "hard link `{}` -> `{}` points outside the kept folders ({}). Add its target to the entry's `keep`",
-                path.display(),
-                target.display(),
-                keep.iter().map(|k| k.display().to_string()).collect::<Vec<_>>().join(", ")
+                archive_path(&path),
+                archive_path(&target),
+                keep.iter().map(|k| archive_path(k)).collect::<Vec<_>>().join(", ")
             );
         }
         // Same per-entry routine `unpack` uses: `..` and absolute paths can't escape `dest`.
@@ -543,6 +543,12 @@ fn tar_unpack(r: impl Read, dest: &Path, keep: &[String]) -> Result<()> {
         entry.unpack_in(&dest).with_context(ctx)?;
     }
     Ok(())
+}
+
+/// An archive path as the archive spells it (`/` separators on every OS), for messages.
+fn archive_path(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    if cfg!(windows) { s.replace('\\', "/") } else { s.into_owned() }
 }
 
 /// Where a symlink at archive path `link` with target `target` points, as an archive path;
