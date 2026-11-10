@@ -562,7 +562,7 @@ mod tests {
                     std::fs::write(&p, "").unwrap();
                     Some(p)
                 };
-                Unit { sample: s.to_string(), r1: mk("R1"), r2: mk("R2"), long: None, numeric_pair: false }
+                Unit { sample: s.to_string(), r1: mk("R1"), r2: mk("R2"), long: None, lane: String::new(), numeric_pair: false }
             })
             .collect()
     }
@@ -674,7 +674,7 @@ mod tests {
     #[test]
     fn missing_files_fail_exists() {
         let s = Schema::load(&fixture("rnaseq-3.27.0.schema_input.json"), false).unwrap();
-        let u = vec![Unit { sample: "A".into(), r1: Some("/nonexistent/A_R1.fastq.gz".into()), r2: None, long: None, numeric_pair: false }];
+        let u = vec![Unit { sample: "A".into(), r1: Some("/nonexistent/A_R1.fastq.gz".into()), r2: None, long: None, lane: String::new(), numeric_pair: false }];
         let err = run(&s, &u, &[("strandedness", "auto")]).unwrap_err().to_string();
         assert!(err.contains("does not exist"), "{err}");
     }
