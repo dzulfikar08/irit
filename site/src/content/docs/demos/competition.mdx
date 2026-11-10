@@ -1,0 +1,44 @@
+---
+title: Two microbes, one dish
+description: An interactive teaching toy. Two populations compete for the same resources, simulated live with the Lotka–Volterra competition model, with presets from Gause's classic experiments.
+editUrl: false
+tableOfContents: false
+---
+
+import Competition from '../../../components/competition/Competition.astro';
+
+{/* Committed page (not synced from docs/). Parameter sources are cited inside the component, next to each preset. */}
+
+**A teaching toy, not a research result.** This page has nothing to do with irit's command-line tools.
+It shows a textbook model of two species competing for the same resources, so you can see how growth
+rates and competition strengths decide whether one species wins or both survive.
+
+The model is the two-species competitive Lotka–Volterra system, solved in your browser with a
+fourth-order Runge–Kutta integrator:
+
+```text
+dN₁/dt = r₁N₁ (1 − (N₁ + a₁₂N₂) / K₁)
+dN₂/dt = r₂N₂ (1 − (N₂ + a₂₁N₁) / K₂)
+```
+
+N is a population size, r its growth rate when rare, K the size it settles at when alone (the carrying
+capacity), and a₁₂ how much one individual of species 2 counts against species 1's capacity (a₂₁ the
+reverse). The two preset experiments used yeasts and the ciliate *Paramecium*: those are the classic data sets
+where every parameter was published. The rods and rounds in the dish are cartoons, not drawings of those organisms.
+
+<Competition />
+
+## Reading it
+
+- **The dish** shows the populations at the time on the slider: more characters means a larger population,
+  scaled so the larger carrying capacity fills the dish. Press Play to watch the run from the start.
+- **Populations over time**: solid line for species 1, dashed for species 2, with each one's carrying
+  capacity as a dotted line.
+- **Phase plane**: each nullcline is where one species stops growing. Filled circles are stable end
+  points, open circles unstable ones. Where the two lines sit decides which of the four endings you get.
+
+## What the model leaves out
+
+Real cultures have lag phases, toxins, spatial structure, mutation and chance. The parameters here are
+constants; in Gause's own data they changed while the cultures grew. Treat the presets as a way to see
+the model behave on real numbers, not as predictions about these organisms.

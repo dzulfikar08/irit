@@ -21,7 +21,11 @@ export default defineConfig({
 			favicon: '/favicon.svg',
 			social: [{ icon: 'github', label: 'Source on GitHub', href: REPO_URL }],
 			// Pages carry their own editUrl (set by scripts/sync-docs.mjs) pointing at docs/.
-			sidebar: sidebarFromSummary(),
+			// Demos are committed pages in src/content/docs/demos/, not synced from docs/.
+			sidebar: [
+				...sidebarFromSummary(),
+				{ label: 'Demos', items: [{ label: 'Two microbes, one dish', slug: 'demos/competition' }] },
+			],
 			customCss: [
 				'@fontsource-variable/inter/wght.css',
 				'@fontsource-variable/inter/wght-italic.css',

@@ -1,0 +1,1160 @@
+---
+// Interactive two-species competition (Lotka–Volterra) for the demos page.
+// Everything is drawn by the client script below; the model lives in model.ts.
+import { PRESETS } from './model';
+
+const sliders = [
+	{ key: 'r1', label: 'Growth rate r₁', min: 0.01, max: 2, step: 0.001 },
+	{ key: 'r2', label: 'Growth rate r₂', min: 0.01, max: 2, step: 0.001 },
+	{ key: 'K1', label: 'Carrying capacity K₁', min: 1, max: 200, step: 0.1 },
+	{ key: 'K2', label: 'Carrying capacity K₂', min: 1, max: 200, step: 0.1 },
+	{ key: 'a12', label: 'Effect of 2 on 1, a₁₂', min: 0, max: 4, step: 0.001 },
+	{ key: 'a21', label: 'Effect of 1 on 2, a₂₁', min: 0, max: 4, step: 0.001 },
+	{ key: 'n1', label: 'Starting N₁', min: 0.01, max: 200, step: 0.01 },
+	{ key: 'n2', label: 'Starting N₂', min: 0.01, max: 200, step: 0.01 },
+];
+
+const outcomes = [
+	{
+		id: 'one',
+		title: 'Species 1 wins',
+		rule: 'K₁ > a₁₂K₂ and K₂ < a₂₁K₁',
+		text: 'Species 1 can grow when it is rare and species 2 cannot. Species 2 dies out from any start.',
+	},
+	{
+		id: 'two',
+		title: 'Species 2 wins',
+		rule: 'K₁ < a₁₂K₂ and K₂ > a₂₁K₁',
+		text: 'The mirror image: species 2 can invade, species 1 cannot.',
+	},
+	{
+		id: 'coexist',
+		title: 'Both coexist',
+		rule: 'K₁ > a₁₂K₂ and K₂ > a₂₁K₁',
+		text: 'Each species holds itself back more than it holds back the other, so either can recover when rare. Both settle at a shared balance point.',
+	},
+	{
+		id: 'bistable',
+		title: 'Whoever leads wins',
+		rule: 'K₁ < a₁₂K₂ and K₂ < a₂₁K₁',
+		text: 'Each species holds the other back more than itself. Neither can invade the other, so the winner depends on where they start.',
+	},
+];
+---
+
+<div class="lv not-content" data-lv>
+	<div class="lv-head">
+		<div class="lv-field">
+			<label for="lv-preset">Scenario</label>
+			<select id="lv-preset" data-preset>
+				{PRESETS.map((p) => <option value={p.id}>{p.label}</option>)}
+				<option value="explore">Explore: your own values</option>
+			</select>
+		</div>
+		<fieldset class="lv-field lv-span" data-span-group>
+			<legend>Time shown</legend>
+			<label><input type="radio" name="lv-span" value="settle" checked /> Until it settles</label>
+			<label><input type="radio" name="lv-span" value="experiment" /> <span data-span-exp-label>Length of the experiment</span></label>
+		</fieldset>
+	</div>
+
+	<div class="lv-source" data-source aria-live="polite"></div>
+
+	<section class="lv-arena-wrap" aria-labelledby="lv-arena-title">
+		<h3 id="lv-arena-title" class="lv-h">The dish</h3>
+		<div class="lv-share" aria-hidden="true">
+			<span class="lv-share-1" data-share1></span><span class="lv-share-2" data-share2></span>
+		</div>
+		<svg class="lv-arena" data-arena viewBox="0 0 640 220" role="img" aria-labelledby="lv-arena-desc">
+			<desc id="lv-arena-desc">Cartoon dish. The number of rod-shaped and round characters follows the two populations at the time shown below.</desc>
+			<defs>
+				<g id="lv-rod">
+					<rect x="-15" y="-7" width="30" height="14" rx="7" class="lv-body1"></rect>
+					<circle cx="3.5" cy="-1.5" r="1.6" class="lv-eye"></circle>
+					<circle cx="9" cy="-1.5" r="1.6" class="lv-eye"></circle>
+					<path d="M3 2.6 q3 2.4 6 0" class="lv-mouth"></path>
+					<path d="M-15 0 q-5 -3 -9 0 q-4 3 -7 0" class="lv-flag1"></path>
+				</g>
+				<g id="lv-coccus">
+					<circle r="9" class="lv-body2"></circle>
+					<circle cx="-3" cy="-2" r="1.6" class="lv-eye"></circle>
+					<circle cx="3" cy="-2" r="1.6" class="lv-eye"></circle>
+					<path d="M-3 2.4 q3 2.6 6 0" class="lv-mouth"></path>
+				</g>
+			</defs>
+			<rect x="1" y="1" width="638" height="218" rx="14" class="lv-dish"></rect>
+			<g data-bugs></g>
+		</svg>
+		<div class="lv-play">
+			<button type="button" class="lv-btn" data-play aria-pressed="false">Play</button>
+			<label class="lv-time">
+				<span class="sr-only">Time</span>
+				<input type="range" min="0" max="800" step="1" value="0" data-scrub aria-describedby="lv-readout" />
+			</label>
+		</div>
+		<p class="lv-readout" id="lv-readout" data-readout></p>
+	</section>
+
+	<div class="lv-charts">
+		<figure class="lv-fig">
+			<figcaption class="lv-h">Populations over time</figcaption>
+			<div class="lv-legend" data-legend></div>
+			<svg class="lv-svg" data-timechart viewBox="0 0 640 300" role="img" aria-label="Line chart of both populations over time"></svg>
+			<fieldset class="lv-inline">
+				<legend class="sr-only">Time axis</legend>
+				<label><input type="radio" name="lv-axis" value="lin" checked /> Linear time</label>
+				<label><input type="radio" name="lv-axis" value="log" /> Log time</label>
+			</fieldset>
+		</figure>
+		<figure class="lv-fig">
+			<figcaption class="lv-h">Phase plane</figcaption>
+			<p class="lv-note">Each species' zero-growth line (nullcline) and the path the two populations take. Click or tap to start from another point.</p>
+			<svg class="lv-svg lv-phase" data-phase viewBox="0 0 360 340" role="img" aria-label="Phase plane: species 1 on the horizontal axis, species 2 on the vertical axis, with both nullclines and the trajectory"></svg>
+		</figure>
+	</div>
+
+	<section aria-labelledby="lv-controls-title">
+		<h3 id="lv-controls-title" class="lv-h">Parameters</h3>
+		<p class="lv-note">Moving a slider switches to Explore mode.</p>
+		<div class="lv-sliders">
+			{
+				sliders.map((s) => (
+					<div class="lv-slider">
+						<label for={`lv-${s.key}`}>{s.label}</label>
+						<output for={`lv-${s.key}`} data-out={s.key} />
+						<input id={`lv-${s.key}`} type="range" min={s.min} max={s.max} step={s.step} data-param={s.key} />
+					</div>
+				))
+			}
+		</div>
+	</section>
+
+	<section aria-labelledby="lv-outcomes-title">
+		<h3 id="lv-outcomes-title" class="lv-h">Four possible endings</h3>
+		<p class="lv-note" data-invasion></p>
+		<ol class="lv-outcomes">
+			{
+				outcomes.map((o) => (
+					<li data-outcome={o.id}>
+						<p class="lv-o-title">
+							{o.title}
+							<span class="lv-badge">Current</span>
+						</p>
+						<p class="lv-o-rule">{o.rule}</p>
+						<p>{o.text}</p>
+					</li>
+				))
+			}
+		</ol>
+		<p class="lv-boundary" data-boundary hidden>
+			These values sit exactly on a dividing line between two endings, so the model cannot decide; nudge a slider.
+		</p>
+	</section>
+</div>
+
+<script>
+	import {
+		PRESETS,
+		classify,
+		interior,
+		invasion,
+		settleTime,
+		simulate,
+		type Params,
+		type Preset,
+		type Trajectory,
+	} from './model';
+
+	const SVGNS = 'http://www.w3.org/2000/svg';
+	const SLOTS = 28; // characters per species at the larger carrying capacity
+	const PLAY_MS = 9000;
+
+	const root = document.querySelector<HTMLElement>('[data-lv]')!;
+	const $ = <T extends Element = HTMLElement>(sel: string) => root.querySelector<T>(sel)!;
+	const presetSelect = $<HTMLSelectElement>('[data-preset]');
+	const scrub = $<HTMLInputElement>('[data-scrub]');
+	const playBtn = $<HTMLButtonElement>('[data-play]');
+	const timeChart = $<SVGSVGElement>('[data-timechart]');
+	const phase = $<SVGSVGElement>('[data-phase]');
+	const bugLayer = $<SVGGElement>('[data-bugs]');
+	const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+	const explorePreset: Preset = {
+		id: 'explore',
+		label: 'Explore',
+		species: ['Species 1', 'Species 2'],
+		params: { ...PRESETS.find((p) => p.id === 'coexist')!.params },
+		timeUnit: 'time units',
+		popUnit: 'units',
+		expected: 'coexist',
+	};
+
+	const state = {
+		preset: PRESETS[0],
+		params: { ...PRESETS[0].params } as Params,
+		span: 'settle' as 'settle' | 'experiment',
+		axis: 'lin' as 'lin' | 'log',
+		traj: null as Trajectory | null,
+		index: 0,
+		playing: false,
+		last: 0,
+	};
+
+	// ---------- helpers ----------
+
+	function el<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number> = {}, parent?: Element) {
+		const node = document.createElementNS(SVGNS, tag);
+		for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+		parent?.appendChild(node);
+		return node;
+	}
+
+	function niceTicks(max: number, count = 5): number[] {
+		if (!(max > 0)) return [0];
+		const raw = max / count;
+		const mag = 10 ** Math.floor(Math.log10(raw));
+		const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => max / s <= count) ?? 10 * mag;
+		const n = Math.ceil(max / step - 1e-9);
+		return Array.from({ length: n + 1 }, (_, i) => +(i * step).toPrecision(12));
+	}
+
+	const fmt = (n: number) => {
+		const a = Math.abs(n);
+		if (a === 0) return '0';
+		if (a < 0.001) return '< 0.001';
+		if (a >= 1000) return Math.round(n).toLocaleString('en');
+		if (a >= 100) return n.toFixed(0);
+		if (a >= 10) return n.toFixed(1);
+		if (a >= 1) return n.toFixed(2);
+		return n.toPrecision(2);
+	};
+	const fmtExact = (n: number) => (+n.toPrecision(5)).toLocaleString('en');
+	const fmtTick = (n: number) => (+n.toPrecision(6)).toLocaleString('en');
+	const fmtParam = (key: string, n: number) => (key.startsWith('K') ? +n.toFixed(2) : +n.toPrecision(4)).toString();
+
+	// Deterministic pseudo-random positions so the dish looks the same on every visit.
+	function rng(seed: number) {
+		return () => {
+			seed = (seed * 1664525 + 1013904223) % 4294967296;
+			return seed / 4294967296;
+		};
+	}
+
+	// ---------- arena ----------
+
+	type Bug = { node: SVGGElement; on: boolean };
+	const bugs: [Bug[], Bug[]] = [[], []];
+	{
+		const rand = rng(7);
+		const spots: [number, number][] = [];
+		// Spread spots across the dish, keeping a minimum distance between characters.
+		let guard = 0;
+		while (spots.length < SLOTS * 2 && guard++ < 20000) {
+			const x = 34 + rand() * 572;
+			const y = 26 + rand() * 168;
+			if (spots.every(([a, b]) => Math.hypot(a - x, b - y) > 31)) spots.push([x, y]);
+		}
+		spots.forEach(([x, y], i) => {
+			const kind = i % 2;
+			const g = el('g', { class: `lv-bug lv-bug${kind + 1}`, transform: `translate(${x.toFixed(1)} ${y.toFixed(1)})` }, bugLayer);
+			const inner = el('g', { class: 'lv-wobble', style: `animation-delay:${(-rand() * 3).toFixed(2)}s` }, g);
+			const rot = kind === 0 ? Math.round(rand() * 360) : 0;
+			el('use', { href: kind === 0 ? '#lv-rod' : '#lv-coccus', transform: `rotate(${rot})` }, inner);
+			bugs[kind].push({ node: g, on: false });
+		});
+	}
+
+	function renderArena(i: number) {
+		const tr = state.traj!;
+		const p = state.params;
+		const scale = Math.max(p.K1, p.K2);
+		const counts = [tr.n1[i], tr.n2[i]].map((n) => {
+			const c = (SLOTS * n) / scale;
+			return c > 0 && c < 1 && n > scale * 1e-3 ? 1 : Math.min(SLOTS, Math.round(c));
+		});
+		counts.forEach((c, k) => {
+			bugs[k].forEach((b, j) => {
+				const on = j < c;
+				if (on !== b.on) {
+					b.on = on;
+					b.node.classList.toggle('is-on', on);
+				}
+			});
+		});
+		const total = tr.n1[i] + tr.n2[i];
+		const s1 = total > 0 ? (tr.n1[i] / total) * 100 : 50;
+		$('[data-share1]').style.width = `${s1}%`;
+		$('[data-share2]').style.width = `${100 - s1}%`;
+		const [a, b] = state.preset.species;
+		$('[data-readout]').textContent =
+			`t = ${fmt(tr.t[i])} ${state.preset.timeUnit}: ${a} ${fmt(tr.n1[i])}, ${b} ${fmt(tr.n2[i])} ${state.preset.popUnit}.`;
+	}
+
+	// ---------- time chart ----------
+
+	const TC = { w: 640, h: 300, l: 52, r: 16, t: 14, b: 44 };
+	let timeCursor: SVGLineElement;
+	let timeDots: SVGCircleElement[] = [];
+	let tx: (t: number) => number = (t) => t;
+	let ty: (n: number) => number = (n) => n;
+
+	function drawTimeChart() {
+		const tr = state.traj!;
+		const p = state.params;
+		timeChart.replaceChildren();
+		// Draw in CSS pixels so text stays readable on a phone.
+		TC.w = Math.max(320, Math.round(timeChart.clientWidth || 640));
+		TC.h = Math.round(Math.min(300, Math.max(230, TC.w * 0.5)));
+		timeChart.setAttribute('viewBox', `0 0 ${TC.w} ${TC.h}`);
+		const { w, h, l, r, t: top, b } = TC;
+		const iw = w - l - r;
+		const ih = h - top - b;
+		let yMax = Math.max(p.K1, p.K2);
+		for (let i = 0; i < tr.n1.length; i++) yMax = Math.max(yMax, tr.n1[i], tr.n2[i]);
+		const yTicks = niceTicks(yMax * 1.05);
+		const yTop = yTicks.at(-1)!;
+		ty = (n) => top + ih - (n / yTop) * ih;
+
+		const T = tr.tEnd;
+		let xTicks: number[];
+		if (state.axis === 'log') {
+			const tau = T / 1e4;
+			const L = Math.log10(1 + T / tau);
+			tx = (t) => l + (Math.log10(1 + t / tau) / L) * iw;
+			xTicks = [];
+			for (let d = 10 ** Math.ceil(Math.log10(tau)); d <= T; d *= 10) xTicks.push(d);
+			xTicks.unshift(0);
+		} else {
+			tx = (t) => l + (t / T) * iw;
+			xTicks = niceTicks(T, 6).filter((v) => v <= T);
+		}
+
+		const axes = el('g', { class: 'lv-axis' }, timeChart);
+		for (const v of yTicks) {
+			el('line', { x1: l, x2: w - r, y1: ty(v), y2: ty(v), class: 'lv-grid' }, axes);
+			el('text', { x: l - 8, y: ty(v) + 4, 'text-anchor': 'end' }, axes).textContent = fmtTick(v);
+		}
+		for (const v of xTicks) {
+			el('line', { x1: tx(v), x2: tx(v), y1: top + ih, y2: top + ih + 5, class: 'lv-tick' }, axes);
+			el('text', { x: tx(v), y: top + ih + 19, 'text-anchor': 'middle' }, axes).textContent = fmtTick(v);
+		}
+		el('line', { x1: l, x2: w - r, y1: top + ih, y2: top + ih, class: 'lv-baseline' }, axes);
+		el('text', { x: l + iw / 2, y: h - 6, 'text-anchor': 'middle', class: 'lv-axlabel' }, axes).textContent =
+			`Time (${state.preset.timeUnit})`;
+		const yl = el('text', { x: 14, y: top + ih / 2, 'text-anchor': 'middle', class: 'lv-axlabel', transform: `rotate(-90 14 ${top + ih / 2})` }, axes);
+		yl.textContent = state.preset.popUnit === 'units' ? 'Population' : `Population (${state.preset.popUnit})`;
+
+		// Carrying capacities as faint reference lines.
+		el('line', { x1: l, x2: w - r, y1: ty(p.K1), y2: ty(p.K1), class: 'lv-kline lv-k1' }, timeChart);
+		el('line', { x1: l, x2: w - r, y1: ty(p.K2), y2: ty(p.K2), class: 'lv-kline lv-k2' }, timeChart);
+
+		const exp = state.preset.experiment;
+		if (exp && state.span === 'settle' && exp < T) {
+			el('line', { x1: tx(exp), x2: tx(exp), y1: top, y2: top + ih, class: 'lv-exp' }, timeChart);
+			const lab = el('text', { x: tx(exp) + 5, y: top + 12, class: 'lv-exp-label' }, timeChart);
+			lab.textContent = 'end of experiment';
+		}
+
+		for (const [k, arr] of [[1, tr.n1], [2, tr.n2]] as const) {
+			let d = '';
+			for (let i = 0; i < arr.length; i++) d += `${i ? 'L' : 'M'}${tx(tr.t[i]).toFixed(1)} ${ty(arr[i]).toFixed(1)}`;
+			el('path', { d, class: `lv-line lv-line${k}` }, timeChart);
+		}
+
+		timeCursor = el('line', { y1: top, y2: top + ih, class: 'lv-cursor' }, timeChart);
+		timeDots = [el('circle', { r: 4.5, class: 'lv-dot lv-dot1' }, timeChart), el('circle', { r: 4.5, class: 'lv-dot lv-dot2' }, timeChart)];
+	}
+
+	// ---------- phase plane ----------
+
+	const PP = { w: 360, h: 340, l: 52, r: 16, t: 14, b: 44 };
+	let phaseDot: SVGCircleElement;
+	let px: (n: number) => number = (n) => n;
+	let py: (n: number) => number = (n) => n;
+	let pxInv: (x: number) => number = (x) => x;
+	let pyInv: (y: number) => number = (y) => y;
+
+	function drawPhase() {
+		const tr = state.traj!;
+		const p = state.params;
+		phase.replaceChildren();
+		PP.w = Math.max(300, Math.round(phase.clientWidth || 360));
+		PP.h = Math.round(PP.w * 0.94);
+		phase.setAttribute('viewBox', `0 0 ${PP.w} ${PP.h}`);
+		const { w, h, l, r, t: top, b } = PP;
+		const iw = w - l - r;
+		const ih = h - top - b;
+		let xMax = Math.max(p.K1, p.a21 > 0 ? Math.min(p.K2 / p.a21, 3 * p.K1) : 0);
+		let yMax = Math.max(p.K2, p.a12 > 0 ? Math.min(p.K1 / p.a12, 3 * p.K2) : 0);
+		for (let i = 0; i < tr.n1.length; i++) {
+			xMax = Math.max(xMax, tr.n1[i]);
+			yMax = Math.max(yMax, tr.n2[i]);
+		}
+		const xTicks = niceTicks(xMax * 1.08, 4);
+		const yTicks = niceTicks(yMax * 1.08, 4);
+		const X = xTicks.at(-1)!;
+		const Y = yTicks.at(-1)!;
+		px = (n) => l + (n / X) * iw;
+		py = (n) => top + ih - (n / Y) * ih;
+		pxInv = (x) => ((x - l) / iw) * X;
+		pyInv = (y) => ((top + ih - y) / ih) * Y;
+
+		el('clipPath', { id: 'lv-clip' }, phase).appendChild(el('rect', { x: l, y: top, width: iw, height: ih }));
+		const axes = el('g', { class: 'lv-axis' }, phase);
+		for (const v of yTicks) {
+			el('line', { x1: l, x2: w - r, y1: py(v), y2: py(v), class: 'lv-grid' }, axes);
+			el('text', { x: l - 8, y: py(v) + 4, 'text-anchor': 'end' }, axes).textContent = fmtTick(v);
+		}
+		for (const v of xTicks) {
+			el('line', { x1: px(v), x2: px(v), y1: top, y2: top + ih, class: 'lv-grid' }, axes);
+			el('text', { x: px(v), y: top + ih + 19, 'text-anchor': 'middle' }, axes).textContent = fmtTick(v);
+		}
+		el('line', { x1: l, x2: w - r, y1: top + ih, y2: top + ih, class: 'lv-baseline' }, axes);
+		el('line', { x1: l, x2: l, y1: top, y2: top + ih, class: 'lv-baseline' }, axes);
+		el('text', { x: l + iw / 2, y: h - 6, 'text-anchor': 'middle', class: 'lv-axlabel' }, axes).textContent = 'Species 1';
+		el('text', { x: 14, y: top + ih / 2, 'text-anchor': 'middle', class: 'lv-axlabel', transform: `rotate(-90 14 ${top + ih / 2})` }, axes).textContent = 'Species 2';
+
+		const clip = el('g', { 'clip-path': 'url(#lv-clip)' }, phase);
+		// Nullclines: N1 + a12 N2 = K1 (species 1 stops growing), a21 N1 + N2 = K2 (species 2).
+		const n1End = p.a12 > 0 ? [0, p.K1 / p.a12] : [p.K1, Y * 2];
+		el('line', { x1: px(p.K1), y1: py(0), x2: px(n1End[0]), y2: py(n1End[1]), class: 'lv-null lv-null1' }, clip);
+		const n2End = p.a21 > 0 ? [p.K2 / p.a21, 0] : [X * 2, p.K2];
+		el('line', { x1: px(0), y1: py(p.K2), x2: px(n2End[0]), y2: py(n2End[1]), class: 'lv-null lv-null2' }, clip);
+
+		let d = '';
+		for (let i = 0; i < tr.n1.length; i++) d += `${i ? 'L' : 'M'}${px(tr.n1[i]).toFixed(1)} ${py(tr.n2[i]).toFixed(1)}`;
+		el('path', { d, class: 'lv-traj' }, clip);
+
+		// Equilibria: filled = stable, open = unstable.
+		const outcome = classify(p);
+		const eq: [number, number, boolean][] = [
+			[p.K1, 0, outcome === 'one' || outcome === 'bistable'],
+			[0, p.K2, outcome === 'two' || outcome === 'bistable'],
+		];
+		const mid = interior(p);
+		if (mid) eq.push([mid[0], mid[1], outcome === 'coexist']);
+		for (const [x, y, stable] of eq) el('circle', { cx: px(x), cy: py(y), r: 5, class: stable ? 'lv-eq lv-eq-stable' : 'lv-eq' }, clip);
+
+		el('circle', { cx: px(tr.n1[0]), cy: py(tr.n2[0]), r: 3.5, class: 'lv-start' }, clip);
+		phaseDot = el('circle', { r: 5.5, class: 'lv-dot lv-dot-phase' }, phase);
+
+		const lab = el('g', { class: 'lv-null-labels' }, phase);
+		const lab1 = el('text', { x: w - r - 4, y: top + 14, 'text-anchor': 'end', class: 'lv-null-lab1' }, lab);
+		lab1.textContent = '— species 1 stops growing';
+		const lab2 = el('text', { x: w - r - 4, y: top + 30, 'text-anchor': 'end', class: 'lv-null-lab2' }, lab);
+		lab2.textContent = '- - species 2 stops growing';
+	}
+
+	// ---------- playhead ----------
+
+	function setIndex(i: number) {
+		const tr = state.traj!;
+		state.index = Math.max(0, Math.min(tr.t.length - 1, Math.round(i)));
+		const k = state.index;
+		scrub.value = String(k);
+		const x = tx(tr.t[k]);
+		timeCursor.setAttribute('x1', String(x));
+		timeCursor.setAttribute('x2', String(x));
+		timeDots[0].setAttribute('cx', String(x));
+		timeDots[0].setAttribute('cy', String(ty(tr.n1[k])));
+		timeDots[1].setAttribute('cx', String(x));
+		timeDots[1].setAttribute('cy', String(ty(tr.n2[k])));
+		phaseDot.setAttribute('cx', String(px(tr.n1[k])));
+		phaseDot.setAttribute('cy', String(py(tr.n2[k])));
+		renderArena(k);
+	}
+
+	function frame(now: number) {
+		if (!state.playing) return;
+		const tr = state.traj!;
+		const n = tr.t.length - 1;
+		const dt = now - state.last;
+		state.last = now;
+		const next = state.index + (dt / PLAY_MS) * n;
+		if (next >= n) {
+			setIndex(n);
+			setPlaying(false);
+			return;
+		}
+		setIndex(next);
+		// keep the fractional position for smooth playback
+		state.index = next;
+		requestAnimationFrame(frame);
+	}
+
+	function setPlaying(on: boolean) {
+		state.playing = on;
+		playBtn.textContent = on ? 'Pause' : 'Play';
+		playBtn.setAttribute('aria-pressed', String(on));
+		root.classList.toggle('is-playing', on);
+		if (on) {
+			if (state.index >= state.traj!.t.length - 1) setIndex(0);
+			state.last = performance.now();
+			requestAnimationFrame(frame);
+		}
+	}
+
+	// ---------- text panels ----------
+
+	const cite: Record<string, string> = {
+		yeast: `<p><strong>Data:</strong> Gause, G. F. (1932). Experimental studies on the struggle for existence. I. Mixed population of two species of yeast. <em>Journal of Experimental Biology</em> 9(4): 389–402. <a href="https://doi.org/10.1242/jeb.9.4.389">doi:10.1242/jeb.9.4.389</a>. Parameter values as tabulated from Gause's fits in Edelstein-Keshet, L. (2005). <em>Mathematical Models in Biology</em>, SIAM Classics in Applied Mathematics 46, section 6.3, p. 231. <a href="https://doi.org/10.1137/1.9780898719147">doi:10.1137/1.9780898719147</a>.</p>
+		<p><strong>Units:</strong> population is yeast volume in Gause's arbitrary units; time in hours; r per hour; a dimensionless. Growth was limited by the alcohol the yeasts produce, not by food. <strong>Our assumption:</strong> both start at 0.45 volume units.</p>
+		<p><strong>Note:</strong> Gause's cultures still held both yeasts when his run ended (about 150 h). The model, run on, has <em>Schizosaccharomyces</em> slowly taking over, by a thin margin: K₂ − a₂₁K₁ is only 0.09.</p>`,
+		paramecium: `<p><strong>Data:</strong> Gause, G. F. (1934). <em>The Struggle for Existence</em>. Williams &amp; Wilkins, Baltimore. Chapter V: Table XI (K and the coefficient of geometric increase b, here r) for the buffered "half-loop" medium, and section III(4) for the competition coefficients a = 1.64 (effect of <em>P. caudatum</em> on <em>P. aurelia</em>) and b = 0.61 (the reverse), taken from relative food consumption.</p>
+		<p><strong>Units:</strong> population is biomass in Gause's volume units; time in days; r per day. <strong>Our assumption:</strong> both start at 2 volume units.</p>
+		<p><strong>Note:</strong> in Gause's cultures <em>P. aurelia</em> drove <em>P. caudatum</em> out entirely. He calls constant coefficients "but a first approximation": early on they changed as the cultures grew. With them held constant, the two nullclines nearly coincide (K₂/a₂₁ = 104.9 against K₁ = 105), so the model needs thousands of days for the same result. Try log time.</p>`,
+		coexist: `<p><strong>Illustrative values</strong>, not from an experiment: chosen so that each species limits itself more than it limits the other. Time and population units are arbitrary.</p>`,
+		bistable: `<p><strong>Illustrative values</strong>, not from an experiment: chosen so that each species limits the other more than itself. Species 2 starts ahead here and still loses, because species 1 starts on its side of the dividing line. Click the phase plane to try other starts. Units are arbitrary.</p>`,
+		explore: `<p><strong>Your own values.</strong> Units are whatever you imagine them to be: r per unit of time, K and the starting sizes in the same population unit, a dimensionless.</p>`,
+	};
+
+	function renderText() {
+		const p = state.params;
+		const outcome = classify(p);
+		root.querySelectorAll<HTMLElement>('[data-outcome]').forEach((li) => {
+			const on = li.dataset.outcome === outcome;
+			li.classList.toggle('is-current', on);
+			if (on) li.setAttribute('aria-current', 'true');
+			else li.removeAttribute('aria-current');
+		});
+		$('[data-boundary]').hidden = outcome !== 'boundary';
+		const { one, two } = invasion(p);
+		const sign = (v: number) => (v > 0 ? '>' : v < 0 ? '<' : '=');
+		$('[data-invasion]').innerHTML =
+			`Now: K₁ = ${fmtExact(p.K1)} ${sign(one)} a₁₂K₂ = ${fmtExact(p.a12 * p.K2)}, so species 1 ${one > 0 ? 'can' : 'cannot'} grow when rare. ` +
+			`K₂ = ${fmtExact(p.K2)} ${sign(two)} a₂₁K₁ = ${fmtExact(p.a21 * p.K1)}, so species 2 ${two > 0 ? 'can' : 'cannot'} grow when rare.`;
+
+		$('[data-source]').innerHTML = cite[state.preset.id] ?? cite.explore;
+
+		const [a, b] = state.preset.species;
+		const italic = state.preset.id === 'yeast' || state.preset.id === 'paramecium';
+		const name = (s: string) => (italic ? `<em>${s}</em>` : s);
+		$('[data-legend]').innerHTML =
+			`<span class="lv-key lv-key1"><svg viewBox="0 0 24 8" aria-hidden="true"><line x1="0" y1="4" x2="24" y2="4"/></svg>1: ${name(a)} (rods)</span>` +
+			`<span class="lv-key lv-key2"><svg viewBox="0 0 24 8" aria-hidden="true"><line x1="0" y1="4" x2="24" y2="4"/></svg>2: ${name(b)} (rounds)</span>`;
+	}
+
+	function syncSliders() {
+		root.querySelectorAll<HTMLInputElement>('[data-param]').forEach((input) => {
+			const key = input.dataset.param as keyof Params;
+			const v = state.params[key];
+			if (+input.max < v) input.max = String(Math.ceil(v * 1.5));
+			input.value = String(v);
+			const out = root.querySelector<HTMLOutputElement>(`[data-out="${key}"]`)!;
+			out.textContent = fmtParam(key, v);
+		});
+	}
+
+	// ---------- update ----------
+
+	function recompute({ keepIndex = false } = {}) {
+		const p = state.params;
+		const exp = state.preset.experiment;
+		const T = state.span === 'experiment' && exp ? exp : settleTime(p, state.preset.settleCap);
+		state.traj = simulate(p, T);
+		scrub.max = String(state.traj.t.length - 1);
+		drawTimeChart();
+		drawPhase();
+		renderText();
+		const end = state.traj.t.length - 1;
+		setIndex(keepIndex ? Math.min(state.index, end) : end);
+	}
+
+	function applyPreset(id: string) {
+		setPlaying(false);
+		if (id === 'explore') {
+			state.preset = { ...explorePreset, params: { ...state.params } };
+		} else {
+			state.preset = PRESETS.find((p) => p.id === id)!;
+			state.params = { ...state.preset.params };
+		}
+		const exp = state.preset.experiment;
+		// With no experiment length there is only one choice, so hide the whole group.
+		$('[data-span-group]').hidden = !exp;
+		if (exp) $('[data-span-exp-label]').textContent = `Length of the experiment (${exp} ${state.preset.timeUnit})`;
+		if (!exp) state.span = 'settle';
+		root.querySelector<HTMLInputElement>(`input[name="lv-span"][value="${state.span}"]`)!.checked = true;
+		state.axis = id === 'paramecium' ? 'log' : 'lin';
+		root.querySelector<HTMLInputElement>(`input[name="lv-axis"][value="${state.axis}"]`)!.checked = true;
+		syncSliders();
+		recompute();
+	}
+
+	function toExplore() {
+		if (state.preset.id !== 'explore') {
+			const from = state.preset;
+			state.preset = {
+				...explorePreset,
+				species: from.species,
+				timeUnit: from.timeUnit,
+				popUnit: from.popUnit,
+				params: state.params,
+			};
+			presetSelect.value = 'explore';
+			$('[data-span-group]').hidden = true;
+			state.span = 'settle';
+			root.querySelector<HTMLInputElement>('input[name="lv-span"][value="settle"]')!.checked = true;
+		}
+	}
+
+	// ---------- events ----------
+
+	presetSelect.addEventListener('change', () => applyPreset(presetSelect.value));
+
+	root.querySelectorAll<HTMLInputElement>('input[name="lv-span"]').forEach((r) =>
+		r.addEventListener('change', () => {
+			state.span = r.value as typeof state.span;
+			setPlaying(false);
+			recompute();
+		})
+	);
+	root.querySelectorAll<HTMLInputElement>('input[name="lv-axis"]').forEach((r) =>
+		r.addEventListener('change', () => {
+			state.axis = r.value as typeof state.axis;
+			drawTimeChart();
+			setIndex(state.index);
+		})
+	);
+
+	let pending = 0;
+	root.querySelectorAll<HTMLInputElement>('[data-param]').forEach((input) =>
+		input.addEventListener('input', () => {
+			const key = input.dataset.param as keyof Params;
+			state.params[key] = +input.value;
+			root.querySelector(`[data-out="${key}"]`)!.textContent = fmtParam(key, +input.value);
+			toExplore();
+			setPlaying(false);
+			cancelAnimationFrame(pending);
+			pending = requestAnimationFrame(() => recompute());
+		})
+	);
+
+	scrub.addEventListener('input', () => {
+		setPlaying(false);
+		setIndex(+scrub.value);
+	});
+	playBtn.addEventListener('click', () => setPlaying(!state.playing));
+
+	phase.addEventListener('click', (ev) => {
+		const pt = phase.createSVGPoint();
+		pt.x = ev.clientX;
+		pt.y = ev.clientY;
+		const local = pt.matrixTransform(phase.getScreenCTM()!.inverse());
+		const n1 = pxInv(local.x);
+		const n2 = pyInv(local.y);
+		if (n1 < 0 || n2 < 0) return;
+		state.params.n1 = Math.max(0.01, +n1.toPrecision(3));
+		state.params.n2 = Math.max(0.01, +n2.toPrecision(3));
+		toExplore();
+		syncSliders();
+		setPlaying(false);
+		recompute();
+		setIndex(0);
+		if (!reduceMotion.matches) setPlaying(true);
+	});
+
+	// ?preset=paramecium links straight to a scenario.
+	const wanted = new URLSearchParams(location.search).get('preset');
+	if (wanted && PRESETS.some((p) => p.id === wanted)) presetSelect.value = wanted;
+	applyPreset(presetSelect.value);
+
+	let lastWidth = 0;
+	let resizeFrame = 0;
+	new ResizeObserver(() => {
+		const width = timeChart.clientWidth;
+		if (Math.abs(width - lastWidth) < 2) return;
+		lastWidth = width;
+		cancelAnimationFrame(resizeFrame);
+		resizeFrame = requestAnimationFrame(() => {
+			const i = state.index;
+			drawTimeChart();
+			drawPhase();
+			setIndex(i);
+			state.index = i;
+		});
+	}).observe($('.lv-charts'));
+	if (!reduceMotion.matches) {
+		setIndex(0);
+		setPlaying(true);
+	}
+	reduceMotion.addEventListener('change', () => {
+		if (reduceMotion.matches) setPlaying(false);
+	});
+</script>
+
+<style>
+	.lv {
+		--sp1: var(--sl-color-accent);
+		--sp2: var(--irit-soga);
+		--lv-panel: var(--irit-row);
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 1.75rem;
+		margin-block: 1.5rem 2.5rem;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-2);
+	}
+	.lv :is(p, ol) {
+		margin: 0;
+	}
+	.lv a {
+		color: var(--sl-color-text-accent);
+	}
+	.lv-h {
+		margin: 0 0 0.5rem;
+		font-size: var(--sl-text-base);
+		font-weight: 700;
+		color: var(--sl-color-white);
+	}
+	.lv-note {
+		color: var(--sl-color-gray-3);
+		margin-block-end: 0.5rem;
+	}
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
+	}
+
+	/* ---- head ---- */
+	.lv-head {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem 2rem;
+		align-items: end;
+	}
+	.lv-field {
+		display: grid;
+		gap: 0.375rem;
+	}
+	.lv-field > label,
+	.lv-field > legend {
+		font-weight: 700;
+		color: var(--sl-color-white);
+	}
+	.lv select {
+		font: inherit;
+		font-size: var(--sl-text-base);
+		color: var(--sl-color-white);
+		background: var(--sl-color-black);
+		border: 1px solid var(--sl-color-gray-4);
+		border-radius: 4px;
+		padding: 0.5rem 0.75rem;
+		min-height: 2.75rem;
+		max-width: 100%;
+	}
+	fieldset {
+		border: 0;
+		margin: 0;
+		padding: 0;
+		min-inline-size: 0;
+	}
+	fieldset[hidden] {
+		display: none;
+	}
+	.lv-head > * {
+		min-width: 0;
+	}
+	.lv-span,
+	.lv-inline {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.25rem 1.25rem;
+	}
+	.lv-span legend {
+		margin-block-end: 0.375rem;
+		padding: 0;
+	}
+	.lv-span label,
+	.lv-inline label {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		min-height: 2.25rem;
+		cursor: pointer;
+	}
+	.lv input[type='radio'] {
+		accent-color: var(--sl-color-accent);
+		width: 1.05rem;
+		height: 1.05rem;
+		margin: 0;
+	}
+	.lv :focus-visible {
+		outline: 2px solid var(--sl-color-accent);
+		outline-offset: 2px;
+	}
+
+	.lv-source {
+		display: grid;
+		gap: 0.5rem;
+		padding: 0.875rem 1rem;
+		border-inline-start: 3px solid var(--sl-color-gray-5);
+		background: var(--lv-panel);
+		line-height: 1.55;
+	}
+	.lv-source strong {
+		color: var(--sl-color-white);
+	}
+
+	/* ---- arena ---- */
+	.lv-share {
+		display: flex;
+		height: 6px;
+		border-radius: 3px;
+		overflow: hidden;
+		margin-block-end: 0.5rem;
+		background: var(--sl-color-gray-5);
+	}
+	.lv-share-1 {
+		background: var(--sp1);
+	}
+	.lv-share-2 {
+		background: var(--sp2);
+	}
+	.lv-arena {
+		display: block;
+		width: 100%;
+		height: auto;
+	}
+	.lv-dish {
+		fill: var(--lv-panel);
+		stroke: var(--sl-color-gray-5);
+		stroke-width: 2;
+	}
+	.lv-body1 {
+		fill: var(--sp1);
+	}
+	.lv-body2 {
+		fill: var(--sp2);
+	}
+	.lv-eye {
+		fill: var(--sl-color-black);
+	}
+	.lv-mouth {
+		fill: none;
+		stroke: var(--sl-color-black);
+		stroke-width: 1.3;
+		stroke-linecap: round;
+	}
+	.lv-flag1 {
+		fill: none;
+		stroke: var(--sp1);
+		stroke-width: 1.6;
+		stroke-linecap: round;
+	}
+	:global(.lv-bug) {
+		opacity: 0;
+		transition: opacity 0.35s ease;
+	}
+	:global(.lv-bug.is-on) {
+		opacity: 1;
+	}
+	:global(.lv-wobble) {
+		animation: lv-wobble 3s ease-in-out infinite alternate;
+		animation-play-state: paused;
+	}
+	.is-playing :global(.lv-wobble) {
+		animation-play-state: running;
+	}
+	@keyframes lv-wobble {
+		from {
+			transform: translate(-2px, 1px) rotate(-4deg);
+		}
+		to {
+			transform: translate(2px, -1px) rotate(4deg);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		:global(.lv-wobble) {
+			animation: none;
+		}
+		:global(.lv-bug) {
+			transition: none;
+		}
+	}
+
+	.lv-play {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		margin-block-start: 0.75rem;
+	}
+	.lv-btn {
+		font: inherit;
+		font-weight: 700;
+		min-width: 5.5rem;
+		min-height: 2.75rem;
+		padding: 0.5rem 1rem;
+		border-radius: 4px;
+		border: 1px solid var(--sl-color-accent);
+		background: var(--sl-color-accent);
+		color: var(--sl-color-black);
+		cursor: pointer;
+	}
+	:global([data-theme='light']) .lv-btn {
+		color: #ffffff;
+	}
+	.lv-btn:hover {
+		background: var(--sl-color-accent-high);
+		border-color: var(--sl-color-accent-high);
+	}
+	.lv-time {
+		flex: 1;
+		display: flex;
+	}
+	.lv input[type='range'] {
+		width: 100%;
+		accent-color: var(--sl-color-accent);
+		min-height: 2rem;
+		margin: 0;
+	}
+	.lv-readout {
+		margin-block-start: 0.375rem;
+		font-variant-numeric: tabular-nums;
+		color: var(--sl-color-gray-2);
+	}
+
+	/* ---- charts ---- */
+	.lv-charts {
+		display: grid;
+		grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+		gap: 1.75rem;
+		align-items: start;
+	}
+	@media (max-width: 50rem) {
+		.lv-charts {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.lv-phase {
+			max-width: 26rem;
+		}
+	}
+	.lv-fig {
+		margin: 0;
+	}
+	.lv-svg {
+		display: block;
+		width: 100%;
+		height: auto;
+		overflow: visible;
+	}
+	.lv-phase {
+		cursor: crosshair;
+	}
+	.lv-legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.25rem 1.25rem;
+		margin-block-end: 0.375rem;
+	}
+	:global(.lv-key) {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		color: var(--sl-color-white);
+	}
+	:global(.lv-key svg) {
+		width: 1.5rem;
+		height: 0.5rem;
+		overflow: visible;
+	}
+	:global(.lv-key line) {
+		stroke-width: 3;
+	}
+	:global(.lv-key1 line) {
+		stroke: var(--sp1);
+	}
+	:global(.lv-key2 line) {
+		stroke: var(--sp2);
+		stroke-dasharray: 5 3;
+	}
+	.lv-inline {
+		margin-block-start: 0.25rem;
+	}
+
+	.lv-svg :global(.lv-axis text) {
+		font-size: 12px;
+		fill: var(--sl-color-gray-3);
+		font-variant-numeric: tabular-nums;
+	}
+	.lv-svg :global(.lv-axis .lv-axlabel) {
+		fill: var(--sl-color-gray-2);
+		font-weight: 600;
+	}
+	.lv-svg :global(.lv-grid) {
+		stroke: var(--irit-rule);
+	}
+	.lv-svg :global(.lv-baseline),
+	.lv-svg :global(.lv-tick) {
+		stroke: var(--sl-color-gray-4);
+	}
+	.lv-svg :global(.lv-kline) {
+		stroke-width: 1;
+		stroke-dasharray: 2 4;
+		opacity: 0.8;
+	}
+	.lv-svg :global(.lv-k1) {
+		stroke: var(--sp1);
+	}
+	.lv-svg :global(.lv-k2) {
+		stroke: var(--sp2);
+	}
+	.lv-svg :global(.lv-exp) {
+		stroke: var(--sl-color-gray-3);
+		stroke-dasharray: 4 3;
+	}
+	.lv-svg :global(.lv-exp-label) {
+		font-size: 11px;
+		fill: var(--sl-color-gray-3);
+	}
+	.lv-svg :global(.lv-line) {
+		fill: none;
+		stroke-width: 2.5;
+		stroke-linejoin: round;
+	}
+	.lv-svg :global(.lv-line1) {
+		stroke: var(--sp1);
+	}
+	.lv-svg :global(.lv-line2) {
+		stroke: var(--sp2);
+		stroke-dasharray: 7 4;
+	}
+	.lv-svg :global(.lv-cursor) {
+		stroke: var(--sl-color-gray-3);
+		stroke-width: 1;
+	}
+	.lv-svg :global(.lv-dot) {
+		stroke: var(--sl-color-black);
+		stroke-width: 1.5;
+	}
+	.lv-svg :global(.lv-dot1) {
+		fill: var(--sp1);
+	}
+	.lv-svg :global(.lv-dot2) {
+		fill: var(--sp2);
+	}
+	.lv-svg :global(.lv-dot-phase) {
+		fill: var(--sl-color-white);
+	}
+	.lv-svg :global(.lv-null) {
+		stroke-width: 2.25;
+	}
+	.lv-svg :global(.lv-null1) {
+		stroke: var(--sp1);
+	}
+	.lv-svg :global(.lv-null2) {
+		stroke: var(--sp2);
+		stroke-dasharray: 6 4;
+	}
+	.lv-svg :global(.lv-null-labels text) {
+		font-size: 11px;
+		font-weight: 600;
+	}
+	.lv-svg :global(.lv-null-lab1) {
+		fill: var(--sp1);
+	}
+	.lv-svg :global(.lv-null-lab2) {
+		fill: var(--sp2);
+	}
+	.lv-svg :global(.lv-traj) {
+		fill: none;
+		stroke: var(--sl-color-white);
+		stroke-width: 1.75;
+		opacity: 0.85;
+	}
+	.lv-svg :global(.lv-eq) {
+		fill: var(--sl-color-black);
+		stroke: var(--sl-color-white);
+		stroke-width: 1.75;
+	}
+	.lv-svg :global(.lv-eq-stable) {
+		fill: var(--sl-color-white);
+	}
+	.lv-svg :global(.lv-start) {
+		fill: var(--sl-color-gray-3);
+	}
+
+	/* ---- sliders ---- */
+	.lv-sliders {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+		gap: 0.875rem 2rem;
+	}
+	.lv-slider {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		gap: 0.125rem 0.75rem;
+		align-items: baseline;
+	}
+	.lv-slider label {
+		color: var(--sl-color-white);
+	}
+	.lv-slider output {
+		font-variant-numeric: tabular-nums;
+		font-family: var(--sl-font-mono);
+		font-size: 0.8125rem;
+		color: var(--sl-color-gray-2);
+	}
+	.lv-slider input {
+		grid-column: 1 / -1;
+	}
+
+	/* ---- outcomes ---- */
+	.lv-outcomes {
+		list-style: none;
+		padding: 0;
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+		gap: 0.75rem;
+		margin-block-start: 0.75rem !important;
+	}
+	.lv-outcomes li {
+		display: grid;
+		gap: 0.25rem;
+		align-content: start;
+		padding: 0.75rem 0.875rem;
+		border: 1px solid var(--irit-rule);
+		border-inline-start: 3px solid var(--irit-rule);
+		border-radius: 4px;
+		margin: 0;
+	}
+	.lv-outcomes li.is-current {
+		border-color: var(--irit-soga);
+		background: var(--lv-panel);
+	}
+	.lv-o-title {
+		font-weight: 700;
+		color: var(--sl-color-white);
+		display: flex;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+	.lv-badge {
+		display: none;
+		font-size: 0.75rem;
+		font-weight: 700;
+		padding: 0.05rem 0.45rem;
+		border-radius: 3px;
+		background: var(--irit-soga);
+		color: var(--sl-color-black);
+	}
+	:global([data-theme='light']) .lv-badge {
+		color: #ffffff;
+	}
+	.is-current .lv-badge {
+		display: inline-block;
+	}
+	.lv-o-rule {
+		font-family: var(--sl-font-mono);
+		font-size: 0.8125rem;
+		color: var(--sl-color-gray-2);
+	}
+	.lv-boundary {
+		margin-block-start: 0.75rem !important;
+		font-weight: 600;
+		color: var(--sl-color-white);
+	}
+</style>

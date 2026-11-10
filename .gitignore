@@ -8,3 +8,4 @@
 /site/.astro/
 /site/src/content/docs/*
 !/site/src/content/docs/index.mdx
+!/site/src/content/docs/demos/

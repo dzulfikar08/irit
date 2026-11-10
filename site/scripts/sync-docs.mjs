@@ -7,7 +7,7 @@
 //   - an editUrl pointing at the original file in docs/ is added.
 // docs/SUMMARY.md (the mdBook table of contents) is skipped; astro.config.mjs reads it for the sidebar.
 //
-// Run by `npm run dev` and `npm run build`. The output folder is gitignored, except index.mdx.
+// Run by `npm run dev` and `npm run build`. The output folder is gitignored, except index.mdx and demos/.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix, relative, resolve } from 'node:path';
@@ -18,7 +18,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '../..');
 const docsDir = join(repoRoot, 'docs');
 const outDir = resolve(here, '../src/content/docs');
-const KEEP = new Set(['index.mdx']); // committed pages that live next to the synced ones
+// Committed pages that live next to the synced ones (top-level names: a folder is kept whole).
+const KEEP = new Set(['index.mdx', 'demos']);
 const SKIP = new Set(['SUMMARY.md']);
 
 function walk(dir) {
