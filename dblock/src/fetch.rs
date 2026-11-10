@@ -54,6 +54,8 @@ pub struct Plan {
 pub struct Opts {
     pub force_stream: bool,
     pub keep_archive: bool,
+    /// Hard-link byte-identical files inside the database (see `dedupe`).
+    pub dedupe: bool,
 }
 
 pub fn target_dir(store: &Path, e: &Entry) -> PathBuf {
@@ -365,7 +367,23 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
     }
     eprintln!("  recording file sizes and SHA-256 sums");
     let (files, bytes, manifest_md5) = manifest(tmp)?;
-    let contents_sha256 = write_sums(tmp)?;
+    let items = hashed(tmp, Some(MANIFEST_FORMAT))?;
+    let sums = sums_text(&items);
+    let deduped = if opts.dedupe {
+        let (d, err) = dedupe(tmp, &items);
+        if d.linked > 0 {
+            eprintln!("  hard-linked {} identical file(s), saving {}", d.linked, human(d.saved));
+        }
+        if let Some(err) = err {
+            eprintln!("  kept {} identical file(s) as copies: this file system refused a hard link ({err})", d.kept);
+        }
+        d
+    } else {
+        Deduped::default()
+    };
+    // Linking changes no name, size or content, so the list taken before it still holds.
+    fs::write(tmp.join(project::SUMS), &sums)?;
+    let contents_sha256 = sha256_hex(&sums);
     let data_rel = data_path(tmp, &e.env_points_to)?.strip_prefix(tmp)?.to_path_buf();
     let locked = Locked {
         id: e.id.clone(),
@@ -387,6 +405,8 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
         licence: e.licence.clone(),
         non_commercial: e.non_commercial,
         verify_dirs: e.verify_dirs.clone(),
+        linked_files: deduped.linked,
+        linked_bytes: deduped.saved,
         parts,
     };
     // The marker goes in before the rename, so a folder under the final name is always complete.
@@ -924,35 +944,162 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, Item)>) -> Result<()> {
 
 /// `sha256  size  path` for every file, sorted by path (`/` separators on every platform).
 /// A symlink is listed as `link  0  path -> target`: its target is recorded, not followed.
+#[cfg(test)]
 pub fn sums(dir: &Path) -> Result<String> {
     sums_as(dir, Some(MANIFEST_FORMAT))
 }
 
 /// `sums` the way a marker of the given format computed it (`None`: v0.1.0, links left out).
 pub fn sums_as(dir: &Path, format: Option<u32>) -> Result<String> {
+    Ok(sums_text(&hashed(dir, format)?))
+}
+
+/// One `walk` item with what `sums` records for it: a file's SHA-256 and the size read.
+struct Hashed {
+    rel: String,
+    item: Item,
+    /// `(sha256, bytes read)` for a file; `None` for a symlink.
+    sum: Option<(String, u64)>,
+}
+
+/// Every item `items_as` finds, files hashed: the one read of the data `sums` and `dedupe` share.
+fn hashed(dir: &Path, format: Option<u32>) -> Result<Vec<Hashed>> {
     let items = items_as(dir, format)?;
-    let mut out = String::new();
+    let mut out = Vec::with_capacity(items.len());
     let mut buf = vec![0u8; 1 << 20];
-    for (rel, item) in &items {
-        if let Item::Link(target) = item {
-            out.push_str(&link_line(rel, target));
-            continue;
-        }
-        let path = dir.join(rel);
-        let mut f = File::open(&path).with_context(|| format!("reading {}", path.display()))?;
-        let mut h = Sha256::new();
-        let mut size = 0u64;
-        loop {
-            let n = f.read(&mut buf)?;
-            if n == 0 {
-                break;
+    for (rel, item) in items {
+        let sum = match &item {
+            Item::Link(_) => None,
+            Item::File(_) => {
+                let path = dir.join(&rel);
+                let mut f = File::open(&path).with_context(|| format!("reading {}", path.display()))?;
+                let mut h = Sha256::new();
+                let mut size = 0u64;
+                loop {
+                    let n = f.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    h.update(&buf[..n]);
+                    size += n as u64;
+                }
+                Some((hex(&h.finalize()), size))
             }
-            h.update(&buf[..n]);
-            size += n as u64;
-        }
-        out.push_str(&format!("{}  {size}  {}\n", hex(&h.finalize()), rel.replace('\\', "/")));
+        };
+        out.push(Hashed { rel, item, sum });
     }
     Ok(out)
+}
+
+fn sums_text(items: &[Hashed]) -> String {
+    let mut out = String::new();
+    for h in items {
+        match (&h.item, &h.sum) {
+            (Item::Link(target), _) => out.push_str(&link_line(&h.rel, target)),
+            (Item::File(_), Some((sha, size))) => out.push_str(&format!("{sha}  {size}  {}\n", h.rel.replace('\\', "/"))),
+            (Item::File(_), None) => unreachable!("files are always hashed"),
+        }
+    }
+    out
+}
+
+/// What `dedupe` did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Deduped {
+    /// Files replaced by a hard link to an identical file.
+    pub linked: u64,
+    /// Bytes those files no longer take on disk.
+    pub saved: u64,
+    /// Identical files left as copies because the link (or the swap into place) failed.
+    pub kept: u64,
+}
+
+/// Replace byte-identical regular files under `dir` with hard links to one copy, using the
+/// SHA-256 sums already taken for `.dblock.sha256` (files are grouped by size, permissions and
+/// SHA-256; nothing is read again). Symlinks are left alone. Each duplicate is swapped in by
+/// linking under a temporary name in its own folder and renaming that over it, so a failure at
+/// any point leaves the copy as it was. A file that can't be linked (a file system without hard
+/// links, a per-file link limit, a read-only folder) is kept as a copy and counted in `kept`;
+/// the error of the first one is returned for the caller to mention. Never fails the fetch.
+fn dedupe(dir: &Path, items: &[Hashed]) -> (Deduped, Option<io::Error>) {
+    let mut groups: BTreeMap<(u64, u32, &str), Vec<&str>> = BTreeMap::new();
+    for h in items {
+        if let (Item::File(_), Some((sha, size))) = (&h.item, &h.sum)
+            && *size > 0
+            && let Ok(meta) = fs::symlink_metadata(dir.join(&h.rel))
+            && meta.is_file()
+        {
+            groups.entry((*size, perm_bits(&meta), sha.as_str())).or_default().push(&h.rel);
+        }
+    }
+    let mut done = Deduped::default();
+    let mut first_err = None;
+    for ((size, _, _), rels) in groups {
+        let Some((first, rest)) = rels.split_first() else { continue };
+        let mut keep = dir.join(first);
+        for rel in rest {
+            let dup = dir.join(rel);
+            if same_file(&keep, &dup) {
+                // Already one file (a hard link in the archive): nothing to save.
+                continue;
+            }
+            match link_over(&keep, &dup) {
+                Ok(()) => {
+                    done.linked += 1;
+                    done.saved += size;
+                }
+                Err(err) => {
+                    done.kept += 1;
+                    first_err.get_or_insert(err);
+                    // Link later copies to this one: if `keep` hit a link-count limit, this
+                    // file still has room.
+                    keep = dup;
+                }
+            }
+        }
+    }
+    (done, first_err)
+}
+
+/// Make `dup` a hard link to `keep`: link under a temporary name next to `dup`, then rename it
+/// over `dup`. On failure `dup` is untouched and the temporary name removed.
+fn link_over(keep: &Path, dup: &Path) -> io::Result<()> {
+    let name = dup.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = dup.with_file_name(format!(".dblock-link-{}-{name}", std::process::id()));
+    fs::hard_link(keep, &tmp)?;
+    let swapped = fs::rename(&tmp, dup);
+    // POSIX `rename` between two names of one file succeeds and leaves both: never leave it.
+    let _ = fs::remove_file(&tmp);
+    swapped
+}
+
+/// Permission bits two files must share to become one (a link has one set for every name).
+#[cfg(unix)]
+fn perm_bits(m: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    m.permissions().mode()
+}
+
+#[cfg(not(unix))]
+fn perm_bits(m: &fs::Metadata) -> u32 {
+    u32::from(m.permissions().readonly())
+}
+
+/// Are these two names of one file already?
+#[cfg(unix)]
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// Stable Rust has no file id on Windows; relinking two names of one file there is harmless,
+/// but is then counted as saved.
+#[cfg(not(unix))]
+fn same_file(_: &Path, _: &Path) -> bool {
+    false
 }
 
 fn link_line(rel: &str, target: &str) -> String {
@@ -1012,13 +1159,6 @@ fn upgrade_marker(dir: &Path, mut l: Locked) -> Result<Locked> {
 
 pub fn sha256_hex(text: &str) -> String {
     hex(&Sha256::digest(text.as_bytes()))
-}
-
-/// Hash every file, keep the list next to the data, and return the list's own SHA-256.
-fn write_sums(dir: &Path) -> Result<String> {
-    let text = sums(dir)?;
-    fs::write(dir.join(project::SUMS), &text)?;
-    Ok(sha256_hex(&text))
 }
 
 /// The path a tool should be given: the database folder (or the single folder inside it,
@@ -1110,7 +1250,7 @@ mod tests {
     }
 
     fn opts() -> Opts {
-        Opts { force_stream: false, keep_archive: false }
+        Opts { force_stream: false, keep_archive: false, dedupe: true }
     }
 
     #[test]
@@ -1332,7 +1472,7 @@ mod tests {
             let (url, _) = serve(body.clone());
             let e = kept_entry(&url, &md5, body.len());
             let store = tempfile::tempdir().unwrap();
-            let (l, _) = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false }).unwrap();
+            let (l, _) = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true }).unwrap();
             assert_eq!(listing(&target_dir(store.path(), &e)), want, "stream={stream}");
             // Manifest and sums cover the kept files only.
             assert_eq!((l.files, l.bytes), (3, 7), "stream={stream}");
@@ -1350,7 +1490,7 @@ mod tests {
             let (url, _) = serve(body.clone());
             let e = kept_entry(&url, &other_md5, body.len());
             let store = tempfile::tempdir().unwrap();
-            let err = format!("{:#}", obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false }).unwrap_err());
+            let err = format!("{:#}", obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true }).unwrap_err());
             assert!(err.contains("checksum mismatch"), "{err}");
             assert!(!store.path().join("mydb").exists());
         }
@@ -1406,7 +1546,7 @@ mod tests {
             let mut e = entry(&url, &md5, body.len(), "dir");
             e.keep = vec!["db/markers".into()];
             let store = tempfile::tempdir().unwrap();
-            let r = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false });
+            let r = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true });
             let dir = target_dir(store.path(), &e);
             let markers = dir.join("db/markers");
             let mode = markers.metadata().map(|m| m.permissions().mode() & 0o777);
@@ -1437,7 +1577,7 @@ mod tests {
                 let mut e = entry(&url, &md5, body.len(), "dir");
                 e.keep = vec!["db/markers".into()];
                 let store = tempfile::tempdir().unwrap();
-                let r = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false });
+                let r = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true });
                 if ok {
                     r.unwrap_or_else(|err| panic!("{link}: {err:#}"));
                 } else {
@@ -1567,7 +1707,7 @@ mod tests {
             let mut e = kept_entry(&url, &md5, body.len());
             e.verify_dirs = BTreeMap::from([("db/markers".to_string(), markers.clone()), ("db/masks".to_string(), "0".repeat(40))]);
             let store = tempfile::tempdir().unwrap();
-            let err = format!("{:#}", obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false }).unwrap_err());
+            let err = format!("{:#}", obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true }).unwrap_err());
             assert!(err.contains("folder hash mismatch") && err.contains("db/masks hashes to"), "{err}");
             assert!(!err.contains("db/markers"), "{err}");
             assert!(!store.path().join("mydb").exists());
@@ -1581,6 +1721,138 @@ mod tests {
         let store = tempfile::tempdir().unwrap();
         let err = format!("{:#}", obtain(store.path(), &e, &opts()).unwrap_err());
         assert!(err.contains("db/metadata is missing"), "{err}");
+    }
+
+    /// Two identical files in different folders, a third of the same size but different content,
+    /// and an empty file twice (nothing to save there).
+    const DUPES: &[(&str, &[u8])] = &[
+        ("db/a/fasttree.log", b"same bytes in every copy\n"),
+        ("db/b/fasttree.log", b"same bytes in every copy\n"),
+        ("db/c/other.log", b"SAME BYTES IN EVERY COPY\n"),
+        ("db/c/fasttree.log", b"same bytes in every copy\n"),
+        ("db/e1", b""),
+        ("db/e2", b""),
+    ];
+
+    fn fetch_dupes(dedupe: bool) -> (tempfile::TempDir, Entry, Locked) {
+        let (body, md5) = archive_of(DUPES);
+        let (url, _) = serve(body.clone());
+        let e = entry(&url, &md5, body.len(), "dir");
+        let store = tempfile::tempdir().unwrap();
+        let (l, reused) = obtain(store.path(), &e, &Opts { dedupe, ..opts() }).unwrap();
+        assert!(!reused);
+        (store, e, l)
+    }
+
+    #[cfg(unix)]
+    fn ino(p: &Path) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(p).unwrap().ino()
+    }
+
+    #[test]
+    fn identical_files_are_hard_linked_and_still_verify() {
+        let (store, e, l) = fetch_dupes(true);
+        let (_plain_store, _, plain) = fetch_dupes(false);
+        let db = store.path().join("mydb");
+        let at = |rel: &str| db.join(Path::new(rel));
+        assert_eq!((l.linked_files, l.linked_bytes), (2, 2 * 25));
+        // Every name is still listed, at its full size, and reads back the same.
+        assert_eq!((l.files, l.bytes), (plain.files, plain.bytes));
+        assert_eq!(l.manifest_md5, plain.manifest_md5);
+        assert_eq!(l.contents_sha256, plain.contents_sha256);
+        for (name, body) in DUPES {
+            assert_eq!(fs::read(at(name)).unwrap(), *body, "{name}");
+        }
+        #[cfg(unix)]
+        {
+            let one = ino(&at("db/a/fasttree.log"));
+            assert_eq!(ino(&at("db/b/fasttree.log")), one);
+            assert_eq!(ino(&at("db/c/fasttree.log")), one);
+            assert_ne!(ino(&at("db/c/other.log")), one, "same size, different content: not linked");
+            assert_ne!(ino(&at("db/e1")), ino(&at("db/e2")), "empty files are left alone");
+        }
+        // The recorded marker says the same; reuse, `verify` and `verify --deep` still pass.
+        let marker = project::read_marker(&db).unwrap();
+        assert_eq!((marker.linked_files, marker.linked_bytes), (2, 50));
+        assert!(matches!(existing(store.path(), &e), Stored::Ready(_)));
+        assert_eq!(manifest_as(&db, l.manifest_format).unwrap().2, l.manifest_md5);
+        assert_eq!(Some(sha256_hex(&sums_as(&db, l.manifest_format).unwrap())), l.contents_sha256);
+        // GTDB-Tk's folder hash is over contents in path order: the same as for the copies.
+        let mut want = BTreeMap::new();
+        want.insert("db".to_string(), sha1_dir(&Path::new(&plain.path).join("db")).unwrap());
+        assert!(check_dirs(&db, &want).unwrap().is_empty());
+        // No temporary link names left behind.
+        assert!(listing(&db).iter().all(|p| !p.contains(".dblock-link-")), "{:?}", listing(&db));
+        assert_eq!(listing(&db).len(), DUPES.len());
+    }
+
+    #[test]
+    fn verify_dirs_are_checked_before_and_hold_after_linking() {
+        let (_plain_store, _, plain) = fetch_dupes(false);
+        let (body, md5) = archive_of(DUPES);
+        let (url, _) = serve(body.clone());
+        let mut e = entry(&url, &md5, body.len(), "dir");
+        e.verify_dirs.insert("db".into(), sha1_dir(&Path::new(&plain.path).join("db")).unwrap());
+        let store = tempfile::tempdir().unwrap();
+        let (l, _) = obtain(store.path(), &e, &opts()).unwrap();
+        assert_eq!(l.linked_files, 2);
+        assert!(check_dirs(Path::new(&l.path), &l.verify_dirs).unwrap().is_empty());
+    }
+
+    #[test]
+    fn no_dedupe_keeps_copies() {
+        let (store, _, l) = fetch_dupes(false);
+        assert_eq!((l.linked_files, l.linked_bytes), (0, 0));
+        let marker = fs::read_to_string(store.path().join("mydb").join(project::MARKER)).unwrap();
+        assert!(!marker.contains("linked_"), "{marker}");
+        #[cfg(unix)]
+        {
+            let db = store.path().join("mydb/db");
+            assert_ne!(ino(&db.join("a/fasttree.log")), ino(&db.join("b/fasttree.log")));
+        }
+    }
+
+    /// A folder the link can't be written into stands in for a file system without hard links:
+    /// the copy stays, nothing is left behind, and the error comes back for a note.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_link_keeps_the_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        for (name, body) in [("a/x", "dup"), ("b/x", "dup")] {
+            fs::create_dir_all(d.path().join(name).parent().unwrap()).unwrap();
+            fs::write(d.path().join(name), body).unwrap();
+        }
+        let b = d.path().join("b");
+        fs::set_permissions(&b, fs::Permissions::from_mode(0o555)).unwrap();
+        if fs::write(b.join("probe"), "").is_ok() {
+            // Root ignores folder permissions; nothing to test here.
+            let _ = fs::remove_file(b.join("probe"));
+            fs::set_permissions(&b, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+        let items = hashed(d.path(), Some(MANIFEST_FORMAT)).unwrap();
+        let (done, err) = dedupe(d.path(), &items);
+        fs::set_permissions(&b, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(done, Deduped { linked: 0, saved: 0, kept: 1 });
+        assert!(err.is_some());
+        assert_ne!(ino(&d.path().join("a/x")), ino(&b.join("x")));
+        assert_eq!(fs::read_to_string(b.join("x")).unwrap(), "dup");
+        assert_eq!(fs::read_dir(&b).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn files_with_different_permissions_are_not_linked() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("run.sh"), "same").unwrap();
+        fs::write(d.path().join("data.txt"), "same").unwrap();
+        fs::set_permissions(d.path().join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(d.path().join("data.txt"), fs::Permissions::from_mode(0o644)).unwrap();
+        let items = hashed(d.path(), Some(MANIFEST_FORMAT)).unwrap();
+        assert_eq!(dedupe(d.path(), &items).0.linked, 0);
     }
 
     #[test]
@@ -1636,7 +1908,7 @@ mod tests {
             let mut e = entry(&url, &md5, body.len(), "dir");
             e.format = Format::TarZst;
             let store = tempfile::tempdir().unwrap();
-            let (l, _) = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false })
+            let (l, _) = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true })
                 .unwrap_or_else(|err| panic!("stream={stream}: {err:#}"));
             assert_eq!(listing(&target_dir(store.path(), &e)), ["db/a.txt", "db/b.txt"], "stream={stream}");
             assert_eq!((l.files, l.bytes), (2, 10));
@@ -1734,7 +2006,7 @@ mod tests {
             let e = multi_entry(dir.path(), &base, &files, true);
             assert_eq!(e.size, files.iter().map(|(_, b)| b.len() as u64).sum::<u64>());
             let store = dir.path().join("store");
-            let (l, _) = obtain(&store, &e, &Opts { force_stream: stream, keep_archive: false })
+            let (l, _) = obtain(&store, &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true })
                 .unwrap_or_else(|err| panic!("stream={stream}: {err:#}"));
             assert_eq!(listing(&target_dir(&store, &e)), want, "stream={stream}");
             assert_eq!(l.files, 5);
@@ -1782,7 +2054,7 @@ mod tests {
             assert!(!partial_path(&store, &e, &sources[1]).exists());
 
             // Streamed: also nothing kept.
-            let err = format!("{:#}", obtain(&store, &e, &Opts { force_stream: true, keep_archive: false }).unwrap_err());
+            let err = format!("{:#}", obtain(&store, &e, &Opts { force_stream: true, keep_archive: false, dedupe: true }).unwrap_err());
             assert!(err.contains("part p-split.tar.zst") && err.contains("Nothing was kept"), "{err}");
             assert!(!target_dir(&store, &e).exists());
         }
