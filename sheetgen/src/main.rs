@@ -1247,7 +1247,7 @@ mod tests {
         let (header, rows) = s.build(&u, &BTreeMap::new(), &fmt, &mut Vec::new()).unwrap();
         assert_eq!(header[3], "LongFastQ");
         assert!(rows[0][1].ends_with("A_R1.fastq.gz") && rows[0][2].ends_with("A_R2.fastq.gz"));
-        assert!(rows[0][3].ends_with("hyb/A.fastq.gz"), "{:?}", rows[0]);
+        assert!(Path::new(&rows[0][3]).ends_with(Path::new("hyb").join("A.fastq.gz")), "{:?}", rows[0]);
     }
 
     #[test]
