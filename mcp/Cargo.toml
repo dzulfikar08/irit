@@ -1,0 +1,20 @@
+[package]
+name = "irit-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MCP server exposing the irit command-line tools to AI agents, with replayable run records"
+repository = "https://github.com/dzulfikar08/irit"
+
+[dependencies]
+rmcp = { version = "3.9", features = ["server", "transport-io", "macros"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-std", "fs"] }
+sha2 = "0.10"
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+tempfile = "3"

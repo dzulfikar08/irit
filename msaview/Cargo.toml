@@ -1,0 +1,29 @@
+[package]
+name = "msaview"
+description = "GPU-rendered desktop viewer for large multiple sequence alignments"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository = "https://github.com/dzulfikar08/irit"
+
+[features]
+default = ["gui"]
+# The viewer itself; without it only the core library and `msagen` build (no GPU/system libs needed).
+gui = ["dep:gpui-kit", "dep:image"]
+
+[dependencies]
+anyhow = "1.0.104"
+flate2 = "1.1.11"
+rayon = "1.12.0"
+memchr = "2.8.0"
+gpui-kit = { version = "=0.9.1", optional = true }
+# Same major version GPUI uses, for building tile images.
+image = { version = "0.25", default-features = false, optional = true }
+
+[[bin]]
+name = "msaview"
+required-features = ["gui"]
+
+[[bin]]
+name = "msagen"
+
