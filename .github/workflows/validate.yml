@@ -30,7 +30,7 @@ jobs:
           done
           ls -la reads
       - name: leanqc
-        run: /usr/bin/time -v target/release/leanqc -t 4 -o leanqc reads/*.fastq.gz 2> leanqc-time.txt; cat leanqc-time.txt | grep -E 'Elapsed|Maximum resident'
+        run: /usr/bin/time -v target/release/leanqc -t 4 -o leanqc-out reads/*.fastq.gz 2> leanqc-time.txt; cat leanqc-time.txt | grep -E 'Elapsed|Maximum resident'
       - name: FastQC 0.12.1 (the container nf-core uses)
         run: |
           mkdir fastqc
@@ -43,12 +43,12 @@ jobs:
           {
             echo "## leanqc vs FastQC"
             echo
-            python3 scripts/compare_fastqc.py fastqc leanqc
+            python3 scripts/compare_fastqc.py fastqc leanqc-out
             echo
             echo "leanqc: $(grep -E 'Elapsed' leanqc-time.txt | sed 's/.*: //') wall, $(grep -E 'Maximum resident' leanqc-time.txt | awk '{printf "%.0f MB", $NF/1024}') peak RSS"
             echo "FastQC: $(grep 'peak MB' fastqc-mem.txt | awk '{print $3}') MB peak (container cgroup)"
           } | tee -a "$GITHUB_STEP_SUMMARY"
-          python3 scripts/compare_fastqc.py fastqc leanqc > /dev/null
+          python3 scripts/compare_fastqc.py fastqc leanqc-out > /dev/null
       - name: Synthetic corpus (re-record FastQC's verdicts for every file, then compare)
         run: |
           # Records FastQC's verdicts for all corpus files, including those in pending_verdicts.tsv.
@@ -85,7 +85,7 @@ jobs:
         with:
           name: qc-reports
           path: |
-            leanqc/
+            leanqc-out/
             fastqc/*.html
             leanqc/tests/corpus/fastqc_verdicts.tsv
 
