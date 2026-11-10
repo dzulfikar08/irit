@@ -2,21 +2,28 @@
 
 *irit* (Indonesian and Javanese): frugal, economical with what you have.
 
-Small, fast command-line tools for the manual steps around sequencing pipelines, built to run on
-ordinary laptops. Each tool is one static Rust binary: no Java, no conda, no containers.
+Small, fast tools for the manual steps around sequencing pipelines, built to run on ordinary laptops.
+Each command-line tool is one static Rust binary: no Java, no conda, no containers.
 
 | Tool | What it does | Replaces | Binary |
 |---|---|---|---|
 | [`sheetgen`](docs/tools/sheetgen.md) | Builds a pipeline's sample sheet from a folder of FASTQ files and checks it against the pipeline's own schema | Hand-written CSVs, per-pipeline scripts | 6.4 MB |
 | [`leanqc`](docs/tools/leanqc.md) | Read quality control with an offline HTML report | FastQC | 1.6 MB |
-| [`isotable`](docs/tools/isotable.md) | Joins fastp, leanqc, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs into one graded row per sample (isolates or MAGs) | Per-pipeline summary scripts | 2.5 MB |
-| [`dblock`](docs/tools/dblock.md) | Downloads, verifies and pins reference databases (GTDB-Tk, CheckM2, SILVA, Kraken 2, Bakta, CARD) with a lock file | Each tool's own downloader | 5.0 MB |
+| [`isotable`](docs/tools/isotable.md) | Joins fastp, leanqc, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs into one graded row per sample (isolates or MAGs) | Per-pipeline summary scripts | 2.6 MB |
+| [`dblock`](docs/tools/dblock.md) | Downloads, verifies and pins reference databases (GTDB-Tk, CheckM2, SILVA, Kraken 2, Bakta, CARD) with a lock file | Each tool's own downloader | 4.9 MB |
+| [`irit-mcp`](docs/tools/mcp.md) | Gives AI agents (any MCP client) the irit tools as typed, checked tools, and records every call with a `replay.sh` that reruns it without the AI | Agents calling CLIs through a free-form shell | 3.1 MB |
+| [`gtdbprep`](docs/tools/gtdbprep.md) | Laptop half of a split GTDB-Tk: renames genomes, runs identify + align, and writes a ~4 KB-per-genome bundle for placement elsewhere | Downloading the 100 GB GTDB-Tk package | 1.6 MB |
+| [`msaview`](docs/tools/msaview.md) | GPU-drawn desktop viewer for very large multiple sequence alignments (100,000 × 30,000 tested) | Jalview, AliView, SeaView | desktop app |
 
 Measured against FastQC 0.12.1 on a 1-million-read nf-core/bacass test file: **1.5 s and 13 MB of
 RAM** against 7.0 s and 483 MB. On the four bacass test files, leanqc gives FastQC's verdict for all
 40 graded module results (ten modules × four files); on a synthetic corpus of ten more files, 88 of
 90 agree, and the two differences are a deliberate fix to FastQC's quality-encoding guess. See
 [benchmarks](docs/benchmarks.md).
+
+If you need FastQC's exact output, byte for byte, use [FastQC-Rust](https://github.com/ewels/FastQC-Rust)
+(Phil Ewels' faithful Rust rewrite) or FastQC itself. leanqc is irit's built-in, smallest-footprint
+QC; see [how they compare](docs/tools/leanqc.md#leanqc-and-fastqc-rust).
 
 ## Install
 
@@ -27,7 +34,7 @@ Download the archive for your system from the [latest release](https://github.co
 Or build with Rust:
 
 ```sh
-cargo install --git https://github.com/dzulfikar08/irit sheetgen leanqc isotable dblock
+cargo install --git https://github.com/dzulfikar08/irit sheetgen leanqc isotable dblock irit-mcp gtdbprep
 ```
 
 or build from a checkout with `cargo build --release` (binaries in `target/release/`).

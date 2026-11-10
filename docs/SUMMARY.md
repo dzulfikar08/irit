@@ -8,6 +8,9 @@
 - [leanqc: read quality control](tools/leanqc.md)
 - [isotable: one row per sample](tools/isotable.md)
 - [dblock: reference databases](tools/dblock.md)
+- [irit-mcp: tools for AI agents](tools/mcp.md)
+- [gtdbprep: GTDB-Tk without the 100 GB download](tools/gtdbprep.md)
+- [msaview: large alignment viewer](tools/msaview.md)
 
 # Results
 
@@ -19,6 +22,7 @@
 - [How this started](research/origin.md)
 - [Where researchers lose time](research/landscape.md)
 - [GTDB-Tk and memory](research/gtdbtk-memory.md)
+- [Split GTDB-Tk: a design](research/split-gtdb.md)
 - [Problems reported upstream](research/upstream-reports.md)
 
 # Plans

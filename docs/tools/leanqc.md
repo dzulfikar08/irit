@@ -114,6 +114,29 @@ refuse the two truncated files in the corpus. Two newer corpus files (a bad flow
 reads over 100 kb) are checked against leanqc's own recorded verdicts until the validation
 workflow records FastQC's.
 
+## leanqc and FastQC-Rust
+
+[FastQC-Rust](https://github.com/ewels/FastQC-Rust) is Phil Ewels' faithful Rust rewrite of FastQC:
+its `fastqc_data.txt` and `summary.txt` are byte-identical to FastQC's, it has every module, and it
+exists to prototype improvements for FastQC itself. If you need FastQC's exact output, use it (or
+FastQC). leanqc is irit's own QC: the same verdicts on the files compared, a smaller footprint, and
+it refuses truncated input that FastQC and FastQC-Rust accept.
+
+Measured on this project's laptop on 2026-11-10 (four 1M-read bacass test files, two runs each,
+FastQC-Rust 1.1.1; leanqc before its switch to the zlib-rs decoder):
+
+| | FastQC-Rust 1.1.1 | leanqc |
+|---|---|---|
+| 1 file, 1 thread | 1.2 s, 32 MB | 1.5 s, 13 MB |
+| 4 files, 4 threads | 1.6 s, 105 MB | 1.7 s, 42 MB |
+| Verdicts (40 compared) | identical to FastQC | identical to FastQC |
+| Output | FastQC's own files, byte for byte | leanqc's own HTML/JSON/TSV |
+| Truncated plain FASTQ | accepted (as FastQC) | refused |
+
+Most of the remaining time difference was the gzip decoder: FastQC-Rust uses zlib-rs, and leanqc
+used miniz_oxide. leanqc now uses zlib-rs too (about 12% faster on one file, identical output); a
+clean side-by-side on a GitHub runner is on the [roadmap](../roadmap.md).
+
 ## Known gaps
 
 - No Kmer content module (FastQC switches it off by default too).
