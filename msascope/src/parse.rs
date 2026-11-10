@@ -618,7 +618,7 @@ mod tests {
     #[test]
     fn gzip_and_file() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join(format!("msaview-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("msascope-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut a = Vec::new();
         for (name, text) in [("a.fa", &b">a\nAC-T\n>b\nACGT\n"[..]), ("a.sto", b"# STOCKHOLM 1.0\na AC\nb AC\n\na -T\nb GT\n//\n")] {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # package.sh [--zip] OUT_PREFIX PATH...  ->  OUT_PREFIX.tar.gz (or OUT_PREFIX.zip with --zip)
 # The archive holds one folder, basename(OUT_PREFIX), with the given files or folders (e.g. the
-# binaries, or msaview.app) plus README.md and LICENSE from the repository root.
+# binaries, or msascope.app) plus README.md and LICENSE from the repository root.
 # Used by release.yml for every platform; scripts/install.sh unpacks the .tar.gz ones.
 set -euo pipefail
 zip=0

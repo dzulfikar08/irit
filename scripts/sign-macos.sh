@@ -10,7 +10,7 @@
 #   IRIT_SIGN_IDENTITY   codesign identity (name or SHA-1); default: the first valid
 #                        "Developer ID Application" identity in the keychain search list
 #   ASC_KEY_PATH, ASC_KEY_ID, ASC_ISSUER_ID   for --notarize (see scripts/notarize.sh)
-# msaview.app is signed by scripts/build-dmg.sh instead.
+# msascope.app is signed by scripts/build-dmg.sh instead.
 set -euo pipefail
 notarize=0
 if [ "${1:-}" = --notarize ]; then notarize=1; shift; fi

@@ -10,9 +10,9 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use msaview::Loaded;
-use msaview::alphabet::SeqType;
-use msaview::view::{self, ColorMode, Scene, TILE, Viewport};
+use msascope::Loaded;
+use msascope::alphabet::SeqType;
+use msascope::view::{self, ColorMode, Scene, TILE, Viewport};
 use rayon::prelude::*;
 
 const NAMES_W: f32 = 200.0;
@@ -77,7 +77,7 @@ const BENCH_PHASES: [(&str, Option<(i32, i32)>); 4] = [
 ];
 const BENCH_FRAMES: usize = 240;
 
-struct MsaView {
+struct MsaScope {
     data: Option<Arc<Loaded>>,
     status: SharedString,
     path: Option<PathBuf>,
@@ -104,7 +104,7 @@ struct MsaView {
     _subs: Vec<Subscription>,
 }
 
-impl MsaView {
+impl MsaScope {
     fn new(path: Option<PathBuf>, ty: Option<SeqType>, bench: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let jump = cx.new(|cx| InputState::new(window, cx).placeholder("Go to column, or row:column"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find sequence name"));
@@ -127,7 +127,7 @@ impl MsaView {
                 _ => {}
             }),
         ];
-        let mut v = MsaView {
+        let mut v = MsaScope {
             data: None,
             status: "Open an alignment (FASTA, Clustal, Stockholm; .gz ok), or try a sample".into(),
             path: None,
@@ -169,9 +169,9 @@ impl MsaView {
             this.update(cx, |v, cx| {
                 match result {
                     Ok(l) => {
-                        eprintln!("msaview: {}", l.summary());
+                        eprintln!("msascope: {}", l.summary());
                         if let Some(rss) = peak_rss_mb() {
-                            eprintln!("msaview: peak RSS after load {rss} MiB");
+                            eprintln!("msascope: peak RSS after load {rss} MiB");
                         }
                         v.status = l.summary().into();
                         v.data = Some(Arc::new(l));
@@ -181,7 +181,7 @@ impl MsaView {
                         v.selected_row = None;
                     }
                     Err(e) => {
-                        eprintln!("msaview: {e:#}");
+                        eprintln!("msascope: {e:#}");
                         v.status = format!("Error: {e:#}").into();
                     }
                 }
@@ -198,10 +198,10 @@ impl MsaView {
         self.status = "Making a sample alignment (2,000 sequences × 3,000 columns)…".into();
         cx.notify();
         let task = cx.background_executor().spawn(async move {
-            let path = std::env::temp_dir().join("msaview-sample-2000x3000.fa");
-            let spec = msaview::synth::Spec { rows: 2000, cols: 3000, kind: msaview::alphabet::Kind::Nucleotide, clades: 12, seed: 1 };
+            let path = std::env::temp_dir().join("msascope-sample-2000x3000.fa");
+            let spec = msascope::synth::Spec { rows: 2000, cols: 3000, kind: msascope::alphabet::Kind::Nucleotide, clades: 12, seed: 1 };
             let mut out = std::io::BufWriter::new(std::fs::File::create(&path)?);
-            msaview::synth::write_fasta(&spec, &mut out)?;
+            msascope::synth::write_fasta(&spec, &mut out)?;
             std::io::Write::flush(&mut out)?;
             std::io::Result::Ok(path)
         });
@@ -706,7 +706,7 @@ impl MsaView {
     }
 }
 
-impl Render for MsaView {
+impl Render for MsaScope {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let area = self.area.get();
         let (w, h) = (f64::from(area.size.width), f64::from(area.size.height));
@@ -822,7 +822,7 @@ fn peak_rss_mb() -> Option<u64> {
     Some(line.split_whitespace().nth(1)?.parse::<u64>().ok()? / 1024)
 }
 
-const USAGE: &str = "usage: msaview [FILE] [--type dna|rna|protein] [--stats] [--bench]
+const USAGE: &str = "usage: msascope [FILE] [--type dna|rna|protein] [--stats] [--bench]
   FILE     aligned FASTA (.gz ok), Clustal or Stockholm
   --type   residue type, instead of guessing it from the residues (also for files opened later)
   --stats  load, print sizes and timings, and exit without opening a window
@@ -863,10 +863,10 @@ fn main() -> anyhow::Result<()> {
         gpui_kit::init(cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
-            titlebar: Some(TitlebarOptions { title: Some("msaview".into()), ..Default::default() }),
+            titlebar: Some(TitlebarOptions { title: Some("msascope".into()), ..Default::default() }),
             ..Default::default()
         };
-        gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| MsaView::new(path, ty, bench, window, cx)))
+        gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| MsaScope::new(path, ty, bench, window, cx)))
             .expect("failed to open window");
     });
     Ok(())

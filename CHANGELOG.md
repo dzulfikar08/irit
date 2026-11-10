@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### msascope
+- **msaview is now msascope**; the name MSAView belongs to an existing viewer, GMOD's. The binary,
+  `msascope.app` (bundle id `com.dzulfikar.irit.msascope`), `msascope.dmg` and the
+  `msascope-<arch>-linux.tar.gz` archives take the new name. The installer replaces an `msaview`
+  it installed earlier with `msascope`, and still installs `msaview` from releases up to 0.2.1.
+
 ### dblock
 - **Identical files inside a database are hard-linked** after unpacking, so they take disk space
   once. Files are matched by size, permissions and the SHA-256 dblock already records, so nothing

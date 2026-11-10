@@ -1,12 +1,12 @@
-//! Write a synthetic aligned FASTA for testing msaview: `msagen ROWS COLS OUT [--protein] [--seed N]`.
+//! Write a synthetic aligned FASTA for testing msascope: `msagen ROWS COLS OUT [--protein] [--seed N]`.
 //! OUT ending in .gz is gzip-compressed; `-` writes to stdout.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use anyhow::{Context, Result, bail};
-use msaview::alphabet::Kind;
-use msaview::synth::{Spec, write_fasta};
+use msascope::alphabet::Kind;
+use msascope::synth::{Spec, write_fasta};
 
 const USAGE: &str = "usage: msagen ROWS COLS OUT [--protein] [--seed N]   (OUT: file, file.gz or -)";
 

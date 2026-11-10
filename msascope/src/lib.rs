@@ -1,4 +1,4 @@
-//! Core of msaview, free of any GUI code: parsing, compact storage, summaries and view geometry.
+//! Core of msascope, free of any GUI code: parsing, compact storage, summaries and view geometry.
 
 pub mod alphabet;
 pub mod matrix;

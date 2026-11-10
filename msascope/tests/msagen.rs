@@ -32,7 +32,7 @@ fn gzip_output_is_complete() {
     let mut text = Vec::new();
     std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(std::fs::File::open(&gz).unwrap()), &mut text).unwrap();
     assert_eq!(text, std::fs::read(&plain).unwrap());
-    let a = msaview::parse::load(&gz).unwrap();
+    let a = msascope::parse::load(&gz).unwrap();
     assert_eq!((a.rows(), a.cols()), (40, 300));
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -41,5 +41,5 @@ fn gzip_output_is_complete() {
 fn stdout() {
     let o = msagen(&["2", "5", "-", "--protein"]);
     assert!(o.status.success());
-    assert_eq!(msaview::parse::parse_bytes(&o.stdout).unwrap().rows(), 2);
+    assert_eq!(msascope::parse::parse_bytes(&o.stdout).unwrap().rows(), 2);
 }
