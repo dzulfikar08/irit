@@ -52,7 +52,7 @@
     },
     "licence": "CC BY-SA 4.0",
     "non_commercial": false,
-    "notes": "For checking that a pipeline runs; classifications against it are fake. As of 2026-11-10 the file served (md5 59512f60fa48010647977460bb855666, same size) does not match GTDB's MD5SUM.txt, so dblock refuses it until GTDB fixes one or the other."
+    "notes": "For checking that a pipeline runs; classifications against it are fake. As of 2026-11-10 the file served (md5 59512f60fa48010647977460bb855666, same size) does not match GTDB's MD5SUM.txt (https://github.com/Ecogenomics/GTDBTk/issues/726), so dblock refuses it until GTDB fixes one or the other: for the whole mock package the published MD5 is the only check. For gtdbprep, use gtdbtk-r232-client instead: it fetches the same archive pinned to the observed MD5 and keeps only markers/, masks/, metadata/ and taxonomy/, and checks the first three against GTDB-Tk's own REF_HASHES (see docs/tools/dblock.md)."
   },
   {
     "id": "gtdbtk-r232-client",
