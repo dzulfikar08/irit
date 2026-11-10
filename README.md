@@ -54,8 +54,26 @@ eval "$(dblock env)"
 ## Documentation
 
 Everything is in [`docs/`](docs/introduction.md): tool guides, benchmarks, the research behind
-the choices, and the [roadmap](docs/roadmap.md). The folder is an [mdBook](https://rust-lang.github.io/mdBook/)
-source (`mdbook serve` from the repository root) so it can be published as a site.
+the choices, and the [roadmap](docs/roadmap.md). The documentation site in `site/` is built from
+that folder.
+
+## Acknowledgements
+
+- **[FastQC](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/)** 0.12.1, Copyright
+  2010-17 Simon Andrews, Babraham Bioinformatics (GPL v3 or later). leanqc includes code
+  translated from FastQC (position groups, GC model, duplication estimate, per-sequence GC fit,
+  per-tile quality, adapter content, encoding detection) and uses its default adapter list and
+  thresholds; see [leanqc](docs/tools/leanqc.md#credit). Each ported function in
+  `leanqc/src/stats.rs` names the FastQC class it comes from.
+- **[nf-core](https://nf-co.re/)** (MIT): sheetgen reads pipelines' `schema_input.json` and follows
+  [nf-schema](https://github.com/nextflow-io/nf-schema)'s rules for sample sheets; copies of five
+  nf-core schemas are test fixtures ([sources](sheetgen/tests/fixtures/README.md)). The validation
+  workflow uses nf-core/bacass and its [test datasets](https://github.com/nf-core/test-datasets).
+- isotable reads the output formats of fastp, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and
+  AMRFinderPlus, and grades MAGs by the MIMAG standard (Bowers et al., *Nature Biotechnology*
+  35, 725-731, 2017). No code from those tools is included.
+- dblock's catalog points at databases published by their authors (GTDB, CheckM2, SILVA, Kraken 2
+  index builds, Bakta, CARD); each entry records its source and licence.
 
 ## Licence
 
