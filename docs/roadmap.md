@@ -26,20 +26,24 @@ What's done, what's next, and what's further out. Items move up as evidence come
       [`gtdbprep`](tools/gtdbprep.md); its bundle classifies identically to `classify_wf` on test genomes.
 - [x] Documentation site (Astro + Starlight) at https://dzulfikar08.github.io/irit/, and an
       interactive competition demo.
+- [x] GTDB placement under an enforced 8.5 GiB memory cap on a 16 GB GitHub runner, with gPlace
+      ([write-up](research/gtdb-placement-test.md)): a shared placement server isn't needed.
+- [x] `leanqc` vs FastQC-Rust benchmark on a GitHub runner; `isotable` reads FastQC/FastQC-Rust output.
+- [x] `dblock` keeps selected folders of an archive and verifies GTDB-Tk folder hashes
+      (`gtdbtk-r232-client` for `gtdbprep`).
 
 ## Next
 
 - [ ] **GTDB-Tk on a desktop: measure before building.** Peak memory and time for GTDB-Tk with and
       without `--scratch_dir`, and with gPlace and `--max_memory`, on a rented large-memory machine.
       See [GTDB-Tk and memory](research/gtdbtk-memory.md).
-- [ ] **gPlace under an 8.5 GB cap** on GitHub runners (in progress): can GTDB placement run on a
-      16 GB machine? Decides whether a placement server is needed at all.
+- [ ] **GTDB placement data without the 60.8 GB download**: an unofficial, credited mirror of the
+      ~7.4 GB placement folders on GitHub Releases (`dzulfikar08/irit-data`), with a `dblock` entry;
+      asked GTDB for official per-folder downloads ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)).
+- [ ] **The ANI species check on a laptop**: its database is 85 GB; fetch only the reference sketches
+      a genome needs (range reads), per the [design](research/split-gtdb.md).
 - [ ] **`msaview` additions**: linked tree panel, multi-threaded gzip, alignments larger than RAM,
       macOS/Windows testing, desktop packaging.
-- [ ] **`leanqc` vs FastQC-Rust benchmark** on a GitHub runner (time and memory, same files), and
-      `isotable` support for FastQC/FastQC-Rust output.
-- [ ] **`dblock` for `gtdbprep`**: keep only selected folders of an archive, and verify folder hashes
-      the way GTDB-Tk does, so the 77 MB client data comes with a lock entry.
 - [ ] **`dblock` additions**: AMRFinderPlus via `amrfinder_update`, GTDB-Tk split download, parallel
       downloads.
 - [ ] **`leanqc` additions**: long-read views (N50, quality by length).
@@ -49,8 +53,8 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [ ] **`subprep`**: validate NCBI/ENA submission metadata offline before upload.
 - [ ] **MCP wrappers for external tools** (fastp, Bakta, CheckM2, GTDB-Tk) in `irit-mcp`, so a whole
       microbial genomics run is recorded and replayable.
-- [ ] **Split GTDB-Tk, step 2**: a placement service for `gtdbprep` bundles, only if the gPlace test
-      shows laptops can't place on their own. See [the design](research/split-gtdb.md).
+- [ ] **Split GTDB-Tk, step 2 (parked)**: a placement service for `gtdbprep` bundles. The gPlace test
+      showed a 16 GB laptop can place on its own, so this is only worth building for larger batches.
 - [ ] **Laptop benchmark for AI agents**: can an agent with these tools produce a defensible microbial
       genomics result on an 8 GB laptop, compared with a hand-built workflow (accuracy,
       reproducibility, time, cost, human intervention)? A possible paper.
