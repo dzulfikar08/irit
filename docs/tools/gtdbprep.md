@@ -197,7 +197,9 @@ for R232 in GTDB's 25 MB mockup archive (checked by `prep` on every run). GTDB-T
 Opaque IDs (`g` + 16 hex digits) never are, so the mockup's 5-line stub works. gtdbprep records
 its hash and notes the `REF_HASHES` mismatch without stopping. These four folders total 77 MB. With
 only them on disk, `prep` produced byte-identical alignment rows to a run against the whole
-mockup. A `dblock` entry `gtdbtk-r232-client` is proposed to fetch exactly this subset.
+mockup. `dblock add gtdbtk-r232-client && dblock fetch` fetches exactly this subset and checks it
+against `REF_HASHES` (see [dblock](dblock.md#gtdbtk-r232-client-and-its-md5)); pass the path
+`dblock env` prints to `--data`.
 
 `classify` and `verify` need the full package (or the mockup for tests), as GTDB-Tk does.
 
@@ -270,5 +272,6 @@ cargo test --release -- --ignored
 - **Tool sources.** Bioconda installs skani 0.4.0 with GTDB-Tk 2.8.0; `--sketch` refuses anything
   but 0.3.1, which has to be built from its tag.
 - **Reference download.** GTDB's mockup archive currently fails its published MD5
-  ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)), so `dblock` refuses it; the
-  proposed `gtdbtk-r232-client` entry checks the extracted folders against `REF_HASHES` instead.
+  ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)), so `dblock` refuses
+  `gtdbtk-r232-mockup`; the `gtdbtk-r232-client` entry uses the observed MD5 and checks the
+  extracted folders against `REF_HASHES` instead.

@@ -55,6 +55,44 @@
     "notes": "For checking that a pipeline runs; classifications against it are fake. As of 2026-11-10 the file served (md5 59512f60fa48010647977460bb855666, same size) does not match GTDB's MD5SUM.txt, so dblock refuses it until GTDB fixes one or the other."
   },
   {
+    "id": "gtdbtk-r232-client",
+    "name": "GTDB-Tk R232 client data for gtdbprep (markers, masks, metadata, taxonomy stub; can't classify)",
+    "version": "R232",
+    "tool": "gtdbprep",
+    "urls": [
+      "https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/mockup_db/r232_mockup.tar.gz"
+    ],
+    "format": "tar.gz",
+    "size": 26324952,
+    "extracted": 92464687,
+    "md5": "59512f60fa48010647977460bb855666",
+    "md5_source": "observed, not published: MD5 of the file GTDB served on 2026-11-10. GTDB's MD5SUM.txt lists 2c710f35d7e6296615bcf9026ee1c951, which no copy matches (https://github.com/Ecogenomics/GTDBTk/issues/726). The published integrity check is verify_dirs: GTDB-Tk 2.8.0's REF_HASHES for R232 (gtdbtk/config/common.py)",
+    "env": null,
+    "env_points_to": "dir",
+    "compat": {
+      "command": [
+        "gtdbtk",
+        "--version"
+      ],
+      "min": "2.7.0",
+      "source": "https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/mockup_db/HOWTO.txt"
+    },
+    "licence": "CC BY-SA 4.0",
+    "keep": [
+      "release232_mockup/markers",
+      "release232_mockup/masks",
+      "release232_mockup/metadata",
+      "release232_mockup/taxonomy"
+    ],
+    "kept_size": 79826896,
+    "verify_dirs": {
+      "release232_mockup/markers": "163f542c3f0a40f59df45d453aa235b39aa96e27",
+      "release232_mockup/masks": "84c7f7a17adc134db4161b15db10ae58389a90c1",
+      "release232_mockup/metadata": "1febdba7d2513a8f43c409423aee83ed99df7a78"
+    },
+    "notes": "Client data for gtdbprep (`gtdbprep prep --data <path>`): the four folders GTDB-Tk's identify and align stages read, taken from GTDB's mock database archive. Not enough to classify: classify and classify_wf need the full gtdbtk-r232 package. taxonomy/ is the mockup's 5-line stub and has no REF_HASHES value (GTDB-Tk only uses it to refuse genome IDs equal to GTDB accessions). No GTDBTK_DATA_PATH export, so it can't shadow a full package in the same project; pass the path from `dblock env` to gtdbprep's --data."
+  },
+  {
     "id": "checkm2-db-v3",
     "name": "CheckM2 DIAMOND database (UniRef100/KO), version 3",
     "version": "3",

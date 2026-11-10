@@ -12,11 +12,16 @@
 //! name once the checksum matches and the folder's marker (with its file list and SHA-256 sums)
 //! is written, so a half-finished or corrupt database is never mistaken for a good one.
 //! One process at a time works on a given database: `obtain` holds `<store>/.lock-<id>`.
+//!
+//! A catalog entry may `keep` only some folders of its archive (the rest is read for the
+//! checksum but never written) and may name `verify_dirs`: folders whose GTDB-Tk folder hash
+//! must match, checked before the folder takes its final name.
 
 use crate::catalog::{Entry, Format, human};
 use crate::project::{self, Locked};
 use anyhow::{Context, Result, bail};
 use md5::{Digest, Md5};
+use sha1::Sha1;
 use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -196,8 +201,8 @@ pub fn plan(store: &Path, e: &Entry, opts: &Opts) -> Result<Plan> {
     fs::create_dir_all(store).with_context(|| format!("creating {}", store.display()))?;
     let free = fs4::available_space(store).with_context(|| format!("checking free space on {}", store.display()))?;
     let resumable = fs::metadata(partial_path(store, e)).map(|m| m.len()).unwrap_or(0);
-    let stored = if e.format == Format::File { e.size } else { e.extracted };
-    let full = if e.format == Format::File { e.size } else { e.size + e.extracted };
+    let stored = e.on_disk();
+    let full = if e.format == Format::File { e.size } else { e.size + stored };
     let can_stream = e.format != Format::File;
 
     if opts.force_stream && can_stream {
@@ -265,6 +270,20 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
         return Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no URL worked")));
     };
 
+    // Errors from here on drop `tmp_dir`, so nothing is kept.
+    for k in &e.keep {
+        if tmp.join(k).symlink_metadata().is_err() {
+            bail!("keep path `{k}` matched nothing in the archive; the catalog entry or the archive's layout is wrong");
+        }
+    }
+    if !e.verify_dirs.is_empty() {
+        eprintln!("  checking GTDB-Tk folder hashes");
+        let bad = check_dirs(tmp, &e.verify_dirs)?;
+        if !bad.is_empty() {
+            bail!("folder hash mismatch for {}: {}. Nothing was kept.", e.id, bad.join("; "));
+        }
+    }
+
     let target = target_dir(store, e);
     if target.symlink_metadata().is_ok() {
         bail!("{} appeared while downloading; move or delete it, then fetch again", target.display());
@@ -292,6 +311,7 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
         env: e.env.clone(),
         licence: e.licence.clone(),
         non_commercial: e.non_commercial,
+        verify_dirs: e.verify_dirs.clone(),
     };
     // The marker goes in before the rename, so a folder under the final name is always complete.
     project::write_marker(tmp, &locked)?;
@@ -390,7 +410,7 @@ fn download_then_extract(store: &Path, e: &Entry, url: &str, tmp: &Path, opts: &
         return Ok(());
     }
     eprintln!("  unpacking");
-    unpack(e.format, File::open(&part)?, tmp)?;
+    unpack(e.format, File::open(&part)?, tmp, &e.keep)?;
     if opts.keep_archive {
         let keep = store.join("archives");
         fs::create_dir_all(&keep)?;
@@ -405,7 +425,7 @@ fn stream_extract(e: &Entry, url: &str, tmp: &Path) -> Result<()> {
     eprintln!("  streaming: unpacking while downloading, so the archive never touches the disk (not resumable)");
     let (resp, _) = get(url, 0)?;
     let mut reader = HashingReader { inner: resp.into_body().into_reader(), hasher: Md5::new(), progress: Progress::new(e.size, 0) };
-    unpack_stream(e.format, &mut reader, tmp)?;
+    unpack_stream(e.format, &mut reader, tmp, &e.keep)?;
     // tar stops at its end marker; hash any padding after it so the MD5 covers the whole file.
     io::copy(&mut reader, &mut io::sink())?;
     let HashingReader { hasher, progress, .. } = reader;
@@ -424,32 +444,32 @@ fn stream_extract(e: &Entry, url: &str, tmp: &Path) -> Result<()> {
     Ok(())
 }
 
-fn unpack(format: Format, src: impl Read, dest: &Path) -> Result<()> {
+fn unpack(format: Format, src: impl Read, dest: &Path, keep: &[String]) -> Result<()> {
     let src = io::BufReader::with_capacity(1 << 20, src);
     match format {
-        Format::TarGz => tar_unpack(flate2::read::MultiGzDecoder::new(src), dest),
-        Format::TarXz => tar_unpack(liblzma::read::XzDecoder::new_multi_decoder(src), dest),
-        Format::TarBz2 => tar_unpack(bzip2::read::MultiBzDecoder::new(src), dest),
+        Format::TarGz => tar_unpack(flate2::read::MultiGzDecoder::new(src), dest, keep),
+        Format::TarXz => tar_unpack(liblzma::read::XzDecoder::new_multi_decoder(src), dest, keep),
+        Format::TarBz2 => tar_unpack(bzip2::read::MultiBzDecoder::new(src), dest, keep),
         Format::File => unreachable!("plain files are not unpacked"),
     }
 }
 
 /// Like `unpack`, but borrows the source so the caller can drain and inspect it afterwards.
-fn unpack_stream<R: Read>(format: Format, src: &mut R, dest: &Path) -> Result<()> {
+fn unpack_stream<R: Read>(format: Format, src: &mut R, dest: &Path, keep: &[String]) -> Result<()> {
     match format {
         Format::TarGz => {
             let mut d = flate2::read::MultiGzDecoder::new(io::BufReader::new(&mut *src));
-            tar_unpack(&mut d, dest)?;
+            tar_unpack(&mut d, dest, keep)?;
             io::copy(&mut d, &mut io::sink())?;
         }
         Format::TarXz => {
             let mut d = liblzma::read::XzDecoder::new_multi_decoder(io::BufReader::new(&mut *src));
-            tar_unpack(&mut d, dest)?;
+            tar_unpack(&mut d, dest, keep)?;
             io::copy(&mut d, &mut io::sink())?;
         }
         Format::TarBz2 => {
             let mut d = bzip2::read::MultiBzDecoder::new(io::BufReader::new(&mut *src));
-            tar_unpack(&mut d, dest)?;
+            tar_unpack(&mut d, dest, keep)?;
             io::copy(&mut d, &mut io::sink())?;
         }
         Format::File => bail!("plain files can't be streamed"),
@@ -457,13 +477,94 @@ fn unpack_stream<R: Read>(format: Format, src: &mut R, dest: &Path) -> Result<()
     Ok(())
 }
 
-fn tar_unpack(r: impl Read, dest: &Path) -> Result<()> {
+/// Unpack a tar stream into `dest`; with `keep`, only entries under those paths. Skipped
+/// entries are still read through (the caller hashes the whole stream).
+fn tar_unpack(r: impl Read, dest: &Path, keep: &[String]) -> Result<()> {
     let mut ar = tar::Archive::new(r);
     ar.set_preserve_permissions(false);
     ar.set_overwrite(false);
-    // `unpack` refuses entries that would land outside `dest` (absolute paths, `..`).
-    ar.unpack(dest).with_context(|| format!("unpacking into {}", dest.display()))?;
+    let ctx = || format!("unpacking into {}", dest.display());
+    if keep.is_empty() {
+        // `unpack` refuses entries that would land outside `dest` (absolute paths, `..`).
+        ar.unpack(dest).with_context(ctx)?;
+        return Ok(());
+    }
+    let keep: Vec<PathBuf> = keep.iter().map(|k| without_dots(Path::new(k))).collect();
+    fs::create_dir_all(dest).with_context(ctx)?;
+    // As `Archive::unpack` does, so the inside-`dest` check compares canonical paths.
+    let dest = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
+    for entry in ar.entries().with_context(ctx)? {
+        let mut entry = entry.with_context(ctx)?;
+        let path = without_dots(&entry.path().with_context(ctx)?);
+        // Component-wise: `markers` keeps `markers/x`, not `markers2/x`.
+        if keep.iter().any(|k| path.starts_with(k)) {
+            // Same per-entry routine `unpack` uses: `..` and absolute paths can't escape `dest`.
+            entry.unpack_in(&dest).with_context(ctx)?;
+        }
+    }
     Ok(())
+}
+
+/// `./a/./b` -> `a/b`, so archive paths written with a leading `./` match `keep` prefixes.
+fn without_dots(p: &Path) -> PathBuf {
+    p.components().filter(|c| !matches!(c, std::path::Component::CurDir)).collect()
+}
+
+/// GTDB-Tk's folder hash, ported from `sha1_dir` in `gtdbtk/tools.py` (GTDB-Tk 2.8.0), the
+/// function `check_install` (`gtdbtk/misc.py`) compares with `REF_HASHES` (`gtdbtk/config/common.py`):
+/// `os.walk(path)` (symlinked folders not entered; links to files are read through), every file's
+/// full path, sorted as strings, then one SHA-1 over the files' contents concatenated in that
+/// order. Names don't enter the hash, only contents and order.
+pub fn sha1_dir(dir: &Path) -> Result<String> {
+    fn rec(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+            let path = entry?.path();
+            // os.walk sorts entries with `is_dir()`, which follows links: a link to a folder is
+            // a folder (not walked, as followlinks=False), anything else is a file.
+            if path.is_dir() {
+                if !path.symlink_metadata()?.file_type().is_symlink() {
+                    rec(&path, out)?;
+                }
+            } else {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    rec(dir, &mut files)?;
+    // Python compares str by code point; for UTF-8 names that is byte order.
+    files.sort_by(|a, b| a.as_os_str().as_encoded_bytes().cmp(b.as_os_str().as_encoded_bytes()));
+    let mut h = Sha1::new();
+    let mut buf = vec![0u8; 1 << 20];
+    for path in &files {
+        let mut f = File::open(path).with_context(|| format!("reading {}", path.display()))?;
+        loop {
+            let n = f.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            h.update(&buf[..n]);
+        }
+    }
+    Ok(hex(&h.finalize()))
+}
+
+/// Compare each folder's `sha1_dir` with the expected one; returns what differs (empty if all match).
+pub fn check_dirs(root: &Path, want: &BTreeMap<String, String>) -> Result<Vec<String>> {
+    let mut bad = Vec::new();
+    for (dir, expected) in want {
+        let path = root.join(dir);
+        if !path.is_dir() {
+            bad.push(format!("{dir} is missing"));
+            continue;
+        }
+        let got = sha1_dir(&path)?;
+        if !got.eq_ignore_ascii_case(expected) {
+            bad.push(format!("{dir} hashes to {got}, expected {expected}"));
+        }
+    }
+    Ok(bad)
 }
 
 struct HashingReader<R> {
@@ -985,6 +1086,209 @@ mod tests {
         fs::create_dir_all(part.parent().unwrap()).unwrap();
         fs::write(&part, vec![b'x'; body.len() * 3]).unwrap();
         obtain(store.path(), &e, &opts()).unwrap();
+    }
+
+    /// A `.tar.gz` of the given entries (names written as given, `./` included), and its MD5.
+    fn archive_of(files: &[(&str, &[u8])]) -> (Vec<u8>, String) {
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()));
+        for (name, body) in files {
+            let mut h = tar::Header::new_gnu();
+            h.set_path(name).unwrap();
+            h.set_size(body.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append(&h, *body).unwrap();
+        }
+        let bytes = tar.into_inner().unwrap().finish().unwrap();
+        let md5 = hex(&Md5::digest(&bytes));
+        (bytes, md5)
+    }
+
+    const MIXED: &[(&str, &[u8])] = &[
+        ("db/markers/a.hmm", b"AAA"),
+        ("./db/markers/sub/b.hmm", b"BB"),
+        ("db/markers2/no.txt", b"not kept: shares a name prefix only"),
+        ("db/radii/big.tsv", b"not kept"),
+        ("db/masks/m.txt", b"MM"),
+        ("readme.txt", b"not kept"),
+    ];
+
+    fn kept_entry(url: &str, md5: &str, size: usize) -> Entry {
+        let mut e = entry(url, md5, size, "dir");
+        e.keep = vec!["db/markers".into(), "./db/masks".into()];
+        e
+    }
+
+    fn listing(dir: &Path) -> Vec<String> {
+        items_as(dir, Some(MANIFEST_FORMAT)).unwrap().into_iter().map(|(r, _)| r.replace('\\', "/")).collect()
+    }
+
+    #[test]
+    fn keep_unpacks_only_listed_folders_in_both_modes() {
+        let (body, md5) = archive_of(MIXED);
+        let want = vec!["db/markers/a.hmm", "db/markers/sub/b.hmm", "db/masks/m.txt"];
+        for stream in [false, true] {
+            let (url, _) = serve(body.clone());
+            let e = kept_entry(&url, &md5, body.len());
+            let store = tempfile::tempdir().unwrap();
+            let (l, _) = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false }).unwrap();
+            assert_eq!(listing(&target_dir(store.path(), &e)), want, "stream={stream}");
+            // Manifest and sums cover the kept files only.
+            assert_eq!((l.files, l.bytes), (3, 7), "stream={stream}");
+            assert_eq!(l.archive_md5, md5);
+            assert!(l.data_path.ends_with("mydb/db") || l.data_path.ends_with("mydb\\db"));
+        }
+    }
+
+    #[test]
+    fn keep_still_checks_the_whole_archive() {
+        let (body, _) = archive_of(MIXED);
+        // The MD5 of a different archive: the skipped entries are part of what is checked.
+        let (_, other_md5) = archive_of(&MIXED[..5]);
+        for stream in [false, true] {
+            let (url, _) = serve(body.clone());
+            let e = kept_entry(&url, &other_md5, body.len());
+            let store = tempfile::tempdir().unwrap();
+            let err = format!("{:#}", obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false }).unwrap_err());
+            assert!(err.contains("checksum mismatch"), "{err}");
+            assert!(!store.path().join("mydb").exists());
+        }
+    }
+
+    #[test]
+    fn keep_path_missing_from_the_archive_is_an_error() {
+        let (body, md5) = archive_of(MIXED);
+        let (url, _) = serve(body.clone());
+        let mut e = kept_entry(&url, &md5, body.len());
+        e.keep.push("db/taxonomy".into());
+        let store = tempfile::tempdir().unwrap();
+        let err = format!("{:#}", obtain(store.path(), &e, &opts()).unwrap_err());
+        assert!(err.contains("`db/taxonomy` matched nothing"), "{err}");
+        assert!(!store.path().join("mydb").exists());
+    }
+
+    #[test]
+    fn filtered_unpack_refuses_paths_outside_dest() {
+        // tar::Builder won't write `..`, so patch the name bytes of a raw header.
+        let mut h = tar::Header::new_old();
+        h.as_old_mut().name[..17].copy_from_slice(b"db/markers/../../");
+        h.as_old_mut().name[17..22].copy_from_slice(b"evil\0");
+        h.set_size(1);
+        h.set_cksum();
+        let mut raw = h.as_bytes().to_vec();
+        raw.extend_from_slice(b"x");
+        raw.resize(512 * 2, 0);
+        raw.extend_from_slice(&[0; 1024]);
+        let root = tempfile::tempdir().unwrap();
+        let dest = root.path().join("d");
+        let _ = tar_unpack(&raw[..], &dest, &["db/markers".into()]);
+        assert!(!root.path().join("evil").exists());
+    }
+
+    #[test]
+    fn sha1_dir_matches_gtdbtk_order_and_content() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join("b")).unwrap();
+        fs::write(d.path().join("b/x"), b"2").unwrap();
+        fs::write(d.path().join("a"), b"1").unwrap();
+        // `b.z` sorts before `b/x`: '.' < '/' in Python's string order too.
+        fs::write(d.path().join("b.z"), b"9").unwrap();
+        fs::write(d.path().join("c"), b"3").unwrap();
+        // hashlib.sha1(b"1923").hexdigest(): files a, b.z, b/x, c.
+        assert_eq!(sha1_dir(d.path()).unwrap(), hex(&Sha1::digest(b"1923")));
+        assert_eq!(sha1_dir(d.path()).unwrap(), "eb72c4ca70ca1394681037753345409cf3d4b488");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sha1_dir_reads_file_links_and_skips_folder_links_like_os_walk() {
+        let d = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        fs::write(other.path().join("hidden"), b"zzz").unwrap();
+        fs::write(d.path().join("a"), b"1").unwrap();
+        std::os::unix::fs::symlink(other.path(), d.path().join("linkdir")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("a"), d.path().join("linkfile")).unwrap();
+        assert_eq!(sha1_dir(d.path()).unwrap(), hex(&Sha1::digest(b"11")));
+    }
+
+    /// Runs GTDB-Tk's own `gtdbtk.tools.sha1_dir` on the same folders when a GTDB-Tk environment
+    /// is available (`GTDBTK_PYTHON`, else `/tmp/mm/gtdbtk/bin/python`); skipped otherwise.
+    #[test]
+    fn sha1_dir_agrees_with_gtdbtk_python_when_available() {
+        let python = std::env::var_os("GTDBTK_PYTHON").map(PathBuf::from).unwrap_or_else(|| "/tmp/mm/gtdbtk/bin/python".into());
+        if !python.is_file() {
+            eprintln!("skipped: no GTDB-Tk Python at {}", python.display());
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        for (rel, body) in [("m/a.hmm", &b"alpha"[..]), ("m/sub/b.hmm", b"beta"), ("m/b.z", b"gamma"), ("m/A", b"upper"), ("m/empty", b"")] {
+            let p = d.path().join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, body).unwrap();
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(d.path().join("m/a.hmm"), d.path().join("m/zlink")).unwrap();
+        let out = std::process::Command::new(&python)
+            .args(["-I", "-c", "import sys; from gtdbtk.tools import sha1_dir; print(sha1_dir(sys.argv[1], False))"])
+            .arg(d.path().join("m"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), sha1_dir(&d.path().join("m")).unwrap());
+    }
+
+    #[test]
+    fn verify_dirs_pass_and_fail() {
+        let (body, md5) = archive_of(MIXED);
+        // Expected values from `sha1_dir`: contents in path order (markers: a.hmm, sub/b.hmm).
+        let markers = hex(&Sha1::digest(b"AAABB"));
+        let masks = hex(&Sha1::digest(b"MM"));
+
+        let (url, _) = serve(body.clone());
+        let mut e = kept_entry(&url, &md5, body.len());
+        e.verify_dirs = BTreeMap::from([("db/markers".to_string(), markers.clone()), ("db/masks".to_string(), masks.clone())]);
+        let store = tempfile::tempdir().unwrap();
+        let (l, _) = obtain(store.path(), &e, &opts()).unwrap();
+        assert_eq!(l.verify_dirs, e.verify_dirs, "recorded for verify --deep");
+        assert!(check_dirs(&target_dir(store.path(), &e), &l.verify_dirs).unwrap().is_empty());
+        assert_eq!(project::read_marker(&target_dir(store.path(), &e)).unwrap().verify_dirs, e.verify_dirs);
+        // Changed afterwards (same size, so plain verify can't see it): check_dirs names it.
+        fs::write(target_dir(store.path(), &e).join("db/masks/m.txt"), b"Mm").unwrap();
+        let bad = check_dirs(&target_dir(store.path(), &e), &l.verify_dirs).unwrap();
+        assert!(bad.len() == 1 && bad[0].starts_with("db/masks hashes to"), "{bad:?}");
+
+        // A wrong expected hash: the fetch fails in either mode and nothing is kept.
+        for stream in [false, true] {
+            let (url, _) = serve(body.clone());
+            let mut e = kept_entry(&url, &md5, body.len());
+            e.verify_dirs = BTreeMap::from([("db/markers".to_string(), markers.clone()), ("db/masks".to_string(), "0".repeat(40))]);
+            let store = tempfile::tempdir().unwrap();
+            let err = format!("{:#}", obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false }).unwrap_err());
+            assert!(err.contains("folder hash mismatch") && err.contains("db/masks hashes to"), "{err}");
+            assert!(!err.contains("db/markers"), "{err}");
+            assert!(!store.path().join("mydb").exists());
+            assert!(!store.path().join(".tmp").exists(), "temporary folder left behind");
+        }
+
+        // A listed folder that isn't there.
+        let (url, _) = serve(body.clone());
+        let mut e = kept_entry(&url, &md5, body.len());
+        e.verify_dirs = BTreeMap::from([("db/metadata".to_string(), masks)]);
+        let store = tempfile::tempdir().unwrap();
+        let err = format!("{:#}", obtain(store.path(), &e, &opts()).unwrap_err());
+        assert!(err.contains("db/metadata is missing"), "{err}");
+    }
+
+    #[test]
+    fn plan_uses_the_kept_size() {
+        let mut e = entry("http://127.0.0.1:9/x", &"0".repeat(32), 1_000, "dir");
+        e.extracted = 5_000_000_000_000;
+        let store = tempfile::tempdir().unwrap();
+        assert!(plan(store.path(), &e, &opts()).is_err(), "5 TB shouldn't fit");
+        e.keep = vec!["db".into()];
+        e.kept_size = Some(1_000);
+        let p = plan(store.path(), &e, &opts()).unwrap();
+        assert_eq!(p.need, 2_000);
     }
 
     #[test]

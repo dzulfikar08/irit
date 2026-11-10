@@ -116,7 +116,7 @@ fn cmd_catalog(entries: &[Entry], tool: Option<&str>) -> Result<()> {
             continue;
         }
         let flag = if e.non_commercial { "  [non-commercial licence]" } else { "" };
-        println!("{:<32} {:>9} {:>10}  {}{flag}", e.id, human(e.size), human(e.extracted), e.name);
+        println!("{:<32} {:>9} {:>10}  {}{flag}", e.id, human(e.size), human(e.on_disk()), e.name);
     }
     Ok(())
 }
@@ -131,7 +131,7 @@ fn cmd_add(dir: &Path, entries: &[Entry], ids: &[String], store: Option<String>)
         if !p.databases.contains(id) {
             p.databases.push(id.clone());
         }
-        println!("added {id}: {} ({} download, {} on disk)", e.name, human(e.size), human(e.extracted));
+        println!("added {id}: {} ({} download, {} on disk)", e.name, human(e.size), human(e.on_disk()));
         if e.non_commercial {
             println!("  licence: {}", e.licence);
         }
@@ -341,9 +341,24 @@ fn cmd_verify(dir: &Path, deep: bool) -> Result<()> {
             continue;
         };
         eprintln!("  hashing {} ({})", l.id, human(bytes));
+        // GTDB-Tk's own folder hashes, when the catalog named some: they come from the publisher,
+        // so they also vouch for what was fetched, not just that it hasn't changed since.
+        if !l.verify_dirs.is_empty() {
+            let wrong = fetch::check_dirs(path, &l.verify_dirs)?;
+            if !wrong.is_empty() {
+                println!("CHANGED  {}: GTDB-Tk folder hash mismatch: {}", l.id, wrong.join("; "));
+                bad += 1;
+                continue;
+            }
+        }
         let now = fetch::sums_as(path, l.manifest_format)?;
         if &fetch::sha256_hex(&now) == want {
-            println!("ok       {}: {} files, {}, every file's SHA-256 matches", l.id, files, human(bytes));
+            let dirs = if l.verify_dirs.is_empty() {
+                String::new()
+            } else {
+                format!(" and {} GTDB-Tk folder hash(es) match", l.verify_dirs.len())
+            };
+            println!("ok       {}: {} files, {}, every file's SHA-256 matches{dirs}", l.id, files, human(bytes));
             continue;
         }
         bad += 1;
@@ -458,6 +473,7 @@ mod remove_tests {
             env: None,
             licence: String::new(),
             non_commercial: false,
+            verify_dirs: Default::default(),
         }
     }
 

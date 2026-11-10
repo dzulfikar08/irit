@@ -81,6 +81,30 @@ GTDB-Tk's 100 GB on an SSD). Archive
 entries that would land outside that folder (absolute paths, `..`) are refused. A checksum mismatch
 is never retried against a mirror: a mirror serving the same bad file wouldn't fix it.
 
+### Keeping part of an archive (`keep`)
+
+A catalog entry can list `keep`: paths inside the archive (e.g. `release232_mockup/markers`).
+Only entries under them are written; everything else is read through and thrown away, so the
+archive MD5 is still checked over the whole file, in both modes. Matching is by path component
+(`markers` keeps `markers/x`, not `markers2/x`), and a leading `./` in the archive is ignored. The
+manifest and `.dblock.sha256` cover only the kept files. A `keep` path that matches nothing fails
+the fetch. `plan` and `catalog` use `kept_size` (bytes kept) when the entry gives it, else
+`extracted`.
+
+### GTDB-Tk folder hashes (`verify_dirs`)
+
+`verify_dirs` maps folders inside the database to the hash GTDB-Tk itself expects for them
+(`REF_HASHES` in `gtdbtk/config/common.py`). dblock computes it the way GTDB-Tk 2.8.0's
+`sha1_dir` (`gtdbtk/tools.py`) does: walk the folder as `os.walk` would (links to folders not
+entered, links to files read through), sort the full file paths as strings, and take one SHA-1
+over all file contents in that order (file names are not hashed). The test suite checks this port
+against GTDB-Tk's own Python function when a GTDB-Tk environment is available.
+
+The hashes are checked after unpacking, before the folder takes its final name: a mismatch fails
+the fetch and nothing is kept. They are recorded in the marker and lock entry, and `verify --deep`
+checks them again. Unlike the SHA-256 list, which dblock writes itself at fetch time, these come
+from the publisher, so they also vouch for what was fetched.
+
 ## The lock file
 
 ```toml
@@ -122,6 +146,7 @@ Every URL, size and checksum in the built-in catalog was checked against the pub
 | id | Download | Unpacked | Notes |
 |---|---|---|---|
 | `gtdbtk-r232` | 60.8 GB | ~100 GB | GTDB-Tk ≥ 2.7.0 (2.7.1+ recommended). Needs ~140 GB RAM to run: see [GTDB-Tk and memory](../research/gtdbtk-memory.md). |
+| `gtdbtk-r232-client` | 26 MB | 80 MB | Client data for [gtdbprep](gtdbprep.md): `markers/`, `masks/`, `metadata/`, `taxonomy/` from the mockup archive. **Can't classify.** MD5 observed, not published; see below. |
 | `gtdbtk-r232-mockup` | 26 MB | ~120 MB | Test database. Currently refused: the served file doesn't match GTDB's checksum ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)). |
 | `checkm2-db-v3` | 1.7 GB | ~3.5 GB | CheckM2 ≥ 1.1.0 only. |
 | `silva-144-qiime2-full` | 274 MB | same | QIIME 2 ≥ 2026.4. |
@@ -133,6 +158,35 @@ Every URL, size and checksum in the built-in catalog was checked against the pub
 | `bakta-db-v6-full` | 31.9 GB | 84 GB | Bakta 1.11–1.x (schema 6). Run `amrfinder_update` after. |
 | `bakta-db-v6-light` | 1.3 GB | 3.9 GB | Same. |
 | `card-4.0.2` | 4 MB | 50 MB | **Non-commercial licence**; checksum computed by us (CARD publishes none). |
+
+### `gtdbtk-r232-client` and its MD5
+
+gtdbprep's laptop half runs only GTDB-Tk's `identify` and `align` stages, which read four folders
+of GTDB's R232 mockup archive. This entry keeps just those (188 files, 79.8 MB) and checks
+`markers/`, `masks/` and `metadata/` against GTDB-Tk 2.8.0's `REF_HASHES` for R232:
+
+| Folder | `sha1_dir` |
+|---|---|
+| `markers/` | `163f542c3f0a40f59df45d453aa235b39aa96e27` |
+| `masks/` | `84c7f7a17adc134db4161b15db10ae58389a90c1` |
+| `metadata/` | `1febdba7d2513a8f43c409423aee83ed99df7a78` |
+
+`taxonomy/` is the mockup's 5-line stub and has no `REF_HASHES` value; GTDB-Tk reads it only to
+refuse genome IDs equal to GTDB accessions. The entry exports no `GTDBTK_DATA_PATH`, so it can't
+shadow a full `gtdbtk-r232` in the same project: `dblock env` prints its path as a comment, and
+you pass it to `gtdbprep prep --data`. `classify` and `classify_wf` need `gtdbtk-r232`.
+
+GTDB's published MD5 for this archive (`2c710f35...`) does not match the file it serves
+([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)), which is why `gtdbtk-r232-mockup`
+refuses it. This entry uses the MD5 we observed instead (`59512f60fa48010647977460bb855666`), and
+its `md5_source` says so. That is acceptable here, and not for the mockup, because the MD5 is not
+the check that matters: GTDB-Tk publishes the `REF_HASHES` values in its own source, independently
+of the served file; they cover all but 1.7 kB of the kept bytes; and GTDB-Tk applies the same check
+itself. The observed MD5 pins the exact file (so the lock records which one) and covers the
+`taxonomy/` stub. If GTDB replaces the file, the MD5 stops matching and the fetch is refused until
+the catalog is updated. To fetch a corrected file sooner, copy the built-in entry into a JSON file
+(a one-element list), change `md5` and `md5_source`, and pass it with `--catalog`; an entry with
+the same id there replaces the built-in one.
 
 Not in the catalog yet: the AMRFinderPlus database (a folder of files without checksums; use
 `amrfinder_update`), GTDB-Tk's 12-part split download.
@@ -150,12 +204,17 @@ Against the real servers on 2026-11-10:
 | Catalog entry with a wrong checksum | Rejected, nothing kept |
 | `verify`, `env`, `check` | As expected |
 | GTDB mock database with GTDB's published checksum | **Rejected: real upstream mismatch** (see [report](../research/upstream-reports.md)) |
+| `gtdbtk-r232-client` from the real 26 MB archive (served locally), both modes | 188 files, 79,826,896 bytes kept; all three folder hashes match, and GTDB-Tk 2.8.0's own `sha1_dir` gives the same values on the result |
+| One byte of a `masks/` file changed, then `verify --deep` | Reported as a folder hash mismatch for `masks/` |
 
 The test suite also runs fetches against a local HTTP server: two fetches of one database at
 once (one download, the other waits and reuses it), an MD5 written in upper case, a leftover partial
 download larger than the file, a database folder without a marker, a same-size edit (caught only by
 the SHA-256 list), and a `glob:` entry that matches two files (an error, not a silent fallback to the
-folder).
+folder), `keep` in both modes (only listed folders written, skipped entries still checksummed, a
+`keep` path that matches nothing), and `verify_dirs` passing and failing (nothing kept on mismatch).
+`sha1_dir` is cross-checked against GTDB-Tk's Python function when `GTDBTK_PYTHON` (or
+`/tmp/mm/gtdbtk/bin/python`) has GTDB-Tk installed; otherwise that test is skipped.
 
 Measured: Kraken 2 viral unpacks to 1.23 GB, not the 0.6 GB its index page lists; the catalog uses
 the measured figure.

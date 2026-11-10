@@ -3,7 +3,8 @@
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Component, Path};
 
 const BUILT_IN: &str = include_str!("catalog.json");
 
@@ -33,6 +34,37 @@ pub struct Entry {
     pub non_commercial: bool,
     #[serde(default)]
     pub notes: String,
+    /// Only unpack archive entries under these paths (e.g. `release232_mockup/markers`). Other
+    /// entries are still read, so the archive checksum covers the whole file, but not written.
+    /// Empty: unpack everything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keep: Vec<String>,
+    /// Size of what `keep` keeps, in bytes. Falls back to `extracted` when missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_size: Option<u64>,
+    /// Folder (relative to the database folder) -> GTDB-Tk folder hash (`sha1_dir`) it must have.
+    /// Checked after unpacking and by `verify --deep`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub verify_dirs: BTreeMap<String, String>,
+}
+
+impl Entry {
+    /// Bytes the database takes once in the store.
+    pub fn on_disk(&self) -> u64 {
+        match self.format {
+            Format::File => self.size,
+            _ if !self.keep.is_empty() => self.kept_size.unwrap_or(self.extracted),
+            _ => self.extracted,
+        }
+    }
+}
+
+/// A plain relative path inside a database: no root, no `..`, not empty.
+pub fn plain_relative(p: &str) -> bool {
+    let path = Path::new(p);
+    !p.is_empty()
+        && path.components().any(|c| matches!(c, Component::Normal(_)))
+        && path.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
 fn default_points_to() -> String {
@@ -88,6 +120,21 @@ pub fn load(extra: Option<&Path>) -> Result<Vec<Entry>> {
         }
         if e.md5.len() != 32 || !e.md5.chars().all(|c| c.is_ascii_hexdigit()) {
             bail!("catalog entry {} has a malformed md5", e.id);
+        }
+        if !e.keep.is_empty() && e.format == Format::File {
+            bail!("catalog entry {}: `keep` needs an archive format, not `file`", e.id);
+        }
+        if let Some(bad) = e.keep.iter().find(|k| !plain_relative(k)) {
+            bail!("catalog entry {}: keep path `{bad}` must be relative, without `..`", e.id);
+        }
+        for (dir, hash) in &mut e.verify_dirs {
+            if !plain_relative(dir) {
+                bail!("catalog entry {}: verify_dirs folder `{dir}` must be relative, without `..`", e.id);
+            }
+            *hash = hash.to_ascii_lowercase();
+            if hash.len() != 40 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                bail!("catalog entry {}: verify_dirs hash for `{dir}` is not a SHA-1", e.id);
+            }
         }
     }
     Ok(entries)
@@ -155,6 +202,32 @@ mod tests {
             assert!(user_catalog(&entry_json(bad, "e3113558d456816ba2c70706932f02c8")).is_err(), "{bad}");
         }
         assert!(user_catalog(&entry_json("ok.db_v1-2", "e3113558d456816ba2c70706932f02c8")).is_ok());
+    }
+
+    #[test]
+    fn keep_and_verify_dirs_are_checked() {
+        let base = entry_json("mydb", "e3113558d456816ba2c70706932f02c8");
+        let with = |extra: &str| user_catalog(&base.replace(r#""licence":"x""#, &format!(r#""licence":"x",{extra}"#)));
+        let ok = with(r#""keep":["db/a","./db/b"],"kept_size":5,"verify_dirs":{"db/a":"163F542C3F0A40F59DF45D453AA235B39AA96E27"}"#).unwrap();
+        let e = find(&ok, "mydb").unwrap();
+        assert_eq!(e.on_disk(), 5);
+        assert_eq!(e.verify_dirs["db/a"], "163f542c3f0a40f59df45d453aa235b39aa96e27");
+        for bad in [r#""keep":["../x"]"#, r#""keep":["/abs"]"#, r#""keep":[""]"#, r#""keep":["."]"#] {
+            assert!(with(bad).is_err(), "{bad}");
+        }
+        assert!(with(r#""verify_dirs":{"a/../../b":"163f542c3f0a40f59df45d453aa235b39aa96e27"}"#).is_err());
+        assert!(with(r#""verify_dirs":{"a":"abc"}"#).is_err());
+        // Without kept_size, `keep` falls back to `extracted`.
+        assert_eq!(find(&with(r#""keep":["db"]"#).unwrap(), "mydb").unwrap().on_disk(), 1);
+    }
+
+    #[test]
+    fn client_entry_keeps_only_what_gtdbprep_reads() {
+        let c = load(None).unwrap();
+        let e = find(&c, "gtdbtk-r232-client").unwrap();
+        assert_eq!(e.keep.len(), 4);
+        assert_eq!(e.verify_dirs.len(), 3);
+        assert!(e.on_disk() < 100_000_000);
     }
 
     #[test]
