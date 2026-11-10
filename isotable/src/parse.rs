@@ -107,7 +107,15 @@ pub fn scan(dirs: &[std::path::PathBuf]) -> Result<Scan> {
                 None
             };
             if let Some((tool, result)) = parsed {
-                let mut records = result.with_context(|| format!("reading {tool} output {}", path.display()))?;
+                let mut records = match result {
+                    // One corrupt or truncated FastQC report (an interrupted copy, say) shouldn't
+                    // stop the run: list it and go on; that read file's evidence is then missing.
+                    Err(e) if tool == "FastQC" => {
+                        skipped.push(format!("{} (unreadable FastQC report, left out: {e:#})", path.display()));
+                        continue;
+                    }
+                    r => r.with_context(|| format!("reading {tool} output {}", path.display()))?,
+                };
                 *seen.entry(tool).or_default() += 1;
                 for r in &mut records {
                     r.tool = tool;
@@ -470,6 +478,9 @@ static SUBSAMPLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)[._-]\d+(\
 /// Read-file mate, lane and index tags (`_R1`, `_1`, `_R1_001`, `_L001`, `_S3`).
 static READ_TAG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([._-]R?[12](_\d{3})?|_L\d{3}|_S\d+)$").unwrap());
+/// Suffixes trimmers add to a read file's name: fastp (`x_1.fastp.fastq.gz`), Trim Galore
+/// (`x_1_val_1.fq.gz`, single-end `x_trimmed.fq.gz`) and the common `.trimmed`.
+static TRIMMED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(\.fastp|_val_[12]|[._]trimmed)$").unwrap());
 static MATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?P<sep>[._-])(?P<r>R?)(?P<n>[12])(?P<tail>(_\d{3})?)$").unwrap());
 
 /// How a record was assigned to a sample.
@@ -494,6 +505,15 @@ pub fn base_name(raw: &str) -> String {
         }
         name = next;
     }
+}
+
+/// A trimmed read file's name without the trimmer's suffix (and extensions), or `None` if the
+/// name carries no trimmer suffix.
+pub fn untrimmed(raw: &str) -> Option<String> {
+    let base = base_name(raw);
+    let m = TRIMMED.find(&base)?;
+    let stem = base_name(&base[..m.start()]);
+    (!stem.is_empty()).then_some(stem)
 }
 
 /// `x_R1` → (`x`, `x_R2`): the name without its mate suffix, and the other mate's name.
@@ -583,6 +603,18 @@ mod tests {
         assert_eq!(m("patient_2", Kind::Sample).1, How::Unmatched);
         assert_eq!(m("patient_R1.fastq.gz", Kind::ReadFile), ("patient".into(), How::Prefix));
         assert_eq!(m("patient_extra", Kind::ReadFile).1, How::Unmatched);
+    }
+
+    #[test]
+    fn trimmer_suffixes() {
+        assert_eq!(untrimmed("S_1.fastp.fastq.gz").as_deref(), Some("S_1"));
+        assert_eq!(untrimmed("S_1_val_1.fq.gz").as_deref(), Some("S_1"));
+        assert_eq!(untrimmed("S_R2_val_2.fq.gz").as_deref(), Some("S_R2"));
+        assert_eq!(untrimmed("S_trimmed.fq.gz").as_deref(), Some("S"));
+        assert_eq!(untrimmed("S_1.trimmed.fastq").as_deref(), Some("S_1"));
+        assert_eq!(untrimmed("S_1.fastq.gz"), None);
+        assert_eq!(untrimmed("value_1.fq.gz"), None);
+        assert_eq!(untrimmed("_trimmed.fq"), None);
     }
 
     #[test]
