@@ -193,12 +193,17 @@ msagen 100000 30000 /tmp/big.fa
 
 Generated files are for testing only and are not kept in the repository.
 
+## Installing
+
+The [installer](../install.md) puts `msaview` in place with the other tools: a signed, notarised
+`msaview.app` on macOS, a binary on Linux (x86_64 and aarch64). There is no Windows build yet.
+
 ## Building
 
-`msaview` needs a desktop build environment (GPUI); the other leanbio tools do not. On
+`msaview` needs a desktop build environment (GPUI); the other irit tools do not. On
 Debian/Ubuntu, install `pkg-config libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev` first.
 This list comes from the build scripts and linked libraries, and is not yet confirmed on a clean
-Ubuntu install. macOS and Windows should need nothing extra, but neither has been built yet. The core library and `msagen` build without GPUI:
+Ubuntu install. macOS builds run on GitHub's runners for every release; Windows has not been built yet. The core library and `msagen` build without GPUI:
 `cargo test --no-default-features`.
 
 It uses GPUI through Longbridge's `gpui-kit` 0.9.1, which pins a GPUI snapshot (`gpui-pre`
