@@ -1,8 +1,8 @@
 # How this started
 
-irit began in November 2026 as a side project between a software engineer (industrial software,
-Rust, IoT) and a microbiologist heading into graduate work on environmental microbial ecology and
-genomics. Neither wanted to start a biotech company; the aim was to build something useful and keep
+irit began in November 2026 as a side project between a software engineer, Dzulfikar Ats Tsauri
+(industrial software, Rust, IoT), who builds the tools, and a microbiologist, Naufal Rafif Ramadhan,
+heading into graduate work on environmental microbial ecology and genomics, who validates them. Neither wanted to start a biotech company; the aim was to build something useful and keep
 current with computational biology.
 
 ## Ideas considered
@@ -25,7 +25,7 @@ results are to validate:
    trackers, forums and papers for where researchers lose time ([landscape](landscape.md)). The
    strongest signals were sample sheets, reference databases and QC aggregation: manual steps, not
    missing science.
-2. **The laptop constraint.** The microbiologist works on a modest laptop, and so do many students.
+2. **The laptop constraint.** Naufal works on a modest laptop, and so do many students.
    Running a standard pipeline locally showed the real bottlenecks were disk (16 GB of containers)
    and memory-hungry tools (FastQC, GTDB-Tk), not CPU. That became the organising principle: tools
    that work on the computer people actually have.

@@ -64,6 +64,12 @@ Everything is in [`docs/`](docs/introduction.md): tool guides, benchmarks, the r
 the choices, and the [roadmap](docs/roadmap.md). The documentation site in `site/` is built from
 that folder.
 
+## People
+
+- **Dzulfikar Ats Tsauri** ([@dzulfikar08](https://github.com/dzulfikar08)): builds the tools.
+- **Naufal Rafif Ramadhan** ([@Melchior132112](https://github.com/Melchior132112)), microbiologist:
+  scientific validation (QC thresholds, biological assumptions, testing on real data).
+
 ## Acknowledgements
 
 - **[FastQC](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/)** 0.12.1, Copyright
