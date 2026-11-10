@@ -1,0 +1,288 @@
+name: gplace-checks
+
+# Two checks of gPlace (cmc-aau/gPlace, the pplacer replacement) on GTDB R232 trees:
+#  1. accuracy: real pplacer vs gPlace on the ar53 tree and the bacterial backbone, same refpkg,
+#     same query MSA (made by GTDB-Tk 2.8.0 identify + align), same options GTDB-Tk uses;
+#  2. memory caps: gPlace --max_memory 8.5G down to the floor on class-level tree 8 and on the full
+#     bacterial tree, each under a kernel (cgroup v2) cap of the same size with swap off.
+# Runs only on the experiment branch.
+on:
+  push:
+    branches: [exp/gplace-checks]
+    paths: [".github/workflows/gplace-checks.yml", "exp/gplace/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  URL: https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz
+  MOCKUP: https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/mockup_db
+  GPLACE_SHA: 695a401e0b54cc1bde55a5e1498a0697899b15ea # cmc-aau/gPlace main HEAD on 2026-11-10, __version__ 0.1.1
+  EXCLUDES: "skani msa"
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+      - name: Pick data disk
+        run: |
+          root_free=$(df --output=avail -B1 / | tail -1)
+          mnt_free=$(df --output=avail -B1 /mnt 2>/dev/null | tail -1 || echo 0)
+          if [[ ${mnt_free:-0} -gt $root_free ]]; then base=/mnt; else base=$HOME; fi
+          sudo mkdir -p "$base/gtdb" && sudo chown "$USER" "$base/gtdb"
+          echo "DATA=$base/gtdb" >> "$GITHUB_ENV"
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: gtdb
+          create-args: >-
+            -c conda-forge -c bioconda
+            python=3.12 gtdbtk=2.8.0 pip pigz unzip
+          cache-environment: false
+      - name: Versions
+        run: |
+          gtdbtk --version | head -3; pplacer --version
+          micromamba list | grep -Ei "gtdbtk|pplacer|prodigal|hmmer" | tee versions-prep.txt
+      - name: Genomes
+        run: |
+          set -uo pipefail
+          mkdir -p genomes dl
+          curl -fsSL "$MOCKUP/test_genome_G021783475.fna.gz" | gunzip > genomes/G021783475__GTDB_test_genome.fna
+          : > genomes-status.tsv
+          while IFS=$'\t' read -r acc label taxon org; do
+            if curl -fsSL --retry 3 -o "dl/$acc.zip" "https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/$acc/download?include_annotation_type=GENOME_FASTA" \
+               && unzip -p "dl/$acc.zip" "ncbi_dataset/data/$acc/*.fna" > "genomes/$label.fna" && [[ -s genomes/$label.fna ]]; then
+              echo -e "$acc\t$label\tok\t$(grep -c '>' genomes/$label.fna)\t$(grep -v '>' genomes/$label.fna | tr -d '\n' | wc -c)" >> genomes-status.tsv
+            else
+              rm -f "genomes/$label.fna"; echo -e "$acc\t$label\tdownload_failed" >> genomes-status.tsv
+            fi
+            sleep 0.4
+          done < exp/gplace/genomes.tsv
+          cat genomes-status.tsv; ls genomes | wc -l; du -sh genomes dl
+      - name: Stream archive and extract placement data
+        run: |
+          set -euo pipefail
+          ex=(); for d in $EXCLUDES; do ex+=(--exclude="*/$d/*" --exclude="$d/*"); done
+          start=$(date +%s)
+          curl -fsSL --retry 3 "$URL" | pigz -dc | tar -x -C "$DATA" "${ex[@]}"
+          echo "extract_s=$(( $(date +%s) - start ))" | tee extract.txt
+          top=$(ls "$DATA"); echo "GTDBTK_DATA_PATH=$DATA/$top" >> "$GITHUB_ENV"
+          du -sh "$DATA"/*/* | sort -h
+      - name: Are the fasttree.log copies identical?
+        run: |
+          find "$GTDBTK_DATA_PATH" -name '*fasttree.log' -print0 | xargs -0 md5sum | sed "s#$GTDBTK_DATA_PATH/##" | tee fasttree-md5.txt
+          find "$GTDBTK_DATA_PATH" -name '*.refpkg' -type d | sort | while read -r d; do echo "$(du -sb "$d" | cut -f1) ${d#$GTDBTK_DATA_PATH/}"; done | tee refpkg-sizes.txt
+      - name: identify + align (no reference MSA)
+        run: |
+          gtdbtk identify --genome_dir genomes -x fna --out_dir run/identify --cpus 4
+          gtdbtk align --identify_dir run/identify --out_dir run/align --skip_gtdb_refs --cpus 4
+          mkdir -p msa
+          for d in bac120 ar53; do
+            f=run/align/align/gtdbtk.$d.user_msa.fasta.gz
+            [[ -f $f ]] && gunzip -c "$f" > msa/$d.fasta && echo "$d: $(grep -c '>' msa/$d.fasta) genomes"
+          done
+          cp run/identify/identify/*summary* run/align/align/*filtered* run/align/align/*.log msa/ 2>/dev/null || true
+          cp run/identify/*.log run/align/*.log msa/ 2>/dev/null || true
+          cp genomes-status.tsv versions-prep.txt extract.txt fasttree-md5.txt refpkg-sizes.txt msa/
+      - name: Stage refpkgs
+        run: |
+          mkdir -p stage/small stage/class8 stage/full
+          cp -r "$GTDBTK_DATA_PATH/pplacer/gtdb_r232_ar53.refpkg" stage/small/
+          cp -r "$GTDBTK_DATA_PATH/split/backbone/pplacer/gtdbtk_package_backbone.refpkg" stage/small/ \
+            || cp -r "$GTDBTK_DATA_PATH"/split/backbone/pplacer/*.refpkg stage/small/
+          cp -r "$GTDBTK_DATA_PATH/split/class_level/pplacer/gtdbtk.package.8.refpkg" stage/class8/
+          cp -r "$GTDBTK_DATA_PATH/pplacer/gtdb_r232_bac120.refpkg" stage/full/
+          du -sh stage/*/*
+      - uses: actions/upload-artifact@v4
+        with: { name: msa, path: msa/, retention-days: 14 }
+      - uses: actions/upload-artifact@v4
+        with: { name: refpkg-small, path: stage/small/, retention-days: 3 }
+      - uses: actions/upload-artifact@v4
+        with: { name: refpkg-class8, path: stage/class8/, retention-days: 3 }
+      - uses: actions/upload-artifact@v4
+        with: { name: refpkg-full, path: stage/full/, retention-days: 3 }
+
+  # ---------------------------------------------------------------- Experiment 1
+  accuracy:
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swap off
+        run: sudo swapoff -a; free -m
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: gp
+          create-args: -c conda-forge -c bioconda python=3.12 pplacer=1.1.alpha19 pip
+          cache-environment: false
+      - name: Install gPlace from source
+        run: |
+          python -m pip install "git+https://github.com/cmc-aau/gPlace@${GPLACE_SHA}"
+          gplace check_install 2>&1 | tail -5
+          { pplacer --version; python -c "import gplace; print('gplace', gplace.__version__)"; echo "gPlace commit $GPLACE_SHA"; } | tee versions.txt
+      - uses: actions/download-artifact@v4
+        with: { name: msa, path: msa }
+      - uses: actions/download-artifact@v4
+        with: { name: refpkg-small, path: rp }
+      - name: Run pplacer and gPlace
+        run: |
+          set -uo pipefail
+          cp exp/gplace/measure.sh "$HOME/m.sh"; chmod +x "$HOME/m.sh"; M=$HOME/m.sh
+          export MEASURE_DIR=$PWD/out
+          mkdir -p out scratch
+          hdr="| Run | Exit | Wall (s) | Max RSS, one process (KB) | Sum of RSS, all processes (KiB) | Peak anon, cgroup (KiB) | cgroup memory.peak (KiB) | OOM kills | Cap (bytes) |"
+          echo "$hdr" > out/table.md; echo "|---|---:|---:|---:|---:|---:|---:|---:|---|" >> out/table.md
+          CAP14=15032385536   # 14 GiB
+          CAP85=9126805504    # 8.5 GiB
+          for t in ar53 backbone; do
+            if [[ $t == ar53 ]]; then rp=rp/gtdb_r232_ar53.refpkg; q=msa/ar53.fasta
+            else rp=$(ls -d rp/*backbone*.refpkg | head -1); q=msa/bac120.fasta; fi
+            [[ -s $q ]] || { echo "no $q"; continue; }
+            echo "== $t: $(grep -c '>' "$q") queries, refpkg $rp"
+            # the exact pplacer call GTDB-Tk 2.8.0 makes (gtdbtk/external/pplacer.py)
+            timeout 9000 $M "pplacer_$t" --cap $CAP14 -- pplacer -m WAG -j 4 -c "$rp" -o "out/pplacer_$t.jplace" "$q" > "out/pplacer_$t.log" 2>&1
+            rc=$?
+            if [[ $rc -ne 0 || ! -s out/pplacer_$t.jplace ]]; then
+              echo "pplacer $t failed ($rc) under 14 GiB; retrying with --mmap-file (GTDB-Tk --scratch_dir)"
+              tail -5 "out/pplacer_$t.log"
+              timeout 9000 $M "pplacer_mmap_$t" --cap $CAP14 -- pplacer -m WAG -j 4 -c "$rp" -o "out/pplacer_$t.jplace" "$q" --mmap-file scratch/$t.pplacer.scratch > "out/pplacer_mmap_$t.log" 2>&1
+              rm -f scratch/*
+            fi
+            $M "gplace_untiled_$t" --cap $CAP14 -- gplace place -m WAG -j 4 -c "$rp" -o "out/gplace_untiled_$t.jplace" "$q" > "out/gplace_untiled_$t.log" 2>&1
+            $M "gplace_8.5G_$t" --cap $CAP85 -- gplace place --max_memory 8.5G -m WAG -j 4 -c "$rp" -o "out/gplace_8.5G_$t.jplace" "$q" > "out/gplace_8.5G_$t.log" 2>&1
+            for g in untiled 8.5G; do
+              [[ -s out/pplacer_$t.jplace && -s out/gplace_${g}_$t.jplace ]] || continue
+              gplace compare --jplace_a "out/pplacer_$t.jplace" --jplace_b "out/gplace_${g}_$t.jplace" > "out/compare_${g}_$t.txt" 2>&1
+              python3 -I exp/gplace/jcheck.py "out/pplacer_$t.jplace" "out/gplace_${g}_$t.jplace" pplacer "gplace_$g" > "out/jcheck_${g}_$t.md"
+            done
+          done
+          grep -h "tiles\|max_memory" out/gplace_*.log || true
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## Experiment 1: pplacer vs gPlace"; echo; cat versions.txt; echo
+            cat out/table.md; echo
+            for f in out/compare_*.txt; do echo "### $(basename $f)"; echo '```'; cat "$f"; echo '```'; done
+            for f in out/jcheck_*.md; do echo "### $(basename $f)"; grep SUMMARY "$f"; done
+          } > out/report.md 2>/dev/null
+          cat out/report.md >> "$GITHUB_STEP_SUMMARY"; cat out/report.md
+          for f in out/jcheck_*.md; do echo "== $f"; cat "$f"; done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: accuracy-results, path: "out/\nversions.txt" }
+
+  # ---------------------------------------------------------------- Experiment 2
+  caps:
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { tree: class8, artifact: refpkg-class8, caps: "8.5G 6G 4G 3G 2G 1.5G 1G 768M 512M", timeout: 60 }
+          - { tree: full, artifact: refpkg-full, caps: "8.5G", timeout: 330 }
+          - { tree: full, artifact: refpkg-full, caps: "6G", timeout: 330 }
+          - { tree: full, artifact: refpkg-full, caps: "4G", timeout: 330 }
+          - { tree: full, artifact: refpkg-full, caps: "3G", timeout: 330 }
+          - { tree: full, artifact: refpkg-full, caps: "2G", timeout: 330 }
+          - { tree: full, artifact: refpkg-full, caps: "1.5G 1G", timeout: 165 }
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swap off
+        run: sudo swapoff -a; free -m; nproc
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: gp
+          create-args: -c conda-forge -c bioconda python=3.12 pip
+          cache-environment: false
+      - name: Install gPlace from source
+        run: |
+          python -m pip install "git+https://github.com/cmc-aau/gPlace@${GPLACE_SHA}"
+          gplace check_install 2>&1 | tail -3
+      - uses: actions/download-artifact@v4
+        with: { name: msa, path: msa }
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ matrix.artifact }}", path: rp }
+      - name: Sweep
+        env:
+          CAPS: ${{ matrix.caps }}
+          TREE: ${{ matrix.tree }}
+          TMIN: ${{ matrix.timeout }}
+        run: |
+          set -uo pipefail
+          cp exp/gplace/measure.sh "$HOME/m.sh"; chmod +x "$HOME/m.sh"; M=$HOME/m.sh
+          export MEASURE_DIR=$PWD/out; mkdir -p out
+          rp=$(ls -d rp/*.refpkg | head -1); q=msa/bac120.fasta
+          echo "tree $TREE refpkg $rp queries $(grep -c '>' $q)"
+          for cap in $CAPS; do
+            bytes=$(python3 -c "import sys;s=sys.argv[1];u={'K':2**10,'M':2**20,'G':2**30}[s[-1]];print(int(float(s[:-1])*u))" "$cap")
+            n="${TREE}_${cap}"
+            timeout $((TMIN*60)) $M "$n" --cap "$bytes" -- gplace place --max_memory "$cap" -m WAG -j 4 -c "$rp" -o "out/$n.jplace" "$q" > "out/$n.log" 2>&1
+            rc=$?
+            tiles=$(grep -oE "Boundary vectors of [0-9,]+ tiles" "out/$n.log" | grep -oE "[0-9,]+" | tr -d , | tail -1)
+            plan=$(grep -E "max_memory .* GiB" "out/$n.log" | tail -1 | sed 's/.*INFO[^-]*//')
+            echo -e "$n\t$cap\t$bytes\t$rc\t${tiles:-0}\t$plan" >> out/sweep.tsv
+            tail -3 "out/$n.log"
+            if [[ $rc -ne 0 || ! -s out/$n.jplace ]]; then echo "cap $cap failed ($rc); stopping"; break; fi
+            if [[ -s out/${TREE}_8.5G.jplace && $cap != 8.5G ]]; then
+              gplace compare --jplace_a "out/${TREE}_8.5G.jplace" --jplace_b "out/$n.jplace" > "out/compare_$n.txt" 2>&1
+              python3 -I exp/gplace/jcheck.py "out/${TREE}_8.5G.jplace" "out/$n.jplace" 8.5G "$cap" > "out/jcheck_$n.md"
+              grep SUMMARY "out/jcheck_$n.md"
+            fi
+          done
+          { echo "## $TREE caps $CAPS"; cat out/table.md; echo; echo '```'; cat out/sweep.tsv; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: "caps-${{ matrix.tree }}-${{ strategy.job-index }}", path: out/ }
+
+  full-compare:
+    needs: caps
+    if: always()
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: "caps-full-*", path: res, merge-multiple: true }
+      - name: Compare every full-tree cap with 8.5G
+        run: |
+          python3 -m venv "$HOME/v" && "$HOME/v/bin/pip" install -q "git+https://github.com/cmc-aau/gPlace@${GPLACE_SHA}" || true
+          export PATH="$HOME/v/bin:$PATH"
+          mkdir -p out; cat res/table.md 2>/dev/null; ls res
+          ref=res/full_8.5G.jplace
+          for j in res/full_*.jplace; do
+            [[ $j == "$ref" || ! -s $ref ]] && continue
+            n=$(basename "$j" .jplace)
+            gplace compare --jplace_a "$ref" --jplace_b "$j" > "out/compare_$n.txt" 2>&1 || true
+            python3 -I exp/gplace/jcheck.py "$ref" "$j" 8.5G "${n#full_}" > "out/jcheck_$n.md"
+            echo "$n: $(grep SUMMARY out/jcheck_$n.md)" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: full-compare, path: out/ }
