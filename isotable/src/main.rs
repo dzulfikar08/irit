@@ -346,8 +346,25 @@ fn finish(mut rows: BTreeMap<String, Row>, mode: Mode) -> BTreeMap<String, Row> 
     rows
 }
 
+/// fastp fields that identify the input rather than describe it; never shown.
+const FASTP_INPUT_KEYS: &[&str] = &["raw_summary", "raw_inputs"];
+
+/// Two fastp reports describe the same raw reads: fastp's whole `before_filtering` summary
+/// matches, or the input file names in its command match along with the raw read count.
+fn same_input(a: &Record, b: &Record) -> bool {
+    let get = |r: &Record, k: &str| r.fields.iter().find(|(f, _)| *f == k).map(|(_, v)| v.clone());
+    let summary = |r| get(r, "raw_summary");
+    if summary(a).is_some() && summary(a) == summary(b) {
+        return true;
+    }
+    let inputs = |r| get(r, "raw_inputs");
+    inputs(a).is_some() && inputs(a) == inputs(b) && get(a, "reads_raw").is_some() && get(a, "reads_raw") == get(b, "reads_raw")
+}
+
 /// Several fastp reports for one sample: identical copies count once; distinct ones are separate
-/// runs, so reads add up and Q30 is pooled as total Q30 bases over total bases.
+/// runs, so reads add up and Q30 is pooled as total Q30 bases over total bases. Two reports on the
+/// same raw reads with different results (fastp rerun with other settings) are not runs to add up:
+/// their differing fields become conflicts.
 fn pool_fastp(row: &mut Row) {
     let mut runs: Vec<Record> = Vec::new();
     for r in std::mem::take(&mut row.fastp) {
@@ -357,6 +374,26 @@ fn pool_fastp(row: &mut Row) {
         }
     }
     if runs.is_empty() {
+        return;
+    }
+    let reruns: Vec<(usize, usize)> = (0..runs.len())
+        .flat_map(|i| (i + 1..runs.len()).map(move |j| (i, j)))
+        .filter(|&(i, j)| same_input(&runs[i], &runs[j]))
+        .collect();
+    if !reruns.is_empty() {
+        for (i, j) in &reruns {
+            row.notes.push(format!(
+                "{} and {} analysed the same raw reads with different results; not added up",
+                runs[*i].source, runs[*j].source
+            ));
+        }
+        for r in runs {
+            for (k, v) in r.fields {
+                if !FASTP_INPUT_KEYS.contains(&k) && k != "q30_bases" && k != "bases_trimmed" {
+                    put(&mut row.cells, k, v, &r.source);
+                }
+            }
+        }
         return;
     }
     let sources: Vec<String> = runs.iter().map(|r| r.source.clone()).collect();
@@ -613,6 +650,79 @@ mod tests {
         let row = &rows["S"].2;
         assert_eq!(cell(row, "reads_trimmed"), "1000000");
         assert_eq!(cell(row, "q30_trimmed"), "37.5"); // (90 + 60) / (100 + 300), not the mean of rates
+    }
+
+    /// A fastp report as fastp writes it: full before_filtering summary and the command line.
+    fn fastp_full(raw_reads: u64, raw_bases: u64, trimmed: u64, in1: &str) -> String {
+        format!(
+            r#"{{"summary":{{"before_filtering":{{"total_reads":{raw_reads},"total_bases":{raw_bases},"q30_bases":{}}},
+            "after_filtering":{{"total_reads":{trimmed},"total_bases":{},"q30_bases":{},"q30_rate":0.97}}}},
+            "duplication":{{"rate":0.01}},
+            "command":"fastp --in1 {in1}_R1.fastq.gz --in2 {in1}_R2.fastq.gz --json x.fastp.json"}}"#,
+            raw_bases * 9 / 10,
+            trimmed * 75,
+            trimmed * 75 * 97 / 100
+        )
+    }
+
+    #[test]
+    fn two_analyses_of_the_same_reads_conflict() {
+        // bacass ERR064912 reanalysed with stricter trimming in a sibling folder.
+        let t = tempfile::tempdir().unwrap();
+        write(t.path(), "a/ERR064912.fastp.json", &fastp_full(2_000_000, 150_000_000, 1_988_356, "ERR064912"));
+        write(t.path(), "b/ERR064912.fastp.json", &fastp_full(2_000_000, 150_000_000, 1_938_356, "ERR064912"));
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["reads"]));
+        let (status, why, row) = &rows["ERR064912"];
+        assert_eq!(*status, Status::Conflict, "{why:?}");
+        assert_eq!(cell(row, "reads_raw"), "2000000"); // not 4,000,000
+        assert_eq!(cell(row, "reads_trimmed"), "CONFLICT");
+        assert!(why.iter().any(|w| w.contains("reads_trimmed differs")), "{why:?}");
+        assert!(row.notes.iter().any(|n| n.contains("same raw reads")), "{:?}", row.notes);
+        assert!(!row.cells.contains_key("raw_summary") && !row.cells.contains_key("raw_inputs"));
+
+        // Same input names (nf-core renames inputs after the sample) but different raw reads:
+        // separate runs, pooled.
+        let t = tempfile::tempdir().unwrap();
+        write(t.path(), "run1/S.fastp.json", &fastp_full(2_000_000, 150_000_000, 1_900_000, "S"));
+        write(t.path(), "run2/S.fastp.json", &fastp_full(1_000_000, 75_000_000, 950_000, "S"));
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["reads"]));
+        let (status, why, row) = &rows["S"];
+        assert_eq!(*status, Status::Pass, "{why:?}");
+        assert_eq!(cell(row, "reads_raw"), "3000000");
+        assert_eq!(cell(row, "reads_trimmed"), "2850000");
+    }
+
+    #[test]
+    fn same_input_names_and_raw_count_conflict_without_a_full_summary() {
+        let mut a = Vec::new();
+        let rec = |trimmed: u64, src: &str| Record {
+            raw_name: "S".into(),
+            kind: parse::Kind::Sample,
+            tool: "fastp",
+            source: src.into(),
+            fields: vec![
+                ("reads_raw", Value::Int(100)),
+                ("reads_trimmed", Value::Int(trimmed)),
+                ("raw_inputs", Value::Text("S_R1.fq.gz S_R2.fq.gz".into())),
+            ],
+        };
+        a.push(rec(90, "x"));
+        a.push(rec(80, "y"));
+        let mut row = Row { fastp: a, ..Default::default() };
+        pool_fastp(&mut row);
+        assert!(matches!(row.cells["reads_trimmed"], Cell::Conflict(_)));
+        assert_eq!(row.cells["reads_raw"].show(), "100");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlinks_are_skipped() {
+        let t = tempfile::tempdir().unwrap();
+        write(t.path(), "S.fastp.json", &fastp(500_000, 90, 100));
+        std::os::unix::fs::symlink(t.path().join("gone.json"), t.path().join("T.fastp.json")).unwrap();
+        let (records, _, skipped) = parse::scan(&[t.path().to_path_buf()]).unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(skipped.iter().any(|s| s.contains("T.fastp.json")), "{skipped:?}");
     }
 
     #[test]

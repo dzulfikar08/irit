@@ -71,10 +71,15 @@ Each value remembers which file it came from.
 - If two files give **different** values for the same field (two QUAST reports with different N50,
   say), the cell shows `CONFLICT`, the sample's status is `conflict`, and the reason names both files
   and values. Equal values from several files are fine.
-- fastp: identical reports (the same numbers, e.g. a copied results folder) count once. Different
-  reports are treated as separate runs of the sample: reads add up, Q30 is pooled as total Q30 bases
-  over total bases (fastp's `q30_bases` / `total_bases` after filtering), and duplication is
-  weighted by reads. Older fastp files without base counts can't be pooled and Q30 is left out.
+- fastp: identical reports (the same numbers, e.g. a copied results folder) count once. Two reports
+  on the **same raw reads** with different results (fastp rerun with other settings, kept in a
+  sibling folder) are a `conflict`, not two runs: the fields that differ show `CONFLICT` and a note
+  names both files. Reports count as the same raw reads when fastp's whole `before_filtering`
+  summary matches, or when the input file names in fastp's recorded `command` and the raw read
+  count both match. Only reports on different raw reads are pooled as separate runs of the sample:
+  reads add up, Q30 is pooled as total Q30 bases over total bases (fastp's `q30_bases` /
+  `total_bases` after filtering), and duplication is weighted by reads. Older fastp files without
+  base counts can't be pooled and Q30 is left out.
 - leanqc: failed checks from all of a sample's read files are merged.
 
 ## Grading
@@ -86,6 +91,13 @@ missing), `warn`, `pass`. A sample never passes on partial evidence.
 (QUAST), and completeness (CheckM2 or BUSCO); a MAG needs CheckM2 completeness and contamination.
 `--require` replaces the list with any of `reads`, `q30`, `contigs`, `n50`, `completeness`,
 `contamination`, `kraken`, `gtdb`, `mlst`, `amr`; `--require none` turns the check off.
+
+Long-read-only isolates (Nanopore assembled without short reads) have no fastp report, so under the
+isolate defaults every sample is `incomplete`. Ask for what such a run does produce, e.g.:
+
+```sh
+isotable results/ --require contigs,n50,completeness
+```
 
 **Isolate mode**:
 
@@ -129,7 +141,9 @@ added; the verdict is not changed. Evidence:
   sheet, both samples joined across all four tools; thresholds flagged the leanqc failures.
 - Regression tests for the joining and merging rules: `patient_1`/`patient_2` stay two samples with
   and without a sheet that lists `patient`; two QUAST reports with different N50 give `conflict`;
-  a copied fastp report is counted once while two runs are pooled; a 5-read fastp file fails and a
+  a copied fastp report is counted once while two runs are pooled, and two fastp analyses of the
+  same raw reads (the bacass ERR064912 report and a stricter rerun) give `conflict` instead of
+  doubling the reads; a 5-read fastp file fails and a
   sample without assembly data is `incomplete`; a per-read Kraken 2 file doesn't replace the report.
 - Synthetic CheckM2 and GTDB-Tk files (in `isotable/testdata/mag/`, made up for the test) in MAG
   mode: tiers as expected, including a 92%-complete bin failing on 12.5% contamination, and the
@@ -139,6 +153,7 @@ added; the verdict is not changed. Evidence:
 
 - No Bracken, Mash or sylph parsers yet.
 - AMRFinderPlus outputs are matched by file name; one file per sample is assumed.
+- Dangling symlinks and unreadable folders in the results are skipped and listed, not read.
 - fastp reports split per mate (one fastp run per read file) would be read as two runs of a sample
   named after each file; nf-core pipelines don't produce them.
 - No per-species expected genome size check.
