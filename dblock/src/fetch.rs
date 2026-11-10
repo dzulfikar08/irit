@@ -67,9 +67,7 @@ fn partial_path(store: &Path, e: &Entry, src: &Source) -> PathBuf {
 /// Largest zstd window the decoder accepts, as a power of two. libzstd refuses frames with a
 /// window above 2^27 (128 MiB) unless told otherwise; `zstd --long=28` and up need more. This
 /// only raises the limit: memory used is the window the archive actually declares.
-#[cfg(target_pointer_width = "64")]
-const ZSTD_WINDOW_LOG_MAX: u32 = 31;
-#[cfg(not(target_pointer_width = "64"))]
+/// 2^30 (1 GiB) covers `--long=30`; a corrupt frame can't claim more while streaming.
 const ZSTD_WINDOW_LOG_MAX: u32 = 30;
 
 fn zstd_reader<R: io::BufRead>(r: R) -> Result<zstd::stream::read::Decoder<'static, R>> {
@@ -497,6 +495,7 @@ fn download_verify(store: &Path, e: &Entry, src: &Source, url: &str) -> Result<(
         have = 0;
     }
 
+    let resumed = have > 0;
     let mut hasher = Hashes::new(src);
     if have > 0 {
         let what = if have == src.size { "already downloaded" } else { "resuming" };
@@ -539,6 +538,11 @@ fn download_verify(store: &Path, e: &Entry, src: &Source, url: &str) -> Result<(
         }
         Err(wrong) => {
             let _ = fs::remove_file(&part);
+            if resumed {
+                // Likely left by an earlier release of the same file name: one fresh try.
+                eprintln!("  the partial file left by an earlier run didn't match ({wrong}); downloading it again from the start");
+                return download_verify(store, e, src, url);
+            }
             bail!(
                 "checksum mismatch for {}: got {wrong} ({}). \
                  The partial file was deleted; fetch again, and if it repeats the publisher may have replaced the file.",
@@ -1799,6 +1803,26 @@ mod tests {
         assert_eq!(*log.lock().unwrap(), ["p-split.tar.zst@100", "p-tree.tar.zst"]);
         assert_eq!(l.files, 5);
         assert!(check_dirs(&target_dir(&store, &e), &e.verify_dirs).unwrap().is_empty());
+    }
+
+    #[test]
+    fn stale_partials_are_downloaded_again_in_the_same_run() {
+        // Partials left by an earlier release with the same file names: one complete but different,
+        // one a wrong prefix. Each fails its check once, then downloads from the start.
+        let good = three_parts();
+        let (base, log) = serve_files(good.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let e = multi_entry(dir.path(), &base, &good, true);
+        let store = dir.path().join("store");
+        let sources = e.sources();
+        fs::create_dir_all(store.join(".partial")).unwrap();
+        let mut stale = good[0].1.clone();
+        stale[0] ^= 0xff;
+        fs::write(partial_path(&store, &e, &sources[0]), &stale).unwrap();
+        fs::write(partial_path(&store, &e, &sources[1]), vec![b'x'; 100]).unwrap();
+        let (l, _) = obtain(&store, &e, &opts()).unwrap_or_else(|err| panic!("{err:#}"));
+        assert_eq!(*log.lock().unwrap(), ["p-core.tar.zst", "p-split.tar.zst@100", "p-split.tar.zst", "p-tree.tar.zst"]);
+        assert_eq!(l.files, 5);
     }
 
     #[test]

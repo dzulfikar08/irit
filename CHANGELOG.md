@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### dblock
+- `tar.zst` archives (long-window ones too), in both download and streaming modes.
+- Multi-part entries: several archives (`parts`, each with its own MD5 and optional SHA-256)
+  unpacked into one database folder that takes its final name only after every part passes; each
+  part resumes on its own.
+- `gtdbtk-r232-placement` (280 MB download, 7.4 GB unpacked) and `gtdbtk-r232-placement-lite`
+  (175 MB, 5.9 GB, no full bacterial tree): GTDB-Tk R232's placement folders from an unofficial,
+  unmodified mirror of GTDB's data (CC BY-SA 4.0), checked against GTDB-Tk's `REF_HASHES`. No ANI
+  database, so classification stops at genus.
+
 ## 0.2.0 (2026-11-10)
 
 The project is now called **irit** (it was leanbio for its first day; a biologics manufacturer
@@ -79,14 +91,6 @@ guessed.
   checks again. `remove --delete-data` needs `--force` and only deletes marked store folders.
 - Uppercase MD5s accepted; catalog ids restricted to plain names; symlinks recorded in manifests
   (0.1.0 markers are accepted and upgraded).
-- `tar.zst` archives (long-window ones too), in both download and streaming modes.
-- Multi-part entries: several archives (`parts`, each with its own MD5 and optional SHA-256)
-  unpacked into one database folder that takes its final name only after every part passes; each
-  part resumes on its own.
-- `gtdbtk-r232-placement` (280 MB download, 7.4 GB unpacked) and `gtdbtk-r232-placement-lite`
-  (175 MB, 5.9 GB, no full bacterial tree): GTDB-Tk R232's placement folders from an unofficial,
-  unmodified mirror of GTDB's data (CC BY-SA 4.0), checked against GTDB-Tk's `REF_HASHES`. No ANI
-  database, so classification stops at genus.
 
 ### Upstream
 - [GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726): GTDB R232 mock database doesn't

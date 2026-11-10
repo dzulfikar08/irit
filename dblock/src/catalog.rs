@@ -25,7 +25,7 @@ pub struct Entry {
     /// Size once extracted, in bytes (approximate).
     pub extracted: u64,
     /// The archive's MD5. For multi-part entries, the MD5 of the parts' `MD5SUMS` lines
-    /// (`<md5>  <file>\n` in catalog order), filled in if left out: it names the exact set.
+    /// (`<md5>  <file>\n`, sorted by file name), filled in if left out: it names the exact set.
     #[serde(default)]
     pub md5: String,
     pub md5_source: String,
@@ -149,7 +149,7 @@ fn check_parts(e: &mut Entry) -> Result<()> {
         bail!("catalog entry {}: give either `urls` or `parts`, not both", e.id);
     }
     let mut names = std::collections::BTreeSet::new();
-    let mut listing = String::new();
+    let mut listing = Vec::new();
     let mut total = 0u64;
     for (i, p) in e.parts.iter_mut().enumerate() {
         let url = match (&p.url, &p.file, &e.base_url) {
@@ -168,6 +168,9 @@ fn check_parts(e: &mut Entry) -> Result<()> {
         if !names.insert(name.clone()) {
             bail!("catalog entry {}: two parts are named `{name}`", e.id);
         }
+        if p.size == 0 {
+            bail!("catalog entry {}: part `{name}` needs its `size` in bytes", e.id);
+        }
         p.md5 = p.md5.to_ascii_lowercase();
         if !is_hex(&p.md5, 32) {
             bail!("catalog entry {}: part `{name}` has a malformed md5", e.id);
@@ -178,14 +181,16 @@ fn check_parts(e: &mut Entry) -> Result<()> {
                 bail!("catalog entry {}: part `{name}` has a malformed sha256", e.id);
             }
         }
-        p.url = Some(url);
-        listing.push_str(&format!("{}  {name}\n", p.md5));
+        listing.push((name, p.md5.clone()));
         total += p.size;
     }
     if e.size != 0 && e.size != total {
         bail!("catalog entry {}: size {} is not the sum of its parts ({total})", e.id, e.size);
     }
     e.size = total;
+    // Sorted by file name, as `md5sum * > MD5SUMS` writes it, so part order doesn't matter.
+    listing.sort();
+    let listing: String = listing.iter().map(|(name, md5)| format!("{md5}  {name}\n")).collect();
     let combined = crate::fetch::hex(&md5::Md5::digest(listing.as_bytes()));
     if !e.md5.is_empty() && !e.md5.eq_ignore_ascii_case(&combined) {
         bail!("catalog entry {}: md5 must be the MD5 of its parts' MD5SUMS lines ({combined}) or left out", e.id);
@@ -262,6 +267,10 @@ pub fn load(extra: Option<&Path>) -> Result<Vec<Entry>> {
             check_parts(e)?;
         } else if e.urls.is_empty() {
             bail!("catalog entry {} has no URL", e.id);
+        } else if e.size == 0 {
+            bail!("catalog entry {} needs its download `size` in bytes", e.id);
+        } else if e.base_url.is_some() {
+            bail!("catalog entry {}: `base_url` is only for entries with `parts`", e.id);
         }
         if !is_hex(&e.md5, 32) {
             bail!("catalog entry {} has a malformed md5", e.id);
@@ -404,6 +413,16 @@ mod tests {
         assert_ne!(full.md5, lite.md5, "different sets of parts");
     }
 
+    #[test]
+    fn single_url_entries_need_a_size_and_no_base_url() {
+        let ok = entry_json("one", &"0".repeat(32));
+        assert!(user_catalog(&ok).is_ok());
+        let err = format!("{:#}", user_catalog(&ok.replace(r#""size":1,"#, "")).unwrap_err());
+        assert!(err.contains("needs its download `size`"), "{err}");
+        let err = format!("{:#}", user_catalog(&ok.replace(r#""size":1,"#, r#""size":1,"base_url":"https://x/","#)).unwrap_err());
+        assert!(err.contains("only for entries with `parts`"), "{err}");
+    }
+
     fn parts_json(extra: &str, parts: &str) -> Result<Vec<Entry>> {
         user_catalog(&format!(
             r#"[{{"id":"mp","name":"t","version":"1","tool":"t","format":"tar.zst","extracted":1,"md5_source":"t","env":null,"compat":null,"licence":"x"{extra},"parts":[{parts}]}}]"#
@@ -427,6 +446,11 @@ mod tests {
         let listing = "e3113558d456816ba2c70706932f02c8  a.tar.zst\n0123456789abcdef0123456789abcdef  b.tar.zst\n";
         assert_eq!(e.md5, crate::fetch::hex(&md5::Md5::digest(listing.as_bytes())));
         assert!(parts_json(&format!(r#"{base},"md5":"{}""#, e.md5), &format!("{ok_a},{b}")).is_ok());
+        // Part order doesn't change it (lines are sorted by file name, like `md5sum *`).
+        assert_eq!(find(&parts_json(base, &format!("{b},{ok_a}")).unwrap(), "mp").unwrap().md5, e.md5);
+        // A loaded entry can be written out and loaded again.
+        let again = user_catalog(&serde_json::to_string(&vec![e.clone()]).unwrap()).unwrap();
+        assert_eq!(find(&again, "mp").unwrap().md5, e.md5);
         let bad = |extra: &str, parts: &str| format!("{:#}", parts_json(extra, parts).unwrap_err());
         assert!(bad(base, a).contains("malformed sha256"));
         assert!(bad("", ok_a).contains("no `base_url`"));
@@ -436,6 +460,7 @@ mod tests {
         assert!(bad(r#","urls":["https://x/y.tar.zst"]"#, b).contains("not both"));
         assert!(bad(base, r#"{"file":"../a","size":1,"md5":"e3113558d456816ba2c70706932f02c8"}"#).contains("file name"));
         assert!(bad(base, r#"{"size":1,"md5":"e3113558d456816ba2c70706932f02c8"}"#).contains("exactly one of"));
+        assert!(bad(base, r#"{"file":"a.tar.zst","size":0,"md5":"e3113558d456816ba2c70706932f02c8"}"#).contains("needs its `size`"));
     }
 
     #[test]
