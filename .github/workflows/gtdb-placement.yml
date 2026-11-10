@@ -1,0 +1,190 @@
+name: gtdb-r232-placement
+
+# Streams the GTDB-Tk R232 package, extracts only what bacterial (and archaeal) placement needs
+# (no skani/ and no msa/), and places a few genomes with GTDB-Tk 2.8.0 using gPlace instead of
+# pplacer, under gPlace's --max_memory and an enforced cgroup cap of the same size.
+# Runs only on the experiment branch.
+on:
+  push:
+    branches: [exp/gtdb-placement]
+    paths: [".github/workflows/gtdb-placement.yml", "exp/gtdb/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  URL: https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz
+  MOCKUP: https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/mockup_db
+  GPLACE_SHA: 695a401e0b54cc1bde55a5e1498a0697899b15ea # cmc-aau/gPlace main, __version__ 0.1.1
+  GPLACE_MAX_MEMORY: 8.5G
+  GPLACE_CGROUP_CAP: "9126805504" # 8.5 GiB, the same limit enforced by the kernel
+  # Folders not extracted: the skani ANI database and the reference MSAs.
+  EXCLUDES: "skani msa"
+
+jobs:
+  place:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Disk before
+        run: df -h / /mnt || df -h /
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Pick data disk
+        run: |
+          df -h / /mnt || true
+          free -g
+          root_free=$(df --output=avail -B1 / | tail -1)
+          mnt_free=$(df --output=avail -B1 /mnt 2>/dev/null | tail -1 || echo 0)
+          if [[ ${mnt_free:-0} -gt $root_free ]]; then base=/mnt; else base=$HOME; fi
+          sudo mkdir -p "$base/gtdb" && sudo chown "$USER" "$base/gtdb"
+          echo "DATA=$base/gtdb" >> "$GITHUB_ENV"
+          echo "root_free=$root_free mnt_free=$mnt_free -> $base/gtdb"
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: gtdb
+          create-args: >-
+            -c conda-forge -c bioconda
+            python=3.12 gtdbtk=2.8.0 pip pigz unzip
+          cache-environment: false
+
+      - name: Install gPlace 0.1.1 from source
+        run: |
+          python -m pip install "git+https://github.com/cmc-aau/gPlace@${GPLACE_SHA}"
+          gplace --version || true
+          gplace check_install
+          gtdbtk --version | head -3
+          pplacer --version; skani --version
+
+      - name: Measurement helpers and pplacer shim
+        run: |
+          mkdir -p "$HOME/shim" "$GITHUB_WORKSPACE/measure"
+          cp exp/gtdb/measure.sh "$HOME/measure.sh"; chmod +x "$HOME/measure.sh"
+          cp exp/gtdb/pplacer-shim.sh "$HOME/shim/pplacer"; chmod +x "$HOME/shim/pplacer"
+          echo "REAL_PPLACER=$(command -v pplacer)" >> "$GITHUB_ENV"
+          echo "MEASURE=$HOME/measure.sh" >> "$GITHUB_ENV"
+          echo "MEASURE_DIR=$GITHUB_WORKSPACE/measure" >> "$GITHUB_ENV"
+          echo "| Run | Exit | Wall (s) | Max RSS, one process (KB) | Peak anon, all processes (KiB) | cgroup memory.peak incl. cache (KiB) | OOM kills | Cap (bytes) |" > measure/table.md
+          echo "|---|---:|---:|---:|---:|---:|---:|---|" >> measure/table.md
+          MEASURE_DIR=$GITHUB_WORKSPACE/measure $HOME/measure.sh selftest --cap 1073741824 -- python3 -c "x=bytearray(300*2**20); import time; time.sleep(2)"
+
+      - name: Stream archive and extract placement data
+        run: |
+          set -euo pipefail
+          ex=(); for d in $EXCLUDES; do ex+=(--exclude="*/$d/*" --exclude="$d/*"); done
+          start=$(date +%s)
+          curl -fsSL --retry 3 "$URL" | pigz -dc | tar -x -C "$DATA" "${ex[@]}"
+          echo "extract_s=$(( $(date +%s) - start ))"
+          top=$(ls "$DATA"); echo "top: $top"
+          echo "GTDBTK_DATA_PATH=$DATA/$top" >> "$GITHUB_ENV"
+          du -sh "$DATA"/*/* | sort -h
+          df -h "$DATA"
+
+      - name: Genomes
+        run: |
+          set -euo pipefail
+          mkdir -p genomes dl
+          curl -fsSL "$MOCKUP/test_genome_G021783475.fna.gz" | gunzip > genomes/G021783475.fna
+          while read -r acc label; do
+            curl -fsSL -o "dl/$acc.zip" "https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/$acc/download?include_annotation_type=GENOME_FASTA"
+            unzip -p "dl/$acc.zip" "ncbi_dataset/data/$acc/*.fna" > "genomes/$label.fna"
+          done < exp/gtdb/genomes.tsv
+          for f in genomes/*.fna; do echo "$f $(grep -c '>' "$f") contigs $(grep -v '>' "$f" | tr -d '\n' | wc -c) bp"; done
+
+      - name: identify + align (no reference MSA)
+        run: |
+          $MEASURE identify -- gtdbtk identify --genome_dir genomes -x fna --out_dir run/identify --cpus 4
+          $MEASURE align -- gtdbtk align --identify_dir run/identify --out_dir run/align --skip_gtdb_refs --cpus 4
+
+      - name: classify with gPlace substituted for pplacer (ANI screen skipped)
+        run: |
+          export PATH="$HOME/shim:$PATH"
+          command -v pplacer
+          cat > classify_no_ani.py <<'EOF'
+          # gtdbtk classify, but with skip_ani_screen=True (the skani database is not on disk).
+          # classify_wf sets this itself after its own ANI step; the CLI no longer exposes it.
+          import sys
+          import gtdbtk.main as m
+          orig = m.OptionsParser.classify
+          def classify(self, options, *a, **k):
+              options.skip_ani_screen = True
+              return orig(self, options, *a, **k)
+          m.OptionsParser.classify = classify
+          from gtdbtk.__main__ import main
+          sys.argv = ["gtdbtk"] + sys.argv[1:]
+          main()
+          EOF
+          $MEASURE classify -- python classify_no_ani.py classify --genome_dir genomes -x fna \
+            --align_dir run/align --out_dir run/classify --cpus 4 --pplacer_cpus 4 || echo "classify failed: $?"
+          cat measure/calls.txt || true
+
+      - name: Direct gPlace runs (worst case trees)
+        continue-on-error: true
+        run: |
+          msa=run/align/align/gtdbtk.bac120.user_msa.fasta.gz
+          [[ -f $msa ]] || msa=$(ls run/align/align/*bac120*user_msa* | head -1)
+          cls=$GTDBTK_DATA_PATH/split/class_level/pplacer
+          # largest class-level refpkg by size
+          big=$(du -s "$cls"/*.refpkg | sort -n | tail -1 | cut -f2)
+          echo "largest class refpkg: $big"; du -sh "$cls"/*.refpkg
+          for rp in "$big" "$GTDBTK_DATA_PATH/pplacer/gtdb_r232_bac120.refpkg"; do
+            [[ -d $rp ]] || continue
+            n=$(basename "$rp" .refpkg)
+            timeout 900 gplace benchmark --refpkg "$rp" --queries 5 --max_memory "$GPLACE_MAX_MEMORY" 2>&1 | tail -25 || true
+            timeout 3000 $MEASURE "direct_$n" --cap "$GPLACE_CGROUP_CAP" -- \
+              gplace place --refpkg "$rp" --msa_file "$msa" --out_file "run/direct_$n.jplace" \
+              --cpus 4 --max_memory "$GPLACE_MAX_MEMORY" || echo "direct $n failed: $?"
+          done
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## GTDB-Tk R232 placement with gPlace (cap $GPLACE_MAX_MEMORY)"
+            echo
+            echo "Runner: $(nproc) vCPU, $(free -g | awk '/Mem:/{print $2}') GiB RAM"
+            echo
+            cat measure/table.md
+            echo
+            echo '### gPlace calls made by GTDB-Tk'
+            echo '```'; cat measure/calls.txt 2>/dev/null; echo '```'
+            echo '### bac120 / ar53 summary'
+            for f in run/classify/classify/*.summary.tsv run/classify/*.summary.tsv; do
+              [[ -f $f ]] || continue
+              echo "#### $(basename "$f")"; echo '```'; cut -f1-3,10-12,16-20 "$f"; echo '```'
+            done
+            echo '### Disk'; echo '```'; du -sh "$DATA"/*/* 2>/dev/null | sort -h; df -h "$DATA"; echo '```'
+          } > report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          cat report.md
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gtdb-placement-results
+          path: |
+            report.md
+            measure/
+            run/**/*.tsv
+            run/**/*.json
+            run/**/*.jplace
+            run/**/*.tree
+            run/**/*.log
+            run/align/align/*.fasta.gz
