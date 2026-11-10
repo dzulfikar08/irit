@@ -236,6 +236,8 @@ pub fn fastp_html(p: &FastpParams) -> String {
 pub fn fastp(ctx: &Ctx, p: &FastpParams) -> Check<Invocation> {
     let cwd = ctx.cwd.as_path();
     let mut inv = external("fastp");
+    // Seen in the real-tools workflow: the HTML report differs between identical runs; the JSON doesn't.
+    inv.volatile = &[".html"];
     let in1 = v::existing_file(cwd, "in1", &p.in1)?;
     v::sequence_file(&in1, "in1", &p.in1, Seq::Fastq)?;
     inv.inputs.push(in1);
@@ -869,7 +871,9 @@ fn gtdbtk_data(field: &str, shown: &str, dir: &Path) -> Check<PathBuf> {
 pub fn gtdbtk_classify_wf(ctx: &Ctx, p: &GtdbtkClassifyWfParams) -> Check<Invocation> {
     let cwd = ctx.cwd.as_path();
     let mut inv = external("gtdbtk");
-    inv.volatile = &[".log"];
+    // Seen in the real-tools workflow: logs, gtdbtk.json (step start/end times) and gzip files
+    // (gzip headers carry a time) differ between identical runs.
+    inv.volatile = &[".log", "gtdbtk.json", ".gz"];
     inv.args.push("classify_wf".into());
     let dir = v::existing_dir(cwd, "genome_dir", &p.genome_dir)?;
     let ext = p.extension.as_deref().unwrap_or("fna");

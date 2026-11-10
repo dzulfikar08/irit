@@ -140,9 +140,13 @@ def main():
     call("dblock_fetch", {"confirm": True, "stream": True})
     dbs = call("dblock_env", {}).get("env", {})
     if a.amrfinder_update and dbs.get("BAKTA_DB"):
-        amr = Path(dbs["BAKTA_DB"]) / "amrfinderplus-db"
-        r = subprocess.run([a.amrfinder_update, "--force_update", "--database", str(amr)], env=env, capture_output=True, text=True)
+        # BAKTA_DB may be relative to the work folder (the dblock store is "dbs")
+        amr = work / dbs["BAKTA_DB"] / "amrfinderplus-db"
+        r = subprocess.run([a.amrfinder_update, "--force_update", "--database", str(amr)], cwd=work, env=env, capture_output=True, text=True)
         log(f"amrfinder_update --force_update --database {amr}: exit {r.returncode}")
+        log("```")
+        log((r.stdout + r.stderr)[-3000:])
+        log("```")
         log("")
 
     def run_all(suffix=""):
