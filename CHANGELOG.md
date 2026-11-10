@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### dblock
+- **Identical files inside a database are hard-linked** after unpacking, so they take disk space
+  once. Files are matched by size, permissions and the SHA-256 dblock already records, so nothing
+  is read twice. `gtdbtk-r232-placement` takes 2.7 GB on disk instead of 7.4 GB, and
+  `gtdbtk-r232-placement-lite` 1.7 GB instead of 5.9 GB (measured with `du` on Linux).
+  `verify`, `verify --deep` and GTDB-Tk folder hashes give the same results. The marker and lock
+  entry record `linked_files` and `linked_bytes`. If the file system refuses hard links the copies
+  are kept, with a note. `fetch --no-dedupe` keeps copies.
+
 ## 0.2.1 (2026-11-10)
 
 ### Fixed
