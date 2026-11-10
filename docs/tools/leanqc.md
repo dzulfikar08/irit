@@ -91,12 +91,18 @@ translations of FastQC's Java code, each marked with the FastQC class and method
 
 ### Quality encoding
 
-leanqc reads qualities as Phred+64 only when the lowest character is `@` (64) or above **and** some
-character is above `J` (74, the highest Phred+33 value Illumina 1.8+ writes). FastQC uses only the
-first condition, so a file of excellent Phred+33 data (every base Q31–Q40, characters `@` to `I`)
-is read by FastQC as Phred+64 Q0–Q9 and fails its quality modules. leanqc reads it as Phred+33,
-notes the ambiguity in the report, and `--phred 64` overrides it. This is the one deliberate
-difference from FastQC's verdicts.
+leanqc reads qualities as Phred+64 only when the lowest character is `@` (64) or above **and** the
+highest is above `J` (74, the highest Phred+33 value Illumina 1.8+ writes) but no higher than `i`
+(105, Q41 in Phred+64, the top Illumina 1.3–1.7 wrote). FastQC uses only the first condition, so
+two kinds of Phred+33 file are misread by it as Phred+64:
+
+- excellent short reads (every base Q31–Q40, characters `@` to `I`): FastQC reads Q0–Q9 and fails
+  its quality modules;
+- high-quality long reads such as PacBio HiFi, with qualities spread over `@` to `~` (Q31–Q93):
+  read as Phred+64, about half the bases drop below Q30.
+
+leanqc reads both as Phred+33 and adds a note to the report saying why; `--phred 64` overrides it.
+This is the one deliberate difference from FastQC's verdicts.
 
 ## Results
 

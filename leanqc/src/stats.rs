@@ -473,7 +473,9 @@ fn hist_mean(hist: &[u64; QBINS], shift: usize) -> Option<f64> {
 
 /// Encoding from the lowest and highest quality characters. FastQC calls anything whose lowest
 /// character is `@` (64) or above Phred+64, which misreads high-quality Phred+33 data (Q31–Q40
-/// only, `@`..`I`). Here Phred+64 also needs a character above `J` (74), the Phred+33 maximum.
+/// only, `@`..`I`; HiFi-like long reads up to `~`). Here Phred+64 also needs its highest character
+/// above `J` (74, the Illumina 1.8+ Phred+33 maximum) and at most `i` (105, Q41 in Phred+64, the
+/// top that Illumina 1.3–1.7 wrote).
 // Port of FastQC PhredEncoding.getFastQEncodingOffset, with the Phred+64 rule changed as above.
 fn phred_offset(min: u8, max: u8, forced: Option<u8>, warnings: &mut Vec<String>) -> u8 {
     if let Some(f) = forced {
@@ -482,10 +484,20 @@ fn phred_offset(min: u8, max: u8, forced: Option<u8>, warnings: &mut Vec<String>
         }
         return f;
     }
-    if min >= 64 && max > b'J' {
+    if min >= 64 && max > b'J' && max <= b'i' {
         return 64;
     }
-    if min >= 64 {
+    if min >= 64 && max > b'i' {
+        warnings.push(format!(
+            "every quality character is {:?} or above, but they go up to {:?}, beyond Phred+64 Illumina's highest ('i', Q41); \
+             read as Phred+33 (Q{}–Q{}, as in high-quality long reads such as PacBio HiFi; FastQC would say Phred+64). \
+             Use --phred 64 if this really is Phred+64 data",
+            min as char,
+            max as char,
+            min - 33,
+            max - 33
+        ));
+    } else if min >= 64 {
         warnings.push(format!(
             "every quality character is between {:?} and {:?}, which fits both Phred+33 (Q{}–Q{}) and Phred+64 (Q{}–Q{}); \
              read as Phred+33 (FastQC would say Phred+64). Use --phred 64 if this is old Illumina 1.3–1.7 data",
@@ -1013,6 +1025,28 @@ mod tests {
         a.add(b"r", b"ACGT", Some(b"BBhh"));
         let r = a.finish("t".into(), None);
         assert_eq!((r.phred_offset, r.warnings.len()), (Some(64), 0));
+        let mut a = Acc::new(10);
+        a.add(b"r", b"ACGT", Some(b"@Bhi"));
+        assert_eq!(a.finish("t".into(), None).phred_offset, Some(64));
+    }
+
+    #[test]
+    fn hifi_like_qualities_are_phred33() {
+        // Long reads with every quality between '@' (Q31) and '~' (Q93), as PacBio HiFi writes:
+        // the lowest is >= 64 and the highest above 'J', but '~' is beyond Phred+64's 'i'.
+        let qual: Vec<u8> = (b'@'..=b'~').cycle().take(5_000).collect();
+        let seq: Vec<u8> = b"ACGT".iter().copied().cycle().take(5_000).collect();
+        let mut a = Acc::new(10);
+        for _ in 0..50 {
+            a.add(b"r", &seq, Some(&qual));
+        }
+        let r = a.finish("t".into(), None);
+        assert_eq!(r.phred_offset, Some(33));
+        assert_eq!(r.q30_percent, Some(100.0)); // was 52.4% read as Phred+64
+        assert!(r.warnings.iter().any(|w| w.contains("PacBio HiFi") && w.contains("--phred 64")), "{:?}", r.warnings);
+        let mut a = Acc::new(10);
+        a.add(b"r", &seq, Some(&qual));
+        assert_eq!(a.finish("t".into(), Some(64)).phred_offset, Some(64));
     }
 
     #[test]
