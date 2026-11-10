@@ -86,6 +86,11 @@ Each value remembers which file it came from.
   staged under the same names (`S_1.fastq.gz`) with the same read count but different bases are
   still two runs. Only when a report lacks the summary (older fastp) do the input file names in
   fastp's recorded `command` plus the raw read count decide.
+- Reports form a rerun group only if every pair in it counts as the same raw reads. If a report
+  without the summary matches two others on names and read count while those two have different
+  summaries, isotable can't tell which are reruns and which are separate runs: every fastp field of
+  the sample shows `CONFLICT` with each report's own numbers, the status is `conflict`, and a note
+  names the reports that differ. Remove the reports that don't belong and rerun.
 - leanqc: failed checks from all of a sample's read files are merged.
 
 ## Grading

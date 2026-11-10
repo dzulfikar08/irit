@@ -364,6 +364,9 @@ fn same_input(a: &Record, b: &Record) -> bool {
 /// Two reports on the same raw reads with different results (fastp rerun with other settings) are
 /// not runs to add up: the sample's totals are computed with each of them in turn, and fields that
 /// come out differently become conflicts naming those reports. Other runs are still pooled in.
+/// When reports are linked only through a third one (A matches B and C on names and read count,
+/// but B and C have different summaries), which are reruns is unclear: every fastp field becomes
+/// a conflict listing each report's own numbers.
 fn pool_fastp(row: &mut Row) {
     let mut runs: Vec<Record> = Vec::new();
     for r in std::mem::take(&mut row.fastp) {
@@ -388,6 +391,39 @@ fn pool_fastp(row: &mut Row) {
         groups.push(merged);
     }
     groups.sort();
+    // A group holds only if every pair in it passes `same_input`.
+    let mut unclear = Vec::new();
+    for g in &groups {
+        let split: Vec<String> = g
+            .iter()
+            .enumerate()
+            .flat_map(|(n, &i)| g[n + 1..].iter().map(move |&j| (i, j)))
+            .filter(|&(i, j)| !same_input(&runs[i], &runs[j]))
+            .map(|(i, j)| format!("{} and {}", runs[i].source, runs[j].source))
+            .collect();
+        if !split.is_empty() {
+            let names: Vec<&str> = g.iter().map(|&i| runs[i].source.as_str()).collect();
+            unclear.push(format!(
+                "{} look like analyses of the same raw reads only through each other ({} differ), so which are reruns and which are separate runs is unclear",
+                names.join(", "),
+                split.join("; ")
+            ));
+        }
+    }
+    if !unclear.is_empty() {
+        row.notes.extend(unclear);
+        row.notes.push("fastp fields are shown per report; remove the reports that don't belong".into());
+        let mut cells: BTreeMap<&'static str, Vec<(String, Value)>> = BTreeMap::new();
+        for r in &runs {
+            for (k, v) in pooled(&[r]).0 {
+                cells.entry(k).or_default().push((r.source.clone(), v));
+            }
+        }
+        for (k, all) in cells {
+            row.cells.insert(k, Cell::Conflict(all));
+        }
+        return;
+    }
     let reps: Vec<&Record> = groups.iter().map(|g| &runs[g[0]]).collect();
     let (base, note) = pooled(&reps);
     if let Some(n) = note {
@@ -783,6 +819,48 @@ mod tests {
         pool_fastp(&mut row);
         assert!(matches!(row.cells["reads_trimmed"], Cell::Conflict(_)));
         assert_eq!(row.cells["reads_raw"].show(), "100");
+    }
+
+    #[test]
+    fn reports_linked_only_through_a_third_are_not_grouped() {
+        // A has no before_filtering summary and matches B and C on input names and raw count;
+        // B and C carry different summaries, so they are not reruns of each other.
+        let rec = |src: &str, trimmed: u64, summary: Option<&str>| {
+            let mut fields = vec![
+                ("reads_raw", Value::Int(100)),
+                ("reads_trimmed", Value::Int(trimmed)),
+                ("raw_inputs", Value::Text("S_1.fq.gz S_2.fq.gz".into())),
+            ];
+            if let Some(s) = summary {
+                fields.push(("raw_summary", Value::Text(s.into())));
+            }
+            Record { raw_name: "S".into(), kind: parse::Kind::Sample, tool: "fastp", source: src.into(), fields }
+        };
+        let make = |name: &str| match name {
+            "A" => rec("A", 90, None),
+            "B" => rec("B", 80, Some("100 15000 13500 0.5")),
+            _ => rec("C", 70, Some("100 14800 13000 0.5")),
+        };
+        let (a, b, c) = (make("A"), make("B"), make("C"));
+        assert!(same_input(&a, &b) && same_input(&a, &c) && !same_input(&b, &c));
+        for order in [["A", "B", "C"], ["B", "C", "A"], ["B", "A", "C"]] {
+            let mut row = Row { fastp: order.iter().map(|n| make(n)).collect(), ..Default::default() };
+            pool_fastp(&mut row);
+            for k in ["reads_raw", "reads_trimmed"] {
+                let Cell::Conflict(all) = &row.cells[k] else { panic!("{k}: {:?}", row.cells[k]) };
+                assert_eq!(all.len(), 3, "{all:?}");
+            }
+            let Cell::Conflict(all) = &row.cells["reads_trimmed"] else { unreachable!() };
+            let mut got: Vec<_> = all.iter().map(|(s, v)| (s.as_str(), v.show())).collect();
+            got.sort();
+            assert_eq!(got, [("A", "90".into()), ("B", "80".into()), ("C", "70".into())]);
+            let note = row.notes.iter().find(|n| n.contains("only through each other")).expect("note");
+            assert!(note.contains("B and C differ"), "{note}");
+        }
+        // Graded as a conflict.
+        let mut row = Row { fastp: vec![a, b, c], ..Default::default() };
+        pool_fastp(&mut row);
+        assert_eq!(grade(&row, &limits(), Mode::Isolate, &["reads"]).0, Status::Conflict);
     }
 
     #[cfg(unix)]
