@@ -1,9 +1,13 @@
 # Introduction
 
-leanbio is a set of small tools for the parts of sequencing analysis that pipelines leave to the
+irit is a set of small tools for the parts of sequencing analysis that pipelines leave to the
 researcher: building sample sheets, checking read quality, and getting the right reference
 databases onto disk. They are written in Rust, ship as single binaries, and are meant to run on the
 laptop a student actually owns, not only on a cluster.
+
+The name is the Indonesian and Javanese word for frugal: getting the most out of modest resources.
+The project was called leanbio for its first day, until it turned out a biologics manufacturer
+already uses that name.
 
 ## Why
 

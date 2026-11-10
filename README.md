@@ -1,4 +1,6 @@
-# leanbio
+# irit
+
+*irit* (Indonesian and Javanese): frugal, economical with what you have.
 
 Small, fast command-line tools for the manual steps around sequencing pipelines, built to run on
 ordinary laptops. Each tool is one static Rust binary: no Java, no conda, no containers.
@@ -15,14 +17,14 @@ Measured against FastQC 0.12.1 on 1 million reads: **2.5 s and 16 MB of RAM** ag
 
 ## Install
 
-Download the archive for your system from the [latest release](https://github.com/dzulfikar08/leanbio/releases/latest)
+Download the archive for your system from the [latest release](https://github.com/dzulfikar08/irit/releases/latest)
 (Linux x86_64/ARM64, macOS Intel/Apple Silicon, Windows), unpack it and put the binaries on your
 `PATH`. The Linux builds are statically linked and run on old distributions too.
 
 Or build with Rust:
 
 ```sh
-cargo install --git https://github.com/dzulfikar08/leanbio sheetgen leanqc isotable dblock
+cargo install --git https://github.com/dzulfikar08/irit sheetgen leanqc isotable dblock
 ```
 
 or build from a checkout with `cargo build --release` (binaries in `target/release/`).

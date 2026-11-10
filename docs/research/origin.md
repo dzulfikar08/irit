@@ -1,6 +1,6 @@
 # How this started
 
-leanbio began in November 2026 as a side project between a software engineer (industrial software,
+irit began in November 2026 as a side project between a software engineer (industrial software,
 Rust, IoT) and a microbiologist heading into graduate work on environmental microbial ecology and
 genomics. Neither wanted to start a biotech company; the aim was to build something useful and keep
 current with computational biology.
