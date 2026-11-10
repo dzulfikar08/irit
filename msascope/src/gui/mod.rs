@@ -1,0 +1,12 @@
+//! The GPUI side of msascope: design system (palette, tokens, metrics, fonts, keys, components)
+//! and the views built from it. The rule: views never use raw colours or sizes. Sizes come from
+//! [`metrics`], colours from [`tokens`].
+
+pub mod cached;
+pub mod components;
+pub mod fonts;
+pub mod keys;
+pub mod metrics;
+pub mod palette;
+pub mod theme;
+pub mod tokens;
