@@ -10,7 +10,7 @@ mod check;
 mod fetch;
 mod project;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use catalog::{Entry, human};
 use clap::{Parser, Subcommand};
 use project::{Lock, Project};
@@ -51,8 +51,12 @@ enum Cmd {
     Remove {
         #[arg(required = true)]
         ids: Vec<String>,
+        /// Also delete the database folder from the shared store (needs --force).
         #[arg(long)]
         delete_data: bool,
+        /// Confirm --delete-data: other projects using the same store lose the database too.
+        #[arg(long, requires = "delete_data")]
+        force: bool,
     },
     /// Show whether the project's databases fit on disk, and how they would be fetched.
     Plan,
@@ -67,8 +71,12 @@ enum Cmd {
         #[arg(long)]
         keep_archive: bool,
     },
-    /// Check that the locked databases are still on disk, unchanged.
-    Verify,
+    /// Check that the locked databases are still on disk, unchanged (file names and sizes).
+    Verify {
+        /// Re-hash every file and compare with the SHA-256 sums recorded at fetch time.
+        #[arg(long)]
+        deep: bool,
+    },
     /// Check installed tool versions against the locked databases.
     Check,
     /// Print shell exports and paths for the locked databases.
@@ -81,12 +89,12 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Catalog { tool } => cmd_catalog(&entries, tool.as_deref()),
         Cmd::Add { ids, store } => cmd_add(&cli.dir, &entries, &ids, store),
-        Cmd::Remove { ids, delete_data } => cmd_remove(&cli.dir, &ids, delete_data),
+        Cmd::Remove { ids, delete_data, force } => cmd_remove(&cli.dir, &ids, delete_data, force),
         Cmd::Plan => cmd_plan(&cli.dir, &entries),
         Cmd::Fetch { ids, stream, keep_archive } => {
             cmd_fetch(&cli.dir, &entries, &ids, &fetch::Opts { force_stream: stream, keep_archive })
         }
-        Cmd::Verify => cmd_verify(&cli.dir),
+        Cmd::Verify { deep } => cmd_verify(&cli.dir, deep),
         Cmd::Check => cmd_check(&cli.dir, &entries),
         Cmd::Env => cmd_env(&cli.dir),
     }
@@ -133,24 +141,63 @@ fn cmd_add(dir: &Path, entries: &[Entry], ids: &[String], store: Option<String>)
     Ok(())
 }
 
-fn cmd_remove(dir: &Path, ids: &[String], delete_data: bool) -> Result<()> {
+fn cmd_remove(dir: &Path, ids: &[String], delete_data: bool, force: bool) -> Result<()> {
     let mut p = require_project(dir)?;
     let mut lock = Lock::load(dir)?;
-    for id in ids {
-        p.databases.retain(|d| d != id);
-        if let Some(l) = lock.databases.iter().find(|d| &d.id == id) {
-            if delete_data {
-                std::fs::remove_dir_all(&l.path)?;
-                println!("deleted {}", l.path);
-            } else {
-                println!("removed {id} from the project; files kept at {}", l.path);
+    let mut doomed = Vec::new();
+    if delete_data {
+        let store = p.store_dir()?;
+        for id in ids {
+            match lock.databases.iter().find(|d| &d.id == id) {
+                Some(l) => doomed.push(deletable(&store, l)?),
+                None => println!("{id} is not in {}; no files to delete", project::LOCK_FILE),
             }
         }
+        if !doomed.is_empty() && !force {
+            for d in &doomed {
+                println!("would delete {}", d.display());
+            }
+            bail!(
+                "the store {} is shared: every project that uses these databases loses them. \
+                 Run again with --force to delete; nothing was changed",
+                store.display()
+            );
+        }
+    }
+    for id in ids {
+        p.databases.retain(|d| d != id);
+        if !delete_data && let Some(l) = lock.databases.iter().find(|d| &d.id == id) {
+            println!("removed {id} from the project; files kept at {}", l.path);
+        }
         lock.databases.retain(|d| &d.id != id);
+    }
+    for d in &doomed {
+        std::fs::remove_dir_all(d).with_context(|| format!("deleting {}", d.display()))?;
+        println!("deleted {} (the store is shared; other projects that used it must fetch it again)", d.display());
     }
     p.save(dir)?;
     lock.save(dir)?;
     Ok(())
+}
+
+/// The folder `remove --delete-data` may delete: `<store>/<id>`, a real folder (not a link),
+/// holding a marker for the same id. Anything else written in a lock file is refused.
+fn deletable(store: &Path, l: &project::Locked) -> Result<PathBuf> {
+    let path = Path::new(&l.path);
+    let meta = path.symlink_metadata().with_context(|| format!("{} ({}) is not there", l.path, l.id))?;
+    if !meta.is_dir() {
+        bail!("refusing to delete {}: not a folder", l.path);
+    }
+    let store = store.canonicalize().with_context(|| format!("store {} not found", store.display()))?;
+    let real = path.canonicalize()?;
+    if real != store.join(&l.id) {
+        bail!("refusing to delete {}: it is not {}", l.path, store.join(&l.id).display());
+    }
+    match project::read_marker(&real) {
+        Some(m) if m.id == l.id => Ok(real),
+        Some(m) => bail!("refusing to delete {}: its marker is for `{}`", l.path, m.id),
+        None => bail!("refusing to delete {}: no {} marker inside", l.path, project::MARKER),
+    }
 }
 
 fn cmd_plan(dir: &Path, entries: &[Entry]) -> Result<()> {
@@ -161,9 +208,16 @@ fn cmd_plan(dir: &Path, entries: &[Entry]) -> Result<()> {
     let mut total = 0;
     for id in &p.databases {
         let e = catalog::find(entries, id)?;
-        if fetch::existing(&store, e).is_some() {
-            println!("  {id}: already in the store");
-            continue;
+        match fetch::existing(&store, e) {
+            fetch::Stored::Ready(_) => {
+                println!("  {id}: already in the store");
+                continue;
+            }
+            fetch::Stored::Bad(why) => {
+                println!("  {id}: CAN'T REUSE. {why}");
+                continue;
+            }
+            fetch::Stored::Absent => {}
         }
         match fetch::plan(&store, e, &opts) {
             Ok(plan) => {
@@ -204,14 +258,12 @@ fn cmd_fetch(dir: &Path, entries: &[Entry], only: &[String], opts: &fetch::Opts)
     for id in ids {
         let e = catalog::find(entries, id)?;
         eprintln!("{id}: {} ({})", e.name, human(e.size));
-        if let Some(found) = fetch::existing(&store, e) {
-            eprintln!("  already in {}, reusing it", found.path);
-            lock.upsert(found);
-            continue;
-        }
-        let result = fetch::plan(&store, e, opts).and_then(|plan| fetch::fetch(&store, e, &plan, opts));
-        match result {
-            Ok(l) => {
+        match fetch::obtain(&store, e, opts) {
+            Ok((found, true)) => {
+                eprintln!("  already in {}, reusing it", found.path);
+                lock.upsert(found);
+            }
+            Ok((l, false)) => {
                 eprintln!("  done: {} files, {} at {}", l.files, human(l.bytes), l.data_path);
                 if e.non_commercial {
                     eprintln!("  licence: {}", e.licence);
@@ -232,7 +284,7 @@ fn cmd_fetch(dir: &Path, entries: &[Entry], only: &[String], opts: &fetch::Opts)
     Ok(())
 }
 
-fn cmd_verify(dir: &Path) -> Result<()> {
+fn cmd_verify(dir: &Path, deep: bool) -> Result<()> {
     let lock = Lock::load(dir)?;
     if lock.databases.is_empty() {
         bail!("nothing locked yet; run `dblock fetch`");
@@ -246,9 +298,7 @@ fn cmd_verify(dir: &Path) -> Result<()> {
             continue;
         }
         let (files, bytes, md5) = fetch::manifest(path)?;
-        if md5 == l.manifest_md5 {
-            println!("ok       {}: {} files, {}", l.id, files, human(bytes));
-        } else {
+        if md5 != l.manifest_md5 {
             println!(
                 "CHANGED  {}: now {} files / {}, locked {} files / {}",
                 l.id,
@@ -258,6 +308,37 @@ fn cmd_verify(dir: &Path) -> Result<()> {
                 human(l.bytes)
             );
             bad += 1;
+            continue;
+        }
+        if !deep {
+            println!("ok       {}: {} files, {} (names and sizes)", l.id, files, human(bytes));
+            continue;
+        }
+        let Some(want) = &l.contents_sha256 else {
+            println!("UNCHECKED {}: no SHA-256 sums recorded (fetched by dblock 0.1); fetch it again to record them", l.id);
+            bad += 1;
+            continue;
+        };
+        eprintln!("  hashing {} ({})", l.id, human(bytes));
+        let now = fetch::sums(path)?;
+        if &fetch::sha256_hex(&now) == want {
+            println!("ok       {}: {} files, {}, every file's SHA-256 matches", l.id, files, human(bytes));
+            continue;
+        }
+        bad += 1;
+        // Name the files, using the list stored with the data if it still matches the lock.
+        let stored = std::fs::read_to_string(path.join(project::SUMS)).ok().filter(|t| &fetch::sha256_hex(t) == want);
+        match stored {
+            Some(old) => {
+                let old: std::collections::BTreeSet<&str> = old.lines().collect();
+                let changed: Vec<&str> = now
+                    .lines()
+                    .filter(|line| !old.contains(line))
+                    .filter_map(|line| line.splitn(3, "  ").nth(2))
+                    .collect();
+                println!("CHANGED  {}: content differs in {}", l.id, changed.join(", "));
+            }
+            None => println!("CHANGED  {}: content differs (and its {} list was altered too)", l.id, project::SUMS),
         }
     }
     if bad > 0 {
@@ -305,9 +386,71 @@ fn cmd_env(dir: &Path) -> Result<()> {
     let lock = Lock::load(dir)?;
     for l in &lock.databases {
         match &l.env {
-            Some(var) => println!("export {var}='{}'", l.data_path),
+            Some(var) => println!("export {var}={}", sh_quote(&l.data_path)),
             None => println!("# {} ({}): {}", l.id, l.tool, l.data_path),
         }
     }
     Ok(())
+}
+
+/// Single-quote for POSIX shells: `'` becomes `'\''`.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quotes_paths_with_single_quotes() {
+        assert_eq!(sh_quote("/data/it's here"), r"'/data/it'\''s here'");
+        assert_eq!(sh_quote("/plain"), "'/plain'");
+    }
+}
+
+#[cfg(test)]
+mod remove_tests {
+    use super::*;
+
+    fn locked(id: &str, path: &Path) -> project::Locked {
+        project::Locked {
+            id: id.into(),
+            name: String::new(),
+            version: String::new(),
+            tool: String::new(),
+            url: String::new(),
+            archive_md5: String::new(),
+            archive_bytes: 0,
+            fetched: String::new(),
+            path: path.display().to_string(),
+            data_path: path.display().to_string(),
+            files: 0,
+            bytes: 0,
+            manifest_md5: String::new(),
+            contents_sha256: None,
+            env: None,
+            licence: String::new(),
+            non_commercial: false,
+        }
+    }
+
+    #[test]
+    fn only_marked_store_folders_can_be_deleted() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        let db = store.join("mydb");
+        std::fs::create_dir_all(&db).unwrap();
+        // No marker yet.
+        assert!(deletable(&store, &locked("mydb", &db)).is_err());
+        project::write_marker(&db, &locked("mydb", &db)).unwrap();
+        assert!(deletable(&store, &locked("mydb", &db)).is_ok());
+        // A lock entry pointing outside the store, even at a folder with a matching marker.
+        let elsewhere = root.path().join("mydb");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        project::write_marker(&elsewhere, &locked("mydb", &elsewhere)).unwrap();
+        assert!(deletable(&store, &locked("mydb", &elsewhere)).is_err());
+        // The right folder under another id's name.
+        assert!(deletable(&store, &locked("other", &db)).is_err());
+    }
 }

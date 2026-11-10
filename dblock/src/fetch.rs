@@ -8,13 +8,16 @@
 //!   on a laptop. Not resumable; the MD5 is still checked over the whole stream and nothing
 //!   is kept if it doesn't match.
 //!
-//! Either way the contents land in a temporary folder and only take their final name once
-//! the checksum matches, so a half-finished or corrupt database is never mistaken for a good one.
+//! Either way the contents land in a uniquely named temporary folder and only take their final
+//! name once the checksum matches and the folder's marker (with its file list and SHA-256 sums)
+//! is written, so a half-finished or corrupt database is never mistaken for a good one.
+//! One process at a time works on a given database: `obtain` holds `<store>/.lock-<id>`.
 
 use crate::catalog::{Entry, Format, human};
 use crate::project::{self, Locked};
 use anyhow::{Context, Result, bail};
 use md5::{Digest, Md5};
+use sha2::Sha256;
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -51,11 +54,99 @@ fn partial_path(store: &Path, e: &Entry) -> PathBuf {
     store.join(".partial").join(format!("{}--{name}.part", e.id))
 }
 
-/// Already in the store, intact, and the same release the catalog describes?
-pub fn existing(store: &Path, e: &Entry) -> Option<Locked> {
+/// What the store holds for a database.
+pub enum Stored {
+    Absent,
+    /// Intact (file names and sizes match its marker) and the release the catalog describes.
+    Ready(Box<Locked>),
+    /// Something is there but can't be reused; the text says what and what to do.
+    Bad(String),
+}
+
+/// Is the database already in the store, intact, and the same release the catalog describes?
+pub fn existing(store: &Path, e: &Entry) -> Stored {
     let dir = target_dir(store, e);
-    let marker = project::read_marker(&dir)?;
-    (marker.archive_md5 == e.md5).then_some(marker)
+    if dir.symlink_metadata().is_err() {
+        return Stored::Absent;
+    }
+    let Some(mut marker) = project::read_marker(&dir) else {
+        return Stored::Bad(format!(
+            "{} exists but has no readable {} marker: a fetch that crashed while moving it into place \
+             (older dblock wrote the marker last) or a folder made by hand. Delete it and fetch again",
+            dir.display(),
+            project::MARKER
+        ));
+    };
+    if marker.id != e.id {
+        return Stored::Bad(format!("{}: its marker is for `{}`, not `{}`; move it away, then fetch again", dir.display(), marker.id, e.id));
+    }
+    if !marker.archive_md5.eq_ignore_ascii_case(&e.md5) {
+        return Stored::Bad(format!(
+            "{} holds a different release (archive md5 {}, the catalog wants {}); move or delete it, then fetch again",
+            dir.display(),
+            marker.archive_md5,
+            e.md5
+        ));
+    }
+    match manifest(&dir) {
+        Ok((_, _, m)) if m == marker.manifest_md5 => {}
+        Ok((files, bytes, _)) => {
+            return Stored::Bad(format!(
+                "{} has changed since it was fetched (now {files} files / {}, its marker says {} files / {}); \
+                 delete it and fetch again",
+                dir.display(),
+                human(bytes),
+                marker.files,
+                human(marker.bytes)
+            ));
+        }
+        Err(err) => return Stored::Bad(format!("{}: {err:#}", dir.display())),
+    }
+    // The store may have moved since the marker was written: point at where it is now.
+    let old = PathBuf::from(&marker.path);
+    if let Ok(rel) = Path::new(&marker.data_path).strip_prefix(&old) {
+        marker.data_path = dir.join(rel).display().to_string();
+    }
+    marker.path = dir.display().to_string();
+    Stored::Ready(Box::new(marker))
+}
+
+/// Lock the database's slot in the store, then reuse what's there or fetch it.
+/// Returns the lock entry and whether it was already in the store.
+pub fn obtain(store: &Path, e: &Entry, opts: &Opts) -> Result<(Locked, bool)> {
+    fs::create_dir_all(store).with_context(|| format!("creating {}", store.display()))?;
+    let lock_path = store.join(format!(".lock-{}", e.id));
+    let lock = File::options()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("opening {}", lock_path.display()))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => {
+            eprintln!("  another dblock is fetching {} into this store; waiting for it", e.id);
+            lock.lock().with_context(|| format!("locking {}", lock_path.display()))?;
+        }
+        Err(fs::TryLockError::Error(err)) => return Err(err).with_context(|| format!("locking {}", lock_path.display())),
+    }
+    // Held until `lock` drops at the end of this function.
+    match existing(store, e) {
+        Stored::Ready(l) => return Ok((*l, true)),
+        Stored::Bad(why) => bail!(why),
+        Stored::Absent => {}
+    }
+    // Temporary folders left by a crashed run (nobody else can be using them: we hold the lock).
+    let prefix = format!(".tmp-{}-", e.id);
+    for entry in fs::read_dir(store)?.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+    let plan = plan(store, e, opts)?;
+    let locked = fetch(store, e, &plan, opts)?;
+    drop(lock);
+    Ok((locked, false))
 }
 
 /// Decide how to fetch, or explain why it won't fit.
@@ -93,19 +184,21 @@ fn too_small(e: &Entry, free: u64, stored: u64) -> String {
     )
 }
 
-pub fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
-    let tmp = store.join(format!(".tmp-{}", e.id));
-    if tmp.exists() {
-        fs::remove_dir_all(&tmp).with_context(|| format!("clearing leftover {}", tmp.display()))?;
-    }
-    fs::create_dir_all(&tmp)?;
+/// Download into a fresh temporary folder, write its marker there, then move it into place.
+/// Call through `obtain`, which holds the per-database lock.
+fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
+    let tmp_dir = tempfile::Builder::new()
+        .prefix(&format!(".tmp-{}-", e.id))
+        .tempdir_in(store)
+        .with_context(|| format!("creating a temporary folder in {}", store.display()))?;
+    let tmp = tmp_dir.path();
 
     let mut last_err = None;
     let mut used_url = None;
     for url in &e.urls {
         let r = match plan.mode {
-            Mode::DownloadThenExtract => download_then_extract(store, e, url, &tmp, opts),
-            Mode::Stream => stream_extract(e, url, &tmp),
+            Mode::DownloadThenExtract => download_then_extract(store, e, url, tmp, opts),
+            Mode::Stream => stream_extract(e, url, tmp),
         };
         match r {
             Ok(()) => {
@@ -116,30 +209,26 @@ pub fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked
                 eprintln!("  {url}: {err:#}");
                 // A checksum mismatch is the data, not the mirror: don't hide it behind a retry.
                 if err.to_string().contains("checksum") {
-                    let _ = fs::remove_dir_all(&tmp);
                     return Err(err);
                 }
                 last_err = Some(err);
-                let _ = fs::remove_dir_all(&tmp);
-                fs::create_dir_all(&tmp)?;
+                fs::remove_dir_all(tmp)?;
+                fs::create_dir(tmp)?;
             }
         }
     }
     let Some(url) = used_url else {
-        let _ = fs::remove_dir_all(&tmp);
         return Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no URL worked")));
     };
 
     let target = target_dir(store, e);
-    if target.exists() {
-        bail!(
-            "{} already exists but is a different download (checksum differs from the catalog); move or delete it, then fetch again",
-            target.display()
-        );
+    if target.symlink_metadata().is_ok() {
+        bail!("{} appeared while downloading; move or delete it, then fetch again", target.display());
     }
-    fs::rename(&tmp, &target).with_context(|| format!("moving into {}", target.display()))?;
-
-    let (files, bytes, manifest_md5) = manifest(&target)?;
+    eprintln!("  recording file sizes and SHA-256 sums");
+    let (files, bytes, manifest_md5) = manifest(tmp)?;
+    let contents_sha256 = write_sums(tmp)?;
+    let data_rel = data_path(tmp, &e.env_points_to)?.strip_prefix(tmp)?.to_path_buf();
     let locked = Locked {
         id: e.id.clone(),
         name: e.name.clone(),
@@ -150,15 +239,28 @@ pub fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked
         archive_bytes: e.size,
         fetched: humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string(),
         path: target.display().to_string(),
-        data_path: data_path(&target, &e.env_points_to)?.display().to_string(),
+        data_path: target.join(data_rel).display().to_string(),
         files,
         bytes,
         manifest_md5,
+        contents_sha256: Some(contents_sha256),
         env: e.env.clone(),
         licence: e.licence.clone(),
         non_commercial: e.non_commercial,
     };
-    project::write_marker(&target, &locked)?;
+    // The marker goes in before the rename, so a folder under the final name is always complete.
+    project::write_marker(tmp, &locked)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // tempfile makes the folder private (0700); the store is meant to be shared.
+        fs::set_permissions(tmp, fs::Permissions::from_mode(0o755))?;
+    }
+    let tmp = tmp_dir.keep();
+    if let Err(err) = fs::rename(&tmp, &target) {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(err).with_context(|| format!("moving into {}", target.display()));
+    }
     Ok(locked)
 }
 
@@ -183,7 +285,9 @@ fn download_then_extract(store: &Path, e: &Entry, url: &str, tmp: &Path, opts: &
     fs::create_dir_all(part.parent().unwrap())?;
     let mut have = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     if have > e.size {
-        have = 0; // a different file was left here
+        // A different file was left here: empty it, or its tail would survive the new download.
+        fs::OpenOptions::new().write(true).open(&part)?.set_len(0)?;
+        have = 0;
     }
 
     let mut hasher = Md5::new();
@@ -428,12 +532,48 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, u64)>) -> Result<()> {
             walk(root, &path, out)?;
         } else if ft.is_file() {
             let rel = path.strip_prefix(root)?.to_string_lossy().into_owned();
-            if rel != project::MARKER {
+            if rel != project::MARKER && rel != project::SUMS {
                 out.push((rel, entry.metadata()?.len()));
             }
         }
     }
     Ok(())
+}
+
+/// `sha256  size  path` for every file, sorted by path (`/` separators on every platform).
+pub fn sums(dir: &Path) -> Result<String> {
+    let mut items = Vec::new();
+    walk(dir, dir, &mut items)?;
+    items.sort();
+    let mut out = String::new();
+    let mut buf = vec![0u8; 1 << 20];
+    for (rel, _) in &items {
+        let path = dir.join(rel);
+        let mut f = File::open(&path).with_context(|| format!("reading {}", path.display()))?;
+        let mut h = Sha256::new();
+        let mut size = 0u64;
+        loop {
+            let n = f.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            h.update(&buf[..n]);
+            size += n as u64;
+        }
+        out.push_str(&format!("{}  {size}  {}\n", hex(&h.finalize()), rel.replace('\\', "/")));
+    }
+    Ok(out)
+}
+
+pub fn sha256_hex(text: &str) -> String {
+    hex(&Sha256::digest(text.as_bytes()))
+}
+
+/// Hash every file, keep the list next to the data, and return the list's own SHA-256.
+fn write_sums(dir: &Path) -> Result<String> {
+    let text = sums(dir)?;
+    fs::write(dir.join(project::SUMS), &text)?;
+    Ok(sha256_hex(&text))
 }
 
 /// The path a tool should be given: the database folder (or the single folder inside it,
@@ -446,17 +586,179 @@ fn data_path(target: &Path, points_to: &str) -> Result<PathBuf> {
         let hits: Vec<_> = items.iter().filter(|(r, _)| r.ends_with(suffix)).collect();
         return match hits.as_slice() {
             [(one, _)] => Ok(target.join(one)),
-            [] => bail!("no {pattern} file in {}", target.display()),
-            _ => Ok(target.to_path_buf()),
+            [] => bail!("no {pattern} file in the download"),
+            many => bail!(
+                "{} files match {pattern} ({}); the catalog entry must name one (e.g. a longer suffix)",
+                many.len(),
+                many.iter().map(|(r, _)| r.as_str()).collect::<Vec<_>>().join(", ")
+            ),
         };
     }
     let inside: Vec<_> = fs::read_dir(target)?
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name() != project::MARKER)
+        .filter(|e| e.file_name() != project::MARKER && e.file_name() != project::SUMS)
         .collect();
     if let [only] = inside.as_slice()
         && only.file_type()?.is_dir() {
             return Ok(only.path());
         }
     Ok(target.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A `.tar.gz` holding `mydb/a.txt` and `mydb/b.txt`, and its MD5.
+    fn archive() -> (Vec<u8>, String) {
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()));
+        for (name, body) in [("mydb/a.txt", &b"hello"[..]), ("mydb/b.txt", &b"world"[..])] {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(body.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append_data(&mut h, name, body).unwrap();
+        }
+        let bytes = tar.into_inner().unwrap().finish().unwrap();
+        let md5 = hex(&Md5::digest(&bytes));
+        (bytes, md5)
+    }
+
+    /// Minimal HTTP server: every GET gets the whole body, slowly enough for fetches to overlap.
+    fn serve(body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/mydb.tar.gz", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let body = body.clone();
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                        line.clear();
+                    }
+                    let mut stream = stream;
+                    let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                    stream.write_all(head.as_bytes()).unwrap();
+                    std::thread::sleep(Duration::from_millis(300));
+                    let _ = stream.write_all(&body);
+                });
+            }
+        });
+        (url, hits)
+    }
+
+    fn entry(url: &str, md5: &str, size: usize, points_to: &str) -> Entry {
+        serde_json::from_value(serde_json::json!({
+            "id": "mydb", "name": "t", "version": "1", "tool": "t", "urls": [url], "format": "tar.gz",
+            "size": size, "extracted": 100, "md5": md5, "md5_source": "test", "env": "MYDB",
+            "env_points_to": points_to, "compat": null, "licence": "x"
+        }))
+        .unwrap()
+    }
+
+    fn opts() -> Opts {
+        Opts { force_stream: false, keep_archive: false }
+    }
+
+    #[test]
+    fn concurrent_fetches_of_one_database_download_it_once() {
+        let (body, md5) = archive();
+        let (url, hits) = serve(body.clone());
+        let e = entry(&url, &md5, body.len(), "dir");
+        let store = tempfile::tempdir().unwrap();
+        let results: Vec<_> = std::thread::scope(|s| {
+            let a = s.spawn(|| obtain(store.path(), &e, &opts()));
+            let b = s.spawn(|| obtain(store.path(), &e, &opts()));
+            vec![a.join().unwrap(), b.join().unwrap()]
+        });
+        let results: Vec<_> = results.into_iter().map(|r| r.unwrap()).collect();
+        assert_eq!(results.iter().filter(|(_, reused)| !reused).count(), 1, "exactly one download");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(results[0].0.manifest_md5, results[1].0.manifest_md5);
+        let leftovers: Vec<_> = fs::read_dir(store.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty());
+        assert!(store.path().join("mydb").join(project::MARKER).is_file());
+        assert!(results[0].0.data_path.ends_with("mydb/mydb") || results[0].0.data_path.ends_with("mydb\\mydb"));
+    }
+
+    #[test]
+    fn uppercase_catalog_md5_downloads_fine() {
+        let (body, md5) = archive();
+        let (url, _) = serve(body.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let cat = dir.path().join("cat.json");
+        let e = entry(&url, &md5.to_ascii_uppercase(), body.len(), "dir");
+        fs::write(&cat, serde_json::to_string(&vec![e]).unwrap()).unwrap();
+        let entries = crate::catalog::load(Some(&cat)).unwrap();
+        let e = crate::catalog::find(&entries, "mydb").unwrap();
+        let (l, _) = obtain(&dir.path().join("store"), e, &opts()).unwrap();
+        assert_eq!(l.archive_md5, md5);
+    }
+
+    #[test]
+    fn folder_without_marker_is_reported_not_overwritten() {
+        let (body, md5) = archive();
+        let e = entry("http://127.0.0.1:9/never", &md5, body.len(), "dir");
+        let store = tempfile::tempdir().unwrap();
+        fs::create_dir_all(store.path().join("mydb/mydb")).unwrap();
+        let err = obtain(store.path(), &e, &opts()).unwrap_err().to_string();
+        assert!(err.contains("no readable .dblock.toml marker"), "{err}");
+    }
+
+    #[test]
+    fn changed_folder_is_not_reused_and_deep_sums_catch_same_size_edits() {
+        let (body, md5) = archive();
+        let (url, hits) = serve(body.clone());
+        let e = entry(&url, &md5, body.len(), "dir");
+        let store = tempfile::tempdir().unwrap();
+        let (l, _) = obtain(store.path(), &e, &opts()).unwrap();
+        let a = store.path().join("mydb/mydb/a.txt");
+
+        // Same length: names and sizes still match, the SHA-256 list does not.
+        fs::write(&a, "HELLO").unwrap();
+        assert!(matches!(existing(store.path(), &e), Stored::Ready(_)));
+        assert_ne!(Some(sha256_hex(&sums(&store.path().join("mydb")).unwrap())), l.contents_sha256);
+
+        // Different length: not reused.
+        fs::write(&a, "hello!").unwrap();
+        let Stored::Bad(why) = existing(store.path(), &e) else { panic!("reused a changed folder") };
+        assert!(why.contains("changed since it was fetched"), "{why}");
+        assert!(obtain(store.path(), &e, &opts()).is_err());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn oversized_leftover_partial_is_emptied() {
+        let (body, md5) = archive();
+        let (url, _) = serve(body.clone());
+        let e = entry(&url, &md5, body.len(), "dir");
+        let store = tempfile::tempdir().unwrap();
+        let part = partial_path(store.path(), &e);
+        fs::create_dir_all(part.parent().unwrap()).unwrap();
+        fs::write(&part, vec![b'x'; body.len() * 3]).unwrap();
+        obtain(store.path(), &e, &opts()).unwrap();
+    }
+
+    #[test]
+    fn several_glob_hits_are_an_error() {
+        let (body, md5) = archive();
+        let (url, _) = serve(body.clone());
+        let e = entry(&url, &md5, body.len(), "glob:*.txt");
+        let store = tempfile::tempdir().unwrap();
+        let err = format!("{:#}", obtain(store.path(), &e, &opts()).unwrap_err());
+        assert!(err.contains("2 files match"), "{err}");
+        assert!(!store.path().join("mydb").exists());
+    }
 }
