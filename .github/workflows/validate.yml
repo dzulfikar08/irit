@@ -1,0 +1,165 @@
+name: Validate against real tools
+
+# Checks each tool against the established tool it replaces or feeds, on real data,
+# using GitHub-hosted runners. Results appear in each run's summary.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 1 * * 1" # Mondays 01:00 UTC: also catches upstream changes (databases, pipelines)
+  push:
+    branches: [main]
+    paths: ["leanqc/**", "sheetgen/**", "dblock/**", "scripts/**", ".github/workflows/validate.yml"]
+
+env:
+  CARGO_TERM_COLOR: always
+  TESTDATA: https://github.com/nf-core/test-datasets/raw/bacass
+
+jobs:
+  leanqc-vs-fastqc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p leanqc
+      - name: Download nf-core/bacass test reads
+        run: |
+          mkdir reads
+          for f in ERR064912_1M_1 ERR064912_1M_2 ERR044595_1M_1 ERR044595_1M_2; do
+            curl -sfL "$TESTDATA/$f.fastq.gz" -o "reads/$f.fastq.gz"
+          done
+          ls -la reads
+      - name: leanqc
+        run: /usr/bin/time -v target/release/leanqc -t 4 -o leanqc reads/*.fastq.gz 2> leanqc-time.txt; cat leanqc-time.txt | grep -E 'Elapsed|Maximum resident'
+      - name: FastQC 0.12.1 (the container nf-core uses)
+        run: |
+          mkdir fastqc
+          docker pull -q quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0
+          docker run --rm -v "$PWD:/d" -w /d quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0 \
+            sh -c 'fastqc -q -t 4 -o fastqc reads/*.fastq.gz && echo "peak MB $(( $(cat /sys/fs/cgroup/memory.peak) / 1048576 ))"' | tee fastqc-mem.txt
+          cd fastqc && for z in *.zip; do unzip -q "$z"; done
+      - name: Compare verdicts
+        run: |
+          {
+            echo "## leanqc vs FastQC"
+            echo
+            python3 scripts/compare_fastqc.py fastqc leanqc
+            echo
+            echo "leanqc: $(grep -E 'Elapsed' leanqc-time.txt | sed 's/.*: //') wall, $(grep -E 'Maximum resident' leanqc-time.txt | awk '{printf "%.0f MB", $NF/1024}') peak RSS"
+            echo "FastQC: $(grep 'peak MB' fastqc-mem.txt | awk '{print $3}') MB peak (container cgroup)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 scripts/compare_fastqc.py fastqc leanqc > /dev/null
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qc-reports
+          path: |
+            leanqc/
+            fastqc/*.html
+
+  sheetgen-bacass:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space (bacass pulls ~16 GB of containers)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p sheetgen
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Nextflow and pull nf-core/bacass 2.7.0
+        run: |
+          curl -s https://get.nextflow.io | bash
+          sudo mv nextflow /usr/local/bin/
+          nextflow pull nf-core/bacass -r 2.7.0
+      - name: Build a messy reads folder
+        run: |
+          mkdir -p dl messy/run1 "messy/run2/batch b"
+          for f in ERR064912_1M_1 ERR064912_1M_2 ERR044595_1M_1 ERR044595_1M_2; do
+            curl -sfL "$TESTDATA/$f.fastq.gz" -o "dl/$f.fastq.gz"
+          done
+          A=$PWD/dl/ERR064912_1M_1.fastq.gz; B=$PWD/dl/ERR064912_1M_2.fastq.gz
+          C=$PWD/dl/ERR044595_1M_1.fastq.gz; D=$PWD/dl/ERR044595_1M_2.fastq.gz
+          ln -s "$A" messy/run1/Ecoli-A_S1_L001_R1_001.fastq.gz; ln -s "$B" messy/run1/Ecoli-A_S1_L001_R2_001.fastq.gz
+          ln -s "$A" messy/run1/Ecoli-A_S1_L002_R1_001.fastq.gz; ln -s "$B" messy/run1/Ecoli-A_S1_L002_R2_001.fastq.gz
+          ln -s "$A" messy/run1/Ecoli-A_S1_L001_I1_001.fastq.gz
+          ln -s "$C" messy/run2/ERR044595_1.fastq.gz; ln -s "$D" messy/run2/ERR044595_2.fastq.gz
+          ln -s "$C" "messy/run2/batch b/iso 7_R1.fq.gz"; ln -s "$D" "messy/run2/batch b/iso 7_R2.fq.gz"
+          ln -s "$C" messy/run2/orphan_R1.fastq.gz
+      - name: sheetgen must reject paths with spaces (bacass forbids them)
+        run: |
+          if target/release/sheetgen messy --pipeline nf-core/bacass -o /dev/null; then
+            echo "expected a schema error"; exit 1
+          fi
+      - name: sheetgen with clean links
+        run: |
+          target/release/sheetgen messy --pipeline nf-core/bacass --link-into links -o sheet.tsv
+          cat sheet.tsv
+      - name: nf-core/bacass accepts the sheet (stub run)
+        run: |
+          nextflow run nf-core/bacass -r 2.7.0 -profile test,docker -stub-run \
+            --input sheet.tsv --outdir out -ansi-log false | tee bacass.log
+          grep -E "Pipeline completed successfully" bacass.log
+          {
+            echo "## sheetgen → nf-core/bacass 2.7.0 (stub run)"
+            echo
+            echo '```'
+            cat sheet.tsv
+            echo '```'
+            echo
+            grep -E '^\[SUCCESS\]' bacass.log || true
+            echo "Lane-merge steps run: $(grep -c 'CAT_FASTQ_SHORT' bacass.log || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dblock-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p dblock
+      - name: Fetch, verify, env
+        env:
+          DBLOCK_STORE: ${{ runner.temp }}/store
+        run: |
+          B=$PWD/target/release/dblock; mkdir proj && cd proj
+          $B add kraken2-viral-20261022 card-4.0.2 silva-144-qiime2-v4
+          $B plan
+          $B fetch
+          $B verify
+          $B env
+          cat dblock.lock
+      - name: Streaming, resume, and a wrong checksum
+        env:
+          DBLOCK_STORE: ${{ runner.temp }}/store2
+        run: |
+          B=$PWD/target/release/dblock; mkdir proj2 && cd proj2
+          cat > test-catalog.json <<'EOF'
+          [{"id": "test-card-wrong-md5", "name": "CARD with a deliberately wrong checksum", "version": "4.0.2", "tool": "RGI",
+            "urls": ["https://card.mcmaster.ca/download/0/broadstreet-v4.0.2.tar.bz2"], "format": "tar.bz2",
+            "size": 4366637, "extracted": 50292963, "md5": "00000000000000000000000000000000",
+            "md5_source": "deliberately wrong", "env": null, "compat": null, "licence": "test"}]
+          EOF
+          $B --catalog test-catalog.json add card-4.0.2 kraken2-viral-20261022 test-card-wrong-md5
+          $B --catalog test-catalog.json fetch --stream card-4.0.2
+          timeout 5 $B --catalog test-catalog.json fetch kraken2-viral-20261022 || true
+          $B --catalog test-catalog.json fetch kraken2-viral-20261022 2>&1 | tee resume.log
+          grep -q "resuming at" resume.log
+          if $B --catalog test-catalog.json fetch test-card-wrong-md5; then echo "wrong checksum was accepted"; exit 1; fi
+          test ! -e "$DBLOCK_STORE/test-card-wrong-md5"
+      - name: GTDB R232 mock database (GTDBTk#726)
+        env:
+          DBLOCK_STORE: ${{ runner.temp }}/store3
+        run: |
+          B=$PWD/target/release/dblock; mkdir proj3 && cd proj3
+          $B add gtdbtk-r232-mockup
+          if $B fetch; then
+            echo "::notice::GTDB's mock database now matches its published checksum: GTDBTk#726 looks fixed; update the catalog note."
+          else
+            echo "::notice::Still mismatched (GTDBTk#726); dblock correctly refuses it."
+          fi
