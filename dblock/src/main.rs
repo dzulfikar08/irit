@@ -498,6 +498,7 @@ mod remove_tests {
             licence: String::new(),
             non_commercial: false,
             verify_dirs: Default::default(),
+            parts: Vec::new(),
         }
     }
 

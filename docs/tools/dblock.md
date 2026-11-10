@@ -81,6 +81,54 @@ GTDB-Tk's 100 GB on an SSD). Archive
 entries that would land outside that folder (absolute paths, `..`) are refused. A checksum mismatch
 is never retried against a mirror: a mirror serving the same bad file wouldn't fix it.
 
+### Formats
+
+`tar.gz`, `tar.bz2`, `tar.xz`, `tar.zst`, or `file` (kept as downloaded). All archive formats work
+in both modes. `tar.zst` archives made with a long window (`zstd --long=N`) decode without extra
+settings: dblock raises libzstd's decoder window limit from its default 2^27 (128 MiB) to 2^31
+(2^30 on 32-bit systems). The limit is only a ceiling; the decoder allocates the window the archive
+declares.
+
+### Multi-part entries (`parts`)
+
+An entry can be several archives that unpack into one database folder:
+
+```json
+{
+  "id": "gtdbtk-r232-placement-lite",
+  "format": "tar.zst",
+  "base_url": "https://github.com/dzulfikar08/irit-data/releases/download/gtdbtk-r232-placement-v1",
+  "parts": [
+    {"file": "gtdbtk-r232-core.tar.zst", "size": 21376819,
+     "md5": "d68a374abc0946aaec5ad59606754b8d", "sha256": "419925c6..."},
+    {"url": "https://elsewhere.example/other.tar.zst", "size": 1, "md5": "..."}
+  ],
+  ...
+}
+```
+
+Each part gives `url`, or `file` (appended to `base_url`); `size`; `md5`; and optionally
+`sha256`, which is then checked as well. The entry has no `urls`. Its `size` is the sum of the
+parts, and its `md5` is the MD5 of the parts' `MD5SUMS` lines (`<md5>  <file>\n`, in catalog
+order); both are filled in when left out, and refused if given and wrong. That combined MD5 is
+what the marker and lock entry record as `archive_md5`, so a different set of parts is a
+different release. The lock entry also lists every part (`[[database.part]]`: file, URL, bytes,
+MD5, SHA-256).
+
+The whole entry is one database: one folder, one lock, one marker, one manifest and SHA-256 list,
+and `verify_dirs` checked once over the combined folder. In download mode every part is
+downloaded and checked before any is unpacked. Each part resumes on its own, and a part that is
+already complete is re-read from disk instead of downloaded again, so a fetch that fails on part 7
+keeps parts 1–6 under `.partial/` for the next run. A part whose checksum doesn't match is
+deleted. In stream mode the parts are streamed one after another into the same temporary folder.
+Either way the folder takes its final name only after every part has passed, and the folder
+hashes match; any failure keeps nothing in the store. `plan` counts the sum of the parts'
+sizes, and `extracted` (or `kept_size`) is for the whole entry.
+
+Parts are unpacked in order and may share folders, but a file may appear in only one part. A
+read-only folder entry in one part would stop a later part from writing into it; the GTDB mirror
+archives hold no folder entries.
+
 ### Keeping part of an archive (`keep`)
 
 A catalog entry can list `keep`: paths inside the archive (e.g. `release232_mockup/markers`).
@@ -158,6 +206,8 @@ Every URL, size and checksum in the built-in catalog was checked against the pub
 |---|---|---|---|
 | `gtdbtk-r232` | 60.8 GB | ~100 GB | GTDB-Tk ≥ 2.7.0 (2.7.1+ recommended). Needs ~140 GB RAM to run: see [GTDB-Tk and memory](../research/gtdbtk-memory.md). |
 | `gtdbtk-r232-client` | 26 MB | 80 MB | Client data for [gtdbprep](gtdbprep.md): `markers/`, `masks/`, `metadata/`, `taxonomy/` from the mockup archive. **Can't classify.** MD5 observed, not published; see below. |
+| `gtdbtk-r232-placement` | 280 MB (12 parts) | 7.4 GB | **Unofficial mirror** of GTDB-Tk's placement folders; no ANI database or MSAs, so classification stops at genus. See below. |
+| `gtdbtk-r232-placement-lite` | 175 MB (11 parts) | 5.9 GB | Same without the full bacterial tree (no `--full_tree`). |
 | `gtdbtk-r232-mockup` | 26 MB | ~120 MB | Test database. Currently refused: the served file doesn't match GTDB's checksum ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)). For gtdbprep use `gtdbtk-r232-client` (below). |
 | `checkm2-db-v3` | 1.7 GB | ~3.5 GB | CheckM2 ≥ 1.1.0 only. |
 | `silva-144-qiime2-full` | 274 MB | same | QIIME 2 ≥ 2026.4. |
@@ -199,8 +249,52 @@ the catalog is updated. To fetch a corrected file sooner, copy the built-in entr
 (a one-element list), change `md5` and `md5_source`, and pass it with `--catalog`; an entry with
 the same id there replaces the built-in one.
 
+### `gtdbtk-r232-placement` and `-lite`: GTDB placement data from a mirror
+
+GTDB-Tk's tree placement needs 7.4 GB of the 100 GB R232 package; the rest is the skani ANI
+database (85 GB) and the reference MSAs (8 GB), see
+[GTDB R232 placement in 8.5 GB](../research/gtdb-placement-test.md). GTDB serves the package only
+as one 60.8 GB gzip stream, so these entries fetch the placement folders from an **unofficial
+mirror**: [`dzulfikar08/irit-data`, release `gtdbtk-r232-placement-v1`](https://github.com/dzulfikar08/irit-data/releases/tag/gtdbtk-r232-placement-v1),
+12 `.tar.zst` archives (zstd -19, `--long=27`) that unpack into one `release232/` folder.
+
+The data is GTDB's, unmodified: **Genome Taxonomy Database (GTDB), https://gtdb.ecogenomic.org,
+CC BY-SA 4.0**, taken from
+[`gtdbtk_r232_data.tar.gz`](https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz).
+The mirror is not run or endorsed by GTDB; cite GTDB and GTDB-Tk for results. The release also
+has `SHA256SUMS`, `MD5SUMS`, `MANIFEST.tsv` (every file's SHA-256) and `FOLDER_HASHES.tsv`.
+
+Trust: the parts' MD5 and SHA-256 come from the mirror, which GTDB doesn't publish for these
+archives, so they only show that the download is the file the mirror published. What ties the
+contents to GTDB is `verify_dirs`: `markers`, `masks`, `metadata`, `mrca_red`, `pplacer`, `radii`
+and `taxonomy` must match GTDB-Tk 2.8.0's own `REF_HASHES`, the same check `gtdbtk check_install`
+does. `split/` has no `REF_HASHES` value; its hash (`c91ff434...`) is the mirror's
+`FOLDER_HASHES.tsv` value, recomputed by dblock with the same `sha1_dir`, so it catches damage
+but is not independent of the mirror.
+
+| | `gtdbtk-r232-placement` | `gtdbtk-r232-placement-lite` |
+|---|---|---|
+| Parts | 12 | 11 (no `gtdbtk-r232-pplacer-bac120-full-tree.tar.zst`) |
+| Download | 279,636,147 bytes | 175,495,212 bytes |
+| Unpacked | 7,368,346,876 bytes | 5,887,238,603 bytes (251 files) |
+| `GTDBTK_DATA_PATH` | `<store>/gtdbtk-r232-placement/release232` | `.../gtdbtk-r232-placement-lite/release232` |
+| Folder hashes checked | 8 (7 against `REF_HASHES`, plus `split`) | 7 (`pplacer` left out) |
+| `classify --full_tree` | yes | no |
+
+The lite entry leaves out the full 379,594-node bacterial tree (1.48 GB unpacked), which only
+`--full_tree` uses; the default split-tree run (backbone, then the 8 class-level trees) and the
+archaeal tree work. Its `pplacer/` then holds only `gtdb_r232_ar53.refpkg`, and GTDB-Tk's
+`pplacer` hash covers both trees, so it can't match: `pplacer` is not in the lite entry's
+`verify_dirs` (the archaeal tree is covered by its part's MD5 and SHA-256 only). For the same
+reason `gtdbtk check_install` reports `pplacer` as wrong on a lite folder.
+
+What these can't do: without `skani/` there is no ANI species screen, so classification stops at
+genus (species stays `s__`), and GTDB-Tk 2.8's `classify` has no option to skip the screen; the
+research page shows the small launcher it used, and how gPlace stood in for pplacer with every
+placement step under an 8.5 GiB cap. Compat: GTDB-Tk ≥ 2.7.0.
+
 Not in the catalog yet: the AMRFinderPlus database (a folder of files without checksums; use
-`amrfinder_update`), GTDB-Tk's 12-part split download.
+`amrfinder_update`).
 
 ## Tested
 
@@ -217,6 +311,8 @@ Against the real servers on 2026-11-10:
 | GTDB mock database with GTDB's published checksum | **Rejected: real upstream mismatch** (see [report](../research/upstream-reports.md)) |
 | `gtdbtk-r232-client` from the real 26 MB archive (served locally), both modes | 188 files, 79,826,896 bytes kept; all three folder hashes match, and GTDB-Tk 2.8.0's own `sha1_dir` gives the same values on the result |
 | One byte of a `masks/` file changed, then `verify --deep` | Reported as a folder hash mismatch for `masks/` |
+| `gtdbtk-r232-placement-lite` from the GitHub mirror (download mode) | 11 parts, 175 MB in 2 min 5 s; every part's MD5 and SHA-256 ok; 251 files, 5,887,238,603 bytes; all 7 folder hashes match; `verify --deep` ok; every file's SHA-256 matches the mirror's `MANIFEST.tsv` |
+| `pplacer/` of the full entry (bac120 part unpacked next to the ar53 refpkg) | `4e8ffa11...`, GTDB-Tk 2.8.0's `REF_HASHES` value (hashed with a Python re-typing of `sha1_dir`, not by a dblock fetch of the full entry) |
 
 The test suite also runs fetches against a local HTTP server: two fetches of one database at
 once (one download, the other waits and reuses it), an MD5 written in upper case, a leftover partial
@@ -225,7 +321,12 @@ the SHA-256 list), and a `glob:` entry that matches two files (an error, not a s
 folder), `keep` in both modes (only listed folders written, skipped entries still checksummed, a
 `keep` path that matches nothing, a read-only kept folder, symlinks and hard links out of the kept
 folders refused), `verify_dirs` passing and failing (nothing kept on mismatch) and outside `keep`
-(catalog refused), and `verify --deep` reporting an unreadable database and going on to the next.
+(catalog refused), `verify --deep` reporting an unreadable database and going on to the next,
+`tar.zst` archives made with a 2^28 window (which a default zstd decoder refuses) in both modes,
+and multi-part entries: three parts into one folder in both modes, a corrupt part (same size, one
+byte changed; nothing kept, with MD5 alone and with MD5 + SHA-256), resuming after it (a complete
+part re-read from disk, a partial one resumed with a `Range` request), a folder hash mismatch
+across parts, and the catalog's checks on parts.
 `sha1_dir` is cross-checked against GTDB-Tk's Python function when `GTDBTK_PYTHON` (or
 `/tmp/mm/gtdbtk/bin/python`) has GTDB-Tk installed; otherwise that test is skipped.
 

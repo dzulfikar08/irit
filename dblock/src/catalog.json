@@ -93,6 +93,215 @@
     "notes": "Client data for gtdbprep (`gtdbprep prep --data <path>`): the four folders GTDB-Tk's identify and align stages read, taken from GTDB's mock database archive. Not enough to classify: classify and classify_wf need the full gtdbtk-r232 package. taxonomy/ is the mockup's 5-line stub and has no REF_HASHES value (GTDB-Tk only uses it to refuse genome IDs equal to GTDB accessions). No GTDBTK_DATA_PATH export, so it can't shadow a full package in the same project; pass the path from `dblock env` to gtdbprep's --data."
   },
   {
+    "id": "gtdbtk-r232-placement",
+    "name": "GTDB-Tk R232 placement data (unofficial mirror: no ANI database, no MSAs)",
+    "version": "R232",
+    "tool": "GTDB-Tk",
+    "format": "tar.zst",
+    "base_url": "https://github.com/dzulfikar08/irit-data/releases/download/gtdbtk-r232-placement-v1",
+    "parts": [
+      {
+        "file": "gtdbtk-r232-core.tar.zst",
+        "size": 21376819,
+        "md5": "d68a374abc0946aaec5ad59606754b8d",
+        "sha256": "419925c64af60ded02344c078b6bb5279db8c601a2b62fcb832c329f38b42d07"
+      },
+      {
+        "file": "gtdbtk-r232-split-backbone.tar.zst",
+        "size": 14214599,
+        "md5": "e69e0e6278ade903c75a52ec997c679b",
+        "sha256": "190b4cf4d8ea6637943dfc1afe67266e76d4ffbf8d487ede862e6e4a2b41cf99"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-1.tar.zst",
+        "size": 15185625,
+        "md5": "defeac46384965c92be880c0ad5b4801",
+        "sha256": "a462910d42ff11b347e6b02fc72df5bb7a033eee8c6bfa4b3de054b0b2a56345"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-2.tar.zst",
+        "size": 17640629,
+        "md5": "5f405694d743f3c72670efd3e353ac3f",
+        "sha256": "d0144a0e0740290c37c74af24cf68ccae059b355dbc80ecb700e663eea30dedd"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-3.tar.zst",
+        "size": 15728505,
+        "md5": "a0f1cdff996b2b7fe43838b4544e3aa9",
+        "sha256": "fb32f18aeeb35c6e8ae4f0fa987e0ae73f45fd47806d0d36975b04222a09a1cc"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-4.tar.zst",
+        "size": 17758621,
+        "md5": "397b4a36b372bb93e3d5a3caac3162e4",
+        "sha256": "81d4d77bf0f18f4a1b1cd8f7569b05568e7684acab85bb94be4220344e2525f6"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-5.tar.zst",
+        "size": 15825533,
+        "md5": "1894109c5bfa8d47f1dc0278b1c47bae",
+        "sha256": "7d8a8cd07c96480e9d694c76a5821bb2f1d2ab653ce3b95ae381235a88f96231"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-6.tar.zst",
+        "size": 21526286,
+        "md5": "80fa68725f1f1ddb2584f00063995765",
+        "sha256": "749d190d6855bee0d75fee0975b5ba43a1a7390b76ef21b8b99380281ab541cf"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-7.tar.zst",
+        "size": 15429667,
+        "md5": "6d55bd9b2f3469aeff313f3485f2a1dd",
+        "sha256": "faa0a40ce58df7b3ba6ad26edf612bc5e14180d372bb067f3f08d63fba27de2e"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-8.tar.zst",
+        "size": 16008572,
+        "md5": "4f3cf608442f6b36db5964fe65a64448",
+        "sha256": "abd7120dd7c802897ef5a3da8fa4c0f58c1d5aac057026f6fc035831094bbbc6"
+      },
+      {
+        "file": "gtdbtk-r232-pplacer-ar53.tar.zst",
+        "size": 4800356,
+        "md5": "2d2fc1917514ec8907aaca7259811564",
+        "sha256": "0046599fbd7216d84760e56912adfe1456706265bf9ca085131e90abb2e50d43"
+      },
+      {
+        "file": "gtdbtk-r232-pplacer-bac120-full-tree.tar.zst",
+        "size": 104140935,
+        "md5": "b2eda367bdeb6ab8a21c636bbde6a307",
+        "sha256": "9cde34d87adcd7ca8a65eef9e7238d447c75f9db462cfd85ea9096931be9a77f"
+      }
+    ],
+    "size": 279636147,
+    "extracted": 7368346876,
+    "md5_source": "https://github.com/dzulfikar08/irit-data/releases/tag/gtdbtk-r232-placement-v1 (the mirror release's MD5SUMS and SHA256SUMS; GTDB publishes no checksums for these archives. The folder hashes in verify_dirs are GTDB-Tk 2.8.0's REF_HASHES, independent of the mirror)",
+    "env": "GTDBTK_DATA_PATH",
+    "env_points_to": "dir",
+    "compat": {
+      "command": [
+        "gtdbtk",
+        "--version"
+      ],
+      "min": "2.7.0",
+      "source": "https://ecogenomics.github.io/GTDBTk/installing/index.html"
+    },
+    "licence": "CC BY-SA 4.0. Data by the Genome Taxonomy Database (GTDB, https://gtdb.ecogenomic.org; Parks et al.), from https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz; repackaged unmodified by an unofficial mirror, not by GTDB.",
+    "non_commercial": false,
+    "verify_dirs": {
+      "release232/markers": "163f542c3f0a40f59df45d453aa235b39aa96e27",
+      "release232/masks": "84c7f7a17adc134db4161b15db10ae58389a90c1",
+      "release232/metadata": "1febdba7d2513a8f43c409423aee83ed99df7a78",
+      "release232/mrca_red": "10a0fc1ca4199ff33e6c2fc4bc933318962ab212",
+      "release232/pplacer": "4e8ffa1133f10bde827bddb81413d06d62de341e",
+      "release232/radii": "546c1769ae19c946ba94b91482f32002a204f598",
+      "release232/split": "c91ff434f882be8bb95307dac44467784708e89e",
+      "release232/taxonomy": "c1e1766fa610229cb7cb45edc9a8fa0eafb44c96"
+    },
+    "notes": "Unofficial mirror of GTDB-Tk R232's placement folders (markers, masks, metadata, mrca_red, pplacer, radii, split, taxonomy), split into 12 zstd archives so they can be fetched without the 60.8 GB package. Unmodified; no skani ANI database and no msa folder. Works with gPlace as the placer in under ~8.5 GiB of RAM (docs/research/gtdb-placement-test.md). Without the ANI screen, classification stops at genus (species stays s__). GTDB-Tk 2.8 classify has no option to skip the ANI screen, so it needs the small skip_ani_screen launcher described on that page. split/ has no REF_HASHES value; its hash is the mirror's FOLDER_HASHES.tsv value, recomputed with the same sha1_dir. Includes the full bacterial tree (pplacer/gtdb_r232_bac120.refpkg) for --full_tree."
+  },
+  {
+    "id": "gtdbtk-r232-placement-lite",
+    "name": "GTDB-Tk R232 placement data without the full bacterial tree (unofficial mirror; no --full_tree)",
+    "version": "R232",
+    "tool": "GTDB-Tk",
+    "format": "tar.zst",
+    "base_url": "https://github.com/dzulfikar08/irit-data/releases/download/gtdbtk-r232-placement-v1",
+    "parts": [
+      {
+        "file": "gtdbtk-r232-core.tar.zst",
+        "size": 21376819,
+        "md5": "d68a374abc0946aaec5ad59606754b8d",
+        "sha256": "419925c64af60ded02344c078b6bb5279db8c601a2b62fcb832c329f38b42d07"
+      },
+      {
+        "file": "gtdbtk-r232-split-backbone.tar.zst",
+        "size": 14214599,
+        "md5": "e69e0e6278ade903c75a52ec997c679b",
+        "sha256": "190b4cf4d8ea6637943dfc1afe67266e76d4ffbf8d487ede862e6e4a2b41cf99"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-1.tar.zst",
+        "size": 15185625,
+        "md5": "defeac46384965c92be880c0ad5b4801",
+        "sha256": "a462910d42ff11b347e6b02fc72df5bb7a033eee8c6bfa4b3de054b0b2a56345"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-2.tar.zst",
+        "size": 17640629,
+        "md5": "5f405694d743f3c72670efd3e353ac3f",
+        "sha256": "d0144a0e0740290c37c74af24cf68ccae059b355dbc80ecb700e663eea30dedd"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-3.tar.zst",
+        "size": 15728505,
+        "md5": "a0f1cdff996b2b7fe43838b4544e3aa9",
+        "sha256": "fb32f18aeeb35c6e8ae4f0fa987e0ae73f45fd47806d0d36975b04222a09a1cc"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-4.tar.zst",
+        "size": 17758621,
+        "md5": "397b4a36b372bb93e3d5a3caac3162e4",
+        "sha256": "81d4d77bf0f18f4a1b1cd8f7569b05568e7684acab85bb94be4220344e2525f6"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-5.tar.zst",
+        "size": 15825533,
+        "md5": "1894109c5bfa8d47f1dc0278b1c47bae",
+        "sha256": "7d8a8cd07c96480e9d694c76a5821bb2f1d2ab653ce3b95ae381235a88f96231"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-6.tar.zst",
+        "size": 21526286,
+        "md5": "80fa68725f1f1ddb2584f00063995765",
+        "sha256": "749d190d6855bee0d75fee0975b5ba43a1a7390b76ef21b8b99380281ab541cf"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-7.tar.zst",
+        "size": 15429667,
+        "md5": "6d55bd9b2f3469aeff313f3485f2a1dd",
+        "sha256": "faa0a40ce58df7b3ba6ad26edf612bc5e14180d372bb067f3f08d63fba27de2e"
+      },
+      {
+        "file": "gtdbtk-r232-split-class-level-8.tar.zst",
+        "size": 16008572,
+        "md5": "4f3cf608442f6b36db5964fe65a64448",
+        "sha256": "abd7120dd7c802897ef5a3da8fa4c0f58c1d5aac057026f6fc035831094bbbc6"
+      },
+      {
+        "file": "gtdbtk-r232-pplacer-ar53.tar.zst",
+        "size": 4800356,
+        "md5": "2d2fc1917514ec8907aaca7259811564",
+        "sha256": "0046599fbd7216d84760e56912adfe1456706265bf9ca085131e90abb2e50d43"
+      }
+    ],
+    "size": 175495212,
+    "extracted": 5887238603,
+    "md5_source": "https://github.com/dzulfikar08/irit-data/releases/tag/gtdbtk-r232-placement-v1 (the mirror release's MD5SUMS and SHA256SUMS; GTDB publishes no checksums for these archives. The folder hashes in verify_dirs are GTDB-Tk 2.8.0's REF_HASHES, independent of the mirror)",
+    "env": "GTDBTK_DATA_PATH",
+    "env_points_to": "dir",
+    "compat": {
+      "command": [
+        "gtdbtk",
+        "--version"
+      ],
+      "min": "2.7.0",
+      "source": "https://ecogenomics.github.io/GTDBTk/installing/index.html"
+    },
+    "licence": "CC BY-SA 4.0. Data by the Genome Taxonomy Database (GTDB, https://gtdb.ecogenomic.org; Parks et al.), from https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz; repackaged unmodified by an unofficial mirror, not by GTDB.",
+    "non_commercial": false,
+    "verify_dirs": {
+      "release232/markers": "163f542c3f0a40f59df45d453aa235b39aa96e27",
+      "release232/masks": "84c7f7a17adc134db4161b15db10ae58389a90c1",
+      "release232/metadata": "1febdba7d2513a8f43c409423aee83ed99df7a78",
+      "release232/mrca_red": "10a0fc1ca4199ff33e6c2fc4bc933318962ab212",
+      "release232/radii": "546c1769ae19c946ba94b91482f32002a204f598",
+      "release232/split": "c91ff434f882be8bb95307dac44467784708e89e",
+      "release232/taxonomy": "c1e1766fa610229cb7cb45edc9a8fa0eafb44c96"
+    },
+    "notes": "Unofficial mirror of GTDB-Tk R232's placement folders (markers, masks, metadata, mrca_red, pplacer, radii, split, taxonomy), split into 12 zstd archives so they can be fetched without the 60.8 GB package. Unmodified; no skani ANI database and no msa folder. Works with gPlace as the placer in under ~8.5 GiB of RAM (docs/research/gtdb-placement-test.md). Without the ANI screen, classification stops at genus (species stays s__). GTDB-Tk 2.8 classify has no option to skip the ANI screen, so it needs the small skip_ani_screen launcher described on that page. split/ has no REF_HASHES value; its hash is the mirror's FOLDER_HASHES.tsv value, recomputed with the same sha1_dir. Lite: leaves out the full bacterial tree archive (104 MB download, 1.48 GB unpacked), so `classify --full_tree` won't work; the default split-tree run (backbone + class-level trees) and archaea do. pplacer/ then holds only gtdb_r232_ar53.refpkg, so its REF_HASHES value (which covers both trees) can't match and pplacer is not in verify_dirs; the archaeal tree is still covered by its part's MD5 and SHA-256."
+  },
+  {
     "id": "checkm2-db-v3",
     "name": "CheckM2 DIAMOND database (UniRef100/KO), version 3",
     "version": "3",
