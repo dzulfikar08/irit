@@ -2,14 +2,16 @@
 # Install the prebuilt irit tools from GitHub Releases (no compiling, no sudo).
 #   curl -fsSL https://raw.githubusercontent.com/dzulfikar08/irit/main/scripts/install.sh | sh
 #   curl -fsSL .../install.sh | IRIT_VERSION=v0.2.0 sh    # a given release (default: the latest)
-#   curl -fsSL .../install.sh | sh -s -- --no-gui          # command-line tools only, no msaview
+#   curl -fsSL .../install.sh | sh -s -- --no-gui          # command-line tools only, no msascope
 #   curl -fsSL .../install.sh | sh -s -- --uninstall       # remove what this script installed
 #
 # Installs sheetgen, leanqc, isotable, dblock, irit-mcp, gtdbprep and irit-gtdb-prep into
-# $PREFIX/bin (PREFIX defaults to ~/.local), plus the msaview viewer:
-#   macOS: $IRIT_APPS/msaview.app (default ~/Applications; signed and notarised) and a
-#          $PREFIX/bin/msaview link to it.
-#   Linux: $PREFIX/bin/msaview (x86_64 and aarch64; needs glibc 2.39+ and a GPU driver).
+# $PREFIX/bin (PREFIX defaults to ~/.local), plus the msascope viewer:
+#   macOS: $IRIT_APPS/msascope.app (default ~/Applications; signed and notarised) and a
+#          $PREFIX/bin/msascope link to it.
+#   Linux: $PREFIX/bin/msascope (x86_64 and aarch64; needs glibc 2.39+ and a GPU driver).
+# Releases up to v0.2.1 call the viewer msaview; for those it is installed under that name.
+# Installing one name removes the other if this script installed it (msaview -> msascope).
 # Linux command-line tools are static (musl) and run on any distribution. Every download is
 # checked against the release's SHA256SUMS. Windows: download irit-x86_64-windows.zip from
 # https://github.com/dzulfikar08/irit/releases instead. Prebuilt archives in this layout exist
@@ -26,16 +28,19 @@ bindir="$prefix/bin"
 apps="${IRIT_APPS:-$HOME/Applications}"
 manifest="$prefix/share/irit/installed-files"
 clis="sheetgen leanqc isotable dblock irit-mcp gtdbprep irit-gtdb-prep"
-app_id="com.dzulfikar.irit.msaview"
+# Viewer names: msascope in releases after v0.2.1, msaview up to v0.2.1. The bundle id goes
+# with the name.
+viewers="msascope msaview"
+app_id_of() { echo "com.dzulfikar.irit.$1"; }
 
 usage() {
   cat <<EOF
 usage: install.sh [--no-gui] [--uninstall] [-h|--help]
 
-Installs the irit command-line tools into \$PREFIX/bin (now $bindir) and the msaview viewer
-(macOS: $apps/msaview.app). IRIT_VERSION=vX.Y.Z picks a release (default: the latest).
+Installs the irit command-line tools into \$PREFIX/bin (now $bindir) and the msascope viewer
+(macOS: $apps/msascope.app). IRIT_VERSION=vX.Y.Z picks a release (default: the latest).
 
-  --no-gui     skip msaview
+  --no-gui     skip msascope
   --uninstall  remove the files this script installed (listed in $manifest)
   -h, --help   this help
 
@@ -70,8 +75,45 @@ sha256() {
   fi
 }
 
-is_ours_app() { # path to an .app: ours if its Info.plist names our bundle id
-  [ -f "$1/Contents/Info.plist" ] && grep -q "<string>$app_id</string>" "$1/Contents/Info.plist"
+is_ours_app() { # path to NAME.app: ours if its Info.plist names irit's bundle id for NAME
+  n="$(basename "$1" .app)"
+  [ -f "$1/Contents/Info.plist" ] && grep -q "<string>$(app_id_of "$n")</string>" "$1/Contents/Info.plist"
+}
+
+is_viewer() { # NAME: msascope, msaview or their .app
+  case " $viewers " in *" ${1%.app} "*) return 0 ;; esac
+  return 1
+}
+
+# remove_entry KIND PATH: remove one manifest entry if it is still what this script put there.
+remove_entry() {
+  kind="$1" path="$2"
+  name="$(basename "$path")"
+  case " $clis " in
+    *" $name "*) ;;
+    *) is_viewer "$name" || { note "skipping $path: not an irit file"; return 0; } ;;
+  esac
+  if [ ! -e "$path" ] && [ ! -L "$path" ]; then return 0; fi
+  case "$kind" in
+    link)
+      if [ -L "$path" ]; then
+        case "$(readlink "$path")" in
+          */"$name.app/Contents/MacOS/$name") rm -f "$path"; echo "removed $path" ;;
+          *) note "kept $path: it no longer points into $name.app" ;;
+        esac
+      else
+        note "kept $path: it was replaced by something else"
+      fi ;;
+    app)
+      if is_ours_app "$path"; then rm -rf "$path"; echo "removed $path"
+      else note "kept $path: not irit's $name"; fi ;;
+    *)
+      if [ -f "$path" ] && [ ! -L "$path" ] && [ "$(sha256 "$path")" = "$kind" ]; then
+        rm -f "$path"; echo "removed $path"
+      else
+        note "kept $path: it changed since this script installed it"
+      fi ;;
+  esac
 }
 
 # --- uninstall ------------------------------------------------------------------------------
@@ -80,35 +122,10 @@ if [ "$uninstall" = 1 ]; then
     echo "Nothing to remove: no irit installed by this script under $prefix ($manifest not found)."
     exit 0
   fi
-  # Each line: "<sha256> <path>" for a file, "link <path>" for the msaview link, "app <path>".
+  # Each line: "<sha256> <path>" for a file, "link <path>" for the viewer's link, "app <path>".
   while read -r kind path; do
     [ -n "$path" ] || continue
-    name="$(basename "$path")"
-    case " $clis msaview msaview.app " in
-      *" $name "*) ;;
-      *) note "skipping $path: not an irit file"; continue ;;
-    esac
-    if [ ! -e "$path" ] && [ ! -L "$path" ]; then continue; fi
-    case "$kind" in
-      link)
-        if [ -L "$path" ]; then
-          case "$(readlink "$path")" in
-            */msaview.app/Contents/MacOS/msaview) rm -f "$path"; echo "removed $path" ;;
-            *) note "kept $path: it no longer points into msaview.app" ;;
-          esac
-        else
-          note "kept $path: it was replaced by something else"
-        fi ;;
-      app)
-        if is_ours_app "$path"; then rm -rf "$path"; echo "removed $path"
-        else note "kept $path: not irit's msaview.app"; fi ;;
-      *)
-        if [ -f "$path" ] && [ ! -L "$path" ] && [ "$(sha256 "$path")" = "$kind" ]; then
-          rm -f "$path"; echo "removed $path"
-        else
-          note "kept $path: it changed since this script installed it"
-        fi ;;
-    esac
+    remove_entry "$kind" "$path"
   done < "$manifest"
   rm -f "$manifest"
   rmdir "$prefix/share/irit" "$prefix/share" 2>/dev/null || true
@@ -126,10 +143,10 @@ case "$(uname -m)" in
 esac
 if [ "$os" = macos ]; then
   cli_asset="irit-universal-macos.tar.gz"
-  gui_asset="msaview-universal-macos.tar.gz"
+  gui_suffix="universal-macos.tar.gz"
 else
   cli_asset="irit-${arch}-linux.tar.gz"
-  gui_asset="msaview-${arch}-linux.tar.gz"
+  gui_suffix="${arch}-linux.tar.gz"
 fi
 
 tag="${IRIT_VERSION:-}"
@@ -203,39 +220,55 @@ for b in $clis; do
 done
 
 gui_done=""
+gui_name=""
 if [ "$gui" = 1 ]; then
-  if [ -n "$(checksum_of "$gui_asset")" ]; then
+  # The release's viewer: msascope, or msaview in releases up to v0.2.1.
+  for v in $viewers; do
+    if [ -n "$(checksum_of "$v-$gui_suffix")" ]; then gui_name="$v"; break; fi
+  done
+  if [ -n "$gui_name" ]; then
+    g="$gui_name"
+    gui_asset="$g-$gui_suffix"
     gui_dir="$(fetch "$gui_asset" "$tmp/gui")" || exit 1
     if [ "$os" = macos ]; then
-      [ -d "$gui_dir/msaview.app" ] || die "$gui_asset holds no msaview.app"
-      if [ -e "$apps/msaview.app" ] && ! is_ours_app "$apps/msaview.app"; then
-        note "$apps/msaview.app is not irit's msaview: left alone, msaview not installed"
+      [ -d "$gui_dir/$g.app" ] || die "$gui_asset holds no $g.app"
+      if [ -e "$apps/$g.app" ] && ! is_ours_app "$apps/$g.app"; then
+        note "$apps/$g.app is not irit's $g: left alone, $g not installed"
       else
         mkdir -p "$apps"
-        rm -rf "$apps/msaview.app"
-        if command -v ditto >/dev/null 2>&1; then ditto "$gui_dir/msaview.app" "$apps/msaview.app"
-        else cp -R "$gui_dir/msaview.app" "$apps/msaview.app"; fi
-        printf 'app %s\n' "$apps/msaview.app" >> "$tmp/new-manifest"
-        if [ -e "$bindir/msaview" ] && [ ! -L "$bindir/msaview" ]; then note "replacing $bindir/msaview with a link to the app"; fi
-        ln -sf "$apps/msaview.app/Contents/MacOS/msaview" "$bindir/msaview"
-        printf 'link %s\n' "$bindir/msaview" >> "$tmp/new-manifest"
-        gui_done="$apps/msaview.app (command: msaview)"
+        rm -rf "$apps/$g.app"
+        if command -v ditto >/dev/null 2>&1; then ditto "$gui_dir/$g.app" "$apps/$g.app"
+        else cp -R "$gui_dir/$g.app" "$apps/$g.app"; fi
+        printf 'app %s\n' "$apps/$g.app" >> "$tmp/new-manifest"
+        if [ -e "$bindir/$g" ] && [ ! -L "$bindir/$g" ]; then note "replacing $bindir/$g with a link to the app"; fi
+        ln -sf "$apps/$g.app/Contents/MacOS/$g" "$bindir/$g"
+        printf 'link %s\n' "$bindir/$g" >> "$tmp/new-manifest"
+        gui_done="$apps/$g.app (command: $g)"
       fi
     else
-      [ -f "$gui_dir/msaview" ] || die "$gui_asset holds no msaview"
-      put "$gui_dir/msaview" "$bindir/msaview"
-      gui_done="$bindir/msaview"
-      if ! "$bindir/msaview" --help >/dev/null 2>&1; then
-        note "msaview was installed but does not start on this system. It needs glibc 2.39 or newer"
+      [ -f "$gui_dir/$g" ] || die "$gui_asset holds no $g"
+      put "$gui_dir/$g" "$bindir/$g"
+      gui_done="$bindir/$g"
+      if ! "$bindir/$g" --help >/dev/null 2>&1; then
+        note "$g was installed but does not start on this system. It needs glibc 2.39 or newer"
         note "(Ubuntu 24.04, Debian 13, Fedora 40 or later) and libxkbcommon, fontconfig and Vulkan."
       fi
     fi
   else
-    note "irit $tag has no msaview build for $os $arch ($gui_asset); installed the command-line tools only"
+    note "irit $tag has no viewer build for $os $arch (msascope-$gui_suffix); installed the command-line tools only"
   fi
 fi
 
-# Keep entries from earlier installs that weren't replaced now (e.g. msaview before --no-gui).
+# The viewer under its other name (msaview, before the rename), if this script installed it.
+if [ -n "$gui_done" ] && [ -f "$manifest" ]; then
+  while read -r kind path; do
+    [ -n "$path" ] || continue
+    n="$(basename "$path")"
+    if is_viewer "$n" && [ "${n%.app}" != "$gui_name" ]; then remove_entry "$kind" "$path"; fi
+  done < "$manifest"
+fi
+
+# Keep entries from earlier installs that weren't replaced now (e.g. msascope before --no-gui).
 if [ -f "$manifest" ]; then
   while read -r kind path; do
     [ -n "$path" ] || continue
@@ -247,7 +280,7 @@ cp "$tmp/new-manifest" "$manifest"
 
 echo
 echo "Installed irit $tag into $bindir:$installed"
-[ -z "$gui_done" ] || echo "msaview: $gui_done"
+[ -z "$gui_done" ] || echo "$gui_name: $gui_done"
 "$bindir/leanqc" --version 2>/dev/null || true
 
 case ":$PATH:" in

@@ -2,14 +2,14 @@
 # and has a dated `## X.Y.Z (YYYY-MM-DD)` section in CHANGELOG.md (not "(unreleased)"):
 #   git tag -a v0.2.0 -m "irit 0.2.0" && git push origin v0.2.0
 # The GitHub Release (notes = that CHANGELOG section) gets, each under a versioned name
-# (irit-X.Y.Z-..., msaview-X.Y.Z...) and an unversioned copy:
+# (irit-X.Y.Z-..., msascope-X.Y.Z...) and an unversioned copy:
 #   irit-x86_64-linux.tar.gz, irit-aarch64-linux.tar.gz   command-line tools, static (musl)
 #   irit-universal-macos.tar.gz                           command-line tools, universal,
 #                                                         Developer ID signed and notarised
 #   irit-x86_64-windows.zip                               sheetgen, leanqc, isotable, dblock (unsigned)
-#   msaview.dmg                                           msaview.app, universal, notarised, stapled
-#   msaview-universal-macos.tar.gz                        the same msaview.app (for install.sh)
-#   msaview-x86_64-linux.tar.gz, msaview-aarch64-linux.tar.gz   glibc 2.39+ (Ubuntu 24.04 builds)
+#   msascope.dmg                                           msascope.app, universal, notarised, stapled
+#   msascope-universal-macos.tar.gz                        the same msascope.app (for install.sh)
+#   msascope-x86_64-linux.tar.gz, msascope-aarch64-linux.tar.gz   glibc 2.39+ (Ubuntu 24.04 builds)
 #   SHA256SUMS                                            every archive above
 # The command-line archives hold sheetgen, leanqc, isotable, dblock, irit-mcp, gtdbprep and
 # irit-gtdb-prep (Windows: the first four; irit-mcp and gtdbprep are Unix-only).
@@ -21,7 +21,7 @@
 # The macOS job uses the `release` environment (Developer ID + App Store Connect secrets), which
 # only main and v* tags may use. dry_run=false is only accepted on a v* tag ref, to redo a
 # release whose tag push failed:  gh workflow run release.yml --ref v0.2.0 -f dry_run=false
-# (Ad-hoc, unsigned msaview builds: msaview.yml.)
+# (Ad-hoc, unsigned msascope builds: msascope.yml.)
 name: Release
 
 on:
@@ -158,7 +158,7 @@ jobs:
           retention-days: 30
 
   linux-gui:
-    name: linux msaview (${{ matrix.arch }})
+    name: linux msascope (${{ matrix.arch }})
     needs: check
     strategy:
       fail-fast: true
@@ -171,25 +171,25 @@ jobs:
     timeout-minutes: 60
     env:
       VERSION: ${{ needs.check.outputs.version }}
-      NAME: msaview-${{ needs.check.outputs.version }}-${{ matrix.arch }}-linux
+      NAME: msascope-${{ needs.check.outputs.version }}-${{ matrix.arch }}-linux
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: System libraries (as in msaview.yml)
+      - name: System libraries (as in msascope.yml)
         run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-msaview
+          key: release-msascope
           cache-on-failure: true
-      - run: cargo build --release --locked -p msaview --bin msaview
+      - run: cargo build --release --locked -p msascope --bin msascope
       - name: Smoke test
         run: |
           set -euo pipefail
-          file target/release/msaview
-          target/release/msaview --help
+          file target/release/msascope
+          target/release/msascope --help
       - name: Package
         run: |
-          ./scripts/package.sh "dist/${NAME}" target/release/msaview
+          ./scripts/package.sh "dist/${NAME}" target/release/msascope
           tar -tzf "dist/${NAME}.tar.gz"
       - uses: actions/upload-artifact@v4
         with:
@@ -255,7 +255,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - run: brew install librsvg   # rsvg-convert, for msaview.app's icon
+      - run: brew install librsvg   # rsvg-convert, for msascope.app's icon
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-macos-universal
@@ -276,7 +276,7 @@ jobs:
         run: |
           # Word splitting of the package and binary lists is intended.
           # shellcheck disable=SC2086
-          ./scripts/macos-universal.sh dist/universal $CLI_PKGS msaview -- $CLI_BINS msaview
+          ./scripts/macos-universal.sh dist/universal $CLI_PKGS msascope -- $CLI_BINS msascope
       - name: Sign and notarise the command-line tools
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
@@ -285,11 +285,11 @@ jobs:
           set -euo pipefail
           bins=(); for b in $CLI_BINS; do bins+=("dist/universal/$b"); done
           ./scripts/sign-macos.sh --notarize "${bins[@]}"
-      - name: Build, sign, notarise, staple (msaview.app + DMG)
+      - name: Build, sign, notarise, staple (msascope.app + DMG)
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-        run: ./scripts/build-dmg.sh --notarize --name "msaview-${VERSION}" dist/universal/msaview dist
+        run: ./scripts/build-dmg.sh --notarize --name "msascope-${VERSION}" dist/universal/msascope dist
       - name: Smoke test
         run: |
           set -euo pipefail
@@ -305,25 +305,25 @@ jobs:
           done
           # The x86_64 slices, through Rosetta when the runner has it.
           arch -x86_64 dist/universal/leanqc --version || echo "::warning::could not run the x86_64 slice (no Rosetta?)"
-          app_bin=dist/msaview.app/Contents/MacOS/msaview
+          app_bin=dist/msascope.app/Contents/MacOS/msascope
           lipo -archs "$app_bin"
           "$app_bin" --help > /dev/null
           # The DMG mounts and holds the signed, stapled app and the Applications link.
           mnt="$(mktemp -d)"
-          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "dist/msaview-${VERSION}.dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "dist/msascope-${VERSION}.dmg"
           ls -l "$mnt"
-          test -d "$mnt/msaview.app" && test -L "$mnt/Applications"
-          codesign --verify --strict "$mnt/msaview.app"
-          spctl --assess --type execute --verbose=2 "$mnt/msaview.app"
+          test -d "$mnt/msascope.app" && test -L "$mnt/Applications"
+          codesign --verify --strict "$mnt/msascope.app"
+          spctl --assess --type execute --verbose=2 "$mnt/msascope.app"
           hdiutil detach "$mnt"
-      - name: Tarballs (command-line tools; msaview.app for install.sh)
+      - name: Tarballs (command-line tools; msascope.app for install.sh)
         run: |
           set -euo pipefail
           bins=(); for b in $CLI_BINS; do bins+=("dist/universal/$b"); done
           ./scripts/package.sh "dist/irit-${VERSION}-universal-macos" "${bins[@]}"
-          ./scripts/package.sh "dist/msaview-${VERSION}-universal-macos" dist/msaview.app
+          ./scripts/package.sh "dist/msascope-${VERSION}-universal-macos" dist/msascope.app
           tar -tzf "dist/irit-${VERSION}-universal-macos.tar.gz"
-          tar -tzf "dist/msaview-${VERSION}-universal-macos.tar.gz" | head -20
+          tar -tzf "dist/msascope-${VERSION}-universal-macos.tar.gz" | head -20
       - name: Remove keychain and notary key
         if: always()
         run: ./scripts/ci-keychain.sh cleanup
@@ -331,9 +331,9 @@ jobs:
         with:
           name: release-macos
           path: |
-            dist/msaview-${{ env.VERSION }}.dmg
+            dist/msascope-${{ env.VERSION }}.dmg
             dist/irit-${{ env.VERSION }}-universal-macos.tar.gz
-            dist/msaview-${{ env.VERSION }}-universal-macos.tar.gz
+            dist/msascope-${{ env.VERSION }}-universal-macos.tar.gz
           if-no-files-found: error
           retention-days: 30
 
@@ -356,15 +356,15 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          for f in irit-"${VERSION}"-* msaview-"${VERSION}"*; do
+          for f in irit-"${VERSION}"-* msascope-"${VERSION}"*; do
             cp "$f" "$(printf '%s' "$f" | sed "s/-${VERSION}//")"
           done
           ls -l
-          sha256sum irit-*.tar.gz irit-*.zip msaview*.dmg msaview-*.tar.gz > SHA256SUMS
+          sha256sum irit-*.tar.gz irit-*.zip msascope*.dmg msascope-*.tar.gz > SHA256SUMS
           cat SHA256SUMS
           for f in irit-x86_64-linux.tar.gz irit-aarch64-linux.tar.gz irit-universal-macos.tar.gz \
-                   irit-x86_64-windows.zip msaview.dmg msaview-universal-macos.tar.gz \
-                   msaview-x86_64-linux.tar.gz msaview-aarch64-linux.tar.gz; do
+                   irit-x86_64-windows.zip msascope.dmg msascope-universal-macos.tar.gz \
+                   msascope-x86_64-linux.tar.gz msascope-aarch64-linux.tar.gz; do
             grep -q "  ${f}\$" SHA256SUMS || { echo "::error::missing $f"; exit 1; }
           done
           test "$(wc -l < SHA256SUMS)" -eq 16
@@ -388,11 +388,11 @@ jobs:
 
           - Linux command-line tools (static, any distribution): [x86_64](${dl}/irit-${VERSION}-x86_64-linux.tar.gz), [aarch64](${dl}/irit-${VERSION}-aarch64-linux.tar.gz)
           - macOS command-line tools (Apple Silicon and Intel, Developer ID signed and notarised): [irit-${VERSION}-universal-macos.tar.gz](${dl}/irit-${VERSION}-universal-macos.tar.gz)
-          - msaview for macOS (signed, notarised): [msaview-${VERSION}.dmg](${dl}/msaview-${VERSION}.dmg). Open it and drag msaview to Applications.
-          - msaview for Linux (glibc 2.39 or newer: Ubuntu 24.04, Debian 13, Fedora 40 or later): [x86_64](${dl}/msaview-${VERSION}-x86_64-linux.tar.gz), [aarch64](${dl}/msaview-${VERSION}-aarch64-linux.tar.gz)
+          - msascope for macOS (signed, notarised): [msascope-${VERSION}.dmg](${dl}/msascope-${VERSION}.dmg). Open it and drag msascope to Applications.
+          - msascope for Linux (glibc 2.39 or newer: Ubuntu 24.04, Debian 13, Fedora 40 or later): [x86_64](${dl}/msascope-${VERSION}-x86_64-linux.tar.gz), [aarch64](${dl}/msascope-${VERSION}-aarch64-linux.tar.gz)
           - Windows (sheetgen, leanqc, isotable, dblock): [irit-${VERSION}-x86_64-windows.zip](${dl}/irit-${VERSION}-x86_64-windows.zip). **Not code-signed**: SmartScreen may warn the first time you run them.
 
           Check downloads with \`sha256sum -c SHA256SUMS --ignore-missing\` (macOS: \`shasum -a 256 -c SHA256SUMS --ignore-missing\`). More, including checking the macOS signatures: https://dzulfikar08.github.io/irit/install/
           EOF
-          gh release create "$tag" dist/irit-*.tar.gz dist/irit-*.zip dist/msaview*.dmg dist/msaview-*.tar.gz dist/SHA256SUMS \
+          gh release create "$tag" dist/irit-*.tar.gz dist/irit-*.zip dist/msascope*.dmg dist/msascope-*.tar.gz dist/SHA256SUMS \
             --verify-tag --latest --title "irit ${VERSION}" --notes-file notes.md

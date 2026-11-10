@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- msaview app icon (irit project, GPL-3.0-or-later): rows of an alignment, one column
-     highlighted. Rendered to msaview.icns by scripts/macos-app.sh. -->
+<!-- msascope app icon (irit project, GPL-3.0-or-later): rows of an alignment, one column
+     highlighted. Rendered to msascope.icns by scripts/macos-app.sh. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <rect x="100" y="100" width="824" height="824" rx="184" fill="#14202b"/>
   <g transform="translate(203 258)">

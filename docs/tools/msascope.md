@@ -1,9 +1,12 @@
-# msaview: large alignment viewer
+# msascope: large alignment viewer
 
-`msaview` is a desktop viewer for multiple sequence alignments that stays smooth at sizes where the
+`msascope` is a desktop viewer for multiple sequence alignments that stays smooth at sizes where the
 usual viewers give up. 100,000 sequences × 30,000 columns loads in about 5 seconds into 1.6 GB of
 RAM. The whole alignment then pans at the display's 60 frames per second, from the full overview
 down to individual letters.
+
+It was called msaview up to irit 0.2.1. It was renamed because MSAView is the long-standing name of
+GMOD's web viewer (now JBrowseMSA, npm package `react-msaview`).
 
 ## Why
 
@@ -11,16 +14,16 @@ Jalview and AliView (Java) and SeaView show a few hundred rows comfortably, fail
 run out of memory, and stall somewhere between 10^4 and 10^5 sequences. Surveillance alignments
 (SARS-CoV-2, influenza, mpox) are now 10^5–10^6 genomes of ~30 kb. No native desktop viewer handles
 that size; a WebGL viewer (Alignment Viewer 2.0) reported 10–100× gains from drawing on the GPU, so
-`msaview` draws with GPUI, Zed's GPU-accelerated UI framework. See
+`msascope` draws with GPUI, Zed's GPU-accelerated UI framework. See
 [landscape](../research/landscape.md#2-viewers).
 
 ## Usage
 
 ```sh
-msaview alignment.fasta          # or .fa.gz, .aln (Clustal), .sto (Stockholm)
-msaview                          # then Open… (Ctrl+O)
-msaview alignment.fasta --stats  # load, print sizes and timings, exit (no window)
-msaview silk.fasta --type protein # residue type given instead of guessed: dna, rna or protein
+msascope alignment.fasta          # or .fa.gz, .aln (Clustal), .sto (Stockholm)
+msascope                          # then Open… (Ctrl+O)
+msascope alignment.fasta --stats  # load, print sizes and timings, exit (no window)
+msascope silk.fasta --type protein # residue type given instead of guessed: dna, rna or protein
 ```
 
 `--type` also applies to files opened later with Open….
@@ -146,7 +149,7 @@ Gzip loading is limited by decompression, which runs on one thread; the parsed b
 encoded in parallel. The gzip row is a single run; four loads of the plain file (one with
 `--stats`, three inside the viewer) took 5.1–5.4 s.
 
-Release binaries: `msaview` 36 MB (most of it GPUI and the bundled icon set), `msagen` 0.4 MB.
+Release binaries: `msascope` 36 MB (most of it GPUI and the bundled icon set), `msagen` 0.4 MB.
 
 Peak resident memory is the process's own high-water mark (`VmHWM`), also checked from outside
 with `getrusage` on the child process; MiB = 2^20 bytes.
@@ -160,7 +163,7 @@ with `getrusage` on the child process; MiB = 2^20 bytes.
 The viewer column is the high-water mark just after loading for the small file, and over the whole
 `--bench` session (four zoom levels of panning) for the large one.
 
-**Frame smoothness.** `msaview FILE --bench` opens the window and pans continuously, by 1/12 of
+**Frame smoothness.** `msascope FILE --bench` opens the window and pans continuously, by 1/12 of
 the view width and 1/24 of its height every frame for 240 frames, at four zoom levels; it records
 the time between frames and the time spent in the alignment's paint callback. On the 100,000 ×
 30,000 alignment:
@@ -195,16 +198,16 @@ Generated files are for testing only and are not kept in the repository.
 
 ## Installing
 
-The [installer](../install.md) puts `msaview` in place with the other tools: a signed, notarised
-`msaview.app` on macOS, a binary on Linux (x86_64 and aarch64). There is no Windows build yet.
+The [installer](../install.md) puts `msascope` in place with the other tools: a signed, notarised
+`msascope.app` on macOS, a binary on Linux (x86_64 and aarch64). There is no Windows build yet.
 
-Started without a file, msaview shows an empty window with **Open…** and **Try a sample** in the
+Started without a file, msascope shows an empty window with **Open…** and **Try a sample** in the
 toolbar. The sample is a synthetic 2,000 × 3,000 nucleotide alignment (written to the temp folder),
-generated the same way as `msagen`'s test files. On the command line: `msaview my_alignment.fa`.
+generated the same way as `msagen`'s test files. On the command line: `msascope my_alignment.fa`.
 
 ## Building
 
-`msaview` needs a desktop build environment (GPUI); the other irit tools do not. On
+`msascope` needs a desktop build environment (GPUI); the other irit tools do not. On
 Debian/Ubuntu, install `pkg-config libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev` first.
 This list comes from the build scripts and linked libraries, and is not yet confirmed on a clean
 Ubuntu install. macOS builds run on GitHub's runners for every release; Windows has not been built yet. The core library and `msagen` build without GPUI:
@@ -221,9 +224,9 @@ default size (1280 × 800). It shows 40 of the 73 sequences of Pfam's globin see
 ([PF00042](https://www.ebi.ac.uk/interpro/entry/pfam/PF00042/)), ordered by a tree computed from
 those rows for the drawing only.
 
-![Planned msaview main window, light theme: sequence names with a tree, Clustal X colours, a hover card, and an overview panel](../images/msaview/redesign-mockup-light.png)
+![Planned msascope main window, light theme: sequence names with a tree, Clustal X colours, a hover card, and an overview panel](../images/msascope/redesign-mockup-light.png)
 
-![The same window in the dark theme](../images/msaview/redesign-mockup-dark.png)
+![The same window in the dark theme](../images/msascope/redesign-mockup-dark.png)
 
 What the redesign adds, in order of priority:
 

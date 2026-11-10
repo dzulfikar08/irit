@@ -35,7 +35,7 @@ const folderOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')
  *   # Part                  -> group
  *   - [Label](dir/page.md)  -> link in that group
  * Pages in docs/ that SUMMARY.md doesn't list are still shown: in the group whose listed pages
- * all live in the same folder (so docs/tools/msaview.md joins "Tools"), otherwise in "More".
+ * all live in the same folder (so docs/tools/msascope.md joins "Tools"), otherwise in "More".
  */
 export function sidebarFromSummary() {
 	const summary = readFileSync(join(docsDir, 'SUMMARY.md'), 'utf8');

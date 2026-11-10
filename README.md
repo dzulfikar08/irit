@@ -13,7 +13,7 @@ Each command-line tool is one static Rust binary: no Java, no conda, no containe
 | [`dblock`](docs/tools/dblock.md) | Downloads, verifies and pins reference databases (GTDB-Tk, CheckM2, SILVA, Kraken 2, Bakta, CARD) with a lock file | Each tool's own downloader | 4.9 MB |
 | [`irit-mcp`](docs/tools/mcp.md) | Gives AI agents (any MCP client) the irit tools as typed, checked tools, and records every call with a `replay.sh` that reruns it without the AI | Agents calling CLIs through a free-form shell | 3.1 MB |
 | [`gtdbprep`](docs/tools/gtdbprep.md) | Laptop half of a split GTDB-Tk: renames genomes, runs identify + align, and writes a ~4 KB-per-genome bundle for placement elsewhere | Downloading the 100 GB GTDB-Tk package | 1.6 MB |
-| [`msaview`](docs/tools/msaview.md) | GPU-drawn desktop viewer for very large multiple sequence alignments (100,000 × 30,000 tested) | Jalview, AliView, SeaView | desktop app |
+| [`msascope`](docs/tools/msascope.md) | GPU-drawn desktop viewer for very large multiple sequence alignments (100,000 × 30,000 tested) | Jalview, AliView, SeaView | desktop app |
 
 Measured against FastQC 0.12.1 on a 1-million-read nf-core/bacass test file: **1.5 s and 13 MB of
 RAM** against 7.0 s and 483 MB. On the four bacass test files, leanqc gives FastQC's verdict for all
@@ -27,21 +27,21 @@ QC; see [how they compare](docs/tools/leanqc.md#leanqc-and-fastqc-rust).
 
 ## Install
 
-Linux and macOS, no sudo (installs into `~/.local/bin`; on macOS msaview goes to `~/Applications`):
+Linux and macOS, no sudo (installs into `~/.local/bin`; on macOS msascope goes to `~/Applications`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/dzulfikar08/irit/main/scripts/install.sh | sh
 ```
 
-`sh -s -- --no-gui` skips msaview, `sh -s -- --uninstall` removes what it installed, and
+`sh -s -- --no-gui` skips msascope, `sh -s -- --uninstall` removes what it installed, and
 `IRIT_VERSION=v0.2.0` in front of `sh` picks a release.
 
 Or download from the [latest release](https://github.com/dzulfikar08/irit/releases/latest):
 
-- **macOS** (Apple Silicon and Intel): `msaview.dmg` and `irit-universal-macos.tar.gz`, signed with a
+- **macOS** (Apple Silicon and Intel): `msascope.dmg` and `irit-universal-macos.tar.gz`, signed with a
   Developer ID and notarised by Apple.
 - **Linux** (x86_64, ARM64): `irit-<arch>-linux.tar.gz`, statically linked, runs on old distributions
-  too; `msaview-<arch>-linux.tar.gz` needs glibc 2.39 or newer.
+  too; `msascope-<arch>-linux.tar.gz` needs glibc 2.39 or newer.
 - **Windows** (x86_64): `irit-x86_64-windows.zip` with sheetgen, leanqc, isotable and dblock. Not
   code-signed, so SmartScreen may warn the first time.
 

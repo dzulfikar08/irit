@@ -3,7 +3,7 @@
 # Builds the packages for aarch64-apple-darwin and x86_64-apple-darwin (release profile, the
 # committed Cargo.lock) and joins each named binary with lipo. Needs Xcode and both Rust targets:
 #   rustup target add aarch64-apple-darwin x86_64-apple-darwin
-# Example: scripts/macos-universal.sh dist/universal sheetgen msaview -- sheetgen msaview
+# Example: scripts/macos-universal.sh dist/universal sheetgen msascope -- sheetgen msascope
 set -euo pipefail
 usage="usage: $0 OUT_DIR PACKAGE... -- BINARY..."
 [ "$(uname -s)" = Darwin ] || { echo "macos-universal.sh runs on macOS only" >&2; exit 1; }
@@ -15,7 +15,7 @@ shift
 [ ${#pkgs[@]} -gt 0 ] && [ $# -gt 0 ] || { echo "$usage" >&2; exit 2; }
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Rust's x86_64 default is 10.12; match msaview.app's LSMinimumSystemVersion for both slices.
+# Rust's x86_64 default is 10.12; match msascope.app's LSMinimumSystemVersion for both slices.
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
   (cd "$root" && cargo build --release --locked --target "$target" "${pkgs[@]}")

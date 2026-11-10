@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["sheetgen", "leanqc", "dblock", "isotable", "mcp", "gtdbprep", "msaview"]
-# msaview's GUI needs GPUI and its system libraries; build it explicitly with `-p msaview`.
+members = ["sheetgen", "leanqc", "dblock", "isotable", "mcp", "gtdbprep", "msascope"]
+# msascope's GUI needs GPUI and its system libraries; build it explicitly with `-p msascope`.
 default-members = ["sheetgen", "leanqc", "dblock", "isotable", "mcp", "gtdbprep"]
 
 [workspace.package]

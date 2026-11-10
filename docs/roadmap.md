@@ -18,7 +18,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
       [FastQC#222](https://github.com/s-andrews/FastQC/pull/222)).
 - [x] Independent reviews of every tool, with fixes and regression tests (sample-name joins, pairing
       rules, FastQC fidelity, database integrity, MCP security).
-- [x] `msaview` first version: 100,000 × 30,000 alignments on a laptop (FASTA/gzip, Clustal,
+- [x] `msascope` first version: 100,000 × 30,000 alignments on a laptop (FASTA/gzip, Clustal,
       Stockholm; overview pyramid, consensus and identity tracks, search, go-to; `--type` override).
 - [x] `irit-mcp`: typed MCP tools for the irit CLIs, with run records and a `replay.sh` that reruns
       a session without the AI; outputs confined to a root folder.
@@ -50,7 +50,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
       the ten identical `fasttree.log` files once (7.4 GB unpacked to 2.7 GB).
 - [ ] **The ANI species check on a laptop**: its database is 85 GB; fetch only the reference sketches
       a genome needs (range reads), per the [design](research/split-gtdb.md).
-- [ ] **`msaview` redesign** ([mockups](tools/msaview.md#planned-redesign)): themes, sequence names,
+- [ ] **`msascope` redesign** ([mockups](tools/msascope.md#planned-redesign)): themes, sequence names,
       readable default zoom, hover card, colour schemes, hiding insert and gappy columns, a tree
       panel, selection and export. Later: multi-threaded gzip, alignments larger than RAM.
 - [ ] **`dblock` additions**: AMRFinderPlus via `amrfinder_update`, GTDB-Tk split download, parallel

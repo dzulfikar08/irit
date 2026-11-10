@@ -11,7 +11,7 @@
 - [dblock: reference databases](tools/dblock.md)
 - [irit-mcp: tools for AI agents](tools/mcp.md)
 - [gtdbprep: GTDB-Tk without the 100 GB download](tools/gtdbprep.md)
-- [msaview: large alignment viewer](tools/msaview.md)
+- [msascope: large alignment viewer](tools/msascope.md)
 
 # Results
 
