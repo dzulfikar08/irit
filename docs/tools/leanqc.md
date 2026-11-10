@@ -1,8 +1,10 @@
 # leanqc: read quality control
 
-`leanqc` reads each FASTQ (or FASTA) file once and reports what FastQC reports, using a fraction of
-the time and memory. It writes a self-contained HTML report per file (inline SVG, no scripts, opens
-offline), the full numbers as JSON, a summary table, and a table MultiQC picks up.
+`leanqc` reads each FASTQ (or FASTA) file once and runs the ten FastQC modules that grade data
+(listed under [Checks](#checks)), using a fraction of the time and memory. It writes a
+self-contained HTML report per file (inline SVG, no scripts, opens offline), the full numbers as
+JSON, a summary table, and a table MultiQC picks up. What it does not do is listed under
+[Known gaps](#known-gaps).
 
 ## Usage
 
@@ -14,10 +16,13 @@ leanqc reads/*.fastq.gz -o qc/ -t 4
 |---|---|
 | `-o DIR` | Output folder (default `leanqc/`). |
 | `-t N` | Files processed at once; each file uses one thread (default: up to 4). |
-| `--dup-sample N` | Reads examined for duplication and overrepresented sequences (default 100,000). |
+| `--phred 33\|64` | Quality encoding, instead of detecting it (see [Quality encoding](#quality-encoding)). |
+| `--dup-distinct N` | Distinct sequences tracked for duplication and overrepresented sequences (default 100,000, as FastQC). |
 | `--no-html` | JSON and TSV only. |
 
-Input can be plain, gzip, bzip2, xz or zstd. FASTA works; the quality modules are skipped.
+Input can be plain, gzip, bzip2, xz or zstd. FASTA works; the quality modules are skipped. A
+truncated file (a gzip stream that stops early, or a last record without its quality line) is an
+error, and leanqc exits non-zero.
 
 Outputs in the folder:
 
@@ -28,43 +33,84 @@ Outputs in the folder:
 
 ## Checks
 
-Thresholds follow FastQC's defaults, so a verdict means the same thing in both tools.
+Thresholds are FastQC 0.12.1's defaults (its `Configuration/limits.txt`), so a verdict means the
+same thing in both tools.
 
-| Check | Warn | Fail |
+| Check (FastQC module) | Warn | Fail |
 |---|---|---|
-| Per-position quality | median < Q25 or lower quartile < Q10 | median < Q20 or lower quartile < Q5 |
-| Per-tile quality | a tile 5 below the all-tile mean at any position | 10 below |
-| Per-read quality | most common mean quality < Q27 | < Q20 |
-| Per-position base content | A/T or G/C differ by > 10% | > 20% |
-| Per-read GC | > 15% of reads off a normal curve | > 30% |
-| N content | > 5% N at any position | > 20% |
-| Read length | lengths differ | any empty read |
-| Duplication | < 80% would remain after deduplication | < 50% |
-| Overrepresented sequences | any sequence > 0.1% | > 1% |
-| Adapter content | any adapter in > 5% of reads | > 10% |
+| Per-position quality (Per base sequence quality) | median < Q25 or lower quartile < Q10 in a position group | median < Q20 or lower quartile < Q5 |
+| Per-tile quality (Per tile sequence quality) | a tile's mean differs from the all-tile mean by > 5 in a position group | > 10 |
+| Per-read quality (Per sequence quality scores) | most common mean read quality ≤ Q27 | ≤ Q20 |
+| Per-position base content (Per base sequence content) | A/T or G/C differ by > 10 points | > 20 |
+| Per-read GC (Per sequence GC content) | > 15% of reads off the fitted normal curve | > 30% |
+| N content (Per base N content) | > 5% N in a position group | > 20% |
+| Read length (Sequence Length Distribution) | lengths differ | any empty read |
+| Duplication (Sequence Duplication Levels) | < 70% of reads would remain after deduplication | < 50% |
+| Overrepresented sequences | any sequence > 0.1% of reads | > 1% |
+| Adapter content | any adapter > 5% of reads in a position group | > 10% |
 
-Adapters searched: Illumina Universal, Nextera, Illumina Small RNA 3', polyA, polyG.
+Adapters searched (FastQC's default list): Illumina Universal, Illumina Small RNA 3', Illumina
+Small RNA 5', Nextera, polyA, polyG.
 
-How some modules work:
+How the modules work (reimplemented from FastQC 0.12.1's source, not copied):
 
-- **Per-read GC.** A read of *n* bases can only take *n*+1 GC values, so each read's value is spread
-  over the percentage bins its range covers (±half a base), as FastQC does. Without this, 75 bp
-  reads fill 76 of 101 bins and the curve looks broken. (This was a bug in the first version; it
-  failed every file FastQC passed.)
+- **Position groups.** Per-position modules are judged on FastQC's linear groups: single positions
+  up to 9, then equal-width groups chosen so there are fewer than 75 (reads up to 75 bp are not
+  grouped). Quality percentiles are FastQC's: each position's percentile, averaged over the group,
+  using only positions covered by more than 100 reads.
+- **Long reads.** Positions 1–999 are kept one by one; beyond that leanqc keeps 10 bp slots up to
+  100 kb and 1,000 bp slots after, so memory stays small. FastQC's group boundaries for reads that
+  long fall on multiples of 20 (and of 2,000 above 100 kb), so slots line up with groups and the
+  verdicts cover the whole read; a 5 kb read set with Q2 after the first 1,000 bases fails, as it
+  should. Two approximations beyond 999 bp: a slot's quality percentile comes from its pooled
+  counts rather than the mean of each position's percentile, and an adapter starting inside a slot
+  is counted from the slot's start.
+- **Base content and N.** A, C, G and T are percentages of A+C+G+T at those positions (Ns and other
+  codes left out); N content is N over all bases, as in FastQC.
+- **Per-read GC.** FastQC's GC model: each read's GC is counted over its first 100 × ⌊length/100⌋
+  bases (1,000 × ⌊length/1,000⌋ above 1 kb), Ns included in the length, and spread over the
+  percentage bins its value can round to. The normal curve is centred on the mode (the average of
+  the bins within 10% of the peak), with the spread measured around that mode. (Version 0.1 put
+  each read in one bin, which failed every file FastQC passed, then fitted the curve around the
+  mean.)
+- **Duplication and overrepresented sequences.** As FastQC: the first 100,000 distinct sequences
+  (first 50 bases of longer reads) are tracked and counted through the whole file; the remaining
+  percentage is extrapolated from those counts with FastQC's correction for sequences first seen
+  after tracking stopped, and overrepresented sequences are percentages of all reads. On the four
+  bacass test files this gives FastQC's figures to two decimals. (Version 0.1 counted the first
+  100,000 reads only and differed by up to 3 points.)
 - **Per-tile quality.** The tile number comes from the read name, using FastQC's rule: split the
   header on `:`; with 7 or more fields (CASAVA 1.8+) the tile is the 5th, with 5–6 fields (older
-  Illumina) the 3rd. Headers without a tile skip the module. More than 2,500 tiles also skips it.
-- **Duplication** is measured directly on the first 100,000 reads. FastQC extrapolates from the
-  distinct sequences it tracks, so the two differ by a few points.
-- Per-position charts stop at 1,000 bp; every whole-read figure still uses all bases.
+  Illumina) the 3rd. The first read decides the field; a later read without a number there turns
+  the module off, as in FastQC. Like FastQC it uses all of the first 10,000 reads and every 10th
+  after, the first 1,000 positions, and the largest difference from the all-tile mean in either
+  direction. More than 2,500 tiles also turns it off.
+- **Per-read quality.** The most common mean read quality; ties go to the lower score.
+
+### Quality encoding
+
+leanqc reads qualities as Phred+64 only when the lowest character is `@` (64) or above **and** some
+character is above `J` (74, the highest Phred+33 value Illumina 1.8+ writes). FastQC uses only the
+first condition, so a file of excellent Phred+33 data (every base Q31–Q40, characters `@` to `I`)
+is read by FastQC as Phred+64 Q0–Q9 and fails its quality modules. leanqc reads it as Phred+33,
+notes the ambiguity in the report, and `--phred 64` overrides it. This is the one deliberate
+difference from FastQC's verdicts.
 
 ## Results
 
-See [benchmarks](../benchmarks.md#leanqc-against-fastqc). In short: 2.5 s and 16 MB against
-7.0 s and 483 MB for one file, and the same verdict as FastQC on every module both tools have.
+See [benchmarks](../benchmarks.md#leanqc-against-fastqc). In short: on a 1-million-read bacass
+test file, 1.5 s and 13 MB against FastQC's 7.0 s and 483 MB. The ten graded modules give the
+same verdict as FastQC 0.12.1 on all four bacass test files (40 of 40) and on a synthetic corpus
+of ten more files (88 of 90; the two differences are the encoding rule above), and both tools
+refuse the two truncated files in the corpus.
 
 ## Known gaps
 
-- No Kmer content module (FastQC disables it by default too).
+- No Kmer content module (FastQC switches it off by default too).
+- "Possible source" for overrepresented sequences checks only the six adapters above; FastQC
+  compares against its contaminant list (151 sequences in 0.12.1). The verdict doesn't depend on
+  it.
+- FastQC's options for grouping (`--nogroup`, `--expgroup`), custom `limits.txt`, adapter and
+  contaminant files are not supported.
 - Long-read specific views (read-length N50, quality by length) are not there yet.
 - Single-threaded per file: one huge file uses one core.

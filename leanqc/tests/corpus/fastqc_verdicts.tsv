@@ -1,0 +1,104 @@
+# FastQC 0.12.1 (quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0) verdicts on the synthetic corpus
+file	module	verdict
+adapters.fastq.gz	Basic Statistics	pass
+adapters.fastq.gz	Per base sequence quality	pass
+adapters.fastq.gz	Per sequence quality scores	pass
+adapters.fastq.gz	Per base sequence content	pass
+adapters.fastq.gz	Per sequence GC content	pass
+adapters.fastq.gz	Per base N content	pass
+adapters.fastq.gz	Sequence Length Distribution	pass
+adapters.fastq.gz	Sequence Duplication Levels	pass
+adapters.fastq.gz	Overrepresented sequences	pass
+adapters.fastq.gz	Adapter Content	fail
+duplicates.fastq.gz	Basic Statistics	pass
+duplicates.fastq.gz	Per base sequence quality	pass
+duplicates.fastq.gz	Per sequence quality scores	pass
+duplicates.fastq.gz	Per base sequence content	warn
+duplicates.fastq.gz	Per sequence GC content	warn
+duplicates.fastq.gz	Per base N content	pass
+duplicates.fastq.gz	Sequence Length Distribution	pass
+duplicates.fastq.gz	Sequence Duplication Levels	warn
+duplicates.fastq.gz	Overrepresented sequences	fail
+duplicates.fastq.gz	Adapter Content	pass
+gc_bimodal.fastq.gz	Basic Statistics	pass
+gc_bimodal.fastq.gz	Per base sequence quality	pass
+gc_bimodal.fastq.gz	Per sequence quality scores	pass
+gc_bimodal.fastq.gz	Per base sequence content	pass
+gc_bimodal.fastq.gz	Per sequence GC content	fail
+gc_bimodal.fastq.gz	Per base N content	pass
+gc_bimodal.fastq.gz	Sequence Length Distribution	pass
+gc_bimodal.fastq.gz	Sequence Duplication Levels	pass
+gc_bimodal.fastq.gz	Overrepresented sequences	pass
+gc_bimodal.fastq.gz	Adapter Content	pass
+hiq_phred33.fastq.gz	Basic Statistics	pass
+hiq_phred33.fastq.gz	Per base sequence quality	fail
+hiq_phred33.fastq.gz	Per sequence quality scores	fail
+hiq_phred33.fastq.gz	Per base sequence content	pass
+hiq_phred33.fastq.gz	Per sequence GC content	pass
+hiq_phred33.fastq.gz	Per base N content	pass
+hiq_phred33.fastq.gz	Sequence Length Distribution	pass
+hiq_phred33.fastq.gz	Sequence Duplication Levels	pass
+hiq_phred33.fastq.gz	Overrepresented sequences	pass
+hiq_phred33.fastq.gz	Adapter Content	pass
+long_reads.fastq.gz	Basic Statistics	pass
+long_reads.fastq.gz	Per base sequence quality	fail
+long_reads.fastq.gz	Per sequence quality scores	fail
+long_reads.fastq.gz	Per base sequence content	warn
+long_reads.fastq.gz	Per sequence GC content	warn
+long_reads.fastq.gz	Per base N content	pass
+long_reads.fastq.gz	Sequence Length Distribution	warn
+long_reads.fastq.gz	Sequence Duplication Levels	pass
+long_reads.fastq.gz	Overrepresented sequences	warn
+long_reads.fastq.gz	Adapter Content	pass
+low_quality_tail.fastq.gz	Basic Statistics	pass
+low_quality_tail.fastq.gz	Per base sequence quality	fail
+low_quality_tail.fastq.gz	Per sequence quality scores	pass
+low_quality_tail.fastq.gz	Per base sequence content	pass
+low_quality_tail.fastq.gz	Per sequence GC content	pass
+low_quality_tail.fastq.gz	Per base N content	pass
+low_quality_tail.fastq.gz	Sequence Length Distribution	pass
+low_quality_tail.fastq.gz	Sequence Duplication Levels	pass
+low_quality_tail.fastq.gz	Overrepresented sequences	pass
+low_quality_tail.fastq.gz	Adapter Content	pass
+n_rich.fastq.gz	Basic Statistics	pass
+n_rich.fastq.gz	Per base sequence quality	pass
+n_rich.fastq.gz	Per sequence quality scores	pass
+n_rich.fastq.gz	Per base sequence content	fail
+n_rich.fastq.gz	Per sequence GC content	warn
+n_rich.fastq.gz	Per base N content	fail
+n_rich.fastq.gz	Sequence Length Distribution	pass
+n_rich.fastq.gz	Sequence Duplication Levels	pass
+n_rich.fastq.gz	Overrepresented sequences	pass
+n_rich.fastq.gz	Adapter Content	pass
+odd_headers.fastq.gz	Basic Statistics	pass
+odd_headers.fastq.gz	Per base sequence quality	pass
+odd_headers.fastq.gz	Per sequence quality scores	pass
+odd_headers.fastq.gz	Per base sequence content	pass
+odd_headers.fastq.gz	Per sequence GC content	pass
+odd_headers.fastq.gz	Per base N content	pass
+odd_headers.fastq.gz	Sequence Length Distribution	pass
+odd_headers.fastq.gz	Sequence Duplication Levels	pass
+odd_headers.fastq.gz	Overrepresented sequences	pass
+odd_headers.fastq.gz	Adapter Content	pass
+phred64.fastq.gz	Basic Statistics	pass
+phred64.fastq.gz	Per base sequence quality	pass
+phred64.fastq.gz	Per sequence quality scores	pass
+phred64.fastq.gz	Per base sequence content	pass
+phred64.fastq.gz	Per sequence GC content	pass
+phred64.fastq.gz	Per base N content	pass
+phred64.fastq.gz	Sequence Length Distribution	pass
+phred64.fastq.gz	Sequence Duplication Levels	pass
+phred64.fastq.gz	Overrepresented sequences	pass
+phred64.fastq.gz	Adapter Content	pass
+truncated_gzip.fastq.gz	(any)	error
+truncated_record.fastq	(any)	error
+varied_lengths.fastq.gz	Basic Statistics	pass
+varied_lengths.fastq.gz	Per base sequence quality	pass
+varied_lengths.fastq.gz	Per sequence quality scores	pass
+varied_lengths.fastq.gz	Per base sequence content	warn
+varied_lengths.fastq.gz	Per sequence GC content	pass
+varied_lengths.fastq.gz	Per base N content	pass
+varied_lengths.fastq.gz	Sequence Length Distribution	warn
+varied_lengths.fastq.gz	Sequence Duplication Levels	pass
+varied_lengths.fastq.gz	Overrepresented sequences	pass
+varied_lengths.fastq.gz	Adapter Content	pass
