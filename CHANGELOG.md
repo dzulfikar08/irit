@@ -15,12 +15,25 @@ guessed.
   align, and writes a small bundle (about 4 KB per genome) that classifies identically to
   `classify_wf` on test genomes. Needs 77 MB of reference data instead of 100 GB.
 - **msaview**: a GPU-drawn desktop viewer for very large multiple sequence alignments (FASTA, gzip,
-  Clustal, Stockholm); built from source for now, not in the release archives.
+  Clustal, Stockholm). In the releases as `msaview.dmg` for macOS and as Linux x86_64/aarch64
+  tarballs.
 - **Documentation site**: https://dzulfikar08.github.io/irit/, with an interactive two-species
   competition demo.
 - **Validation on GitHub runners**: leanqc against FastQC on real and synthetic data, sheetgen
   against a real nf-core/bacass run, dblock against the live database servers, and a speed
   comparison with FastQC-Rust. Runs weekly and on every change.
+
+### Releases and installing
+- **Installer**: `curl -fsSL https://raw.githubusercontent.com/dzulfikar08/irit/main/scripts/install.sh | sh`
+  installs the prebuilt tools (and msaview) into `~/.local` without sudo, checks every download
+  against `SHA256SUMS`, and `--uninstall` removes exactly what it installed.
+- **Signed macOS builds**: the command-line tools are universal binaries (Apple Silicon and Intel),
+  signed with a Developer ID and notarised; msaview is a signed, notarised and stapled `msaview.app`
+  in a DMG.
+- The Linux and macOS archives now include `irit-mcp`, `gtdbprep` and `irit-gtdb-prep`. Windows builds
+  (sheetgen, leanqc, isotable, dblock) are not code-signed.
+- Every release has `SHA256SUMS` and fixed asset names (`irit-x86_64-linux.tar.gz`, `msaview.dmg`,
+  ...) for `releases/latest/download/` links; see [installing and verifying downloads](docs/install.md).
 
 ### sheetgen
 - Rows are validated against the pipeline's whole schema (the `jsonschema` crate plus nf-schema's

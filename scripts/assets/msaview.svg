@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- msaview app icon (irit project, GPL-3.0-or-later): rows of an alignment, one column
+     highlighted. Rendered to msaview.icns by scripts/macos-app.sh. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="#14202b"/>
+  <g transform="translate(203 258)">
+    <!-- A #3aa65a, C #3b82d6, G #e0a526, T #d9534f, gap #2c3a47 -->
+    <g>
+      <rect x="0"   y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
+      <rect x="106" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
+      <rect x="212" y="0" width="88" height="88" rx="16" fill="#e0a526"/>
+      <rect x="318" y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
+      <rect x="424" y="0" width="88" height="88" rx="16" fill="#d9534f"/>
+      <rect x="530" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
+    </g>
+    <g transform="translate(0 140)">
+      <rect x="0"   y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
+      <rect x="106" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
+      <rect x="212" y="0" width="88" height="88" rx="16" fill="#2c3a47"/>
+      <rect x="318" y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
+      <rect x="424" y="0" width="88" height="88" rx="16" fill="#d9534f"/>
+      <rect x="530" y="0" width="88" height="88" rx="16" fill="#e0a526"/>
+    </g>
+    <g transform="translate(0 280)">
+      <rect x="0"   y="0" width="88" height="88" rx="16" fill="#d9534f"/>
+      <rect x="106" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
+      <rect x="212" y="0" width="88" height="88" rx="16" fill="#e0a526"/>
+      <rect x="318" y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
+      <rect x="424" y="0" width="88" height="88" rx="16" fill="#d9534f"/>
+      <rect x="530" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
+    </g>
+    <g transform="translate(0 420)">
+      <rect x="0"   y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
+      <rect x="106" y="0" width="88" height="88" rx="16" fill="#2c3a47"/>
+      <rect x="212" y="0" width="88" height="88" rx="16" fill="#e0a526"/>
+      <rect x="318" y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
+      <rect x="424" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
+      <rect x="530" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
+    </g>
+    <!-- the conserved column -->
+    <rect x="300" y="-36" width="124" height="580" rx="28" fill="none" stroke="#f4f1e8" stroke-width="18"/>
+  </g>
+</svg>

@@ -1,7 +1,8 @@
 name: msaview builds
 
 # Builds the desktop viewer (and the msagen test-data generator) on GitHub's runners and uploads
-# them as downloadable artifacts, so nobody has to compile GPUI locally. Not signed or notarised.
+# them as downloadable artifacts, so nobody has to compile GPUI locally. Not signed or notarised:
+# these are ad-hoc test builds. Signed, notarised msaview builds come from release.yml (v* tags).
 on:
   workflow_dispatch:
   push:
