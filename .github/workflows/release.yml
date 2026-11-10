@@ -33,7 +33,7 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then tool=cross; else tool=cargo; fi
-          $tool build --release --workspace --target ${{ matrix.target }}
+          $tool build --release --target ${{ matrix.target }} -p sheetgen -p leanqc -p isotable -p dblock
       - name: Package
         shell: bash
         run: |
