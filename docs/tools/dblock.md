@@ -85,9 +85,9 @@ is never retried against a mirror: a mirror serving the same bad file wouldn't f
 
 `tar.gz`, `tar.bz2`, `tar.xz`, `tar.zst`, or `file` (kept as downloaded). All archive formats work
 in both modes. `tar.zst` archives made with a long window (`zstd --long=N`) decode without extra
-settings: dblock raises libzstd's decoder window limit from its default 2^27 (128 MiB) to 2^31
-(2^30 on 32-bit systems). The limit is only a ceiling; the decoder allocates the window the archive
-declares.
+settings: dblock raises libzstd's decoder window limit from its default 2^27 (128 MiB) to 2^30
+(1 GiB, enough for `--long=30`). The limit is only a ceiling; the decoder allocates the window the
+archive declares.
 
 ### Multi-part entries (`parts`)
 
@@ -109,8 +109,9 @@ An entry can be several archives that unpack into one database folder:
 
 Each part gives `url`, or `file` (appended to `base_url`); `size`; `md5`; and optionally
 `sha256`, which is then checked as well. The entry has no `urls`. Its `size` is the sum of the
-parts, and its `md5` is the MD5 of the parts' `MD5SUMS` lines (`<md5>  <file>\n`, in catalog
-order); both are filled in when left out, and refused if given and wrong. That combined MD5 is
+parts, and its `md5` is the MD5 of the parts' `MD5SUMS` lines (`<md5>  <file>\n`, sorted by
+file name as `md5sum *` writes them, so the order of `parts` doesn't matter); both are filled in
+when left out, and refused if given and wrong. Every part needs its `size`. That combined MD5 is
 what the marker and lock entry record as `archive_md5`, so a different set of parts is a
 different release. The lock entry also lists every part (`[[database.part]]`: file, URL, bytes,
 MD5, SHA-256).
@@ -120,7 +121,8 @@ and `verify_dirs` checked once over the combined folder. In download mode every 
 downloaded and checked before any is unpacked. Each part resumes on its own, and a part that is
 already complete is re-read from disk instead of downloaded again, so a fetch that fails on part 7
 keeps parts 1–6 under `.partial/` for the next run. A part whose checksum doesn't match is
-deleted. In stream mode the parts are streamed one after another into the same temporary folder.
+deleted; if it had been resumed from an earlier run's file (say, one left from an older release
+with the same file name), it is downloaded once more from the start in the same run. In stream mode the parts are streamed one after another into the same temporary folder.
 Either way the folder takes its final name only after every part has passed, and the folder
 hashes match; any failure keeps nothing in the store. `plan` counts the sum of the parts'
 sizes, and `extracted` (or `kept_size`) is for the whole entry.
