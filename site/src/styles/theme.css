@@ -2,12 +2,12 @@
  * irit theme.
  * Palette: tarum (the indigo of Javanese dye) as ink and links on a cool, unbleached paper;
  * soga (the brown batik dye) is the single accent, kept for irit's own measured results.
- * Type: Atkinson Hyperlegible Next and Mono, chosen for unambiguous digits in a table-heavy site.
+ * Type: Inter for text and tables (plain zero, tabular figures), JetBrains Mono for code.
  */
 
 :root {
-	--sl-font: 'Atkinson Hyperlegible Next Variable';
-	--sl-font-mono: 'Atkinson Hyperlegible Mono Variable';
+	--sl-font: 'Inter Variable';
+	--sl-font-mono: 'JetBrains Mono Variable';
 	--sl-content-width: 48rem;
 	--sl-line-height: 1.65;
 	--sl-line-height-headings: 1.18;

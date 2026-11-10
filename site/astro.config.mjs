@@ -23,9 +23,9 @@ export default defineConfig({
 			// Pages carry their own editUrl (set by scripts/sync-docs.mjs) pointing at docs/.
 			sidebar: sidebarFromSummary(),
 			customCss: [
-				'@fontsource-variable/atkinson-hyperlegible-next/wght.css',
-				'@fontsource-variable/atkinson-hyperlegible-next/wght-italic.css',
-				'@fontsource-variable/atkinson-hyperlegible-mono/wght.css',
+				'@fontsource-variable/inter/wght.css',
+				'@fontsource-variable/inter/wght-italic.css',
+				'@fontsource-variable/jetbrains-mono/wght.css',
 				'./src/styles/theme.css',
 			],
 			expressiveCode: {
@@ -34,8 +34,8 @@ export default defineConfig({
 				defaultProps: { wrap: true, overridesByLang: { 'bash,sh,shell,zsh': { frame: 'code' } } },
 				styleOverrides: {
 					borderRadius: '4px',
-					codeFontFamily: "'Atkinson Hyperlegible Mono Variable', ui-monospace, monospace",
-					uiFontFamily: "'Atkinson Hyperlegible Next Variable', system-ui, sans-serif",
+					codeFontFamily: "'JetBrains Mono Variable', ui-monospace, monospace",
+					uiFontFamily: "'Inter Variable', system-ui, sans-serif",
 					frames: { shadowColor: 'transparent' },
 				},
 			},
