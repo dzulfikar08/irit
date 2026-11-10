@@ -25,6 +25,7 @@
 - [GTDB-Tk and memory](research/gtdbtk-memory.md)
 - [Split GTDB-Tk: a design](research/split-gtdb.md)
 - [GTDB placement in 8.5 GB](research/gtdb-placement-test.md)
+- [gPlace vs pplacer, and memory caps](research/gplace-checks.md)
 - [Problems reported upstream](research/upstream-reports.md)
 
 # Plans
