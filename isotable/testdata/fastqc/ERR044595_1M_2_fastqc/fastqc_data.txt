@@ -1,0 +1,21 @@
+##FastQC	0.12.1
+>>Basic Statistics	pass
+#Measure	Value
+Filename	ERR044595_1M_2.fastq.gz
+File type	Conventional base calls
+Encoding	Sanger / Illumina 1.9
+Total Sequences	1000000
+Total Bases	100 Mbp
+Sequences flagged as poor quality	0
+Sequence length	100
+%GC	40
+>>END_MODULE
+>>Per base sequence quality	fail
+#Base	Mean	Median	Lower Quartile	Upper Quartile	10th Percentile	90th Percentile
+1	32.5	34.0	31.0	34.0	27.0	35.0
+>>END_MODULE
+>>Sequence Duplication Levels	warn
+#Total Deduplicated Percentage	71.2
+>>END_MODULE
+>>Adapter Content	pass
+>>END_MODULE
