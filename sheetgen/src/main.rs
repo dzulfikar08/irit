@@ -45,7 +45,8 @@ struct Cli {
     #[arg(long)]
     name_from_dir: bool,
 
-    /// Treat unpaired files as long reads (goes in the schema's long-read column).
+    /// Treat unpaired files as long reads (goes in the schema's long-read column). Turns off
+    /// pairing on a bare `_1`/`_2` suffix, which would pair numbered Nanopore chunks.
     #[arg(long)]
     long: bool,
 
@@ -71,6 +72,11 @@ struct Cli {
     /// Write the sheet even if the schema has rules sheetgen can't evaluate.
     #[arg(long)]
     allow_unchecked: bool,
+
+    /// List `Undetermined_S0_*` files (reads bcl2fastq couldn't assign to a sample) as a sample
+    /// instead of skipping them.
+    #[arg(long)]
+    include_undetermined: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -98,6 +104,8 @@ struct Fastq {
     pair_stem: String,
     /// The mate came from a bare `_1`/`_2` suffix rather than `R1`/`R2`.
     numeric: bool,
+    /// Looks like Oxford Nanopore MinKNOW output (`barcodeNN/` folder, `_pass_`/`_fail_` name).
+    ont: bool,
 }
 
 /// How a file stem was read: sample, lane, mate (`None` for index reads), pair stem, numeric.
@@ -118,25 +126,33 @@ static FASTQ_EXT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\.f(ast)?q(\.gz|\.bz2|\.zst)?$").unwrap());
 // bcl2fastq/BCL Convert: Sample_S1_L001_R1_001.fastq.gz
 static ILLUMINA: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?P<s>.+?)_S\d+(?:_L(?P<lane>\d{3}))?_(?P<r>[RI][12])_\d{3}$").unwrap()
+    Regex::new(r"^(?P<s>.+?)_S\d+(?:_L(?P<lane>\d{1,3}))?_(?P<r>[RIri][12])_\d{3}$").unwrap()
 });
-// sample_R1, sample_1, sample.R2, sample_L002_R1_001, sample_R1_001
+// sample_R1, sample_r1, sample_1, sample.R2, sample_L002_R1_001, sample_R1_001; lanes may have
+// 1-3 digits: Novogene/BGI `S1_EKDL01_HGV_L1_1`, MGI `FP150002315_L01_1`.
 static GENERIC: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?P<s>.+?)(?:_L(?P<lane>\d{3}))?[._-](?P<r>[RI]?[12])(?:_\d{3})?$").unwrap()
+    Regex::new(r"^(?P<s>.+?)(?:_L(?P<lane>\d{1,3}))?[._-](?P<r>[RIri]?[12])(?:_\d{3})?$").unwrap()
 });
+// MinKNOW: barcode01/FAX123_pass_barcode01_abc_0.fastq.gz; chunk numbers are not mates.
+static ONT_DIR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(barcode\d+|unclassified)$").unwrap());
+static ONT_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_(pass|fail)_").unwrap());
+static UNDETERMINED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^undetermined_S0_").unwrap());
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let fixed = parse_sets(&cli.set)?;
 
-    let (files, skipped) = scan(&cli.dirs, cli.name_from_dir, !cli.no_pair_numeric)?;
+    let opts = ScanOpts {
+        name_from_dir: cli.name_from_dir,
+        pair_numeric: !cli.no_pair_numeric && !cli.long,
+        include_undetermined: cli.include_undetermined,
+    };
+    let (files, notes) = scan(&cli.dirs, &opts)?;
     if files.is_empty() {
         bail!("no FASTQ files found under {}", show_dirs(&cli.dirs));
     }
     let (mut units, mut warnings) = pair(files, cli.long)?;
-    for s in &skipped {
-        warnings.push(format!("skipped index read file {s}"));
-    }
+    warnings.extend(notes);
     check_names(&units, cli.allow_merge, &mut warnings)?;
     if let Some(dir) = &cli.link_into {
         link_into(&mut units, dir)?;
@@ -159,8 +175,10 @@ fn main() -> Result<()> {
 
     let table = if let Some(path) = &schema_path {
         let schema = schema::Schema::load(path, cli.allow_unchecked)?;
+        check_long(&units, schema.has_long_column(), schema.has_run_column(), &mut warnings)?;
         schema.build(&units, &fixed, &fmt_path, &mut warnings)?
     } else {
+        check_long(&units, false, false, &mut warnings)?;
         match cli.format {
             Format::Nfcore => nfcore_table(&units, &fmt_path),
             Format::Qiime2 => {
@@ -226,17 +244,33 @@ fn parse_sets(sets: &[String]) -> Result<BTreeMap<String, String>> {
         .collect()
 }
 
-/// Walk the folders and classify every FASTQ file. Returns the files and skipped index reads.
-fn scan(dirs: &[PathBuf], name_from_dir: bool, pair_numeric: bool) -> Result<(Vec<Fastq>, Vec<String>)> {
+struct ScanOpts {
+    name_from_dir: bool,
+    pair_numeric: bool,
+    include_undetermined: bool,
+}
+
+/// Walk the folders and classify every FASTQ file. Returns the files and notes about files
+/// skipped (index reads, Undetermined, dangling symlinks).
+fn scan(dirs: &[PathBuf], opts: &ScanOpts) -> Result<(Vec<Fastq>, Vec<String>)> {
     let mut files = Vec::new();
-    let mut skipped = Vec::new();
+    let mut notes = Vec::new();
     let mut seen = BTreeSet::new();
     for dir in dirs {
         let dir = dir
             .canonicalize()
             .with_context(|| format!("cannot open {}", dir.display()))?;
         for entry in walkdir::WalkDir::new(&dir).follow_links(true).sort_by_file_name() {
-            let entry = entry?;
+            let entry = match entry {
+                Ok(e) => e,
+                // A dangling symlink or an unreadable subfolder: skip it, don't drop the run.
+                Err(e) if e.depth() > 0 => {
+                    let at = e.path().map(|p| p.display().to_string()).unwrap_or_default();
+                    notes.push(format!("skipped {at}: {}", e.io_error().map(|io| io.to_string()).unwrap_or_else(|| e.to_string())));
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -249,19 +283,33 @@ fn scan(dirs: &[PathBuf], name_from_dir: bool, pair_numeric: bool) -> Result<(Ve
                 continue; // same folder given twice, or nested in another argument
             }
             let stem = &name[..m.start()];
-            let (mut sample, lane, mate, pair_stem, numeric) = classify(stem, pair_numeric);
-            if mate.is_none() {
-                skipped.push(path.display().to_string());
+            if !opts.include_undetermined && UNDETERMINED.is_match(stem) {
+                notes.push(format!(
+                    "skipped {} (reads not assigned to any sample; --include-undetermined lists them)",
+                    path.display()
+                ));
                 continue;
             }
-            if name_from_dir
-                && let Some(parent) = path.parent().and_then(|p| p.file_name()) {
-                    sample = parent.to_string_lossy().into_owned();
+            let parent = path.parent().and_then(|p| p.file_name()).map(|p| p.to_string_lossy().into_owned());
+            let ont = ONT_NAME.is_match(stem) || parent.as_deref().is_some_and(|p| ONT_DIR.is_match(p));
+            let (mut sample, lane, mate, pair_stem, numeric) = if ont {
+                // Never pair Nanopore chunks: `_0`, `_1`, ... are chunk numbers, not mates.
+                (stem.to_string(), String::new(), Some(Mate::Unpaired), stem.to_string(), false)
+            } else {
+                classify(stem, opts.pair_numeric)
+            };
+            let Some(mate) = mate else {
+                notes.push(format!("skipped index read file {}", path.display()));
+                continue;
+            };
+            if opts.name_from_dir
+                && let Some(parent) = parent {
+                    sample = parent;
                 }
-            files.push(Fastq { path, sample, lane, mate: mate.unwrap(), pair_stem, numeric });
+            files.push(Fastq { path, sample, lane, mate, pair_stem, numeric, ont });
         }
     }
-    Ok((files, skipped))
+    Ok((files, notes))
 }
 
 /// Split a file stem into sample, lane, mate (`None` for an index read I1/I2), the stem with
@@ -306,6 +354,13 @@ fn pair(files: Vec<Fastq>, long: bool) -> Result<(Vec<Unit>, Vec<String>)> {
     }
     let mut units = Vec::new();
     let mut warnings = Vec::new();
+    let ont = unpaired.iter().filter(|f| f.ont).count();
+    if ont > 0 && !long {
+        warnings.push(format!(
+            "{ont} files look like Oxford Nanopore (MinKNOW) output and were written as single-end short reads; \
+             pass --long (and usually --name-from-dir) for long reads"
+        ));
+    }
     let mut orphans = Vec::new();
     for ((sample, lane, _, _), fs) in groups {
         let at = if lane.is_empty() { sample.clone() } else { format!("{sample} lane {lane}") };
@@ -334,6 +389,7 @@ fn pair(files: Vec<Fastq>, long: bool) -> Result<(Vec<Unit>, Vec<String>)> {
     for f in unpaired {
         if long {
             // Hybrid assembly: put long reads on the sample's short-read row if it has one.
+            // Further long files of the sample get rows of their own (see `check_long`).
             if let Some(u) = units
                 .iter_mut()
                 .rev()
@@ -371,6 +427,47 @@ fn pair(files: Vec<Fastq>, long: bool) -> Result<(Vec<Unit>, Vec<String>)> {
         );
     }
     Ok((units, warnings))
+}
+
+/// Long reads must land in a long-read column, and one sample's several long-read files only
+/// make sense where the sheet has a run column to tell the rows apart.
+fn check_long(units: &[Unit], long_column: bool, run_column: bool, warnings: &mut Vec<String>) -> Result<()> {
+    let mut per_sample: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for u in units {
+        if let Some(p) = &u.long {
+            per_sample.entry(&u.sample).or_default().push(p.display().to_string());
+        }
+    }
+    if per_sample.is_empty() {
+        return Ok(());
+    }
+    if !long_column {
+        if let Some(u) = units.iter().find(|u| u.long.is_some() && u.r1.is_some()) {
+            bail!(
+                "sample `{}` has short reads and a long-read file ({}), but this sheet has no long-read column; \
+                 hybrid samples need a schema with a long-read column (e.g. --pipeline nf-core/bacass)",
+                u.sample,
+                u.long.as_ref().unwrap().display()
+            );
+        }
+        warnings.push("this sheet has no long-read column; long-read-only rows have their reads in the R1 column".into());
+    }
+    let several: Vec<_> = per_sample.into_iter().filter(|(_, v)| v.len() > 1).collect();
+    if several.is_empty() {
+        return Ok(());
+    }
+    let list: Vec<String> = several.iter().map(|(s, v)| format!("{s}: {} files ({})", v.len(), v.join(", "))).collect();
+    if run_column {
+        warnings.push(format!("several long-read files per sample, one row each: {}", list.join("; ")));
+        return Ok(());
+    }
+    bail!(
+        "these samples have several long-read files, but the sheet takes one long-read file per sample \
+         (nf-core/bacass, for one, takes a single LongFastQ per row):\n  {}\n\
+         concatenate each sample's files first, e.g. `cat barcode01/*.fastq.gz > barcode01.fastq.gz` \
+         (gzip files can be concatenated as they are), then point sheetgen at the merged files",
+        list.join("\n  ")
+    )
 }
 
 /// Different names that become the same after cleaning would be merged into one sample by the
@@ -562,9 +659,153 @@ mod tests {
         }
     }
 
+    fn opts(pair_numeric: bool) -> ScanOpts {
+        ScanOpts { name_from_dir: false, pair_numeric, include_undetermined: false }
+    }
+
     fn units_of(root: &Path, pair_numeric: bool) -> Result<Vec<Unit>> {
-        let (files, _) = scan(&[root.to_path_buf()], false, pair_numeric)?;
+        let (files, _) = scan(&[root.to_path_buf()], &opts(pair_numeric))?;
         Ok(pair(files, false)?.0)
+    }
+
+    /// Scan and pair the way `main` does for `--long [--name-from-dir]`.
+    fn long_units(root: &Path, name_from_dir: bool) -> Result<(Vec<Unit>, Vec<String>)> {
+        let o = ScanOpts { name_from_dir, pair_numeric: false, include_undetermined: false };
+        let (files, _) = scan(&[root.to_path_buf()], &o)?;
+        pair(files, true)
+    }
+
+    fn bacass() -> schema::Schema {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bacass-2.7.0.schema_input.json");
+        schema::Schema::load(&p, false).unwrap()
+    }
+
+    #[test]
+    fn hybrid_long_reads_need_a_long_read_column() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["hyb/A_R1.fastq.gz", "hyb/A_R2.fastq.gz", "hyb/A.fastq.gz"]);
+        let (u, _) = long_units(t.path(), false).unwrap();
+        assert_eq!(u.len(), 1);
+        assert!(u[0].r1.is_some() && u[0].r2.is_some() && u[0].long.is_some());
+        // Default nf-core table: no long-read column, so refuse instead of dropping the file.
+        let err = check_long(&u, false, false, &mut Vec::new()).unwrap_err().to_string();
+        assert!(err.contains("no long-read column") && err.contains("A.fastq.gz"), "{err}");
+        // A schema without a long-read column refuses it too.
+        let rnaseq = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rnaseq-3.27.0.schema_input.json");
+        let rnaseq = schema::Schema::load(&rnaseq, false).unwrap();
+        assert!(!rnaseq.has_long_column());
+        let fmt = |p: &Path| p.display().to_string();
+        let err = rnaseq.build(&u, &BTreeMap::new(), &fmt, &mut Vec::new()).unwrap_err().to_string();
+        assert!(err.contains("no long-read column"), "{err}");
+        // bacass has LongFastQ: all three files land in the row.
+        let s = bacass();
+        check_long(&u, s.has_long_column(), s.has_run_column(), &mut Vec::new()).unwrap();
+        let (header, rows) = s.build(&u, &BTreeMap::new(), &fmt, &mut Vec::new()).unwrap();
+        assert_eq!(header[3], "LongFastQ");
+        assert!(rows[0][1].ends_with("A_R1.fastq.gz") && rows[0][2].ends_with("A_R2.fastq.gz"));
+        assert!(rows[0][3].ends_with("hyb/A.fastq.gz"), "{:?}", rows[0]);
+    }
+
+    #[test]
+    fn long_only_rows_without_long_column_warn() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["B.fastq.gz"]);
+        let (u, _) = long_units(t.path(), false).unwrap();
+        let mut w = Vec::new();
+        check_long(&u, false, false, &mut w).unwrap();
+        assert!(w.iter().any(|w| w.contains("long-read-only rows")), "{w:?}");
+    }
+
+    const ONT: [&str; 4] = [
+        "ont/barcode01/FAX123_pass_barcode01_abc_0.fastq.gz",
+        "ont/barcode01/FAX123_pass_barcode01_abc_1.fastq.gz",
+        "ont/barcode01/FAX123_pass_barcode01_abc_2.fastq.gz",
+        "ont/barcode01/FAX123_pass_barcode01_abc_3.fastq.gz",
+    ];
+
+    #[test]
+    fn nanopore_chunks_are_never_paired() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &ONT);
+        let (u, _) = long_units(t.path(), true).unwrap();
+        assert_eq!(u.len(), 4);
+        assert!(u.iter().all(|u| u.sample == "barcode01" && u.r1.is_none() && u.r2.is_none() && u.long.is_some()));
+        // bacass takes one long-read file per row: ask to concatenate.
+        let s = bacass();
+        let err = check_long(&u, s.has_long_column(), s.has_run_column(), &mut Vec::new()).unwrap_err().to_string();
+        assert!(err.contains("barcode01: 4 files") && err.contains("concatenate"), "{err}");
+        // A schema with a run column may list them as rows of one sample.
+        let mut w = Vec::new();
+        check_long(&u, true, true, &mut w).unwrap();
+        assert!(w.iter().any(|w| w.contains("one row each")), "{w:?}");
+
+        // Even with numeric pairing on and no --long: no pairing, no "mate missing" error.
+        let (files, _) = scan(&[t.path().to_path_buf()], &opts(true)).unwrap();
+        let (u, w) = pair(files, false).unwrap();
+        assert_eq!(u.len(), 4);
+        assert!(u.iter().all(|u| u.r2.is_none()));
+        assert!(w.iter().any(|w| w.contains("Oxford Nanopore") && w.contains("--long")), "{w:?}");
+    }
+
+    #[test]
+    fn pass_fail_names_outside_barcode_folders_are_not_paired() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["run/FAX9_fail_x_1.fastq.gz", "run/FAX9_fail_x_2.fastq.gz"]);
+        let u = units_of(t.path(), true).unwrap();
+        assert_eq!(u.len(), 2);
+        assert!(u.iter().all(|u| u.r2.is_none()));
+    }
+
+    #[test]
+    fn short_lane_numbers_and_lowercase_mates() {
+        let t = tempfile::tempdir().unwrap();
+        touch(
+            t.path(),
+            &[
+                "S1_EKDL01_HGV_L1_1.fq.gz",
+                "S1_EKDL01_HGV_L1_2.fq.gz",
+                "S1_EKDL01_HGV_L2_1.fq.gz",
+                "S1_EKDL01_HGV_L2_2.fq.gz",
+                "FP150002315_L01_1.fq.gz",
+                "FP150002315_L01_2.fq.gz",
+                "a_r1.fastq.gz",
+                "a_r2.fastq.gz",
+            ],
+        );
+        let u = units_of(t.path(), true).unwrap();
+        let rows: Vec<_> = u.iter().map(|u| (u.sample.as_str(), u.r2.is_some())).collect();
+        assert_eq!(
+            rows,
+            vec![("FP150002315", true), ("S1_EKDL01_HGV", true), ("S1_EKDL01_HGV", true), ("a", true)]
+        );
+        let (_, l, m, _, numeric) = classify("a_r1", true);
+        assert_eq!((l.as_str(), m, numeric), ("", Some(Mate::R1), false));
+        assert_eq!(classify("x_S1_L1_r2_001", true).1, "1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlinks_are_skipped() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["A_R1.fastq.gz", "A_R2.fastq.gz"]);
+        std::os::unix::fs::symlink(t.path().join("gone.fastq.gz"), t.path().join("B_R1.fastq.gz")).unwrap();
+        let (files, notes) = scan(&[t.path().to_path_buf()], &opts(true)).unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(notes.iter().any(|n| n.contains("B_R1.fastq.gz")), "{notes:?}");
+    }
+
+    #[test]
+    fn undetermined_reads_are_skipped_unless_asked() {
+        let t = tempfile::tempdir().unwrap();
+        touch(
+            t.path(),
+            &["Undetermined_S0_L001_R1_001.fastq.gz", "Undetermined_S0_L001_R2_001.fastq.gz", "A_S1_L001_R1_001.fastq.gz", "A_S1_L001_R2_001.fastq.gz"],
+        );
+        let (files, notes) = scan(&[t.path().to_path_buf()], &opts(true)).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(notes.iter().filter(|n| n.contains("--include-undetermined")).count(), 2);
+        let o = ScanOpts { include_undetermined: true, ..opts(true) };
+        assert_eq!(scan(&[t.path().to_path_buf()], &o).unwrap().0.len(), 4);
     }
 
     fn rel(root: &Path, p: &Option<PathBuf>) -> Option<String> {

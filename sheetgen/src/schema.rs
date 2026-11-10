@@ -211,6 +211,15 @@ impl Schema {
         Ok(Schema { columns, validator, unique_entries, dependent, unchecked })
     }
 
+    pub fn has_long_column(&self) -> bool {
+        self.columns.iter().any(|c| c.role == Role::Long)
+    }
+
+    /// A run/lane column tells several rows of one sample apart (mag `run`).
+    pub fn has_run_column(&self) -> bool {
+        self.columns.iter().any(|c| c.role == Role::Run)
+    }
+
     pub fn build(
         &self,
         units: &[Unit],
@@ -224,9 +233,9 @@ impl Schema {
                 bail!("--set {key}: the schema has no such column (columns: {})", names.join(", "));
             }
         }
-        let has_long_col = self.columns.iter().any(|c| c.role == Role::Long);
-        if units.iter().any(|u| u.long.is_some()) && !has_long_col {
-            warnings.push("this pipeline has no long-read column; long reads went into the R1 column".into());
+        let has_long_col = self.has_long_column();
+        if !has_long_col && let Some(u) = units.iter().find(|u| u.long.is_some() && u.r1.is_some()) {
+            bail!("sample `{}` has short and long reads, but this schema has no long-read column", u.sample);
         }
         for u in &self.unchecked {
             warnings.push(format!("not checked: {u}"));

@@ -30,18 +30,26 @@ sheetgen data/ --pipeline nf-core/bacass --link-into links/  # clean, space-free
 | `--schema FILE` | Use this schema instead. |
 | `--set COL=VALUE` | Fixed value for a column the files can't tell us, such as `strandedness`. Repeatable. |
 | `--name-from-dir` | Name samples after the folder holding the files. |
-| `--long` | Treat unpaired files as long reads (the schema's long-read column, for hybrid assembly). |
+| `--long` | Treat unpaired files as long reads (the schema's long-read column, for hybrid assembly). Also turns off pairing on a bare `_1`/`_2` suffix; `_R1`/`_R2` names still pair. |
 | `--relative` | Paths relative to the current folder. |
 | `--link-into DIR` | Create `<sample>_<n>_R1.fastq.gz` symlinks in DIR and list those. Originals are not touched. |
 | `--no-pair-numeric` | Don't pair on a bare `_1`/`_2` suffix; `x_1.fq.gz` and `x_2.fq.gz` become two single-end samples. |
 | `--allow-merge` | Accept different names that become the same after cleaning (`s 1`, `s_1`); the pipeline merges them. |
 | `--allow-unchecked` | Write the sheet even if the schema has rules sheetgen can't evaluate (listed as warnings). |
+| `--include-undetermined` | List `Undetermined_S0_*` files as a sample instead of skipping them. |
 
 ## What it recognises
 
 - bcl2fastq / BCL Convert names: `Sample_S1_L001_R1_001.fastq.gz`. Lanes become separate rows
-  (nf-core pipelines merge rows that share a sample name). Index reads (`I1`, `I2`) are skipped.
-- `_R1`/`_R2`, `_1`/`_2`, `.R1`, with `.fastq`/`.fq` and `.gz`, `.bz2`, `.zst`.
+  (nf-core pipelines merge rows that share a sample name). Index reads (`I1`, `I2`) are skipped,
+  and so are `Undetermined_S0_*` files (reads not assigned to a sample) unless
+  `--include-undetermined` is given.
+- Lane tokens with one to three digits: `_L001` (Illumina), `_L1` (Novogene/BGI, e.g.
+  `S1_EKDL01_HGV_L1_1.fq.gz`), `_L01` (MGI, e.g. `FP150002315_L01_1.fq.gz`). Lanes of one sample
+  become rows of one sample. If a provider puts flowcell or library codes in the name that differ
+  between files of one sample, name samples by folder with `--name-from-dir`.
+- `_R1`/`_R2` (any case, so `_r1` too), `_1`/`_2`, `.R1`, with `.fastq`/`.fq` and `.gz`, `.bz2`,
+  `.zst`.
 - Two files are mates only when they are in the **same folder** and their names differ only in the
   mate token (`A_R1` / `A_R2`). `runA/A_R1` is never paired with `runB/A_R2`. Several pairs for one
   sample (lanes, or runs in different folders) become several rows.
@@ -52,10 +60,37 @@ sheetgen data/ --pipeline nf-core/bacass --link-into links/  # clean, space-free
   in the summary, because `patient_1` and `patient_2` might be two single-end samples. Use
   `--no-pair-numeric` in that case.
 - Files without a mate marker are single-end (or long reads with `--long`).
-- Symlinks keep their own names, so a folder of renamed links behaves as expected.
+- Symlinks keep their own names, so a folder of renamed links behaves as expected. A dangling
+  symlink (or an unreadable subfolder) is skipped with a warning.
 - Sample names are cleaned to `[A-Za-z0-9._-]`. Two different names that become the same after
   cleaning (`s 1` and `s_1`) are an error, since the pipeline would merge them into one sample;
   `--allow-merge` accepts it.
+
+## Long reads and Nanopore
+
+With `--long`, files without a mate marker are long reads. A sample's long-read file goes on its
+short-read row when it has one (hybrid assembly), otherwise on a row of its own.
+
+- The long-read file needs a long-read column (`LongFastQ`, `long_reads`, ...). If a sample has both
+  short reads and a long-read file and the sheet has none (the default `sample,fastq_1,fastq_2`
+  layout, or a short-read pipeline's schema), sheetgen stops instead of dropping the file. Use the
+  hybrid pipeline's schema, e.g. `--pipeline nf-core/bacass`. Long-read-only rows without a
+  long-read column go in the R1 column, with a warning.
+- Oxford Nanopore MinKNOW output (files in `barcode01/`, `unclassified/`, or with `_pass_`/`_fail_`
+  in the name) is never paired: `FAX123_pass_barcode01_abc_0` and `..._1` are chunk numbers, not
+  mates. Without `--long` such files are written as single-end short reads with a warning to add
+  `--long`.
+- A sample with several long-read files (MinKNOW writes one per few thousand reads) is an error
+  unless the schema has a run column to tell the rows apart: nf-core/bacass takes a single
+  `LongFastQ` per sample. Concatenate first (gzip files concatenate as they are):
+
+```sh
+for d in fastq_pass/barcode*/; do cat "$d"*.fastq.gz > "merged/$(basename "$d").fastq.gz"; done
+sheetgen merged/ --long --pipeline nf-core/bacass -o samplesheet.tsv
+```
+
+Each merged file is then one sample named after its barcode. For files left in their barcode
+folders, `--name-from-dir` names samples `barcode01`, `barcode02`, ...
 
 ## Schema handling
 
