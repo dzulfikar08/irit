@@ -88,6 +88,17 @@
 - The output parsers are now also a library (`isotable::parse`), so irit-mcp reads tool outputs the
   same way isotable grades them. The command-line tool is unchanged.
 
+### gtdbprep
+- **`gtdbprep ani`: GTDB-Tk's ANI species screen without the 85 GB skani database.** The genomes
+  are screened locally against a compact index of every R232 reference's marker k-mers. Only the
+  references skani would compare in full are fetched, by HTTP range requests, and GTDB-Tk's own
+  `ANIScreener` then runs on just those. Sketches can come from GTDB's own `.tar.gz` (through a
+  gzip seek index), an unpacked `sketches.db` (local or hosted), or one split into parts. See
+  [the research page](docs/research/ani-laptop.md).
+- `gtdbprep ani-index build | gz-scan | gz-attach` make the screen index and the seek index from
+  a full skani database and GTDB's archive (maintainers).
+- The screen index is not hosted yet, so `ani` needs one built from the full database once.
+
 ## 0.2.1 (2026-11-10)
 
 ### Fixed
