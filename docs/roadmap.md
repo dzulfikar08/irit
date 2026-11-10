@@ -9,7 +9,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [x] `dblock`: database catalog, disk planning, resumable and streaming fetch, lock file, verify,
       tool-version check.
 - [x] Baseline of nf-core/bacass on a laptop ([setup](lab/setup.md), [benchmarks](benchmarks.md)).
-- [x] Upstream report: GTDB R232 mock database checksum ([details](research/upstream-reports.md)).
+- [x] Upstream report: GTDB R232 mock database checksum ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)).
 
 ## Next
 
