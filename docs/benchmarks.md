@@ -36,6 +36,11 @@ pipeline defaults).
 | | Per-position base content | warn | warn |
 | all four | every other module | pass | pass |
 
+The same comparison runs on GitHub-hosted runners in the [validation workflow](https://github.com/dzulfikar08/irit/actions/workflows/validate.yml)
+(weekly and on every change to a tool). First run, 2026-11-10, ubuntu-latest (4 vCPU, 16 GB):
+40 module verdicts compared across the four files, 0 differ. 4 files with 4 threads: leanqc 2.95 s
+wall and 52 MB peak; FastQC 1,200 MB peak (container cgroup).
+
 Total sequences and %GC agree. Total deduplicated percentage differs by up to 3 points
 (FastQC 90.2–94.9%, leanqc 93.5–94.9%) because the two estimate it differently; both pass.
 
