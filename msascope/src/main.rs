@@ -15,6 +15,11 @@ use msascope::alphabet::SeqType;
 use msascope::view::{self, ColorMode, Scene, TILE, Viewport};
 use rayon::prelude::*;
 
+// Phase 0 ports the design system; Phase 1 uses the rest of it.
+#[allow(dead_code)]
+mod gui;
+use gui::theme::{Settings, ThemeChoice, is_dark};
+
 const NAMES_W: f32 = 200.0;
 const RULER_H: f32 = 20.0;
 const CONS_H: f32 = 14.0;
@@ -101,6 +106,7 @@ struct MsaScope {
     search: Entity<InputState>,
     focus: FocusHandle,
     bench: Option<Bench>,
+    settings: Settings,
     _subs: Vec<Subscription>,
 }
 
@@ -108,7 +114,7 @@ impl MsaScope {
     fn new(path: Option<PathBuf>, ty: Option<SeqType>, bench: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let jump = cx.new(|cx| InputState::new(window, cx).placeholder("Go to column, or row:column"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find sequence name"));
-        let subs = vec![
+        let mut subs = vec![
             cx.subscribe_in(&jump, window, |this, state, ev: &InputEvent, window, cx| match ev {
                 InputEvent::PressEnter { .. } => {
                     let text = state.read(cx).value().to_string();
@@ -127,6 +133,13 @@ impl MsaScope {
                 _ => {}
             }),
         ];
+        // Follow the OS appearance while the theme is "System".
+        subs.push(cx.observe_window_appearance(window, |v, window, cx| {
+            if v.settings.theme == ThemeChoice::System {
+                gui::tokens::apply_palette(ThemeChoice::System.palette(is_dark(window.appearance())), cx);
+                cx.notify();
+            }
+        }));
         let mut v = MsaScope {
             data: None,
             status: "Open an alignment (FASTA, Clustal, Stockholm; .gz ok), or try a sample".into(),
@@ -149,6 +162,7 @@ impl MsaScope {
             search,
             focus: cx.focus_handle(),
             bench: bench.then(|| Bench { phase: 0, frame: 0, last: None, intervals: Vec::new(), paint_ms: Rc::default() }),
+            settings: Settings::load(),
             _subs: subs,
         };
         v.focus.focus(window, cx);
@@ -861,6 +875,9 @@ fn main() -> anyhow::Result<()> {
     }
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
         gpui_kit::init(cx);
+        let settings = Settings::load();
+        gui::tokens::apply_palette(settings.theme.palette(is_dark(cx.window_appearance())), cx);
+        gui::fonts::apply(None, cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
             titlebar: Some(TitlebarOptions { title: Some("msascope".into()), ..Default::default() }),
