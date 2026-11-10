@@ -14,8 +14,10 @@ npm run build   # sync docs/, build to dist/, fail on broken internal links or a
   Restart `npm run dev` to pick up edits made in `docs/`.
 - **Sidebar** comes from `../docs/SUMMARY.md` (see `site.config.mjs`). A page not listed there
   still appears: in the group whose pages share its folder, otherwise under "More".
-- **Landing page** is `src/content/docs/index.mdx`, the only committed page here. Its numbers
-  must match `docs/benchmarks.md` and the README; `src/components/Measured.astro` holds the chart.
+- **Landing page** is `src/content/docs/index.mdx`, committed here. Its numbers must match
+  `docs/benchmarks.md` and the README; `src/components/Measured.astro` holds the chart.
+- **Demos** are committed pages in `src/content/docs/demos/` (the sync leaves that folder alone), with
+  their components in `src/components/`. They are listed in the sidebar by `astro.config.mjs`.
 - **Theme** is `src/styles/theme.css`.
 
 Deployed by `.github/workflows/pages.yml` on pushes to `main` that touch `docs/`, `site/` or the
