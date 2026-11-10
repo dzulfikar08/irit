@@ -6,9 +6,6 @@ name: irit-mcp real tools
 
 on:
   workflow_dispatch:
-  # TEMPORARY, remove before merging: workflow_dispatch only works once the file is on main.
-  push:
-    branches: [mcp-external-tools]
 
 env:
   CARGO_TERM_COLOR: always

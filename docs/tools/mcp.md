@@ -602,7 +602,8 @@ run but does not carry the data.
   each tool twice to find the volatile outputs, deletes the outputs and runs `replay.sh`. It only
   runs by hand: `gh workflow run mcp-real-tools.yml`. First result (2026-11-10): all calls
   succeeded; fastp 40,000 reads, Bakta 522 CDSs / 36 tRNAs / 3 rRNAs, CheckM2 98.9% complete and
-  0.08% contaminated, GTDB-Tk classified the mock test genome with ANI 100.
+  0.08% contaminated, GTDB-Tk classified the mock test genome with ANI 100. `replay.sh` then re-ran 11 commands and all
+  41 outputs matched ([run](https://github.com/dzulfikar08/irit/actions/runs/42850479255)).
 - By hand: a session with sheetgen → leanqc → isotable → dblock_catalog replayed with all 7 outputs
   matching; dblock_add, plan, verify, env and check against a local project.
 
