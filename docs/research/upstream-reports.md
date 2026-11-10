@@ -30,4 +30,4 @@ curl -s https://data.gtdb.ecogenomic.org/releases/release232/232.0/MD5SUM.txt | 
 ```
 
 `dblock` keeps GTDB's published checksum in its catalog and refuses the file until one of the two
-is updated. Status: reported to the GTDB-Tk issue tracker (link below once filed).
+is updated. Status: reported 2026-11-10 as [Ecogenomics/GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726).
