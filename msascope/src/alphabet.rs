@@ -54,6 +54,10 @@ pub struct Alphabet {
     enc: [u8; 256],
     symbols: &'static [u8],
     colors: [u32; NCODES],
+    /// Fills for dark themes: the same hues, dark enough for light letters.
+    colors_dark: [u32; NCODES],
+    /// Pale fills for light themes at letter zoom, where the letters carry the information.
+    colors_pale: [u32; NCODES],
 }
 
 /// DNA: T, no U. Four bits per residue.
@@ -72,6 +76,8 @@ impl Alphabet {
     const fn new(kind: Kind, name: &'static str, symbols: &'static [u8], bits: u32) -> Self {
         let mut enc = [INVALID; 256];
         let mut colors = [0xC8C8C8; NCODES];
+        let mut colors_dark = [DARK_OTHER; NCODES];
+        let mut colors_pale = [PALE_OTHER; NCODES];
         let mut i = 0;
         while i < symbols.len() {
             let s = symbols[i];
@@ -81,6 +87,14 @@ impl Alphabet {
                 Kind::Nucleotide => nt_color(s),
                 Kind::Protein => aa_color(s),
             };
+            colors_dark[i] = match kind {
+                Kind::Nucleotide => nt_color_dark(s),
+                Kind::Protein => aa_color_dark(s),
+            };
+            colors_pale[i] = match kind {
+                Kind::Nucleotide => nt_color_pale(s),
+                Kind::Protein => aa_color_pale(s),
+            };
             i += 1;
         }
         enc[b'.' as usize] = GAP;
@@ -89,7 +103,7 @@ impl Alphabet {
             Kind::Nucleotide => 15, // N
             Kind::Protein => 23,    // X
         };
-        Alphabet { kind, name, bits, enc, symbols, colors }
+        Alphabet { kind, name, bits, enc, symbols, colors, colors_dark, colors_pale }
     }
 
     #[inline]
@@ -115,6 +129,18 @@ impl Alphabet {
     #[inline]
     pub fn color(&self, code: u8) -> u32 {
         self.colors[code as usize & (NCODES - 1)]
+    }
+
+    /// Colour of a code for a light or dark theme.
+    #[inline]
+    pub fn color_in(&self, code: u8, dark: bool) -> u32 {
+        if dark { self.colors_dark[code as usize & (NCODES - 1)] } else { self.color(code) }
+    }
+
+    /// Colour of a code behind a letter: pale fills on light themes, the dark fills on dark ones.
+    #[inline]
+    pub fn letter_fill(&self, code: u8, dark: bool) -> u32 {
+        if dark { self.color_in(code, true) } else { self.colors_pale[code as usize & (NCODES - 1)] }
     }
 
     /// The alphabet to move to when `self` rejects byte `b`: T in RNA or U in DNA keeps both apart,
@@ -174,6 +200,65 @@ const fn aa_color(s: u8) -> u32 {
         b'P' => 0xD9D94A,
         b'H' | b'Y' => 0x4CC2C2, // aromatic polar
         _ => 0xC8C8C8,
+    }
+}
+
+// Dark-theme fills (redesign spec §2.4). Letters on them are light (#eef1fb).
+const DARK_OTHER: u32 = 0x45475A;
+
+const fn nt_color_dark(s: u8) -> u32 {
+    match s {
+        b'-' => GAP_COLOR,
+        b'A' => 0x2F6B3A,
+        b'C' => 0x2F4F8A,
+        b'G' => 0x7A5326,
+        b'T' | b'U' => 0x7D3038,
+        b'N' | b'X' => 0x585B70,
+        _ => DARK_OTHER,
+    }
+}
+
+const fn aa_color_dark(s: u8) -> u32 {
+    match s {
+        b'-' => GAP_COLOR,
+        b'A' | b'I' | b'L' | b'M' | b'F' | b'W' | b'V' => 0x3A5590,
+        b'K' | b'R' => 0x83373E,
+        b'E' | b'D' => 0x6E3F78,
+        b'N' | b'Q' | b'S' | b'T' => 0x2F6B48,
+        b'C' => 0x7C4B58,
+        b'G' => 0x80592F,
+        b'P' => 0x66662A,
+        b'H' | b'Y' => 0x2A6970,
+        _ => DARK_OTHER,
+    }
+}
+
+// Light-theme fills behind letters (redesign spec §2.4). Letters on them are dark (#2a2c3c).
+const PALE_OTHER: u32 = 0xC8CAD4;
+
+const fn nt_color_pale(s: u8) -> u32 {
+    match s {
+        b'-' => GAP_COLOR,
+        b'A' => 0x8FD18F,
+        b'C' => 0x9DBAF2,
+        b'G' => 0xF5C38A,
+        b'T' | b'U' => 0xF2A0A6,
+        _ => PALE_OTHER,
+    }
+}
+
+const fn aa_color_pale(s: u8) -> u32 {
+    match s {
+        b'-' => GAP_COLOR,
+        b'A' | b'I' | b'L' | b'M' | b'F' | b'W' | b'V' => 0xA9C0F3,
+        b'K' | b'R' => 0xF3A6A0,
+        b'E' | b'D' => 0xDCAEE0,
+        b'N' | b'Q' | b'S' | b'T' => 0xA6DCA8,
+        b'C' => 0xF4BCBC,
+        b'G' => 0xF5C79E,
+        b'P' => 0xDEDC94,
+        b'H' | b'Y' => 0x9FD6D6,
+        _ => PALE_OTHER,
     }
 }
 
@@ -422,5 +507,28 @@ mod tests {
         assert_eq!(NT_MIXED.color(16), NT_MIXED.color(4)); // U red like T, not the gap colour
         assert_eq!(RNA.color(4), DNA.color(4));
         assert_eq!(DNA.color(GAP), GAP_COLOR);
+    }
+
+    /// WCAG contrast of the letter ink on every fill drawn behind letters is at least 4.5:1
+    /// (redesign spec §2.4): dark ink on the pale light fills, light ink on the dark fills.
+    #[test]
+    fn letters_readable_on_fills() {
+        fn contrast(a: u32, b: u32) -> f32 {
+            let lin = |c: u32, s: u32| {
+                let v = ((c >> s) & 0xff) as f32 / 255.0;
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            let l = |c| 0.2126 * lin(c, 16) + 0.7152 * lin(c, 8) + 0.0722 * lin(c, 0);
+            let (x, y) = (l(a), l(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        }
+        for a in [&DNA, &RNA, &NT_MIXED, &DNA_WIDE, &RNA_WIDE, &PROTEIN] {
+            for code in 1..a.len() as u8 {
+                for (dark, ink) in [(false, 0x2A2C3C), (true, 0xEEF1FB)] {
+                    let c = contrast(a.letter_fill(code, dark), ink);
+                    assert!(c >= 4.5, "{a:?} {} dark={dark}: {c:.2}", a.symbol(code) as char);
+                }
+            }
+        }
     }
 }

@@ -62,6 +62,7 @@ pub fn parse_hex(s: &str) -> Option<Rgb> {
     u32::from_str_radix(h, 16).ok()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 /// Relative luminance in 0..=1 (sRGB, not linearised; good enough to pick light or dark).
 pub fn luminance(c: Rgb) -> f32 {
     let r = ((c >> 16) & 0xff) as f32;

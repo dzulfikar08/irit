@@ -32,6 +32,8 @@ pub struct Tokens {
     pub hover: Hsla,
     pub selected: Hsla,
     pub accent: Hsla,
+    /// Column bands and selections (Phase 5).
+    #[allow(dead_code)]
     pub accent_soft: Hsla,
     pub accent_fg: Hsla,
     pub success: Hsla,
@@ -41,6 +43,7 @@ pub struct Tokens {
     /// msascope's own colour: the app mark, the file tab and status bar dots.
     pub app: Hsla,
     /// Track header and corner, and the selected row's name (`grid_header_active`).
+    #[allow(dead_code)]
     pub grid_line: Hsla,
     pub grid_header: Hsla,
     pub grid_header_active: Hsla,
@@ -179,6 +182,19 @@ pub fn apply_palette(p: &Palette, cx: &mut App) {
         k.primary_hover = c(mix(p.accent, p.foreground, 0.12));
         k.primary_active = c(mix(p.accent, p.background, 0.12));
         k.primary_foreground = t.accent_fg;
+        // gpui-kit 0.9.1 colours buttons from their own fields, not from primary/secondary.
+        k.button_primary = k.primary;
+        k.button_primary_hover = k.primary_hover;
+        k.button_primary_active = k.primary_active;
+        k.button_primary_foreground = t.accent_fg;
+        k.button = t.surface;
+        k.button_hover = solid_hover;
+        k.button_active = c(mix(p.background, p.foreground, 0.10));
+        k.button_foreground = t.fg;
+        k.button_secondary = t.surface;
+        k.button_secondary_hover = solid_hover;
+        k.button_secondary_active = c(mix(p.background, p.foreground, 0.10));
+        k.button_secondary_foreground = t.fg;
         k.secondary = t.surface;
         k.secondary_hover = solid_hover;
         k.secondary_active = c(mix(p.background, p.foreground, 0.10));

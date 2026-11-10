@@ -2,7 +2,10 @@
 //! and the views built from it. The rule: views never use raw colours or sizes. Sizes come from
 //! [`metrics`], colours from [`tokens`].
 
+pub mod app;
 pub mod cached;
+pub mod canvas;
+pub mod chrome;
 pub mod components;
 pub mod fonts;
 pub mod keys;
