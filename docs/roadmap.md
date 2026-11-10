@@ -32,11 +32,15 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [ ] **`subprep`**: validate NCBI/ENA submission metadata offline before upload.
 - [ ] **Typed MCP tool layer** over the standard microbial genomics tools, recording every call as a
       replayable script, so an AI agent can run analyses that can be repeated without it.
+- [ ] **Split GTDB-Tk**: run the light steps (marker genes, alignment, ANI sketch) on the laptop and
+      send only those to a shared placement server that keeps the tree in memory. See
+      [GTDB-Tk and memory](research/gtdbtk-memory.md#using-hosted-data-instead-of-downloading-it).
 - [ ] **Laptop benchmark for AI agents**: can an agent with these tools produce a defensible microbial
       genomics result on an 8 GB laptop, compared with a hand-built workflow (accuracy,
       reproducibility, time, cost, human intervention)? A possible paper.
 - [ ] **Instrument connection**: lab instruments run vendor software on dedicated (often older Windows)
-      PCs. Open standards exist (SiLA 2; LADS, an OPC UA companion specification for lab devices).
+      PCs, and labs usually connect them through a LIMS, which parses instrument exports or uses vendor
+      drivers. So the practical route is the LIMS or the files instruments drop for it. Open standards exist (SiLA 2; LADS, an OPC UA companion specification for lab devices).
       A small agent that watches sequencer run folders or speaks these protocols could start QC as
       soon as a run finishes. Check real instrument support first. Note that current Rust supports
       Windows 10+; Windows 7 needs a lower-tier target.
