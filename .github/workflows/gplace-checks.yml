@@ -15,7 +15,7 @@ on:
         description: "Reuse the msa/refpkg artifacts of this earlier run (skip prep, streaming)"
         default: ""
       stage:
-        description: "all | rerun (accuracy + extra caps only)"
+        description: "all | rerun (accuracy + extra caps) | floor (full-tree 5.2G, 5.5G)"
         default: all
 
 permissions:
@@ -128,7 +128,7 @@ jobs:
   # ---------------------------------------------------------------- Experiment 1
   accuracy:
     needs: prep
-    if: ${{ !cancelled() && (needs.prep.result == 'success' || needs.prep.result == 'skipped') }}
+    if: ${{ !cancelled() && inputs.stage != 'floor' && (needs.prep.result == 'success' || needs.prep.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
     defaults:
@@ -207,7 +207,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.stage == 'rerun' && '[{"set":"extra","tree":"class8","artifact":"refpkg-class8","caps":"8.5G 1.9G","timeout":60},{"set":"extra","tree":"full","artifact":"refpkg-full","caps":"5G","timeout":330},{"set":"extra","tree":"full","artifact":"refpkg-full","caps":"4.5G","timeout":330},{"set":"extra","tree":"full","artifact":"refpkg-full","caps":"4G","timeout":330,"kcap":"15032385536"}]' || '[{"set":"main","tree":"class8","artifact":"refpkg-class8","caps":"8.5G 6G 4G 3G 2G 1.5G 1G 768M 512M","timeout":60},{"set":"main","tree":"full","artifact":"refpkg-full","caps":"8.5G","timeout":330},{"set":"main","tree":"full","artifact":"refpkg-full","caps":"6G","timeout":330},{"set":"main","tree":"full","artifact":"refpkg-full","caps":"4G","timeout":330},{"set":"main","tree":"full","artifact":"refpkg-full","caps":"3G","timeout":330},{"set":"main","tree":"full","artifact":"refpkg-full","caps":"2G","timeout":330},{"set":"main","tree":"full","artifact":"refpkg-full","caps":"1.5G 1G","timeout":165}]') }}
+        include: ${{ fromJSON(inputs.stage == 'floor' && '[{"set":"floor","tree":"full","artifact":"refpkg-full","caps":"5.2G","timeout":330},{"set":"floor","tree":"full","artifact":"refpkg-full","caps":"5.5G","timeout":330}]' || inputs.stage == 'rerun' && '[{"set":"extra","tree":"class8","artifact":"refpkg-class8","caps":"8.5G 1.9G","timeout":60},{"set":"extra","tree":"full","artifact":"refpkg-full","caps":"5G","timeout":330},{"set":"extra","tree":"full","artifact":"refpkg-full","caps":"4.5G","timeout":330},{"set":"extra","tree":"full","artifact":"refpkg-full","caps":"4G","timeout":330,"kcap":"15032385536"}]' || '[{"set":"main","tree":"class8","artifact":"refpkg-class8","caps":"8.5G 6G 4G 3G 2G 1.5G 1G 768M 512M","timeout":60},{"set":"main","tree":"full","artifact":"refpkg-full","caps":"8.5G","timeout":330},{"set":"main","tree":"full","artifact":"refpkg-full","caps":"6G","timeout":330},{"set":"main","tree":"full","artifact":"refpkg-full","caps":"4G","timeout":330},{"set":"main","tree":"full","artifact":"refpkg-full","caps":"3G","timeout":330},{"set":"main","tree":"full","artifact":"refpkg-full","caps":"2G","timeout":330},{"set":"main","tree":"full","artifact":"refpkg-full","caps":"1.5G 1G","timeout":165}]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 355
     defaults:
