@@ -47,7 +47,10 @@ jobs:
           mkdir -p "$HOME/tool-bin"
           root=${MAMBA_ROOT_PREFIX:?setup-micromamba sets MAMBA_ROOT_PREFIX}
           for t in fastp bakta checkm2 gtdbtk; do
-            printf '#!/bin/sh\nPATH=%s/envs/%s/bin:$PATH\nexport PATH\nexec %s/envs/%s/bin/%s "$@"\n' "$root" "$t" "$root" "$t" "$t" > "$HOME/tool-bin/$t"
+            # CheckM2's TensorFlow library asks for an executable stack, which newer glibc refuses
+            # ("cannot enable executable stack"); this tunable allows it for that process only.
+            extra=""; [ "$t" = checkm2 ] && extra="GLIBC_TUNABLES=glibc.rtld.execstack=2; export GLIBC_TUNABLES"
+            printf '#!/bin/sh\nPATH=%s/envs/%s/bin:$PATH\nexport PATH\n%s\nexec %s/envs/%s/bin/%s "$@"\n' "$root" "$t" "$extra" "$root" "$t" "$t" > "$HOME/tool-bin/$t"
             chmod +x "$HOME/tool-bin/$t"
             "$HOME/tool-bin/$t" --version | head -n 1
           done
@@ -81,7 +84,8 @@ jobs:
         run: |
           python3 .github/scripts/mcp_real_tools.py \
             --mcp "$PWD/target/release/irit-mcp" --work work \
-            --path "$HOME/tool-bin:$PWD/target/release:$PATH"
+            --path "$HOME/tool-bin:$PWD/target/release:$PATH" \
+            --amrfinder-update "$MAMBA_ROOT_PREFIX/envs/bakta/bin/amrfinder_update"
 
       - name: Keep the run record
         if: always()
@@ -90,8 +94,9 @@ jobs:
           name: irit-mcp-real-tools-run
           path: |
             work/irit-runs
-            work/trim/*.json
-            work/bakta*/*.txt
-            work/checkm2*/quality_report.tsv
-            work/gtdbtk*/classify/*.summary.tsv
+            work/*_first/*.json
+            work/*_first/*.txt
+            work/*_first/*.log
+            work/checkm2_first/quality_report.tsv
+            work/gtdbtk_first/classify/*.summary.tsv
           if-no-files-found: warn
