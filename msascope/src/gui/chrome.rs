@@ -4,16 +4,18 @@
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::{IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{IconName, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use msascope::view::{self, ColorMode};
+use gpui_kit::assets::IconName as Lucide;
+use msascope::scheme::{self, Scheme};
+use msascope::view;
 
 use super::app::{Fit, MsaScope};
 use super::components::{IconButtonExt as _, dot, icon_button, kbd};
 use super::fonts::tabular;
 use super::metrics::*;
-use super::theme::ThemeChoice;
+use super::theme::{GAPPY_CHOICES, ThemeChoice};
 use super::tokens::tokens;
 
 /// A thin vertical rule between toolbar groups.
@@ -185,26 +187,68 @@ impl MsaScope {
             }
             menu
         };
-        let mode_items = |mut menu: gpui_kit::component::menu::PopupMenu, current: ColorMode, entity: WeakEntity<MsaScope>| {
-            for (m, label) in [(ColorMode::Residues, "Residues"), (ColorMode::Differences, "Differences from consensus")] {
+        let kind = self.data.as_ref().map(|d| d.aln.kind());
+        let mode = self.mode;
+        let scheme_items = move |mut menu: gpui_kit::component::menu::PopupMenu, entity: WeakEntity<MsaScope>| {
+            let schemes = Scheme::ALL.into_iter().filter(|s| kind.is_none_or(|k| s.applies(k)));
+            for s in schemes {
                 let entity = entity.clone();
-                menu = menu.item(PopupMenuItem::new(format!("{label}   D")).checked(current == m).on_click(move |_, _, cx| {
+                let key = if s == Scheme::Differences { "   D" } else { "" };
+                menu = menu.item(PopupMenuItem::new(format!("{}{key}", s.label())).checked(mode.scheme == s).on_click(move |_, _, cx| {
                     let _ = entity.update(cx, |v, cx| {
-                        if v.mode != m {
-                            v.toggle_mode();
-                        }
+                        v.set_scheme(s);
                         cx.notify();
                     });
                 }));
             }
+            let e = entity.clone();
+            menu.separator().item(PopupMenuItem::new("By conservation   C").checked(mode.by_conservation).on_click(move |_, _, cx| {
+                let _ = e.update(cx, |v, cx| {
+                    v.mode.by_conservation = !v.mode.by_conservation;
+                    cx.notify();
+                });
+            }))
+        };
+        let inserts = self.data.as_ref().map_or(0, |d| d.aln.insert_count());
+        let (hide_inserts, hide_gappy, gappy_pct) = (self.hide_inserts, self.hide_gappy, self.settings.gappy_pct);
+        let column_items = move |mut menu: gpui_kit::component::menu::PopupMenu, entity: WeakEntity<MsaScope>| {
+            if inserts > 0 {
+                let e = entity.clone();
+                menu = menu
+                    .item(PopupMenuItem::new(format!("Hide {} insert columns   I", view::group_digits(inserts))).checked(hide_inserts).on_click(move |_, _, cx| {
+                        let _ = e.update(cx, |v, cx| v.set_hide_inserts(!v.hide_inserts, cx));
+                    }))
+                    .separator();
+            }
+            let e = entity.clone();
+            menu = menu.item(PopupMenuItem::new("Show gappy columns").checked(!hide_gappy).on_click(move |_, _, cx| {
+                let _ = e.update(cx, |v, cx| v.set_gappy(None, cx));
+            }));
+            for p in GAPPY_CHOICES {
+                let e = entity.clone();
+                let label = if p == 100 { "Hide all-gap columns".to_string() } else { format!("Hide columns ≥ {p}% gaps") };
+                let key = if p == gappy_pct { "   G" } else { "" };
+                menu = menu.item(PopupMenuItem::new(format!("{label}{key}")).checked(hide_gappy && gappy_pct == p).on_click(move |_, _, cx| {
+                    let _ = e.update(cx, |v, cx| v.set_gappy(Some(p), cx));
+                }));
+            }
             menu
         };
-        let (fit, mode) = (self.fit, self.mode);
+        let fit = self.fit;
         let fit_label = fit.filter(|f| *f != Fit::Readable).map_or("Fit", |f| f.label());
-        let mode_label = match mode {
-            ColorMode::Residues => "Residues",
-            ColorMode::Differences => "Differences",
+        // A strip of the scheme's legend colours, as on the button in the mockup.
+        let theme = t.tile_theme();
+        let swatches = kind.map(|k| scheme::legend(mode.scheme, k, &theme)).unwrap_or_default();
+        let strip = h_flex().gap(px(1.)).children(swatches.into_iter().take(8).map(|(c, _)| div().w(px(4.)).h(px(10.)).rounded(px(1.)).bg(rgb(c))));
+        let scheme_label = if mode.by_conservation { format!("{} · conservation", mode.scheme.label()) } else { mode.scheme.label().to_string() };
+        let columns_label = match (hide_inserts && inserts > 0, hide_gappy) {
+            (true, true) => format!("Inserts, gappy ≥ {gappy_pct}% hidden"),
+            (true, false) => "Inserts hidden".to_string(),
+            (false, true) if gappy_pct == 100 => "All-gap hidden".to_string(),
+            (false, true) => format!("Gappy ≥ {gappy_pct}% hidden"),
+            (false, false) => "All columns".to_string(),
         };
+        let any_hidden = (hide_inserts && inserts > 0) || hide_gappy;
 
         let mut row = h_flex()
             .size_full()
@@ -221,34 +265,64 @@ impl MsaScope {
             .child(separator(cx))
             .child(zoom);
         if compact {
-            // Fit and colour fold into one menu.
+            // Fit, colour and columns fold into one menu.
             let e = entity.clone();
-            row = row.child(separator(cx)).child(Button::new("more").ghost().xsmall().icon(IconName::Ellipsis).tooltip("Fit and colour").dropdown_menu(move |menu, _, _| {
+            row = row.child(separator(cx)).child(Button::new("more").ghost().xsmall().icon(IconName::Ellipsis).tooltip("Fit, colour and columns").dropdown_menu(move |menu, _, _| {
                 let menu = fit_items(menu, fit, e.clone()).separator();
-                mode_items(menu, mode, e.clone())
+                let menu = scheme_items(menu, e.clone()).separator();
+                column_items(menu, e.clone())
             }));
         } else {
-            let (e1, e2) = (entity.clone(), entity.clone());
+            let (e1, e2, e3) = (entity.clone(), entity.clone(), entity.clone());
             row = row
                 .child(Button::new("fit").ghost().xsmall().icon(IconName::Maximize).label(fit_label).dropdown_caret(true).tooltip("Fit · 0, W, H").dropdown_menu(move |menu, _, _| fit_items(menu, fit, e1.clone())))
                 .child(separator(cx))
-                .child(Button::new("colour").ghost().xsmall().icon(IconName::Palette).label(mode_label).dropdown_caret(true).tooltip("Colour · D").dropdown_menu(move |menu, _, _| mode_items(menu, mode, e2.clone())));
+                .child(
+                    Button::new("colour")
+                        .outline()
+                        .xsmall()
+                        .child(h_flex().gap(SPACE_3).child(strip).child(scheme_label))
+                        .dropdown_caret(true)
+                        .tooltip("Colour scheme · S cycles, D differences, C conservation")
+                        .dropdown_menu(move |menu, _, _| scheme_items(menu, e2.clone())),
+                )
+                .child(div().w(SPACE_2))
+                .child(
+                    Button::new("columns")
+                        .ghost()
+                        .xsmall()
+                        .selected(any_hidden)
+                        .icon(Lucide::FoldHorizontal)
+                        .label(columns_label)
+                        .dropdown_caret(true)
+                        .tooltip("Hide insert and gappy columns · I, G")
+                        .dropdown_menu(move |menu, _, _| column_items(menu, e3.clone())),
+                );
         }
+        let e = entity.clone();
+        let overview_on = self.settings.overview;
+        row = row.child(div().flex_1()).child(icon_button("overview", Lucide::PanelRight, overview_on, cx).tip("Overview panel", None).on_click(move |_, _, cx| {
+            let _ = e.update(cx, |v, cx| {
+                v.settings.overview = !v.settings.overview;
+                v.settings.save();
+                cx.notify();
+            });
+        }));
         row
     }
 
     pub(super) fn render_status_bar(&mut self, cx: &mut Context<Self>) -> Div {
         let t = tokens(cx);
-        let hover = self.hover_text();
         let message: SharedString = if self.error.is_some() {
             "Couldn't open the file".into()
         } else if let Some(p) = &self.loading {
             format!("Loading {}…", p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())).into()
-        } else if !hover.is_empty() {
-            hover.into()
+        } else if self.cols_pending {
+            "Hiding columns…".into()
         } else {
             self.status.clone()
         };
+        let hidden = self.hidden_count();
         let theme = match self.settings.theme {
             ThemeChoice::System => format!("System ({})", if t.dark { "dark" } else { "light" }),
             c => c.label().to_owned(),
@@ -273,6 +347,7 @@ impl MsaScope {
                 row.child(div().flex_none().child(format))
                     .child(div().flex_none().text_color(t.fg).child(format!("{} sequences × {} columns", view::group_digits(d.aln.rows()), view::group_digits(d.aln.cols()))))
             })
+            .when(hidden > 0, |row| row.child(div().flex_none().child(format!("{} columns hidden", view::group_digits(hidden)))))
             .child(div().flex_1().min_w_0().truncate().when(self.error.is_some(), |d| d.text_color(t.danger)).child(message))
             .when_some(selection, |row, s| row.child(div().flex_none().max_w(px(260.)).truncate().text_color(t.fg).child(s)))
             .when_some(d, |row, d| row.child(div().flex_none().child(format!("loaded in {:.2} s · {} MiB", d.load_secs(), view::group_digits(d.bytes() >> 20)))))

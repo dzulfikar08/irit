@@ -12,6 +12,10 @@ pub struct ColumnStats {
     pub identity: Vec<f32>,
     /// Fraction of rows that are gaps.
     pub gaps: Vec<f32>,
+    /// Share of each code per column, 0–255 of the rows (rounded down). 32 bytes per column.
+    pub shares: Vec<[u8; NCODES]>,
+    /// Clustal X colouring per column ([`crate::scheme::clustal_mask`]); zeros for nucleotides.
+    pub clustal: Vec<u32>,
 }
 
 /// Columns per task: 1024 × 32 u32 counters = 128 KB, which stays in L2. Splitting by rows instead
@@ -25,13 +29,22 @@ impl ColumnStats {
         let (rows, cols) = (aln.rows(), aln.cols());
         let m = &aln.matrix;
         let n = rows.max(1) as f32;
-        let mut s = ColumnStats { consensus: vec![GAP; cols], identity: vec![0.0; cols], gaps: vec![0.0; cols] };
+        let mut s = ColumnStats {
+            consensus: vec![GAP; cols],
+            identity: vec![0.0; cols],
+            gaps: vec![0.0; cols],
+            shares: vec![[0u8; NCODES]; cols],
+            clustal: vec![0; cols],
+        };
+        let alpha = aln.alphabet();
         s.consensus
             .par_chunks_mut(COL_BLOCK)
             .zip(s.identity.par_chunks_mut(COL_BLOCK))
             .zip(s.gaps.par_chunks_mut(COL_BLOCK))
+            .zip(s.shares.par_chunks_mut(COL_BLOCK))
+            .zip(s.clustal.par_chunks_mut(COL_BLOCK))
             .enumerate()
-            .for_each(|(blk, ((cons, ident), gaps))| {
+            .for_each(|(blk, ((((cons, ident), gaps), shares), clustal))| {
                 let (c0, w) = (blk * COL_BLOCK, cons.len());
                 let mut acc = vec![0u32; w * NCODES];
                 let mut buf = vec![0u8; w];
@@ -48,6 +61,10 @@ impl ColumnStats {
                     }
                     ident[i] = cnt as f32 / n;
                     gaps[i] = h[GAP as usize] as f32 / n;
+                    for (sh, &v) in shares[i].iter_mut().zip(h) {
+                        *sh = (v as u64 * 255 / rows.max(1) as u64) as u8;
+                    }
+                    clustal[i] = crate::scheme::clustal_mask(alpha, h, rows as u32);
                 }
             });
         s
@@ -67,6 +84,9 @@ mod tests {
         assert_eq!(cons, b"AG-A"); // T/A tie in the last column goes to the lower code (A)
         assert_eq!(s.identity, [0.75, 0.75, 0.0, 0.5]);
         assert_eq!(s.gaps, [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(s.shares[0][a.alphabet().encode(b'A').unwrap() as usize], 191); // 3 of 4
+        assert_eq!(s.shares[2][GAP as usize], 255);
+        assert!(s.clustal.iter().all(|&m| m == 0)); // DNA
     }
 
     #[test]

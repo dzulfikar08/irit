@@ -4,6 +4,7 @@ pub mod alphabet;
 pub mod matrix;
 pub mod parse;
 pub mod pyramid;
+pub mod scheme;
 pub mod stats;
 pub mod synth;
 pub mod view;

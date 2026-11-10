@@ -14,7 +14,9 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use msascope::Loaded;
 use msascope::alphabet::SeqType;
-use msascope::view::{self, ColorMode, TileTheme, Viewport};
+use msascope::pyramid::Pyramid;
+use msascope::scheme::{self, ColorMode, Scheme};
+use msascope::view::{self, ColumnMap, Viewport};
 
 use super::cached::CachedView;
 use super::metrics::*;
@@ -50,12 +52,16 @@ impl Fit {
     }
 }
 
-/// Cached rasterised tiles for the current scale, colour mode and theme, keyed by tile position.
+/// What a set of cached tiles was drawn with: scale (cw, ch bits), colour mode, theme, whether
+/// letters are drawn over them, display scale × 100 and the hidden-columns generation. The
+/// scales are keyed exactly: they only change on zoom, and rounding would merge distinct
+/// sub-pixel scales.
+pub type TileKey = (u64, u64, ColorMode, scheme::Theme, bool, u32, u64);
+
+/// Cached rasterised tiles for the current [`TileKey`], keyed by tile position.
 #[derive(Default)]
 pub struct TileCache {
-    /// (cw bits, ch bits, colour mode, theme, display scale × 100). The scales are keyed exactly:
-    /// they only change on zoom, and rounding would merge distinct sub-pixel scales.
-    pub key: Option<(u64, u64, ColorMode, TileTheme, u32)>,
+    pub key: Option<TileKey>,
     pub tiles: HashMap<(i64, i64), (Arc<RenderImage>, u64)>,
     pub frame: u64,
     pub rendered: usize,
@@ -95,15 +101,32 @@ const BENCH_PHASES: [(&str, Option<(i32, i32)>); 4] =
     [("overview (fit)", None), ("1 px per cell", Some((0, 0))), ("4 px per cell", Some((4, 4))), ("letters, 12x16 px", Some((7, 8)))];
 const BENCH_FRAMES: usize = 240;
 
+/// The columns shown while some are hidden: the map and the pyramid built for it.
+pub struct HiddenCols {
+    pub map: ColumnMap,
+    pub pyramid: Pyramid,
+    /// Changes with every rebuild; part of the tile key.
+    pub generation: u64,
+}
+
+/// The overview panel's image, cached until what it shows changes.
+#[derive(Default)]
+pub struct OverviewCache {
+    pub key: Option<(ColorMode, scheme::Theme, u64, u32, u32)>,
+    pub image: Option<Arc<RenderImage>>,
+}
+
 /// What a mouse drag does.
 #[derive(Clone, Copy, Debug)]
-enum Drag {
+pub(super) enum Drag {
     /// Pan the alignment; the last pointer position.
     Pan(Point<Pixels>),
     /// Shift+drag: will select a block (not built yet); does nothing for now.
     Block,
     /// Resize the name panel: pointer x and panel width when the drag started.
     Splitter { x0: Pixels, w0: f32 },
+    /// Pan by dragging in the overview panel.
+    Overview,
 }
 
 /// The parts of the state the cached chrome (title bar, toolbar) shows. When it changes, the
@@ -119,6 +142,12 @@ struct ChromeKey {
     theme: ThemeChoice,
     dark: bool,
     compact: bool,
+    kind: Option<msascope::alphabet::Kind>,
+    inserts: usize,
+    hide_inserts: bool,
+    hide_gappy: bool,
+    gappy_pct: u8,
+    overview: bool,
 }
 
 pub struct MsaScope {
@@ -137,13 +166,31 @@ pub struct MsaScope {
     /// The fit in effect; re-applied when the window is resized, until the user zooms.
     pub(super) fit: Option<Fit>,
     pub(super) mode: ColorMode,
+    /// The scheme `d` returns to from Differences.
+    prev_scheme: Scheme,
     pub(super) tiles: Rc<RefCell<TileCache>>,
+    /// Hidden columns in effect (`None`: every column shown), and the generation of the last
+    /// rebuild asked for; a rebuild runs in the background and the old map stays until it ends.
+    pub(super) hidden: Option<Arc<HiddenCols>>,
+    cols_gen: u64,
+    pub(super) cols_pending: bool,
+    pub(super) hide_inserts: bool,
+    pub(super) hide_gappy: bool,
+    pub(super) overview: Rc<RefCell<OverviewCache>>,
+    /// The overview image's bounds (window coordinates), written by its canvas each layout.
+    pub(super) overview_area: Rc<Cell<Bounds<Pixels>>>,
+    /// The pointer, while it is over the alignment or the track header.
+    pub(super) pointer: Option<Point<Pixels>>,
+    /// The view column under the pointer in the track header.
+    pub(super) hover_track: Option<usize>,
+    /// The hover card is hidden after a scroll until the pointer moves again.
+    card_hidden: bool,
     /// The alignment area (window coordinates), written by the canvas each layout.
     pub(super) area: Rc<Cell<Bounds<Pixels>>>,
     pub(super) hover: Option<(usize, usize)>,
     /// The row under the pointer in the name panel.
     pub(super) hover_name: Option<usize>,
-    drag: Option<Drag>,
+    pub(super) drag: Option<Drag>,
     pub(super) matches: Vec<usize>,
     match_idx: usize,
     pub(super) selected_row: Option<usize>,
@@ -201,8 +248,19 @@ impl MsaScope {
             vp: Viewport { col0: 0.0, row0: 0.0, cw: view::LETTERS_CW, ch: view::LETTERS_CH, width: 0.0, height: 0.0 },
             pending: None,
             fit: None,
-            mode: ColorMode::Residues,
+            mode: ColorMode::new(Scheme::ClustalX),
+            prev_scheme: Scheme::ClustalX,
             tiles: Rc::default(),
+            hidden: None,
+            cols_gen: 0,
+            cols_pending: false,
+            hide_inserts: true,
+            hide_gappy: false,
+            overview: Rc::default(),
+            overview_area: Rc::new(Cell::new(Bounds::default())),
+            pointer: None,
+            hover_track: None,
+            card_hidden: false,
             area: Rc::new(Cell::new(Bounds::default())),
             hover: None,
             hover_name: None,
@@ -245,7 +303,16 @@ impl MsaScope {
                         if let Some(rss) = peak_rss_mb() {
                             eprintln!("msascope: peak RSS after load {rss} MiB");
                         }
+                        let kind = l.aln.kind();
+                        if !v.mode.scheme.applies(kind) {
+                            v.mode.scheme = Scheme::default_for(kind);
+                        }
+                        if !v.prev_scheme.applies(kind) {
+                            v.prev_scheme = Scheme::default_for(kind);
+                        }
                         v.data = Some(Arc::new(l));
+                        v.hidden = None;
+                        v.rebuild_columns(cx);
                         v.pending = Some(Fit::Readable);
                         v.vp.col0 = 0.0;
                         v.vp.row0 = 0.0;
@@ -269,6 +336,9 @@ impl MsaScope {
     /// Close the file: back to the empty window.
     pub(super) fn close(&mut self, cx: &mut Context<Self>) {
         self.data = None;
+        self.hidden = None;
+        self.cols_gen += 1;
+        self.cols_pending = false;
         self.path = None;
         self.error = None;
         self.status = SharedString::default();
@@ -324,8 +394,100 @@ impl MsaScope {
         }
     }
 
+    /// Rows and shown (view) columns.
     pub(super) fn dims(&self) -> (usize, usize) {
-        self.data.as_ref().map_or((0, 0), |d| (d.aln.rows(), d.aln.cols()))
+        self.data.as_ref().map_or((0, 0), |d| (d.aln.rows(), view::view_cols(self.col_map(), d.aln.cols())))
+    }
+
+    pub(super) fn col_map(&self) -> Option<&ColumnMap> {
+        self.hidden.as_deref().map(|h| &h.map)
+    }
+
+    /// Columns hidden now.
+    pub(super) fn hidden_count(&self) -> usize {
+        self.data.as_ref().map_or(0, |d| d.aln.cols()) - self.dims().1
+    }
+
+    /// Rebuild the hidden-columns map and its pyramid in the background after a toggle; the
+    /// view keeps the old one until the new one is ready, then keeps the column at its left edge.
+    pub(super) fn rebuild_columns(&mut self, cx: &mut Context<Self>) {
+        let Some(d) = self.data.clone() else { return };
+        self.cols_gen += 1;
+        let generation = self.cols_gen;
+        let inserts = self.hide_inserts && !d.aln.inserts.is_empty();
+        let gappy = self.hide_gappy.then(|| self.settings.gappy_pct as f32 / 100.0);
+        if !inserts && gappy.is_none() && self.hidden.is_none() {
+            self.cols_pending = false;
+            return;
+        }
+        self.cols_pending = true;
+        cx.notify();
+        let task = cx.background_executor().spawn(async move {
+            ColumnMap::hiding(&d.aln, &d.stats, inserts, gappy).map(|map| {
+                let pyramid = Pyramid::build_mapped(&d.aln, &d.stats.consensus, Some(&map.visible));
+                Arc::new(HiddenCols { map, pyramid, generation })
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let hidden = task.await;
+            this.update(cx, |v, cx| {
+                if v.cols_gen != generation {
+                    return;
+                }
+                let cols = v.dims().1;
+                let left = (cols > 0).then(|| view::aln_col(v.col_map(), (v.vp.col0.max(0.0) as usize).min(cols - 1)));
+                v.hidden = hidden;
+                v.cols_pending = false;
+                if let Some(left) = left {
+                    let nv = v.col_map().map_or(left, |m| m.view_of(left).unwrap_or_else(|e| e));
+                    v.vp.col0 = nv as f64 + v.vp.col0.fract();
+                }
+                let (r, c) = v.dims();
+                v.vp.clamp(r, c);
+                if v.fit.is_some() && v.pending.is_none() {
+                    v.pending = v.fit;
+                }
+                v.hover = None;
+                v.hover_track = None;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(super) fn set_hide_inserts(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.hide_inserts = on;
+        self.rebuild_columns(cx);
+    }
+
+    /// Hide columns with at least `pct`% gaps (`None`: show them).
+    pub(super) fn set_gappy(&mut self, pct: Option<u8>, cx: &mut Context<Self>) {
+        self.hide_gappy = pct.is_some();
+        if let Some(p) = pct {
+            self.settings.gappy_pct = p;
+            self.settings.save();
+        }
+        self.rebuild_columns(cx);
+    }
+
+    pub(super) fn set_scheme(&mut self, s: Scheme) {
+        if s != Scheme::Differences {
+            self.prev_scheme = s;
+        }
+        self.mode.scheme = s;
+    }
+
+    /// The next scheme that applies to the open alignment (`s`).
+    fn cycle_scheme(&mut self) {
+        let kind = self.data.as_ref().map_or(msascope::alphabet::Kind::Protein, |d| d.aln.kind());
+        let all: Vec<Scheme> = Scheme::ALL.into_iter().filter(|s| s.applies(kind)).collect();
+        let i = all.iter().position(|&s| s == self.mode.scheme).map_or(0, |i| (i + 1) % all.len());
+        self.set_scheme(all[i]);
+    }
+
+    pub(super) fn show_overview(&self) -> bool {
+        self.settings.overview && self.bench.is_none() && self.data.is_some()
     }
 
     pub(super) fn set_theme(&mut self, choice: ThemeChoice, window: &mut Window, cx: &mut Context<Self>) {
@@ -403,14 +565,28 @@ impl MsaScope {
         self.vp.clamp(rows, cols);
     }
 
+    /// Go to a column (alignment numbering, from 1) or `row:column`. A hidden column goes to the
+    /// next shown one.
     fn jump_to(&mut self, text: &str, cx: &mut Context<Self>) {
         let parse = |s: &str| s.trim().replace([',', '_'], "").parse::<usize>().ok().filter(|&n| n >= 1).map(|n| n - 1);
         let (row, col) = match text.split_once(':') {
             Some((r, c)) => (parse(r), parse(c)),
             None => (None, parse(text)),
         };
-        let (rows, cols) = self.dims();
+        let rows = self.dims().0;
+        let cols = self.data.as_ref().map_or(0, |d| d.aln.cols());
+        let shown = self.dims().1;
+        let mut note = None;
+        let vcol = col.filter(|&c| c < cols).map(|c| match self.col_map().map(|m| m.view_of(c)) {
+            None | Some(Ok(_)) => self.col_map().map_or(c, |m| m.view_of(c).unwrap()),
+            Some(Err(v)) => {
+                note = Some(format!("Column {} is hidden; showing the next shown column", view::group_digits(c + 1)));
+                v.min(shown.saturating_sub(1))
+            }
+        });
         if row.is_none_or(|r| r < rows) && col.is_none_or(|c| c < cols) && (row.is_some() || col.is_some()) {
+            let col = vcol;
+            self.status = note.map(SharedString::from).unwrap_or_default();
             if self.vp.cw < view::LETTERS_CW && col.is_some() {
                 self.fit = None;
                 self.set_scale(view::LETTERS_CW, self.vp.ch.max(view::LETTERS_CH), None);
@@ -478,7 +654,14 @@ impl MsaScope {
             "w" if !ctrl => self.request_fit(Fit::Width),
             "h" if !ctrl => self.request_fit(Fit::Height),
             "r" if !ctrl => self.request_fit(Fit::Readable),
-            "d" if !ctrl => self.toggle_mode(),
+            "d" if !ctrl => self.toggle_differences(),
+            "c" if !ctrl => self.mode.by_conservation = !self.mode.by_conservation,
+            "s" if !ctrl => self.cycle_scheme(),
+            "i" if !ctrl => self.set_hide_inserts(!self.hide_inserts, cx),
+            "g" if !ctrl => {
+                let p = (!self.hide_gappy).then_some(self.settings.gappy_pct);
+                self.set_gappy(p, cx)
+            }
             "o" if ctrl => self.prompt_open(cx),
             "f" if ctrl => self.search.update(cx, |s, cx| s.focus(window, cx)),
             "g" if ctrl => self.jump.update(cx, |s, cx| s.focus(window, cx)),
@@ -488,11 +671,13 @@ impl MsaScope {
         cx.notify();
     }
 
-    pub(super) fn toggle_mode(&mut self) {
-        self.mode = match self.mode {
-            ColorMode::Residues => ColorMode::Differences,
-            ColorMode::Differences => ColorMode::Residues,
-        };
+    /// Differences from the consensus, or back to the scheme before it.
+    pub(super) fn toggle_differences(&mut self) {
+        if self.mode.scheme == Scheme::Differences {
+            self.mode.scheme = self.prev_scheme;
+        } else {
+            self.mode.scheme = Scheme::Differences;
+        }
     }
 
     fn on_scroll(&mut self, ev: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -517,9 +702,11 @@ impl MsaScope {
         } else {
             self.pan(-dx, -dy);
         }
+        self.card_hidden = true;
         cx.notify();
     }
 
+    /// The cell, name row or track column under the pointer.
     fn update_hover(&mut self, pos: Point<Pixels>) {
         let area = self.area.get();
         let (rows, cols) = self.dims();
@@ -528,19 +715,15 @@ impl MsaScope {
         // Over the name panel: the row only.
         let in_names = pos.x < area.origin.x && pos.x >= area.origin.x - px(self.settings.name_width);
         self.hover_name = if in_names { self.vp.hit(0.0, y, rows, cols).map(|(r, _)| r) } else { None };
+        let in_header = pos.y < area.origin.y && pos.y >= area.origin.y - px(HEADER_H) && pos.x >= area.origin.x;
+        self.hover_track = if in_header { self.vp.hit(x, 0.0, rows.max(1), cols).map(|(_, c)| c) } else { None };
+        self.pointer = Some(pos);
     }
 
-    pub(super) fn hover_text(&self) -> String {
-        let (Some(d), Some((r, c))) = (&self.data, self.hover) else { return String::new() };
-        let code = d.aln.matrix.get(r, c);
-        format!(
-            "{} · column {} · {} · consensus {} ({:.0}% identity)",
-            d.aln.names[r],
-            view::group_digits(c + 1),
-            d.aln.symbol(code) as char,
-            d.aln.symbol(d.stats.consensus[c]) as char,
-            d.stats.identity[c] * 100.0,
-        )
+    /// Whether the hover card is shown: over a cell or the track header, not while dragging or
+    /// just after a scroll.
+    pub(super) fn card_visible(&self) -> bool {
+        self.data.is_some() && self.drag.is_none() && !self.card_hidden && self.pointer.is_some() && (self.hover.is_some() || self.hover_track.is_some())
     }
 
     fn step_bench(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -624,6 +807,12 @@ impl MsaScope {
             theme: self.settings.theme,
             dark: tokens(cx).dark,
             compact: window.viewport_size().width < COMPACT_WINDOW,
+            kind: self.data.as_ref().map(|d| d.aln.kind()),
+            inserts: self.data.as_ref().map_or(0, |d| d.aln.insert_count()),
+            hide_inserts: self.hide_inserts,
+            hide_gappy: self.hide_gappy,
+            gappy_pct: self.settings.gappy_pct,
+            overview: self.settings.overview,
         }
     }
 
@@ -652,17 +841,36 @@ impl MsaScope {
                 let w = (w0 + f32::from(ev.position.x - x0)).clamp(NAME_W_MIN, NAME_W_MAX);
                 self.settings.name_width = w.round();
             }
+            Some(Drag::Overview) => self.overview_pan(ev.position),
             Some(Drag::Block) | None => {}
+        }
+        if !ev.dragging() {
+            self.card_hidden = false;
         }
         self.update_hover(ev.position);
         cx.notify();
     }
 
-    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+    /// Centre the view on the point of the overview under `pos`.
+    pub(super) fn overview_pan(&mut self, pos: Point<Pixels>) {
+        let b = self.overview_area.get();
+        let (rows, cols) = self.dims();
+        if b.size.width <= px(0.) || b.size.height <= px(0.) {
+            return;
+        }
+        let fx = (f64::from(pos.x - b.origin.x) / f64::from(b.size.width)).clamp(0.0, 1.0);
+        let fy = (f64::from(pos.y - b.origin.y) / f64::from(b.size.height)).clamp(0.0, 1.0);
+        self.vp.col0 = fx * cols as f64 - self.vp.width / self.vp.cw / 2.0;
+        self.vp.row0 = fy * rows as f64 - self.vp.height / self.vp.ch / 2.0;
+        self.vp.clamp(rows, cols);
+    }
+
+    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(Drag::Splitter { .. }) = self.drag {
             self.settings.save();
         }
         self.drag = None;
+        cx.notify();
     }
 }
 
@@ -706,18 +914,25 @@ impl Render for MsaScope {
         let t = tokens(cx);
         let main = if self.data.is_some() {
             let name_w = px(self.settings.name_width);
-            div()
+            let alignment = div()
                 .id("alignment")
                 .relative()
                 .flex_1()
-                .min_h_0()
+                .min_w_0()
+                .h_full()
+                .on_hover(cx.listener(|v, hovered: &bool, _, cx| {
+                    if !*hovered && v.drag.is_none() {
+                        v.hover = None;
+                        v.hover_name = None;
+                        v.hover_track = None;
+                        v.pointer = None;
+                        cx.notify();
+                    }
+                }))
                 .track_focus(&self.focus)
                 .on_key_down(cx.listener(Self::on_key))
                 .on_scroll(cx.listener(Self::on_scroll))
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-                .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-                .on_mouse_move(cx.listener(Self::on_mouse_move))
                 .child(self.alignment_canvas(window, cx))
                 // The name panel's splitter, over its right edge.
                 .child(
@@ -739,7 +954,19 @@ impl Render for MsaScope {
                                 cx.notify();
                             }),
                         ),
-                )
+                );
+            // Move and release go to the row, so drags that leave the alignment (or start in the
+            // overview) keep working.
+            div()
+                .flex()
+                .flex_row()
+                .flex_1()
+                .min_h_0()
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+                .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+                .on_mouse_move(cx.listener(Self::on_mouse_move))
+                .child(alignment)
+                .when(self.show_overview(), |d| d.child(self.render_overview(window, cx)))
                 .into_any_element()
         } else {
             self.render_empty(window, cx).into_any_element()
@@ -759,6 +986,7 @@ impl Render for MsaScope {
             .child(tools)
             .child(main)
             .child(self.render_status_bar(cx))
+            .when_some(self.render_hover_card(window, cx), |d, card| d.child(card))
     }
 }
 

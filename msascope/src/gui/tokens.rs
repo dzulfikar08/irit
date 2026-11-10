@@ -57,6 +57,7 @@ pub struct Tokens {
     /// The same colours as 0xRRGGBB, for tiles rasterised on the CPU.
     pub bg_rgb: Rgb,
     pub fg_rgb: Rgb,
+    pub accent_rgb: Rgb,
 }
 
 impl Global for Tokens {}
@@ -130,11 +131,16 @@ impl Tokens {
             track_lo: c(mix(p.background, p.accent, if p.dark { 0.45 } else { 0.35 })),
             bg_rgb: p.background,
             fg_rgb: p.foreground,
+            accent_rgb: p.accent,
         }
     }
 
+    /// The colours tiles are drawn with.
+    pub fn tile_theme(&self) -> msascope::scheme::Theme {
+        msascope::scheme::Theme { dark: self.dark, bg: self.bg_rgb, fg: self.fg_rgb, accent: self.accent_rgb }
+    }
+
     /// Shadow stack for an elevation (lighter in light mode).
-    #[allow(dead_code)]
     pub fn shadow(&self, elevation: Elevation) -> Vec<BoxShadow> {
         let k = if self.dark { 1.0 } else { 0.55 };
         let s = |y: f32, blur: f32, a: f32| BoxShadow {
@@ -273,6 +279,16 @@ mod tests {
         near(d.chrome, 0x232434);
         near(d.grid_header, 0x28293a);
         near(d.border, 0x303042);
+    }
+
+    /// The core's theme presets (used by its colour tests) are the GUI's palettes.
+    #[std::prelude::v1::test]
+    fn tile_themes_match_core_presets() {
+        assert_eq!(Tokens::from_palette(&LIGHT).tile_theme(), msascope::scheme::Theme::LIGHT);
+        assert_eq!(Tokens::from_palette(&DARK).tile_theme(), msascope::scheme::Theme::DARK);
+        // and the letter ink is the same
+        let l = Rgba::from(Tokens::from_palette(&LIGHT).res_ink);
+        assert_eq!(((l.r * 255.0).round() as u32) << 16 | ((l.g * 255.0).round() as u32) << 8 | (l.b * 255.0).round() as u32, msascope::scheme::Theme::LIGHT.ink());
     }
 
     /// Text tokens on the surfaces they are drawn on are at least 4.5:1 (WCAG AA) in both palettes:
