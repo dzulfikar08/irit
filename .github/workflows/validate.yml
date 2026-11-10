@@ -195,3 +195,56 @@ jobs:
           else
             echo "::notice::Still mismatched (GTDBTk#726); dblock correctly refuses it."
           fi
+
+  qc-speed:
+    # Time and memory of FastQC 0.12.1, FastQC-Rust and leanqc on the same files, same runner.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p leanqc
+      - name: Download test reads and FastQC-Rust
+        run: |
+          mkdir reads
+          for f in ERR064912_1M_1 ERR064912_1M_2 ERR044595_1M_1 ERR044595_1M_2; do
+            curl -sfL "$TESTDATA/$f.fastq.gz" -o "reads/$f.fastq.gz"
+          done
+          mkdir fqrs && curl -fsSL https://github.com/ewels/FastQC-Rust/releases/latest/download/fastqc-linux-x86_64.tar.gz | tar xz -C fqrs --strip-components=1
+          fqrs/fastqc --version
+          docker pull -q quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0
+      - name: Time three runs of each
+        run: |
+          one=reads/ERR064912_1M_1.fastq.gz
+          measure() { # name, then command; prints "name<TAB>seconds<TAB>MB"
+            local name=$1; shift
+            /usr/bin/time -f '%e %M' -o t.txt "$@" > /dev/null 2>&1
+            read -r s kb < t.txt; printf '%s\t%s\t%s\n' "$name" "$s" "$((kb / 1024))"
+          }
+          java_peak() { # FastQC runs in Docker, so take the container's own peak memory
+            local t0 t1; t0=$(date +%s.%N)
+            mb=$(docker run --rm -v "$PWD:/d" -w /d quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0 \
+              sh -c "mkdir -p o && fastqc -q $1 -o o $2 >/dev/null 2>&1; echo \$((\$(cat /sys/fs/cgroup/memory.peak) / 1048576))")
+            t1=$(date +%s.%N); printf '%s\t%s\t%s\n' "$3" "$(echo "$t1 - $t0" | bc)" "$mb"
+          }
+          sudo apt-get install -y -qq bc > /dev/null
+          for i in 1 2 3; do
+            rm -rf o1 o2 o3 o4 && mkdir o1 o2 o3 o4
+            measure "leanqc, 1 file, 1 thread" target/release/leanqc -t 1 -o o1 "$one"
+            measure "FastQC-Rust, 1 file, 1 thread" fqrs/fastqc -q -t 1 -o o2 "$one"
+            java_peak "-t 1" "$one" "FastQC 0.12.1 (Docker), 1 file, 1 thread"
+            measure "leanqc, 4 files, 4 threads" target/release/leanqc -t 4 -o o3 reads/*.fastq.gz
+            measure "FastQC-Rust, 4 files, 4 threads" fqrs/fastqc -q -t 4 -o o4 reads/*.fastq.gz
+            java_peak "-t 4" "reads/*.fastq.gz" "FastQC 0.12.1 (Docker), 4 files, 4 threads"
+          done | tee runs.tsv
+          {
+            echo "## QC speed: FastQC 0.12.1, FastQC-Rust, leanqc (median of 3; ubuntu-latest)"
+            echo
+            echo "| Tool and input | Wall time (s) | Peak memory (MB) |"
+            echo "|---|---|---|"
+            sort -t$'\t' -k1,1 -s runs.tsv | awk -F'\t' '{n[$1]++; t[$1,n[$1]]=$2; m[$1,n[$1]]=$3}
+              END {for (k in n) {split("",a); for(i=1;i<=n[k];i++) a[i]=t[k,i]; asort(a); split("",b); for(i=1;i<=n[k];i++) b[i]=m[k,i]; asort(b);
+                   printf "| %s | %.2f | %d |\n", k, a[int((n[k]+1)/2)], b[int((n[k]+1)/2)]}}' | sort
+            echo
+            echo "FastQC's time includes starting its container (about 0.5 s); its memory is the container's cgroup peak."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
