@@ -42,7 +42,8 @@ jobs:
       - run: cargo test --workspace --exclude msascope
       - run: cargo test -p msascope --no-default-features
 
-  # Windows: the four command-line tools (irit-mcp and gtdbprep use Unix-only APIs for now).
+  # Windows: the four command-line tools (irit-mcp and gtdbprep use Unix-only APIs for now) and
+  # msascope's core; msascope.yml builds the viewer itself.
   windows:
     runs-on: windows-latest
     steps:
@@ -53,3 +54,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -p sheetgen -p leanqc -p isotable -p dblock --all-targets -- -D warnings
       - run: cargo test -p sheetgen -p leanqc -p isotable -p dblock
+      - run: cargo clippy -p msascope --no-default-features --all-targets -- -D warnings
+      - run: cargo test -p msascope --no-default-features
