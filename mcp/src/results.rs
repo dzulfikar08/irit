@@ -3,6 +3,7 @@
 use crate::record::FileRecord;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 /// Parses a CSV (RFC 4180 quoting) or TSV table; the delimiter is taken from the header line.
 pub fn parse_table(text: &str) -> (Vec<String>, Vec<Vec<String>>) {
@@ -138,9 +139,131 @@ pub fn env_exports(text: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// isotable's records as JSON objects: the name the file gives, then each value isotable reads
+/// (numbers as numbers, rounded to 2 decimals). isotable's join helpers (`raw_*`) are left out.
+fn isotable_records(records: Vec<isotable::parse::Record>, name_key: &str) -> Vec<Value> {
+    use isotable::parse::Value as V;
+    records
+        .into_iter()
+        .map(|r| {
+            let mut m = Map::new();
+            m.insert(name_key.into(), json!(r.raw_name));
+            for (k, v) in r.fields.into_iter().filter(|(k, _)| !k.starts_with("raw_")) {
+                let v = match v {
+                    V::Int(n) => json!(n),
+                    V::Num(x) => json!((x * 100.0).round() / 100.0),
+                    V::Text(t) => json!(t),
+                };
+                m.insert(k.into(), v);
+            }
+            Value::Object(m)
+        })
+        .collect()
+}
+
+/// fastp's JSON report, read by isotable's parser: reads before/after, Q30 and duplication (%).
+pub fn fastp_summary(path: &Path) -> Result<Value, String> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let recs = isotable::parse::fastp(path, &name).map_err(|e| format!("{}: {e:#}", path.display()))?;
+    Ok(isotable_records(recs, "sample").into_iter().next().unwrap_or(Value::Null))
+}
+
+/// CheckM2's quality_report.tsv, one entry per genome (isotable's parser).
+pub fn checkm2_summary(path: &Path) -> Result<Vec<Value>, String> {
+    isotable::parse::checkm2(path).map(|r| isotable_records(r, "genome")).map_err(|e| format!("{}: {e:#}", path.display()))
+}
+
+/// GTDB-Tk summary.tsv rows: isotable's `gtdb` classification, plus the columns that say how the
+/// call was made and whether GTDB-Tk had doubts.
+pub fn gtdbtk_summary(path: &Path) -> Result<Vec<Value>, String> {
+    let recs = isotable::parse::gtdbtk(path).map_err(|e| format!("{}: {e:#}", path.display()))?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (header, rows) = parse_table(&text);
+    let extra = ["classification_method", "closest_genome_reference", "closest_genome_ani", "msa_percent", "warnings", "note"];
+    let mut out = isotable_records(recs, "genome");
+    for o in &mut out {
+        let Some(row) = rows.iter().find(|r| r.first().map(String::as_str) == o["genome"].as_str()) else { continue };
+        for col in extra {
+            let Some(i) = header.iter().position(|h| h == col) else { continue };
+            match row.get(i).map(String::as_str) {
+                None | Some("" | "N/A") => {}
+                Some(cell) => o[col] = json!(cell),
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Bakta's `<prefix>.txt`: `Key: value` lines under `Sequence(s):`, `Annotation:` and `Bakta:`
+/// (written in bakta/main.py at v1.12.2). Counts become numbers.
+pub fn bakta_summary(text: &str) -> Value {
+    let mut sections = Map::new();
+    let mut current = String::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(head) = line.strip_suffix(':') {
+            current = match head {
+                "Sequence(s)" => "sequences".into(),
+                other => other.to_lowercase(),
+            };
+            continue;
+        }
+        let Some((k, v)) = line.split_once(": ") else { continue };
+        let value = v.parse::<u64>().map(|n| json!(n)).or_else(|_| v.parse::<f64>().map(|x| json!(x))).unwrap_or_else(|_| json!(v));
+        let section = sections.entry(current.clone()).or_insert_with(|| json!({}));
+        section[k.to_lowercase().replace(' ', "_")] = value;
+    }
+    Value::Object(sections)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_outputs() {
+        let d = tempfile::tempdir().unwrap();
+        let fp = d.path().join("s1.fastp.json");
+        std::fs::write(
+            &fp,
+            r#"{"summary": {"before_filtering": {"total_reads": 1000, "total_bases": 150000},
+               "after_filtering": {"total_reads": 950, "total_bases": 140000, "q30_rate": 0.91234, "q30_bases": 127000}},
+               "duplication": {"rate": 0.012}, "command": "fastp --in1 s1_R1.fq"}"#,
+        )
+        .unwrap();
+        let s = fastp_summary(&fp).unwrap();
+        assert_eq!(s["sample"], "s1");
+        assert_eq!(s["reads_raw"], 1000);
+        assert_eq!(s["reads_trimmed"], 950);
+        assert_eq!(s["q30_trimmed"], 91.23);
+        assert!(s.get("raw_summary").is_none() && s.get("raw_inputs").is_none());
+
+        let cm = d.path().join("quality_report.tsv");
+        std::fs::write(&cm, "Name\tCompleteness\tContamination\tCompleteness_Model_Used\nbin1\t98.5\t0.7\tGradient Boost\n").unwrap();
+        assert_eq!(checkm2_summary(&cm).unwrap(), vec![json!({"genome": "bin1", "completeness": 98.5, "contamination": 0.7})]);
+
+        let gt = d.path().join("gtdbtk.bac120.summary.tsv");
+        std::fs::write(
+            &gt,
+            "user_genome\tclassification\tclosest_genome_reference\tclosest_genome_ani\tclassification_method\tnote\twarnings\n\
+             s1\td__Bacteria;s__Escherichia coli\tGCF_003697165.2\t98.9\tANI\tN/A\tN/A\n",
+        )
+        .unwrap();
+        let g = gtdbtk_summary(&gt).unwrap();
+        assert_eq!(g[0]["genome"], "s1");
+        assert_eq!(g[0]["gtdb"], "d__Bacteria;s__Escherichia coli");
+        assert_eq!(g[0]["classification_method"], "ANI");
+        assert_eq!(g[0]["closest_genome_ani"], "98.9");
+        assert!(g[0].get("warnings").is_none());
+
+        let b = bakta_summary(
+            "Sequence(s):\nLength: 4641652\nCount: 1\nGC: 50.8\nN50: 4641652\n\nAnnotation:\ntRNAs: 86\nCDSs: 4310\nncRNA regions: 60\n\nBakta:\nSoftware: v1.12.2\nDatabase: v6.0, light\n",
+        );
+        assert_eq!(b["sequences"]["length"], 4641652);
+        assert_eq!(b["sequences"]["gc"], 50.8);
+        assert_eq!(b["annotation"]["cdss"], 4310);
+        assert_eq!(b["annotation"]["ncrna_regions"], 60);
+        assert_eq!(b["bakta"]["database"], "v6.0, light");
+    }
 
     #[test]
     fn tables() {

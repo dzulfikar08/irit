@@ -5,7 +5,7 @@
 //! sample against thresholds you can change. Two files that disagree about one sample make a
 //! `conflict`; a sample missing a required measurement is `incomplete`, never `pass`.
 
-mod parse;
+use isotable::parse;
 
 use anyhow::{Result, bail};
 use clap::{Parser, ValueEnum};

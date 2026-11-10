@@ -1,5 +1,6 @@
 //! The MCP server: one tool per irit capability, each call run as a subprocess and recorded.
 
+use crate::external as x;
 use crate::params::{self as p, Invocation};
 use crate::record::{self, CallRecord, Run, RunLog, Status};
 use crate::results;
@@ -15,7 +16,11 @@ use std::sync::{Arc, Mutex};
 
 const INSTRUCTIONS: &str = "Tools for sequencing-data housekeeping from the irit project: \
 sheetgen (sample sheets from FASTQ folders, checked against a pipeline's schema), leanqc (read QC), \
-isotable (one graded QC row per sample from tool outputs) and dblock_* (reference databases). \
+isotable (one graded QC row per sample from tool outputs) and dblock_* (reference databases); \
+plus the microbial isolate path with third-party tools: fastp (trimming), bakta (annotation), checkm2 \
+(completeness/contamination) and gtdbtk_classify_wf (taxonomy). Those need the program installed \
+(Bioconda) and, for the last three, a database (dblock_env shows dblock-managed paths); they can run for \
+hours. Their results list `warnings` when the installed version isn't the one irit-mcp was checked against. \
 Parameters are checked before anything runs; unknown parameters are refused, so read each tool's schema \
 instead of guessing flags. A tool that exits non-zero returns isError with its stderr: report it, \
 don't carry on as if it worked. Every call is recorded with input/output SHA-256s in a run folder whose \
@@ -29,6 +34,8 @@ const ROW_LIMIT: usize = 1000;
 
 pub struct Config {
     pub bin_dir: Option<PathBuf>,
+    /// `--tool-path NAME=PATH`: where a third-party tool is, instead of searching PATH.
+    pub tool_paths: HashMap<String, PathBuf>,
     pub runs_root: PathBuf,
     /// Working folder, write root and captured environment.
     pub ctx: Ctx,
@@ -115,10 +122,10 @@ fn tail(s: &str, limit: usize) -> String {
     format!("[...]{}", &s[start..])
 }
 
+/// The first non-empty line of `--version` (GTDB-Tk may add a "newer version available" line).
 fn version_text(out: Option<std::process::Output>) -> Option<String> {
     let out = out.filter(|o| o.status.success())?;
-    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!v.is_empty()).then_some(v)
+    String::from_utf8_lossy(&out.stdout).lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
 }
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -137,8 +144,14 @@ impl Irit {
         }
     }
 
-    fn resolve(&self, tool: &str) -> Option<PathBuf> {
+    fn resolve(&self, tool: &str, external: bool) -> Option<PathBuf> {
         let exe = format!("{tool}{}", std::env::consts::EXE_SUFFIX);
+        if external {
+            return match self.cfg.tool_paths.get(tool) {
+                Some(p) => Some(p.clone()).filter(|p| p.is_file()),
+                None => find_on_path(&exe),
+            };
+        }
         match &self.cfg.bin_dir {
             Some(d) => Some(d.join(&exe)).filter(|p| p.is_file()),
             None => find_on_path(&exe),
@@ -189,6 +202,7 @@ impl Irit {
             stderr: None,
             stdout_is_output: false,
             env: Default::default(),
+            external: false,
             error: None,
         };
         let finish = |mut rec: CallRecord, stdout: Vec<u8>, stderr: String| {
@@ -207,11 +221,14 @@ impl Irit {
         rec.argv = std::iter::once(inv.tool.to_string()).chain(inv.args.iter().cloned()).collect();
         rec.stdout_is_output = inv.stdout_is_output;
         rec.env = inv.env.clone();
-        let Some(program) = self.resolve(inv.tool) else {
+        rec.external = inv.external;
+        let Some(program) = self.resolve(inv.tool, inv.external) else {
             rec.status = Status::Error;
-            rec.error = Some(match &self.cfg.bin_dir {
-                Some(d) => format!("{} not found in {}", inv.tool, d.display()),
-                None => format!("{} not found on PATH; install irit or start irit-mcp with --bin-dir", inv.tool),
+            rec.error = Some(match (&self.cfg.bin_dir, self.cfg.tool_paths.get(inv.tool)) {
+                (_, Some(p)) if inv.external => format!("{} not found at {} (--tool-path)", inv.tool, p.display()),
+                _ if inv.external => x::install_hint(inv.tool),
+                (Some(d), _) => format!("{} not found in {}", inv.tool, d.display()),
+                (None, _) => format!("{} not found on PATH; install irit or start irit-mcp with --bin-dir", inv.tool),
             });
             return finish(rec, Vec::new(), String::new());
         };
@@ -244,6 +261,9 @@ impl Irit {
         };
         let outputs = inv.outputs.clone();
         rec.outputs = tokio::task::spawn_blocking(move || record::output_records(&before, &outputs)).await.unwrap_or_default();
+        for o in &mut rec.outputs {
+            o.volatile = inv.volatile.iter().any(|end| o.path.ends_with(end));
+        }
         rec.exit_status = out.status.code();
         rec.status = if out.status.success() { Status::Ok } else { Status::Failed };
         if !out.status.success() {
@@ -251,6 +271,19 @@ impl Irit {
                 Some(c) => format!("exit status {c}"),
                 None => "killed by a signal".into(),
             });
+        } else {
+            // A zero exit without the files the tool always writes is not a result.
+            let written = |p: &PathBuf| rec.outputs.iter().any(|o| Path::new(&o.path) == p);
+            let missing: Vec<String> = inv
+                .expect
+                .iter()
+                .filter(|group| !group.iter().any(written))
+                .map(|g| g.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" or "))
+                .collect();
+            if !missing.is_empty() {
+                rec.status = Status::Failed;
+                rec.error = Some(format!("exited 0 but did not write: {}", missing.join(", ")));
+            }
         }
 
         let run_dir = {
@@ -299,7 +332,12 @@ impl Irit {
                 Err(CallToolResult::structured_error(v))
             }
             Status::Failed => {
-                v["error"] = json!("tool_failed");
+                if r.exit_status == Some(0) {
+                    v["error"] = json!("missing_outputs");
+                    v["message"] = json!(r.error);
+                } else {
+                    v["error"] = json!("tool_failed");
+                }
                 v["exit_status"] = json!(r.exit_status);
                 v["stderr"] = json!(tail(&d.stderr, STDERR_LIMIT));
                 v["stdout"] = json!(tail(&d.stdout_text(), STDERR_LIMIT));
@@ -336,6 +374,29 @@ impl Irit {
             }),
             None => Ok(d.stdout_text()),
         }
+    }
+
+    /// Result of a third-party tool: the envelope, the version check, and `summarize`'s fields.
+    /// A summary that can't be read from outputs the tool did write is an error, not an empty result.
+    fn external_reply(&self, d: Done, summarize: impl FnOnce(&mut Value) -> Result<(), String>) -> Result<CallToolResult, ErrorData> {
+        let mut v = match self.envelope(&d) {
+            Ok(v) => v,
+            Err(e) => return Ok(e),
+        };
+        let r = &d.record;
+        let tool = r.argv.first().map(String::as_str).unwrap_or("");
+        v["version"] = json!(r.version);
+        if let Some(p) = x::pinned(tool) {
+            v["checked_against"] = json!(format!("{tool} {}", p.version));
+        }
+        v["warnings"] = json!(x::version_warning(tool, r.version.as_deref()).into_iter().collect::<Vec<_>>());
+        if let Err(e) = summarize(&mut v) {
+            v["error"] = json!("output_unreadable");
+            v["message"] = json!(format!("{tool} exited 0 but its output could not be read: {e}"));
+            v["note"] = json!("do not report this as an empty result");
+            return Ok(CallToolResult::structured_error(v));
+        }
+        Ok(CallToolResult::structured(v))
     }
 
     fn read_log(&self, run_id: Option<&str>) -> Result<RunLog, String> {
@@ -472,6 +533,72 @@ map and as shell export lines. Read-only.")]
             let text = d.stdout_text();
             v["env"] = json!(results::env_exports(&text));
             v["shell"] = json!(text);
+        })
+    }
+
+    #[tool(description = "fastp 1.4.0: trim and filter Illumina reads (single or paired-end) and write a JSON and HTML report. \
+Adapters are auto-detected unless set. Returns the report paths and fastp's totals: reads before and after filtering, bases, \
+Q30 % and duplication % (read by isotable's own fastp parser). Name `json` `<sample>.fastp.json` so isotable can join it.")]
+    async fn fastp(&self, Parameters(params): Parameters<x::FastpParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("fastp", &params, x::fastp(&self.cfg.ctx, &params)).await;
+        let json_path = self.cfg.ctx.cwd.join(&params.json);
+        self.external_reply(d, |v| {
+            v["report"] = json!({"json": params.json, "html": x::fastp_html(&params)});
+            v["summary"] = results::fastp_summary(&json_path)?;
+            Ok(())
+        })
+    }
+
+    #[tool(description = "Bakta 1.12.2: annotate a bacterial genome assembly (FASTA). Needs a Bakta v6 database (`db`, or $BAKTA_DB); \
+its version.json and files are checked first. Writes GFF3, GenBank, EMBL, TSV, JSON and FASTA files named `<prefix>.*` into \
+`outdir`. Takes minutes to an hour. Returns the counts from Bakta's summary (<prefix>.txt): sequence stats and features (CDSs, \
+tRNAs, rRNAs, hypotheticals, ...).")]
+    async fn bakta(&self, Parameters(params): Parameters<x::BaktaParams>) -> Result<CallToolResult, ErrorData> {
+        let inv = x::bakta(&self.cfg.ctx, &params);
+        let txt = inv.as_ref().ok().and_then(|i| i.expect.first()?.first().cloned());
+        let d = self.execute("bakta", &params, inv).await;
+        self.external_reply(d, |v| {
+            let txt = txt.ok_or("no summary path")?;
+            let text = std::fs::read_to_string(&txt).map_err(|e| format!("{}: {e}", txt.display()))?;
+            v["summary_file"] = json!(txt);
+            v["summary"] = results::bakta_summary(&text);
+            Ok(())
+        })
+    }
+
+    #[tool(description = "CheckM2 1.1.0 predict: completeness and contamination of genomes or MAGs (FASTA). Needs the CheckM2 \
+DIAMOND database (`db`, or $CHECKM2DB). Set lowmem on 8-16 GB machines. With overwrite: true, CheckM2 empties `outdir` first. \
+Returns per genome: completeness and contamination (%), read from quality_report.tsv by isotable's parser.")]
+    async fn checkm2(&self, Parameters(params): Parameters<x::Checkm2Params>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("checkm2", &params, x::checkm2(&self.cfg.ctx, &params)).await;
+        let report = self.cfg.ctx.cwd.join(&params.outdir).join("quality_report.tsv");
+        self.external_reply(d, |v| {
+            v["genomes"] = json!(results::checkm2_summary(&report)?);
+            v["report"] = json!(report);
+            Ok(())
+        })
+    }
+
+    #[tool(description = "GTDB-Tk 2.8.0 classify_wf: GTDB taxonomy for the genomes in a folder (skani ANI screen, then tree placement \
+for genomes without a species match). Needs the full GTDB-Tk reference data (`data_path`, or $GTDBTK_DATA_PATH), including skani/. \
+Placement can need over 100 GB of RAM; on a laptop set pplacer_cpus 1 and scratch_dir. GTDB-Tk 2.8.0 has no option to skip the ANI \
+screen and no memory cap of its own. Returns per genome: classification, method, closest reference and ANI, and warnings, from \
+classify/<prefix>.{bac120,ar53}.summary.tsv.")]
+    async fn gtdbtk_classify_wf(&self, Parameters(params): Parameters<x::GtdbtkClassifyWfParams>) -> Result<CallToolResult, ErrorData> {
+        let inv = x::gtdbtk_classify_wf(&self.cfg.ctx, &params);
+        let summaries = inv.as_ref().map(|i| i.expect.concat()).unwrap_or_default();
+        let d = self.execute("gtdbtk_classify_wf", &params, inv).await;
+        // Only the summaries this call wrote: a stale ar53 file from an earlier run is not a result.
+        let written: Vec<PathBuf> =
+            summaries.into_iter().filter(|s| d.record.outputs.iter().any(|o| Path::new(&o.path) == s)).collect();
+        self.external_reply(d, |v| {
+            let mut genomes = Vec::new();
+            for s in &written {
+                genomes.extend(results::gtdbtk_summary(s)?);
+            }
+            v["summary_files"] = json!(written);
+            v["genomes"] = json!(genomes);
+            Ok(())
         })
     }
 

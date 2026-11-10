@@ -1,0 +1,99 @@
+# Opt-in check of irit-mcp's third-party wrappers against the real programs: fastp 1.4.0,
+# Bakta 1.12.2 (light database), CheckM2 1.1.0 and GTDB-Tk 2.8.0 (GTDB's mock database), on a
+# small genome. Downloads about 3 GB of databases and takes 30-60 minutes, so it only runs by hand:
+#   gh workflow run mcp-real-tools.yml --ref <branch>
+name: irit-mcp real tools
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  real-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Free disk space (databases need about 10 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Build irit-mcp, dblock and isotable
+        run: cargo build --release -p irit-mcp -p dblock -p isotable
+
+      # One environment per tool, as their pinned dependencies (DIAMOND, Prodigal, Python)
+      # differ. Each tool is reached through a wrapper that puts its own environment first on PATH.
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: fastp
+          create-args: -c conda-forge -c bioconda fastp=1.4.0
+          init-shell: bash
+      - name: Tool environments
+        shell: bash -el {0}
+        run: |
+          for spec in "bakta bakta=1.12.2" "checkm2 checkm2=1.1.0" "gtdbtk gtdbtk=2.8.0"; do
+            set -- $spec
+            micromamba create -y -n "$1" -c conda-forge -c bioconda "$2"
+          done
+          mkdir -p "$HOME/tool-bin"
+          root=${MAMBA_ROOT_PREFIX:?setup-micromamba sets MAMBA_ROOT_PREFIX}
+          for t in fastp bakta checkm2 gtdbtk; do
+            # CheckM2's TensorFlow library asks for an executable stack, which newer glibc refuses
+            # ("cannot enable executable stack"); this tunable allows it for that process only.
+            extra=""; [ "$t" = checkm2 ] && extra="GLIBC_TUNABLES=glibc.rtld.execstack=2; export GLIBC_TUNABLES"
+            printf '#!/bin/sh\nPATH=%s/envs/%s/bin:$PATH\nexport PATH\n%s\nexec %s/envs/%s/bin/%s "$@"\n' "$root" "$t" "$extra" "$root" "$t" "$t" > "$HOME/tool-bin/$t"
+            chmod +x "$HOME/tool-bin/$t"
+            "$HOME/tool-bin/$t" --version | head -n 1
+          done
+
+      - name: Test data
+        run: |
+          mkdir -p work/asm work/reads work/gtdb_genomes work/gtdb_mock
+          cd work
+          # Mycoplasma genitalium G37 (580 kb, translation table 4)
+          curl -fsSL https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/027/325/GCF_000027325.1_ASM2732v1/GCF_000027325.1_ASM2732v1_genomic.fna.gz | gunzip > asm/mg.fna
+          # 20,000 error-free 2x150 pairs from it, for fastp
+          python3 - <<'EOF'
+          import gzip, random
+          random.seed(1)
+          seq = "".join(l.strip() for l in open("asm/mg.fna") if not l.startswith(">"))
+          comp = str.maketrans("ACGTN", "TGCAN")
+          with gzip.open("reads/mg_R1.fastq.gz", "wt") as r1, gzip.open("reads/mg_R2.fastq.gz", "wt") as r2:
+              for i in range(20000):
+                  s = random.randrange(0, len(seq) - 400)
+                  frag = seq[s:s + 350]
+                  r1.write(f"@r{i}/1\n{frag[:150]}\n+\n{'F' * 150}\n")
+                  r2.write(f"@r{i}/2\n{frag[-150:].translate(comp)[::-1]}\n+\n{'F' * 150}\n")
+          EOF
+          # GTDB's mock GTDB-Tk database and its test genome. dblock refuses this archive because
+          # it doesn't match GTDB's published MD5 (GTDBTk#726), so it is fetched directly here.
+          curl -fsSL https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/mockup_db/r232_mockup.tar.gz | tar xz -C gtdb_mock
+          curl -fsSL -o gtdb_genomes/test_genome_G021783475.fna.gz https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/mockup_db/test_genome_G021783475.fna.gz
+          ls -la asm reads gtdb_genomes gtdb_mock
+
+      - name: Run the tools through irit-mcp, twice, then replay
+        run: |
+          python3 .github/scripts/mcp_real_tools.py \
+            --mcp "$PWD/target/release/irit-mcp" --work work \
+            --path "$HOME/tool-bin:$PWD/target/release:$PATH" \
+            --amrfinder-update "$MAMBA_ROOT_PREFIX/envs/bakta/bin/amrfinder_update"
+
+      - name: Keep the run record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: irit-mcp-real-tools-run
+          path: |
+            work/irit-runs
+            work/*_first/*.json
+            work/*_first/*.txt
+            work/*_first/*.log
+            work/checkm2_first/quality_report.tsv
+            work/gtdbtk_first/classify/*.summary.tsv
+          if-no-files-found: warn

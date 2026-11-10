@@ -15,6 +15,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io
 sha2 = "0.10"
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+isotable = { path = "../isotable" }
 
 [dev-dependencies]
 tempfile = "3"

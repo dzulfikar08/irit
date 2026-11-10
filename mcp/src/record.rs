@@ -20,6 +20,10 @@ pub struct FileRecord {
     /// Set for symbolic links (e.g. `sheetgen --link-into`); size and hash are then omitted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symlink_to: Option<String>,
+    /// An output known to differ between identical runs (a log, a file with the run's date):
+    /// replay.sh checks that it exists, not its hash.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub volatile: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -68,6 +72,10 @@ pub struct CallRecord {
     /// (e.g. the dblock store, the Nextflow home). Passed to the tool and exported by replay.sh.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// A third-party program (fastp, Bakta, CheckM2, GTDB-Tk): replay.sh takes it from PATH,
+    /// not from `$IRIT_BIN_DIR`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -184,7 +192,7 @@ pub fn input_records(paths: &[PathBuf]) -> Vec<FileRecord> {
         .into_iter()
         .filter_map(|p| {
             let (size, sha) = hash_file(&p).ok()?;
-            Some(FileRecord { path: display(&p), size, sha256: Some(sha), symlink_to: None })
+            Some(FileRecord { path: display(&p), size, sha256: Some(sha), symlink_to: None, volatile: false })
         })
         .collect()
 }
@@ -269,10 +277,10 @@ pub fn output_records(before: &Snapshot, targets: &[PathBuf]) -> Vec<FileRecord>
         .into_iter()
         .filter(|(p, st)| before.get(p) != Some(st))
         .filter_map(|(p, st)| match st.link {
-            Some(target) => Some(FileRecord { path: display(&p), size: 0, sha256: None, symlink_to: Some(display(&target)) }),
+            Some(target) => Some(FileRecord { path: display(&p), size: 0, sha256: None, symlink_to: Some(display(&target)), volatile: false }),
             None => {
                 let (size, sha) = hash_file(&p).ok()?;
-                Some(FileRecord { path: display(&p), size, sha256: Some(sha), symlink_to: None })
+                Some(FileRecord { path: display(&p), size, sha256: Some(sha), symlink_to: None, volatile: false })
             }
         })
         .collect()
@@ -316,10 +324,17 @@ failed=0
 ran=0
 checked=0
 
-# irit binaries come from $IRIT_BIN_DIR when set, else from PATH.
+# irit binaries come from $IRIT_BIN_DIR when set, else from PATH; third-party tools (fastp,
+# bakta, checkm2, gtdbtk) always come from PATH.
 irit() { t=$1; shift; if [ -n "${IRIT_BIN_DIR:-}" ]; then "$IRIT_BIN_DIR/$t" "$@"; else "$t" "$@"; fi; }
+ext() { "$@"; }
+# Only the first line of --version is compared (GTDB-Tk adds one when a newer release exists).
 want_version() {
-  got=$(irit "$1" --version 2>/dev/null || true)
+  got=$(irit "$1" --version 2>/dev/null | head -n 1)
+  [ "$got" = "$2" ] || echo "replay: warning: $1 reports '$got'; the run used '$2'" >&2
+}
+want_ext_version() {
+  got=$(ext "$1" --version 2>/dev/null | head -n 1)
   [ "$got" = "$2" ] || echo "replay: warning: $1 reports '$got'; the run used '$2'" >&2
 }
 step() {
@@ -338,6 +353,10 @@ check() {
   checked=$((checked + 1))
   if [ ! -f "$2" ]; then echo "replay: missing $2" >&2; failed=1; return; fi
   [ "$(sha "$2")" = "$1" ] || { echo "replay: differs: $2" >&2; failed=1; }
+}
+check_exists() {
+  checked=$((checked + 1))
+  [ -f "$1" ] || { echo "replay: missing $1" >&2; failed=1; }
 }
 check_link() {
   checked=$((checked + 1))
@@ -378,7 +397,7 @@ pub fn replay_script(log: &RunLog) -> String {
     for c in &ran {
         match (c.argv.first(), &c.version) {
             (Some(tool), Some(v)) => {
-                versions.insert((tool.clone(), v.clone()));
+                versions.insert((tool.clone(), v.clone(), c.external));
             }
             (Some(tool), None) => {
                 unknown.insert(tool.clone());
@@ -387,10 +406,11 @@ pub fn replay_script(log: &RunLog) -> String {
         }
     }
     s += "\n";
-    for (tool, v) in &versions {
-        s += &format!("want_version {} {}\n", sh_quote(tool), sh_quote(v));
+    for (tool, v, external) in &versions {
+        let f = if *external { "want_ext_version" } else { "want_version" };
+        s += &format!("{f} {} {}\n", sh_quote(tool), sh_quote(v));
     }
-    let unknown: Vec<&String> = unknown.iter().filter(|t| !versions.iter().any(|(x, _)| x == *t)).collect();
+    let unknown: Vec<&String> = unknown.iter().filter(|t| !versions.iter().any(|(x, _, _)| x == *t)).collect();
     if !unknown.is_empty() {
         let names = unknown.iter().map(|t| t.as_str()).collect::<Vec<_>>().join(" ");
         s += &format!("echo {} >&2\n", sh_quote(&format!("replay: version unknown (--version failed in the run), not checked: {names}")));
@@ -413,7 +433,7 @@ pub fn replay_script(log: &RunLog) -> String {
                         s += &format!("{k}={}; export {k}\n", sh_quote(v));
                     }
                 }
-                let step = format!("step {n} {} irit {cmd}\n", c.exit_status.unwrap_or(0));
+                let step = format!("step {n} {} {} {cmd}\n", c.exit_status.unwrap_or(0), runner(c));
                 if fetch {
                     s += &sh_comment(&format!("downloads databases again: {}", step.trim_end()));
                     s += &format!(
@@ -426,6 +446,7 @@ pub fn replay_script(log: &RunLog) -> String {
                 for o in &c.outputs {
                     let line = match (&o.symlink_to, &o.sha256) {
                         (Some(t), _) => format!("check_link {} {}", sh_quote(t), sh_quote(&safe_path(&o.path))),
+                        (None, Some(_)) if o.volatile => format!("check_exists {}", sh_quote(&safe_path(&o.path))),
                         (None, Some(h)) => format!("check {} {}", sh_quote(h), sh_quote(&safe_path(&o.path))),
                         _ => continue,
                     };
@@ -437,8 +458,11 @@ pub fn replay_script(log: &RunLog) -> String {
             }
             Status::Failed => {
                 s += &sh_comment(&format!("not replayed: exited {} in the run", c.exit_status.unwrap_or(-1)));
+                if let (Some(0), Some(e)) = (c.exit_status, &c.error) {
+                    s += &sh_comment(e);
+                }
                 if !cmd.is_empty() {
-                    s += &sh_comment(&format!("irit {cmd}"));
+                    s += &sh_comment(&format!("{} {cmd}", runner(c)));
                 }
             }
             Status::Rejected | Status::Error => {
@@ -458,6 +482,11 @@ pub fn replay_script(log: &RunLog) -> String {
     }
     s += "\nif [ \"$failed\" -eq 0 ]; then echo \"replay: $ran commands re-run, $checked outputs match\" >&2; fi\nexit \"$failed\"\n";
     s
+}
+
+/// The replay.sh function that finds the program: `irit` (`$IRIT_BIN_DIR` or PATH) or `ext` (PATH).
+fn runner(c: &CallRecord) -> &'static str {
+    if c.external { "ext" } else { "irit" }
 }
 
 fn status_word(s: Status) -> &'static str {
@@ -520,7 +549,7 @@ pub fn ro_crate(log: &RunLog) -> Value {
     }
     for c in log.calls.iter().filter(|c| matches!(c.status, Status::Ok | Status::Failed)) {
         let Some(tool) = c.argv.first() else { continue };
-        let version = c.version.as_deref().and_then(|v| v.split_whitespace().last()).unwrap_or("unknown");
+        let version = c.version.as_deref().and_then(crate::external::version_number).unwrap_or("unknown");
         let tool_id = format!("#{tool}-{version}");
         tools.entry(tool_id.clone()).or_insert_with(|| {
             json!({
@@ -528,7 +557,10 @@ pub fn ro_crate(log: &RunLog) -> Value {
                 "@type": "SoftwareApplication",
                 "name": tool,
                 "softwareVersion": version,
-                "url": format!("https://github.com/dzulfikar08/irit/blob/main/docs/tools/{tool}.md")
+                "url": match crate::external::pinned(tool).filter(|_| c.external) {
+                    Some(p) => p.url.to_string(),
+                    None => format!("https://github.com/dzulfikar08/irit/blob/main/docs/tools/{tool}.md"),
+                }
             })
         });
         let mut entity = |f: &FileRecord| {
@@ -615,13 +647,14 @@ mod tests {
             started: "2026-11-10T00:00:00.000Z".into(),
             ended: "2026-11-10T00:00:01.000Z".into(),
             exit_status: Some(if status == Status::Ok { 0 } else { 2 }),
-            inputs: vec![FileRecord { path: "/data/x/my reads's.fq".into(), size: 3, sha256: Some("aa".into()), symlink_to: None }],
-            outputs: vec![FileRecord { path: "/data/x/qc/r.json".into(), size: 5, sha256: Some("bb".into()), symlink_to: None }],
+            inputs: vec![FileRecord { path: "/data/x/my reads's.fq".into(), size: 3, sha256: Some("aa".into()), symlink_to: None, volatile: false }],
+            outputs: vec![FileRecord { path: "/data/x/qc/r.json".into(), size: 5, sha256: Some("bb".into()), symlink_to: None, volatile: false }],
             stdout: None,
             stdout_sha256: None,
             stderr: None,
             stdout_is_output: false,
             env: BTreeMap::new(),
+            external: false,
             error: None,
         }
     }
@@ -755,8 +788,8 @@ mod tests {
             ok.version = Some(e.clone());
             ok.env = BTreeMap::from([("DBLOCK_STORE".to_string(), e.clone()), (format!("X;touch {c}"), e.clone())]);
             ok.outputs = vec![
-                FileRecord { path: e.clone(), size: 1, sha256: Some(e.clone()), symlink_to: None },
-                FileRecord { path: format!("{e}/l"), size: 0, sha256: None, symlink_to: Some(e.clone()) },
+                FileRecord { path: e.clone(), size: 1, sha256: Some(e.clone()), symlink_to: None, volatile: false },
+                FileRecord { path: format!("{e}/l"), size: 0, sha256: None, symlink_to: Some(e.clone()), volatile: false },
             ];
             ok.stdout_is_output = true;
             ok.stdout_sha256 = Some(e.clone());
@@ -823,13 +856,80 @@ mod tests {
         fetch.mcp_tool = "dblock_fetch".into();
         fetch.argv = vec!["dblock".into(), "fetch".into()];
         fetch.env = BTreeMap::from([("DBLOCK_STORE".to_string(), "/big/my store".to_string())]);
-        fetch.outputs = vec![FileRecord { path: "/p/dblock.lock".into(), size: 1, sha256: Some("cc".into()), symlink_to: None }];
+        fetch.outputs = vec![FileRecord { path: "/p/dblock.lock".into(), size: 1, sha256: Some("cc".into()), symlink_to: None, volatile: false }];
         let s = replay_script(&log_of(vec![fetch]));
         assert!(s.contains("# downloads databases again: step 001 0 irit dblock fetch\n"));
         assert!(s.contains("if fetch_wanted; then\n  step 001 0 irit dblock fetch\nelse\n"));
         assert!(s.contains("if fetch_wanted; then check cc /p/dblock.lock; fi\n"));
         assert!(s.contains("DBLOCK_STORE='/big/my store'; export DBLOCK_STORE\n# downloads"));
         assert!(!s.lines().any(|l| l.starts_with("step ")), "{s}");
+    }
+
+    #[test]
+    fn external_calls_come_from_path() {
+        let mut fastp = call(1, Status::Ok);
+        fastp.mcp_tool = "fastp".into();
+        fastp.external = true;
+        fastp.argv = vec!["fastp".into(), "--in1=r1.fq".into(), "--json=s.fastp.json".into()];
+        fastp.version = Some("fastp 1.4.0".into());
+        let mut missing = call(2, Status::Failed);
+        missing.external = true;
+        missing.mcp_tool = "bakta".into();
+        missing.argv = vec!["bakta".into(), "--".into(), "a.fna".into()];
+        missing.exit_status = Some(0);
+        missing.error = Some("exited 0 but did not write: /w/o/a.txt".into());
+        let s = replay_script(&log_of(vec![fastp, missing, call(3, Status::Ok)]));
+        assert!(s.contains("want_ext_version fastp 'fastp 1.4.0'\n"), "{s}");
+        assert!(s.contains("want_version leanqc 'leanqc 0.1.0'\n"));
+        assert!(s.contains("step 001 0 ext fastp --in1=r1.fq --json=s.fastp.json\n"));
+        let mut logged = call(4, Status::Ok);
+        logged.outputs[0].volatile = true;
+        assert!(replay_script(&log_of(vec![logged])).contains("\ncheck_exists /data/x/qc/r.json\n"));
+        assert!(s.contains("# not replayed: exited 0 in the run\n# exited 0 but did not write: /w/o/a.txt\n# ext bakta -- a.fna\n"), "{s}");
+        let mut g = call(1, Status::Ok);
+        g.external = true;
+        g.argv = vec!["gtdbtk".into(), "classify_wf".into()];
+        g.version = Some("gtdbtk: version 2.8.0 Copyright 2017 Pierre-Alain Chaumeil".into());
+        let j = ro_crate(&log_of(vec![g]));
+        let tool = j["@graph"].as_array().unwrap().iter().find(|e| e["@id"] == "#gtdbtk-2.8.0").unwrap().clone();
+        assert_eq!(tool["url"], "https://github.com/Ecogenomics/GTDBTk");
+    }
+
+    /// replay.sh runs a third-party tool from PATH even with IRIT_BIN_DIR set, and compares only
+    /// the first line of its --version.
+    #[test]
+    #[cfg(unix)]
+    fn replay_runs_external_tools_from_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(d.path()).unwrap();
+        let (path_dir, irit_dir) = (root.join("path"), root.join("irit"));
+        fs::create_dir(&path_dir).unwrap();
+        fs::create_dir(&irit_dir).unwrap();
+        let tool = path_dir.join("fastp");
+        let script = "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'fastp 1.4.0'; echo 'more'; exit 0; fi\necho ran > out.txt\n";
+        fs::write(&tool, script).unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut c = call(1, Status::Ok);
+        c.external = true;
+        c.argv = vec!["fastp".into(), "--in1=x".into()];
+        c.version = Some("fastp 1.4.0".into());
+        c.cwd = root.to_string_lossy().into_owned();
+        let out = root.join("out.txt");
+        c.outputs = vec![FileRecord { path: out.to_string_lossy().into_owned(), size: 4, sha256: Some(hash_bytes(b"ran\n")), symlink_to: None, volatile: false }];
+        fs::create_dir(root.join("run")).unwrap();
+        fs::write(root.join("run/replay.sh"), replay_script(&log_of(vec![c]))).unwrap();
+        let path = format!("{}:{}", path_dir.display(), std::env::var("PATH").unwrap_or_default());
+        let r = std::process::Command::new("sh")
+            .arg(root.join("run/replay.sh"))
+            .env("PATH", path)
+            .env("IRIT_BIN_DIR", &irit_dir)
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&r.stderr);
+        assert!(r.status.success(), "{err}");
+        assert!(!err.contains("warning"), "{err}");
+        assert_eq!(fs::read_to_string(out).unwrap(), "ran\n");
     }
 
     #[test]

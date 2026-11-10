@@ -34,6 +34,9 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [x] `leanqc` vs FastQC-Rust benchmark on a GitHub runner; `isotable` reads FastQC/FastQC-Rust output.
 - [x] `dblock` keeps selected folders of an archive and verifies GTDB-Tk folder hashes
       (`gtdbtk-r232-client` for `gtdbprep`).
+- [x] `irit-mcp` wraps fastp 1.4.0, Bakta 1.12.2, CheckM2 1.1.0 and GTDB-Tk 2.8.0 `classify_wf`, with
+      only the flags of those versions, input and database checks, and the same run records and
+      `replay.sh` (next release). Tested with stand-ins for the programs.
 
 ## Next
 
@@ -53,12 +56,13 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [ ] **`dblock` additions**: AMRFinderPlus via `amrfinder_update`, GTDB-Tk split download, parallel
       downloads.
 - [ ] **`leanqc` additions**: long-read views (N50, quality by length).
+- [ ] **More `irit-mcp` wrappers**: an assembler (e.g. SPAdes or Shovill), mlst and AMRFinderPlus, so
+      the isolate path has no step outside the record. Check the four wrappers against the real
+      tools and databases on a large machine.
 
 ## Later
 
 - [ ] **`subprep`**: validate NCBI/ENA submission metadata offline before upload.
-- [ ] **MCP wrappers for external tools** (fastp, Bakta, CheckM2, GTDB-Tk) in `irit-mcp`, so a whole
-      microbial genomics run is recorded and replayable.
 - [ ] **Split GTDB-Tk, step 2 (parked)**: a placement service for `gtdbprep` bundles. The gPlace test
       showed a 16 GB laptop can place on its own, so this is only worth building for larger batches.
 - [ ] **Laptop benchmark for AI agents**: can an agent with these tools produce a defensible microbial
