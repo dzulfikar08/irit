@@ -36,5 +36,5 @@ established tool it replaces or feeds.
 
 ## Status
 
-Early. All three tools work and are tested on real data (see [benchmarks](benchmarks.md)), but
+Early. The tools work and are tested on real data (see [benchmarks](benchmarks.md)), but
 they have one test machine so far. The [roadmap](roadmap.md) lists what comes next.
