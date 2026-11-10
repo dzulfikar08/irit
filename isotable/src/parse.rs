@@ -59,7 +59,17 @@ pub fn scan(dirs: &[std::path::PathBuf]) -> Result<Scan> {
     let mut skipped = Vec::new();
     for dir in dirs {
         for entry in walkdir::WalkDir::new(dir).follow_links(true).sort_by_file_name() {
-            let entry = entry?;
+            let entry = match entry {
+                Ok(e) => e,
+                // A dangling symlink or unreadable subfolder: note it and carry on.
+                Err(e) if e.depth() > 0 => {
+                    let at = e.path().map(|p| p.display().to_string()).unwrap_or_default();
+                    let why = e.io_error().map(|io| io.to_string()).unwrap_or_else(|| e.to_string());
+                    skipped.push(format!("{at} ({why})"));
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -151,8 +161,35 @@ fn fastp(path: &Path, name: &str) -> Result<Vec<Record>> {
     if let Some(d) = j["duplication"]["rate"].as_f64() {
         fields.push(("duplication", Value::Num(d * 100.0)));
     }
+    // What went in, to tell a rerun on the same reads from a separate run (see `pool_fastp`).
+    if let Some(b) = s["before_filtering"].as_object().filter(|b| b.contains_key("total_bases")) {
+        fields.push(("raw_summary", Value::Text(Json::Object(b.clone()).to_string())));
+    }
+    if let Some(cmd) = j["command"].as_str() {
+        let inputs = fastp_inputs(cmd);
+        if !inputs.is_empty() {
+            fields.push(("raw_inputs", Value::Text(inputs.join(" "))));
+        }
+    }
     // nf-core names fastp reports after the sample (`<sample>.fastp.json`), one per read pair.
     Ok(vec![rec(name.trim_end_matches(".fastp.json"), Kind::Sample, fields)])
+}
+
+/// Input file names (`-i/--in1`, `-I/--in2`) in fastp's recorded command line, without folders.
+fn fastp_inputs(cmd: &str) -> Vec<String> {
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    let mut out = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        let value = match w.split_once('=') {
+            Some(("--in1" | "--in2", v)) => Some(v),
+            _ if matches!(*w, "-i" | "-I" | "--in1" | "--in2") => words.get(i + 1).copied(),
+            _ => None,
+        };
+        if let Some(v) = value {
+            out.push(v.rsplit(['/', '\\']).next().unwrap_or(v).to_string());
+        }
+    }
+    out
 }
 
 fn leanqc(path: &Path) -> Result<Vec<Record>> {
