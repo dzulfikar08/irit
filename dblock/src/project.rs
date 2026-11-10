@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const PROJECT_FILE: &str = "dblock.toml";
@@ -98,6 +99,9 @@ pub struct Locked {
     pub licence: String,
     #[serde(default)]
     pub non_commercial: bool,
+    /// Folder -> GTDB-Tk folder hash (`sha1_dir`) the catalog required; `verify --deep` checks them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub verify_dirs: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
