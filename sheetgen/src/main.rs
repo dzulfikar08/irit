@@ -77,8 +77,8 @@ struct Cli {
     #[arg(long)]
     include_undetermined: bool,
 
-    /// List Nanopore reads that failed MinKNOW's quality filter (`_fail_` in the name, or files
-    /// under a `fastq_fail/` folder) instead of skipping them.
+    /// List Nanopore reads that failed MinKNOW's quality filter (`_fail_` in the name, files under
+    /// a `fastq_fail/` folder, Guppy `fastq_runid_*` files under `fail/`) instead of skipping them.
     #[arg(long)]
     include_fail: bool,
 }
@@ -112,8 +112,11 @@ struct Fastq {
     token: String,
     /// The sample name came from the folder (`--name-from-dir`), not the file name.
     named_by_dir: bool,
-    /// Looks like Oxford Nanopore MinKNOW output (`barcodeNN/` folder, `_pass_`/`_fail_` name).
+    /// Looks like Oxford Nanopore MinKNOW/Guppy output (`barcodeNN/` folder, `_pass_`/`_fail_`
+    /// or `fastq_runid_` name).
     ont: bool,
+    /// Unpaired by the numbered-sibling rule (`x_0`, `x_1`, `x_2` chunks), not by its name.
+    demoted: bool,
 }
 
 impl Fastq {
@@ -166,9 +169,17 @@ static BGI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?P<s>.+?)_L(?P<lan
 static GENERIC: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?P<s>.+?)(?:_L(?P<lane>\d{3}))?[._-](?P<r>[RIri]?[12])(?:_\d{3})?$").unwrap()
 });
-// MinKNOW: barcode01/FAX123_pass_barcode01_abc_0.fastq.gz; chunk numbers are not mates.
+// MinKNOW: barcode01/FAX123_pass_barcode01_abc_0.fastq.gz; Guppy: pass/fastq_runid_abc_0_1.fastq.
+// Chunk numbers are not mates.
 static ONT_DIR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(barcode\d+|unclassified)$").unwrap());
-static ONT_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_(pass|fail)_").unwrap());
+static ONT_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(_(pass|fail)_|^fastq_runid_)").unwrap());
+// Guppy's `pass/` and `fail/` folders: ONT only for files without a mate token in the name.
+static GUPPY_DIR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(pass|fail)$").unwrap());
+static GUPPY_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^fastq_runid_").unwrap());
+static CHUNK_NO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_\d+$").unwrap());
+// bcl2fastq/BCL Convert read 3/4 (10x ATAC, UMI reads): Sample_S1_L001_R3_001.
+static ILLUMINA_R34: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?P<pre>.+?_S\d+(?:_L\d{3})?_)R(?P<n>[34])(?P<post>_\d{3})$").unwrap());
 static ONT_FAIL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_fail_").unwrap());
 static UNDETERMINED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^undetermined_S0_").unwrap());
 
@@ -355,16 +366,28 @@ fn scan(dirs: &[PathBuf], opts: &ScanOpts) -> Result<(Vec<Fastq>, Vec<String>)> 
                 .strip_prefix(&dir)
                 .ok()
                 .and_then(Path::parent)
-                .is_some_and(|rel| rel.components().any(|c| c.as_os_str().eq_ignore_ascii_case("fastq_fail")));
+                .is_some_and(|rel| {
+                    rel.components().any(|c| {
+                        let c = c.as_os_str();
+                        // Guppy's `fail/` only for Guppy-named files; `fail` alone is too common.
+                        c.eq_ignore_ascii_case("fastq_fail") || (c.eq_ignore_ascii_case("fail") && GUPPY_NAME.is_match(stem))
+                    })
+                });
             if !opts.include_fail && (ONT_FAIL.is_match(stem) || in_fail_dir) {
                 failed += 1;
                 continue;
             }
             let parent = path.parent().and_then(|p| p.file_name()).map(|p| p.to_string_lossy().into_owned());
-            let ont = ONT_NAME.is_match(stem) || parent.as_deref().is_some_and(|p| ONT_DIR.is_match(p));
+            let ont = ONT_NAME.is_match(stem)
+                || parent.as_deref().is_some_and(|p| {
+                    ONT_DIR.is_match(p) || (GUPPY_DIR.is_match(p) && classify(stem, true).mate == Some(Mate::Unpaired))
+                });
             let c = if ont {
-                // Never pair Nanopore chunks: `_0`, `_1`, ... are chunk numbers, not mates.
-                unpaired(stem)
+                // Never pair Nanopore chunks: `_0`, `_1`, ... are chunk numbers, not mates. The
+                // chunk number is dropped from the sample name, so chunks of a run stay one sample.
+                let mut c = unpaired(stem);
+                c.sample = CHUNK_NO.replace(stem, "").into_owned();
+                c
             } else {
                 classify(stem, opts.pair_numeric)
             };
@@ -386,12 +409,13 @@ fn scan(dirs: &[PathBuf], opts: &ScanOpts) -> Result<(Vec<Fastq>, Vec<String>)> 
                 token: c.token,
                 named_by_dir,
                 ont,
+                demoted: false,
             });
         }
     }
     if failed > 0 {
         notes.push(format!(
-            "skipped {failed} Nanopore files that failed MinKNOW's quality filter (`_fail_` in the name or under fastq_fail/); --include-fail lists them"
+            "skipped {failed} Nanopore files that failed MinKNOW's quality filter (`_fail_` in the name, under fastq_fail/, or Guppy files under fail/); --include-fail lists them"
         ));
     }
     Ok((files, notes))
@@ -432,16 +456,59 @@ fn classify(stem: &str, pair_numeric: bool) -> Classified {
     }
 }
 
-/// A file next to a weak pair (`x_1`/`x_2`, `x_r1`/`x_r2`) numbered beyond 2 or 0 (`x_3`,
-/// `x_r3`, `x_0`): the numbers then count replicates or chunks, not mates.
-fn numbered_sibling<'a>(pair_stem: &str, token: &str, stems: &'a BTreeSet<String>) -> Option<&'a str> {
-    let (pre, post) = pair_stem.split_once('\u{0}')?;
+/// Files next to a weak pair (`x_1`/`x_2`, `x_r1`/`x_r2`) numbered beyond 2 or 0 (`x_3`,
+/// `x_r3`, `x_0`), with their numbers: the numbers then count replicates, chunks or extra reads,
+/// not mates.
+fn numbered_siblings<'a>(pair_stem: &str, token: &str, stems: &'a BTreeSet<String>) -> Vec<(&'a str, &'a str)> {
+    let Some((pre, post)) = pair_stem.split_once('\u{0}') else { return Vec::new() };
     let head = format!("{pre}{}", &token[..token.len() - 1]);
-    stems.iter().map(String::as_str).find(|s| {
-        s.strip_prefix(head.as_str())
-            .and_then(|rest| rest.strip_suffix(post))
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && n != "1" && n != "2")
-    })
+    stems
+        .iter()
+        .filter_map(|s| {
+            let n = s.strip_prefix(head.as_str())?.strip_suffix(post)?;
+            (!n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && n != "1" && n != "2").then_some((s.as_str(), n))
+        })
+        .collect()
+}
+
+/// Longest of the first few reads of a FASTQ file (plain or gzip), or `None` if the file can't
+/// be read or has no complete record.
+fn first_reads_max_len(path: &Path) -> Option<usize> {
+    use std::io::{BufRead, BufReader, Read};
+    const RECORDS: usize = 10;
+    let file = std::fs::File::open(path).ok()?;
+    let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+    let reader: Box<dyn Read> = if name.ends_with(".gz") {
+        Box::new(flate2::read::MultiGzDecoder::new(file))
+    } else if name.ends_with(".fastq") || name.ends_with(".fq") {
+        Box::new(file)
+    } else {
+        return None; // .bz2/.zst: not sniffed
+    };
+    let mut lines = BufReader::new(reader).lines();
+    let mut max = None;
+    for _ in 0..RECORDS {
+        let Some(Ok(head)) = lines.next() else { break };
+        let (Some(Ok(seq)), Some(Ok(_)), Some(Ok(_))) = (lines.next(), lines.next(), lines.next()) else { break };
+        if !head.starts_with('@') {
+            return None;
+        }
+        max = Some(max.unwrap_or(0).max(seq.trim_end().len()));
+    }
+    max
+}
+
+/// Short-read evidence for a weak `_1`/`_2` pair under `--long`: a bare-named long-read file
+/// beside it (`x` next to `x_1`/`x_2`, SRA hybrid layout), or first reads all under 1,000 bp.
+fn short_pair_evidence(fs: &[Fastq], long_stems: &BTreeSet<String>) -> bool {
+    const SHORT_MAX: usize = 1000;
+    let bare = fs[0].pair_stem.split_once('\u{0}').map(|(pre, post)| {
+        format!("{}{post}", pre.trim_end_matches(['_', '.', '-']))
+    });
+    if bare.is_some_and(|b| long_stems.contains(&b)) {
+        return true;
+    }
+    fs.iter().all(|f| first_reads_max_len(&f.path).is_some_and(|n| n < SHORT_MAX))
 }
 
 /// The other mate's file stem for a weak mate token (`x_1` → `x_2`), if `stem` has one.
@@ -475,8 +542,32 @@ fn pair(files: Vec<Fastq>, opts: &PairOpts) -> Result<(Vec<Unit>, Vec<String>)> 
     type Key = (String, String, PathBuf, String);
     let dir_of = |f: &Fastq| f.path.parent().map(Path::to_path_buf).unwrap_or_default();
     let mut stems: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+    // Stems of files without any mate token: candidate long-read files.
+    let mut bare_stems: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
     for f in &files {
         stems.entry(dir_of(f)).or_default().insert(f.stem.clone());
+        if f.mate == Mate::Unpaired {
+            bare_stems.entry(dir_of(f)).or_default().insert(f.stem.clone());
+        }
+    }
+    // 10x / UMI runs: R3 (and R4) next to R1/R2. Which read is the cDNA, barcode or UMI differs
+    // between kits, so refuse rather than list R3 as a sample of its own.
+    let mut extra_reads = Vec::new();
+    for f in files.iter().filter(|f| f.mate == Mate::Unpaired && !f.ont) {
+        let Some(c) = ILLUMINA_R34.captures(&f.stem) else { continue };
+        let r1 = format!("{}R1{}", &c["pre"], &c["post"]);
+        if stems[&dir_of(f)].contains(&r1) {
+            extra_reads.push(format!("{} (next to {r1})", f.path.display()));
+        }
+    }
+    if !extra_reads.is_empty() {
+        bail!(
+            "R3/R4 read files next to R1/R2 (10x Genomics or UMI layout):\n  {}\n\
+             in these runs R1/R2/R3 hold barcodes, UMIs or cDNA depending on the kit, so a plain R1/R2 sheet would be wrong; \
+             use the pipeline's own input for this layout (e.g. nf-core/scrnaseq, or a UMI-aware pipeline), \
+             or move the R3/R4 files out of the folder if you know R1/R2 are the reads to list",
+            extra_reads.join("\n  ")
+        );
     }
     let mut groups: BTreeMap<Key, Vec<Fastq>> = BTreeMap::new();
     let mut unpaired = Vec::new();
@@ -489,21 +580,36 @@ fn pair(files: Vec<Fastq>, opts: &PairOpts) -> Result<(Vec<Unit>, Vec<String>)> 
     }
     let mut units = Vec::new();
     let mut warnings = Vec::new();
-    // `ctrl_r1`, `ctrl_r2` next to `ctrl_r3` are replicates, not mates: keep them apart.
+    // `x_0`, `x_1`, `x_2` are chunks, not mates: keep them apart. `s_1`, `s_2` next to `s_3`
+    // (replicates, or fasterq-dump's `_1`..`_4` for 10x runs) is ambiguous: refuse.
     let mut kept = BTreeMap::new();
+    let mut ambiguous = Vec::new();
+    let mut ambiguous_r = false;
+    let mut weak_long = Vec::new();
     for (key, fs) in groups {
-        let sibling = match fs.iter().all(Fastq::weak) {
-            true => numbered_sibling(&key.3, &fs[0].token, &stems[&key.2]),
-            false => None,
-        };
-        let Some(sibling) = sibling else {
+        let weak = fs.iter().all(Fastq::weak);
+        let siblings = if weak { numbered_siblings(&key.3, &fs[0].token, &stems[&key.2]) } else { Vec::new() };
+        let names: Vec<_> = fs.iter().map(|f| f.stem.as_str()).collect();
+        if siblings.is_empty() {
+            // Under --long a bare `_1`/`_2` may just as well number long-read files: pair only
+            // with evidence that they are short reads.
+            let both = fs.iter().any(|f| f.mate == Mate::R1) && fs.iter().any(|f| f.mate == Mate::R2);
+            if long && weak && both && !short_pair_evidence(&fs, bare_stems.get(&key.2).unwrap_or(&BTreeSet::new())) {
+                weak_long.push(fs.iter().map(|f| f.path.display().to_string()).collect::<Vec<_>>().join(", "));
+            }
             kept.insert(key, fs);
             continue;
-        };
-        let names: Vec<_> = fs.iter().map(|f| f.stem.as_str()).collect();
+        }
+        let sib: Vec<_> = siblings.iter().map(|(s, _)| *s).collect();
+        if !siblings.iter().any(|(_, n)| n.bytes().all(|b| b == b'0')) {
+            ambiguous_r |= fs.iter().any(|f| f.token.starts_with('r'));
+            ambiguous.push(format!("{} (next to {})", names.join(", "), sib.join(", ")));
+            continue;
+        }
         warnings.push(format!(
-            "not paired: {} ({sibling} next to them suggests numbered replicates or chunks, not mates; name mates _R1/_R2 to pair them)",
-            names.join(", ")
+            "not paired: {} ({} next to them: numbered from 0, so chunks, not mates; name mates _R1/_R2 to pair them)",
+            names.join(", "),
+            sib.join(", ")
         ));
         for mut f in fs {
             if !f.named_by_dir {
@@ -511,8 +617,31 @@ fn pair(files: Vec<Fastq>, opts: &PairOpts) -> Result<(Vec<Unit>, Vec<String>)> 
             }
             f.lane.clear();
             f.mate = Mate::Unpaired;
+            f.demoted = true;
             unpaired.push(f);
         }
+    }
+    if !ambiguous.is_empty() {
+        let fix = if ambiguous_r {
+            "rename the files: mates _R1/_R2, replicates e.g. _rep1, _rep2 (lowercase _r1/_r2 always pair)"
+        } else {
+            "pass --no-pair-numeric to list every file as a single-end sample, or rename mates _R1/_R2"
+        };
+        bail!(
+            "these files may be mates, but more files are numbered the same way, so the numbers may count replicates or extra reads \
+             (fasterq-dump writes _1.._4 for 10x runs) rather than mates:\n  {}\n{fix}",
+            ambiguous.join("\n  ")
+        );
+    }
+    if !weak_long.is_empty() {
+        bail!(
+            "with --long, these files are told apart only by a bare _1/_2 or lowercase _r1/_r2, which could be short-read mates or \
+             numbered long-read files, and nothing shows which (no long-read file named without the suffix beside them, \
+             and their first reads are not all under 1,000 bp):\n  {}\n\
+             rename short-read mates _R1/_R2; if they are separate long-read files, pass --no-pair-numeric (bare _1/_2) \
+             or rename them (lowercase _r1/_r2 always pair)",
+            weak_long.join("\n  ")
+        );
     }
     let groups = kept;
     let ont = unpaired.iter().filter(|f| f.ont).count();
@@ -561,8 +690,10 @@ fn pair(files: Vec<Fastq>, opts: &PairOpts) -> Result<(Vec<Unit>, Vec<String>)> 
                 u.long = Some(f.path.clone());
                 continue;
             }
-            // A long-only `x_1` next to `x_2` is almost certainly a short-read mate.
+            // A long-only `x_1` next to `x_2` is almost certainly a short-read mate (chunks the
+            // sibling rule unpaired were already judged).
             if !f.ont
+                && !f.demoted
                 && let Some(other) = weak_counterpart(&f.stem)
                 && stems[&dir_of(&f)].contains(&other)
             {
@@ -895,10 +1026,132 @@ mod tests {
         let (u, w) = pair(files, &PairOpts { long: true, no_pair_numeric: true }).unwrap();
         assert_eq!(u.len(), 2);
         assert!(w.iter().any(|w| w.contains("look like short-read mates")), "{w:?}");
-        // Replicate-looking names demoted under --long: refused.
+        // Replicate-looking names: refused by the numbered-sibling rule, with or without --long.
         touch(t.path(), &["rep/x_r1.fastq.gz", "rep/x_r2.fastq.gz", "rep/x_r3.fastq.gz"]);
         let err = long_units(&t.path().join("rep"), false).unwrap_err().to_string();
-        assert!(err.contains("look like short-read mates"), "{err}");
+        assert!(err.contains("more files are numbered the same way") && err.contains("rename"), "{err}");
+        // Chunks (numbered from 0) are unpaired by the sibling rule and not refused as mates.
+        touch(t.path(), &["chunks/x_0.fq.gz", "chunks/x_1.fq.gz", "chunks/x_2.fq.gz"]);
+        let (u, w) = long_units(&t.path().join("chunks"), false).unwrap();
+        assert_eq!(u.len(), 3);
+        assert!(u.iter().all(|u| u.long.is_some() && u.r1.is_none()), "{u:?}");
+        assert!(w.iter().any(|w| w.contains("not paired")) && !w.iter().any(|w| w.contains("short-read mates")), "{w:?}");
+    }
+
+    fn write_gz_fastq(path: &Path, reads: usize, len: usize) {
+        use std::io::Write;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut gz = flate2::write::GzEncoder::new(std::fs::File::create(path).unwrap(), flate2::Compression::fast());
+        for i in 0..reads {
+            writeln!(gz, "@r{i}\n{}\n+\n{}", "A".repeat(len), "I".repeat(len)).unwrap();
+        }
+        gz.finish().unwrap();
+    }
+
+    #[test]
+    fn long_mode_pairs_bare_numeric_mates_only_with_evidence() {
+        // No evidence (empty files, no bare-named long file): refused, not paired.
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["reads_1.fastq.gz", "reads_2.fastq.gz"]);
+        let err = long_units(t.path(), false).unwrap_err().to_string();
+        assert!(err.contains("could be short-read mates or numbered long-read files") && err.contains("--no-pair-numeric"), "{err}");
+        // Long reads named _1/_2: refused too.
+        let t = tempfile::tempdir().unwrap();
+        write_gz_fastq(&t.path().join("reads_1.fastq.gz"), 10, 5000);
+        write_gz_fastq(&t.path().join("reads_2.fastq.gz"), 10, 5000);
+        assert!(long_units(t.path(), false).is_err());
+        // --no-pair-numeric lists them as two long-read files.
+        let (files, _) = scan(&[t.path().to_path_buf()], &opts(false)).unwrap();
+        let (u, _) = pair(files, &PairOpts { long: true, no_pair_numeric: true }).unwrap();
+        assert_eq!(u.len(), 2);
+        assert!(u.iter().all(|u| u.long.is_some() && u.r1.is_none()));
+        // Short reads (sniffed, gzip): paired.
+        let t = tempfile::tempdir().unwrap();
+        write_gz_fastq(&t.path().join("reads_1.fastq.gz"), 20, 150);
+        write_gz_fastq(&t.path().join("reads_2.fastq.gz"), 20, 150);
+        let (u, _) = long_units(t.path(), false).unwrap();
+        assert_eq!(u.len(), 1);
+        assert!(u[0].r1.is_some() && u[0].r2.is_some() && u[0].long.is_none(), "{u:?}");
+        // Lowercase _r1/_r2 follow the same rule.
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["x_r1.fastq.gz", "x_r2.fastq.gz"]);
+        assert!(long_units(t.path(), false).is_err());
+        // Uppercase R1/R2 need no evidence.
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["x_R1.fastq.gz", "x_R2.fastq.gz"]);
+        assert_eq!(long_units(t.path(), false).unwrap().0.len(), 1);
+    }
+
+    #[test]
+    fn sniffs_first_reads() {
+        let t = tempfile::tempdir().unwrap();
+        write_gz_fastq(&t.path().join("a.fq.gz"), 3, 120);
+        assert_eq!(first_reads_max_len(&t.path().join("a.fq.gz")), Some(120));
+        std::fs::write(t.path().join("b.fastq"), "@r\nACGT\n+\nIIII\n").unwrap();
+        assert_eq!(first_reads_max_len(&t.path().join("b.fastq")), Some(4));
+        std::fs::write(t.path().join("c.fastq"), "").unwrap();
+        assert_eq!(first_reads_max_len(&t.path().join("c.fastq")), None);
+        std::fs::write(t.path().join("d.fastq.gz"), "").unwrap();
+        assert_eq!(first_reads_max_len(&t.path().join("d.fastq.gz")), None);
+    }
+
+    #[test]
+    fn guppy_pass_folder_chunks_are_nanopore() {
+        let t = tempfile::tempdir().unwrap();
+        touch(
+            t.path(),
+            &[
+                "pass/fastq_runid_abc_0_0.fastq",
+                "pass/fastq_runid_abc_0_1.fastq",
+                "pass/fastq_runid_abc_0_2.fastq",
+                "pass/fastq_runid_abc_0_3.fastq",
+                "fail/fastq_runid_abc_0_0.fastq",
+            ],
+        );
+        let (files, notes) = scan(&[t.path().to_path_buf()], &opts(true)).unwrap();
+        assert_eq!(files.len(), 4, "fail/ skipped");
+        assert!(notes.iter().any(|n| n.contains("skipped 1 Nanopore")), "{notes:?}");
+        assert!(files.iter().all(|f| f.ont && f.sample == "fastq_runid_abc_0"));
+        let (u, _) = long_units(t.path(), false).unwrap();
+        assert_eq!(u.len(), 4);
+        let err = check_long(&u, true, false, &mut Vec::new()).unwrap_err().to_string();
+        assert!(err.contains("fastq_runid_abc_0: 4 files") && err.contains("concatenate"), "{err}");
+        // Short-read mates in a folder named `pass` still pair.
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["pass/A_R1.fastq.gz", "pass/A_R2.fastq.gz", "fail/B_R1.fastq.gz", "fail/B_R2.fastq.gz"]);
+        let u = units_of(t.path(), true).unwrap();
+        assert_eq!(u.len(), 2);
+        assert!(u.iter().all(|u| u.r2.is_some()));
+    }
+
+    #[test]
+    fn ambiguous_numbered_siblings_are_refused() {
+        for names in [&["s_1.fastq.gz", "s_2.fastq.gz", "s_3.fastq.gz"][..], &["SRR5_1.fastq.gz", "SRR5_2.fastq.gz", "SRR5_3.fastq.gz", "SRR5_4.fastq.gz"]] {
+            let t = tempfile::tempdir().unwrap();
+            touch(t.path(), names);
+            let err = units_of(t.path(), true).unwrap_err().to_string();
+            assert!(err.contains("more files are numbered the same way") && err.contains("--no-pair-numeric"), "{err}");
+            assert!(long_units(t.path(), false).is_err());
+            // --no-pair-numeric: every file a single-end sample.
+            let u = units_of(t.path(), false).unwrap();
+            assert_eq!(u.len(), names.len());
+            assert!(u.iter().all(|u| u.r2.is_none()));
+        }
+    }
+
+    #[test]
+    fn tenx_read3_next_to_r1_r2_is_refused() {
+        let t = tempfile::tempdir().unwrap();
+        touch(
+            t.path(),
+            &["x_S1_L001_R1_001.fastq.gz", "x_S1_L001_R2_001.fastq.gz", "x_S1_L001_R3_001.fastq.gz", "x_S1_L001_I1_001.fastq.gz"],
+        );
+        let err = units_of(t.path(), true).unwrap_err().to_string();
+        assert!(err.contains("10x Genomics or UMI") && err.contains("x_S1_L001_R3_001"), "{err}");
+        // An R3 without R1/R2 beside it is just a file name.
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["y_S1_L001_R3_001.fastq.gz"]);
+        assert_eq!(units_of(t.path(), true).unwrap().len(), 1);
     }
 
     #[test]
@@ -921,15 +1174,20 @@ mod tests {
     #[test]
     fn numbered_replicates_are_not_paired() {
         let t = tempfile::tempdir().unwrap();
-        touch(t.path(), &["ctrl_r1.fastq.gz", "ctrl_r2.fastq.gz", "ctrl_r3.fastq.gz", "x_0.fq.gz", "x_1.fq.gz", "x_2.fq.gz"]);
+        touch(t.path(), &["x_0.fq.gz", "x_1.fq.gz", "x_2.fq.gz", "y_r0.fq.gz", "y_r1.fq.gz", "y_r2.fq.gz"]);
         let (files, _) = scan(&[t.path().to_path_buf()], &opts(true)).unwrap();
         let (u, w) = pair(files, &SHORT).unwrap();
         let names: Vec<_> = u.iter().map(|u| (u.sample.as_str(), u.r2.is_some())).collect();
         assert_eq!(
             names,
-            [("ctrl_r1", false), ("ctrl_r2", false), ("ctrl_r3", false), ("x_0", false), ("x_1", false), ("x_2", false)]
+            [("x_0", false), ("x_1", false), ("x_2", false), ("y_r0", false), ("y_r1", false), ("y_r2", false)]
         );
         assert_eq!(w.iter().filter(|w| w.contains("not paired")).count(), 2, "{w:?}");
+        // Replicates numbered from 1 (ctrl_r3 beside ctrl_r1/ctrl_r2): ambiguous, refused.
+        let t2 = tempfile::tempdir().unwrap();
+        touch(t2.path(), &["ctrl_r1.fastq.gz", "ctrl_r2.fastq.gz", "ctrl_r3.fastq.gz"]);
+        let err = units_of(t2.path(), true).unwrap_err().to_string();
+        assert!(err.contains("ctrl_r1, ctrl_r2 (next to ctrl_r3)") && err.contains("_rep1"), "{err}");
         // Two lowercase mates alone pair, flagged like bare _1/_2.
         let t = tempfile::tempdir().unwrap();
         touch(t.path(), &["ctrl_r1.fastq.gz", "ctrl_r2.fastq.gz", "B_R1.fq.gz", "B_R2.fq.gz", "B_R3.fq.gz"]);

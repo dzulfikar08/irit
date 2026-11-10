@@ -7,6 +7,7 @@ version.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
+flate2 = "1.1.11"
 jsonschema = { version = "0.61.0", default-features = false }
 regex = "1.13.1"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
