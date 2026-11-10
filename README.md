@@ -7,7 +7,7 @@ ordinary laptops. Each tool is one static Rust binary: no Java, no conda, no con
 |---|---|---|---|
 | [`sheetgen`](docs/tools/sheetgen.md) | Builds a pipeline's sample sheet from a folder of FASTQ files and checks it against the pipeline's own schema | Hand-written CSVs, per-pipeline scripts | 2.4 MB |
 | [`leanqc`](docs/tools/leanqc.md) | Read quality control with an offline HTML report | FastQC | 1.6 MB |
-| [`isotable`](docs/tools/isotable.md) | Joins fastp, leanqc, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs into one graded row per sample (isolates or MAGs) | Per-pipeline summary scripts | 1.5 MB |
+| [`isotable`](docs/tools/isotable.md) | Joins fastp, leanqc, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs into one graded row per sample (isolates or MAGs) | Per-pipeline summary scripts | 2.5 MB |
 | [`dblock`](docs/tools/dblock.md) | Downloads, verifies and pins reference databases (GTDB-Tk, CheckM2, SILVA, Kraken 2, Bakta, CARD) with a lock file | Each tool's own downloader | 5.1 MB |
 
 Measured against FastQC 0.12.1 on 1 million reads: **2.5 s and 16 MB of RAM** against 7.0 s and
