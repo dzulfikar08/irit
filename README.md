@@ -44,5 +44,8 @@ source (`mdbook serve` from the repository root) so it can be published as a sit
 
 ## Licence
 
-MIT or Apache-2.0, at your option. The databases `dblock` downloads have their own licences;
-`dblock catalog` flags the ones that restrict commercial use.
+GPL-3.0-or-later (see [LICENSE](LICENSE)). You can use, study, change and share the tools freely;
+if you distribute a modified version, it must stay under the GPL with its source available.
+
+The databases `dblock` downloads have their own licences; `dblock catalog` flags the ones that
+restrict commercial use.
