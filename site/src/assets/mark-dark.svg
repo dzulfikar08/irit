@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Four short reads stacked like a pileup: the irit mark. -->
+  <g fill="#b4c3ef">
+    <rect x="3" y="5" width="17" height="4" rx="1"/>
+    <rect x="9" y="11" width="20" height="4" rx="1"/>
+    <rect x="5" y="17" width="13" height="4" rx="1"/>
+  </g>
+  <rect x="12" y="23" width="9" height="4" rx="1" fill="#d9a06a"/>
+</svg>

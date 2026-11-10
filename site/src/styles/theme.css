@@ -1,0 +1,311 @@
+/*
+ * irit theme.
+ * Palette: tarum (the indigo of Javanese dye) as ink and links on a cool, unbleached paper;
+ * soga (the brown batik dye) is the single accent, kept for irit's own measured results.
+ * Type: Atkinson Hyperlegible Next and Mono, chosen for unambiguous digits in a table-heavy site.
+ */
+
+:root {
+	--sl-font: 'Atkinson Hyperlegible Next Variable';
+	--sl-font-mono: 'Atkinson Hyperlegible Mono Variable';
+	--sl-content-width: 48rem;
+	--sl-line-height: 1.65;
+	--sl-line-height-headings: 1.18;
+	--sl-text-h1: 2.5rem;
+	--sl-text-h2: 1.625rem;
+	--sl-text-h3: 1.25rem;
+	--sl-text-h4: 1.0625rem;
+
+	/* Dark mode (Starlight's default scheme) */
+	--sl-color-white: #ffffff;
+	--sl-color-gray-1: #e6e8ee;
+	--sl-color-gray-2: #c6cad5;
+	--sl-color-gray-3: #949bad;
+	--sl-color-gray-4: #5d6579;
+	--sl-color-gray-5: #333b4e;
+	--sl-color-gray-6: #1b2131;
+	--sl-color-black: #131826;
+
+	--sl-color-accent-low: #222d50;
+	--sl-color-accent: #7186d4;
+	--sl-color-accent-high: #b8c6f0;
+
+	--irit-soga: #d39a63;
+	--irit-ref-bar: #475069;
+	--irit-rule: #2a3245;
+	--irit-row: #182031;
+}
+
+:root[data-theme='light'] {
+	--sl-color-white: #121a33;
+	--sl-color-gray-1: #1f2840;
+	--sl-color-gray-2: #343d55;
+	--sl-color-gray-3: #555e74;
+	--sl-color-gray-4: #858c9c;
+	--sl-color-gray-5: #c6cad3;
+	--sl-color-gray-6: #e9ebef;
+	--sl-color-gray-7: #f3f4f6;
+	--sl-color-black: #fbfbf9;
+
+	--sl-color-accent-low: #dfe5f4;
+	--sl-color-accent: #2f4a9a;
+	--sl-color-accent-high: #213670;
+
+	--sl-color-bg-nav: #fbfbf9;
+	--sl-color-bg-sidebar: #f4f5f3;
+
+	--irit-soga: #8a5321;
+	--irit-ref-bar: #b9bfcc;
+	--irit-rule: #dcdfe5;
+	--irit-row: #f2f3f1;
+}
+
+/* ---------- Type ---------- */
+
+body {
+	font-feature-settings: 'kern';
+	text-rendering: optimizeLegibility;
+}
+
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6),
+h1#_top {
+	font-weight: 700;
+	letter-spacing: -0.012em;
+}
+h1#_top {
+	letter-spacing: -0.02em;
+}
+
+.sl-markdown-content {
+	/* Keep prose lines comfortable even when the column is wider for tables. */
+	--irit-measure: 72ch;
+}
+.sl-markdown-content :is(p, ul, ol, blockquote) {
+	max-width: var(--irit-measure);
+}
+
+.sl-markdown-content a:not(:where(.not-content *)) {
+	text-decoration-thickness: 1px;
+	text-underline-offset: 0.18em;
+}
+.sl-markdown-content a:not(:where(.not-content *)):hover {
+	text-decoration-thickness: 2px;
+}
+
+.sl-markdown-content code:not(:where(.not-content *, pre *)) {
+	font-size: 0.9em;
+	padding: 0.075em 0.3em;
+	border-radius: 3px;
+}
+
+/* Task lists in the roadmap: let the checkboxes read as state, not form fields. */
+.sl-markdown-content .contains-task-list {
+	padding-inline-start: 0;
+}
+.sl-markdown-content .task-list-item {
+	list-style: none;
+}
+.sl-markdown-content .task-list-item input[type='checkbox'] {
+	accent-color: var(--sl-color-accent);
+	margin-inline-end: 0.5em;
+	translate: 0 0.1em;
+}
+
+/* ---------- Tables ---------- */
+
+.sl-markdown-content table:not(:where(.not-content *)) {
+	font-size: 0.9375rem;
+	line-height: 1.5;
+	font-variant-numeric: tabular-nums;
+	border-collapse: collapse;
+	max-width: 100%;
+	/* Starlight makes tables scrollable blocks; keep that and show a quiet edge. */
+	border-block: 1px solid var(--irit-rule);
+}
+.sl-markdown-content :is(th, td):not(:where(.not-content *)) {
+	padding: 0.5rem 0.875rem;
+	border-bottom: 1px solid var(--irit-rule);
+}
+.sl-markdown-content :is(th:first-child, td:first-child):not(:where(.not-content *)) {
+	padding-inline-start: 0.625rem;
+}
+.sl-markdown-content :is(th:last-child, td:last-child):not(:where(.not-content *)) {
+	padding-inline-end: 0.625rem;
+}
+.sl-markdown-content thead th:not(:where(.not-content *)) {
+	background: var(--irit-row);
+	border-bottom: 1px solid var(--sl-color-gray-4);
+	font-weight: 700;
+	font-size: 0.875rem;
+	vertical-align: bottom;
+}
+.sl-markdown-content tbody tr:last-child td:not(:where(.not-content *)) {
+	border-bottom: 0;
+}
+.sl-markdown-content td code:not(:where(.not-content *)) {
+	white-space: nowrap;
+}
+
+/* ---------- Header ---------- */
+
+.site-title {
+	gap: 0.5rem;
+	font-weight: 700;
+	font-size: 1.375rem;
+	letter-spacing: -0.02em;
+	color: var(--sl-color-white);
+}
+.site-title img {
+	height: 1.75rem;
+	width: auto;
+}
+
+/* Sidebar group labels: sentence case, not tracked capitals. */
+.sidebar-content .group-label .large {
+	font-size: var(--sl-text-sm);
+	font-weight: 700;
+	color: var(--sl-color-white);
+}
+
+/* ---------- Landing page (splash) ---------- */
+
+[data-has-hero] .hero {
+	display: block;
+	padding-block: clamp(2.5rem, 7vw, 5.5rem) 1rem;
+	text-align: start;
+}
+[data-has-hero] .hero .stack,
+[data-has-hero] .hero .copy {
+	align-items: flex-start;
+	text-align: start;
+}
+[data-has-hero] .hero h1 {
+	font-size: clamp(2.5rem, 6.4vw, 4.75rem);
+	line-height: 1.02;
+	letter-spacing: -0.035em;
+	font-weight: 750;
+	max-width: 13ch;
+	color: var(--sl-color-white);
+}
+[data-has-hero] .hero .tagline {
+	font-size: clamp(1.125rem, 1.8vw, 1.3125rem);
+	line-height: 1.5;
+	max-width: 40rem;
+	color: var(--sl-color-gray-2);
+}
+
+[data-has-hero] .sl-markdown-content {
+	max-width: 60rem;
+}
+
+.irit-name {
+	color: var(--sl-color-gray-3);
+	font-size: var(--sl-text-sm);
+	margin-block-end: 1rem;
+}
+.irit-name em {
+	font-style: italic;
+	color: var(--sl-color-white);
+	font-weight: 600;
+}
+
+.sl-markdown-content .irit-section {
+	margin-block-start: clamp(3rem, 7vw, 5rem);
+}
+.sl-markdown-content .irit-section > h2,
+.sl-markdown-content .irit-section > .sl-heading-wrapper {
+	margin-block-end: 0.75rem;
+}
+
+/* The measured result is the one place soga appears in body copy. */
+.irit-measured {
+	border-top: 3px solid var(--irit-soga);
+	padding-block-start: 1.25rem;
+	max-width: 44rem;
+}
+
+/* Tools: a definition list, name / what it does / binary size. */
+.sl-markdown-content .irit-toollist {
+	margin: 0;
+	padding: 0;
+	border-top: 1px solid var(--irit-rule);
+}
+.sl-markdown-content .irit-toollist > div {
+	display: grid;
+	grid-template-columns: 9rem minmax(0, 1fr) 4.5rem;
+	gap: 0.25rem 1.5rem;
+	align-items: baseline;
+	padding-block: 1rem;
+	border-bottom: 1px solid var(--irit-rule);
+	margin: 0;
+}
+.sl-markdown-content .irit-toollist :is(dt, dd) {
+	margin: 0;
+}
+.sl-markdown-content .irit-toollist dt {
+	font-weight: 700;
+}
+.sl-markdown-content .irit-toollist dt code {
+	font-size: 1.0625rem;
+	background: none;
+	padding: 0;
+}
+.sl-markdown-content .irit-toollist dd.size {
+	text-align: end;
+	color: var(--sl-color-gray-3);
+	font-size: var(--sl-text-sm);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+@media (max-width: 40rem) {
+	.sl-markdown-content .irit-toollist > div {
+		grid-template-columns: minmax(0, 1fr) auto;
+	}
+	.sl-markdown-content .irit-toollist dd:not(.size) {
+		grid-column: 1 / -1;
+		grid-row: 2;
+	}
+	.sl-markdown-content .irit-toollist dd.size {
+		grid-row: 1;
+		grid-column: 2;
+	}
+}
+
+.irit-install-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+	gap: 1.5rem 2.5rem;
+}
+.sl-markdown-content .irit-install-grid h3 {
+	font-size: var(--sl-text-h4);
+	margin-block-start: 0.5rem;
+}
+
+.sl-markdown-content .irit-nextlist {
+	list-style: none;
+	padding: 0;
+}
+.sl-markdown-content .irit-nextlist li {
+	padding-block: 0.375rem;
+}
+.sl-markdown-content .irit-nextlist a {
+	font-weight: 700;
+}
+
+/* Section headings on the landing page are not reference targets worth a link icon. */
+[data-has-hero] .sl-markdown-content .sl-anchor-link {
+	display: none;
+}
+
+/* Phones: tighter cells so four-column tables fit before they need to scroll. */
+@media (max-width: 30rem) {
+	.sl-markdown-content table:not(:where(.not-content *)) {
+		font-size: 0.875rem;
+	}
+	.sl-markdown-content :is(th, td):not(:where(.not-content *)) {
+		padding: 0.4375rem 0.5rem;
+	}
+	.sl-markdown-content :is(th:first-child, td:first-child):not(:where(.not-content *)) {
+		padding-inline-start: 0.375rem;
+	}
+}
