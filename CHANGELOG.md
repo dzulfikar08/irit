@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-11-10)
 
 The project is now called **irit** (it was leanbio for its first day; a biologics manufacturer
 already uses that name). Every tool went through independent code reviews; each fix has a

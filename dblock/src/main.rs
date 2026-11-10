@@ -502,6 +502,8 @@ mod remove_tests {
     }
 
     /// A lock entry for `dir` as `fetch` would record it, SHA-256 list included.
+    // Only the Unix-only permission test uses it.
+    #[cfg(unix)]
     fn locked_with_sums(id: &str, dir: &Path) -> project::Locked {
         let mut l = locked(id, dir);
         (l.files, l.bytes, l.manifest_md5) = fetch::manifest(dir).unwrap();
