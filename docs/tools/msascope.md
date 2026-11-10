@@ -31,28 +31,44 @@ msascope silk.fasta --type protein # residue type given instead of guessed: dna,
 | Input | Action |
 |---|---|
 | Wheel / trackpad | Scroll (Shift+wheel: horizontal) |
-| Drag | Pan |
+| Drag | Pan (Shift+drag is kept for selecting a block, not built yet) |
 | Ctrl+wheel | Zoom at the pointer (Ctrl+Shift: columns only, Ctrl+Alt: rows only) |
-| `+` / `-` / `0` | Zoom in / out / fit the whole alignment |
+| `+` / `-` | Zoom in / out by √2 |
+| `0` / `w` / `h` | Fit all / fit width / fit height |
+| `r` | Back to the readable zoom a file opens at |
 | Arrows, Page Up/Down, Home/End | Move; Ctrl+Home/End jumps to the corners |
 | Ctrl+G | Go to a column (`15000`) or row and column (`250:15000`) |
 | Ctrl+F | Find sequences by name (substring, case-insensitive); Enter / Shift+Enter for next/previous |
 | `d` | Colour mode: residues, or differences from the column consensus |
-| Click | Select a row; hovering shows row, column, residue, consensus and identity in the status bar |
+| Click | Select a row (in the alignment or the name panel); hovering shows the sequence, column, residue, consensus and identity in the status bar |
+| Drag the name panel's right edge | Resize it (120–480 px, remembered) |
 
-Zoom goes from the whole alignment (fit to the window, columns and rows scaled separately) to
-about 32 pixels per cell in steps of √2. Letters appear once cells are at least 8 × 10 pixels.
+A file opens at a readable zoom, not fitted to the window: the whole alignment at about 11 × 16
+pixels per cell if it fits; otherwise rows at 16 pixels, so names and residues can be read, and
+columns fitted to the width when that leaves at least 4 pixels per column (else 11 pixels). The
+fit zooms use the exact scale, so the alignment fills the window with no empty band; they never
+zoom in past 11 × 16 pixels. `+` and `-` then move in steps of √2, from about 1/260,000 to 32
+pixels per cell. Letters appear once cells are at least 7 × 10 pixels, names once rows are at
+least 8 pixels tall.
 
-The window shows, from the top: a toolbar, the position ruler, a consensus track (most common
-residue per column) and an identity track (bar height = share of sequences carrying the consensus
-residue; dark green ≥ 90%, light green ≥ 50%, amber below). The sequence names stay in a column on
-the left while the alignment scrolls; when rows are too thin to label, it shows the visible row
-range and a marker of where the view sits in the whole alignment.
+The window shows, from the top: a title bar with the open file and the theme menu (System,
+Light, Dark; System follows the OS), a toolbar, and the track header: column ruler, consensus
+(most common residue per column), identity (bar height = share of sequences carrying the
+consensus residue, strong colour at 90% or more) and gaps (share of gaps per column). The sequence
+names stay in a panel on the left while the alignment scrolls, as `ID` and a dimmer `/start-end`
+for Pfam-style names; when rows are too thin to label, the panel shows the visible rows in words
+("rows 1,201–1,260 of 32,112") and a marker of where the view sits. The status bar shows the file
+format and residue type, the size, the hovered cell, the selected row, the load time and memory,
+and the theme. Settings (theme, name panel width) are saved in `msascope/settings.toml` in the
+platform's config folder (`~/.config` on Linux).
 
 Colours: nucleotides A green, C blue, G orange, T/U red, ambiguity codes grey; amino acids by
 Clustal X groups (hydrophobic blue, positive red, negative magenta, polar green, plus C, G, P and
-aromatic H/Y). The **differences** mode fades every residue that matches its column's consensus and
-keeps the rest in full colour, which is what you want for alignments of near-identical genomes.
+aromatic H/Y), without Clustal X's per-column rules yet. Behind letters the light theme uses pale
+fills and the dark theme dark fills, so the letters stay readable (at least 4.5:1 contrast, checked
+by a test). The **differences** mode fades every residue that matches its column's consensus
+towards the background and keeps the rest in full colour, which is what you want for alignments
+of near-identical genomes.
 
 ## Formats
 
@@ -131,8 +147,8 @@ to a residue rather than the gap, then to the lower code. For 100,000 ×
 **Rendering.** GPUI does not expose custom shaders, so the alignment area is drawn as image tiles
 of 256 × 256 device pixels. A tile is rasterised once on the CPU (in parallel across tiles, one
 pixel = one cell or one pyramid block, picking the coarsest pyramid level that is still at least
-one block per pixel) and then composited by GPUI's GPU sprite atlas; tiles are cached per zoom
-level and colour mode, and evicted (and freed from the GPU atlas) when far off screen. No UI element
+one block per pixel) and then composited by GPUI's GPU sprite atlas; tiles are cached per scale, colour mode and
+theme, and evicted (and freed from the GPU atlas) when far off screen. No UI element
 is created per cell. When letters are visible, each distinct letter is shaped once per frame and
 painted per visible cell. Tracks are drawn as runs of equal-colour quads, one entry per pixel
 column.
@@ -182,6 +198,31 @@ are measurements from an automated pan, not a judgement by eye with a real mouse
 measures redrawing, not tile drawing. One machine and one display so far; 120 Hz displays and
 weaker GPUs are untested.
 
+**After the rename and the first redesign steps (2026-11-11).** The table above was measured
+before them, on the 100,000 × 30,000 file. The redesign was checked against the last msaview
+build (commit `b87af1d`) on the same machine, with a smaller file (`msagen 20000 10000`, 200 MB,
+in `/tmp`) because the machine had little free memory, and with the two builds run alternately
+because other jobs kept it busy (load average 10 to 55 on 12 threads). Window 1280 × 800.
+
+| | msaview (before) | msascope (after) |
+|---|---|---|
+| Load, `--stats`, median of 6 | 0.95 s (0.38 + 0.21 + 0.37) | 0.93 s (0.38 + 0.19 + 0.36) |
+| Peak RSS, `--stats` | 166 MiB | 168 MiB |
+| Paint median, whole alignment (fit) | 8.8 ms | 5.5 ms |
+| Paint median, 1 px per cell | 9.7 ms | 4.8 ms |
+| Paint median, 4 px per cell | 2.6 ms | 2.5 ms |
+| Paint median, letters (11 × 16 px) | 14.6 ms | 12.5 ms |
+| Peak RSS, `--bench` | 275–282 MiB | 287–292 MiB |
+
+Paint medians are the median over 6 (before) and 7 (after) `--bench` runs. In each of the five
+runs made back to back, msascope's letters paint was 1.2 to 3.0 ms lower. Letters got cheaper because
+each cell now paints its glyph directly instead of a one-letter text line. The fit row is not a
+like-for-like comparison: msaview fitted to a √2 zoom step and msascope to the exact scale. On
+this busy machine the frame interval medians were 17–27 ms for both builds, so the 16.7 ms
+figures in the table above were not reproduced here. Two of 15 runs (one of each build) stopped
+advancing in their first phase and were dropped; the bench advances one step per frame, and a
+window that is not shown gets no frames.
+
 ## Test data
 
 `msagen ROWS COLS OUT [--protein] [--seed N]` writes a synthetic alignment (OUT ending in `.gz` is
@@ -199,10 +240,9 @@ Generated files are for testing only and are not kept in the repository.
 ## Installing
 
 The [installer](../install.md) puts `msascope` in place with the other tools: a signed, notarised
-`msascope.app` on macOS, a binary on Linux (x86_64 and aarch64). There is no Windows build yet.
+`msascope.app` on macOS, a binary on Linux (x86_64 and aarch64). There is no Windows release yet (see Building).
 
-Started without a file, msascope shows an empty window with **Open…** and **Try a sample** in the
-toolbar. The sample is a synthetic 2,000 × 3,000 nucleotide alignment (written to the temp folder),
+Started without a file, msascope shows a card with **Open…** and **Try a sample**. The sample is a synthetic 2,000 × 3,000 nucleotide alignment (written to the temp folder),
 generated the same way as `msagen`'s test files. On the command line: `msascope my_alignment.fa`.
 
 ## Building
@@ -210,7 +250,8 @@ generated the same way as `msagen`'s test files. On the command line: `msascope 
 `msascope` needs a desktop build environment (GPUI); the other irit tools do not. On
 Debian/Ubuntu, install `pkg-config libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev` first.
 This list comes from the build scripts and linked libraries, and is not yet confirmed on a clean
-Ubuntu install. macOS builds run on GitHub's runners for every release; Windows has not been built yet. The core library and `msagen` build without GPUI:
+Ubuntu install. macOS builds run on GitHub's runners for every release. `msascope.yml` also builds it for
+Windows (x86_64); that build has only been checked to start (`--help`), not used. The core library and `msagen` build without GPUI:
 `cargo test --no-default-features`.
 
 It uses GPUI through Longbridge's `gpui-kit` 0.9.1, which pins a GPUI snapshot (`gpui-pre`
@@ -219,7 +260,8 @@ API changes often.
 
 ## Planned redesign
 
-These are **mockups**, not the current app: a static drawing of the planned main window at its
+The first two steps are built (see "Built so far" below). The pictures here are **mockups**, a
+static drawing of the planned main window at its
 default size (1280 × 800). It shows 40 of the 73 sequences of Pfam's globin seed alignment
 ([PF00042](https://www.ebi.ac.uk/interpro/entry/pfam/PF00042/)), ordered by a tree computed from
 those rows for the drawing only.
@@ -228,11 +270,24 @@ those rows for the drawing only.
 
 ![The same window in the dark theme](../images/msascope/redesign-mockup-dark.png)
 
-What the redesign adds, in order of priority:
+Built so far:
 
-- Light and dark themes, a title bar with file tabs, a toolbar with shortcuts, and a status bar.
+- Light and dark themes (Catppuccin Latte and Mocha, magenta accent) and System, which follows
+  the OS appearance; a title bar with the file tab, a toolbar, and a status bar. One file at a
+  time; tabs for several files are not built.
 - A resizable sequence-name panel, and opening at a zoom where names and residues are readable.
-  Fit, Fit width and Fit height replace the single fit-everything zoom.
+  Fit, Fit width and Fit height, at the exact scale, replace the single fit-everything zoom.
+- The design system behind them (colour tokens, sizes, fonts, shortcut labels), adapted from
+  Kantor by the same author.
+
+The current app with Pfam's PF00042 full alignment (32,112 × 698) at the zoom it opens at:
+
+![msascope, light theme: PF00042 full at the readable zoom it opens at](../images/msascope/phase1-full-light.png)
+
+![The same in the dark theme, fitted to the window (Fit all)](../images/msascope/phase1-full-dark-fit.png)
+
+Still to come, in order of priority:
+
 - At low zoom, blocks coloured by how strongly they agree with the column consensus instead of
   sub-pixel cells, plus an overview panel with the visible area marked.
 - A hover card: sequence, residue and its position in the ungapped sequence, column, consensus.
@@ -247,14 +302,14 @@ Each step has to keep the load and paint times in [Measured](#measured) within 5
 
 ## Known gaps
 
-- Single machine tested (Linux, Wayland). macOS and Windows builds are untested.
+- Single machine tested (Linux, Wayland). The macOS and Windows builds are only checked to start
+  (`--help`) on GitHub's runners.
 - Mouse wheel, drag and the Open… dialog were not exercised by an automated test; zoom keys, colour
   mode, go-to and search were (driven through the keyboard while taking screenshots).
 - The whole alignment must fit in RAM: about half a byte per nucleotide cell, so 10^6 × 30 kb needs
   about 15 GB. A memory-mapped packed cache file would lift that.
 - Gzip input loads about 3× slower than plain FASTA because decompression is single-threaded.
 - Loading blocks the view (a "Loading…" status, no progress bar) and cannot be cancelled.
-- Zoom steps are √2 apart, so "fit" can leave up to ~30% of the window empty.
 - Upper pyramid levels approximate the majority (area-weighted majority of majorities).
 - Clustal and Stockholm load on one thread and read the file twice; fine for typical sizes, slower
   than FASTA for very large files.
