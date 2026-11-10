@@ -2897,12 +2897,15 @@ dependencies = [
  "clap",
  "flate2",
  "humantime",
+ "libz-rs-sys",
+ "md-5 0.11.0",
  "serde",
  "serde_json",
  "sha1",
  "sha2 0.11.1",
  "tar",
  "tempfile",
+ "ureq",
 ]
 
 [[package]]
@@ -3835,6 +3838,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61ff90caf6077a803a240f62fdbe88645a890bbca49ef8174c3cb0404362171d"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "libz-rs-sys"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "434324ee61a8e4a05dd3fdf03d51c073ea7fdaf5a35b2ca33c4ca9f3f37def4a"
+dependencies = [
+ "zlib-rs",
 ]
 
 [[package]]
