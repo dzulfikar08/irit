@@ -1,0 +1,107 @@
+name: gtdb-r232-sizes
+
+# Lists every member of the GTDB-Tk R232 full package by streaming it through tar -tv
+# (nothing is extracted) and checks the stream's MD5. Runs only on the experiment branch.
+on:
+  push:
+    branches: [exp/gtdb-placement]
+    paths: [".github/workflows/gtdb-sizes.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  URL: https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz
+  EXPECTED_MD5: 25a59e0352b1fd150c589f56559767d4
+  EXPECTED_BYTES: "60806405195"
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Tools
+        run: sudo apt-get install -y pigz >/dev/null
+
+      - name: Stream archive through tar -tv and md5sum
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          start=$(date +%s)
+          curl -fsSL --retry 3 "$URL" \
+            | tee >(md5sum | cut -d' ' -f1 > out/md5.txt) >(wc -c > out/bytes.txt) \
+            | pigz -dc | tar -tv --numeric-owner > out/listing.txt
+          sleep 10
+          echo "wall_s=$(( $(date +%s) - start ))" | tee out/time.txt
+          echo "md5=$(cat out/md5.txt) bytes=$(cat out/bytes.txt)"
+          wc -l out/listing.txt
+
+      - name: Summarise
+        run: |
+          set -euo pipefail
+          cat > summarise.py <<'EOF'
+          import collections, sys
+          rows = []
+          for line in open("out/listing.txt"):
+              p = line.split(None, 5)
+              if len(p) < 6 or not p[0].startswith("-"):
+                  continue
+              path = p[5].rstrip("\n").split(" -> ")[0]
+              rows.append((int(p[2]), path))
+          tops = set(p.lstrip("./").split("/")[0] for _, p in rows)
+          drop = 1 if len(tops) == 1 else 0  # drop the archive's own top folder (e.g. release232/)
+          def strip(path):
+              return path.lstrip("./").split("/")[drop:]
+          def table(depth, title, prefix=None, top=None):
+              agg = collections.defaultdict(lambda: [0, 0])
+              for size, path in rows:
+                  parts = strip(path)
+                  if prefix and parts[:len(prefix)] != prefix:
+                      continue
+                  key = "/".join(parts[:depth]) if len(parts) > depth else "/".join(parts)
+                  agg[key][0] += size
+                  agg[key][1] += 1
+              items = sorted(agg.items(), key=lambda kv: -kv[1][0])
+              if top:
+                  items = items[:top]
+              out = [f"### {title}", "", "| Path | Size (bytes) | GB (10^9) | Files |", "|---|---:|---:|---:|"]
+              for k, (s, n) in items:
+                  out.append(f"| `{k}` | {s:,} | {s/1e9:.3f} | {n:,} |")
+              return "\n".join(out) + "\n"
+          total = sum(s for s, _ in rows)
+          md5 = open("out/md5.txt").read().strip()
+          nbytes = open("out/bytes.txt").read().strip()
+          head = [
+              "## GTDB-Tk R232 full package",
+              "",
+              f"- Stream bytes: {int(nbytes):,} (expected {int(sys.argv[2]):,})",
+              f"- Stream MD5: `{md5}` (expected `{sys.argv[1]}`: {'MATCH' if md5 == sys.argv[1] else 'MISMATCH'})",
+              f"- Files: {len(rows):,}; unpacked total {total:,} bytes ({total/1e9:.2f} GB, {total/2**30:.2f} GiB)",
+              f"- Archive top folder(s): {sorted(tops)}",
+              "",
+          ]
+          parts = [ "\n".join(head),
+              table(1, "Per top-level folder"),
+              table(2, "Depth 2"),
+              table(3, "Depth 3"),
+              table(4, "split/ refpkgs (depth 4)", prefix=["split"]),
+              table(3, "pplacer/ refpkgs", prefix=["pplacer"]),
+              table(9, "Largest 40 files", top=40),
+          ]
+          open("out/summary.md", "w").write("\n".join(parts))
+          EOF
+          python3 -I summarise.py "$EXPECTED_MD5" "$EXPECTED_BYTES"
+          cat out/summary.md >> "$GITHUB_STEP_SUMMARY"
+          cat out/summary.md
+          gzip -k out/listing.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gtdbtk-r232-listing
+          path: |
+            out/listing.txt.gz
+            out/summary.md
+            out/md5.txt
+            out/bytes.txt
+            out/time.txt
