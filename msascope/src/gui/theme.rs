@@ -59,11 +59,19 @@ pub struct Settings {
     pub theme: ThemeChoice,
     /// Width of the name panel, logical px.
     pub name_width: f32,
+    /// The overview panel on the right.
+    pub overview: bool,
+    /// The "gappy" threshold: columns with at least this share of gaps (percent) are hidden
+    /// while gappy columns are hidden.
+    pub gappy_pct: u8,
 }
+
+/// The gappy thresholds the toolbar offers.
+pub const GAPPY_CHOICES: [u8; 5] = [25, 50, 75, 90, 100];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemeChoice::System, name_width: NAME_W_DEFAULT }
+        Settings { theme: ThemeChoice::System, name_width: NAME_W_DEFAULT, overview: true, gappy_pct: 50 }
     }
 }
 
@@ -86,6 +94,14 @@ impl Settings {
                         s.name_width = w.clamp(NAME_W_MIN, NAME_W_MAX);
                     }
                 }
+                "overview" => s.overview = v != "false",
+                "gappy_pct" => {
+                    if let Ok(p) = v.parse::<u8>()
+                        && (1..=100).contains(&p)
+                    {
+                        s.gappy_pct = p;
+                    }
+                }
                 _ => {}
             }
         }
@@ -93,7 +109,13 @@ impl Settings {
     }
 
     pub fn to_text(&self) -> String {
-        format!("# msascope settings\ntheme = \"{}\"\nname_width = {}\n", self.theme.key(), self.name_width.round())
+        format!(
+            "# msascope settings\ntheme = \"{}\"\nname_width = {}\noverview = {}\ngappy_pct = {}\n",
+            self.theme.key(),
+            self.name_width.round(),
+            self.overview,
+            self.gappy_pct
+        )
     }
 
     fn path() -> Option<PathBuf> {
@@ -129,10 +151,11 @@ mod tests {
 
     #[std::prelude::v1::test]
     fn settings_round_trip_and_bad_values() {
-        let s = Settings { theme: ThemeChoice::Dark, name_width: 250.0 };
+        let s = Settings { theme: ThemeChoice::Dark, name_width: 250.0, overview: false, gappy_pct: 90 };
         assert_eq!(Settings::parse(&s.to_text()), s);
-        let s = Settings::parse("theme = purple\nname_width = 9999\nother = 1\nno equals sign\n");
-        assert_eq!(s, Settings { theme: ThemeChoice::System, name_width: NAME_W_MAX });
+        let s = Settings::parse("theme = purple\nname_width = 9999\nother = 1\nno equals sign\ngappy_pct = 0\n");
+        assert_eq!(s, Settings { theme: ThemeChoice::System, name_width: NAME_W_MAX, ..Settings::default() });
+        assert_eq!(Settings::parse("gappy_pct = 101").gappy_pct, 50);
         assert_eq!(Settings::parse("name_width = nan").name_width, NAME_W_DEFAULT);
     }
 
