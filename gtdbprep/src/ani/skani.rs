@@ -11,7 +11,7 @@
 //! `skani search` screens every reference by its marker k-mers (`markers.bin`, position `j`),
 //! then reads entry `j` of `index.db` from `sketches.db` for each reference that passes. This
 //! module reads markers, splits records, and writes a small database of the same format that
-//! holds only some references. Nothing here interprets the full sketches: their bytes are copied.
+//! holds only some references. Full sketches are copied byte for byte.
 
 use anyhow::{Context, Result, bail, ensure};
 use std::fs::{self, File};
@@ -181,6 +181,54 @@ pub fn read_sketch_markers<R: Read>(b: &mut Bin<R>) -> Result<Markers> {
     Ok(Markers { file_name, markers })
 }
 
+/// The marker-only form of a full sketch (what skani's `Sketch::get_markers_only` writes to
+/// `markers.bin`): the same bytes without the seeds, the seed positions and the contig lengths.
+pub fn markers_only(sketch: &[u8]) -> Result<Vec<u8>> {
+    let mut b = Bin::new(sketch);
+    b.string()?;
+    let name_end = b.pos() as usize;
+    match b.u8()? {
+        0 => {}
+        1 => {
+            let n = b.length()?;
+            b.skip(12 * n)?;
+        }
+        t => bail!("bad option tag {t} in a sketch"),
+    }
+    let n = b.length()?;
+    for _ in 0..n {
+        let m = b.length()?;
+        b.skip(8 * m)?;
+    }
+    let contigs_start = b.pos() as usize;
+    let contigs = b.length()?;
+    for _ in 0..contigs {
+        let l = b.length()?;
+        b.skip(l)?;
+    }
+    b.u64()?; // total_sequence_length
+    let contigs_end = b.pos() as usize;
+    let n = b.length()?;
+    b.skip(4 * n)?;
+    let rest_start = b.pos() as usize;
+    b.u64()?; // repetitive_kmers
+    let n = b.length()?;
+    b.skip(8 * n + 8 * 4 + 2)?;
+    ensure!(
+        b.pos() as usize == sketch.len(),
+        "a sketch record has {} bytes after its last field",
+        sketch.len() - b.pos() as usize
+    );
+    let mut out = Vec::with_capacity(sketch.len() - rest_start + contigs_end);
+    out.extend_from_slice(&sketch[..name_end]);
+    out.push(0); // kmer_seeds_k: None
+    out.extend_from_slice(&0u64.to_le_bytes()); // multi_position_storage: empty
+    out.extend_from_slice(&sketch[contigs_start..contigs_end]);
+    out.extend_from_slice(&0u64.to_le_bytes()); // contig_lengths: empty
+    out.extend_from_slice(&sketch[rest_start..]);
+    Ok(out)
+}
+
 /// Stream through a `markers.bin`: the parameters first, then one sketch at a time.
 pub struct MarkersFile<R: Read> {
     pub params: Params,
@@ -260,9 +308,7 @@ pub fn genome_id(file_name: &str) -> &str {
 }
 
 /// Write a skani database folder holding only `records` (full `sketches.db` records, in the
-/// order given). Its `markers.bin` holds the full sketches rather than marker-only copies:
-/// `skani search` reads only the marker k-mers and the name from it, so the result is the same,
-/// and no part of a sketch has to be re-encoded.
+/// order given). Its `markers.bin` holds marker-only copies, as skani writes them.
 pub fn write_db(dir: &Path, params: &Params, records: &[(String, Vec<u8>)]) -> Result<()> {
     fs::create_dir_all(dir)?;
     let mut markers = BufWriter::new(File::create(dir.join("markers.bin"))?);
@@ -277,7 +323,9 @@ pub fn write_db(dir: &Path, params: &Params, records: &[(String, Vec<u8>)]) -> R
             rec.starts_with(&params.raw),
             "sketch {name} has other skani parameters than the database"
         );
-        markers.write_all(&rec[params.raw.len()..])?;
+        markers.write_all(
+            &markers_only(&rec[params.raw.len()..]).with_context(|| format!("sketch {name}"))?,
+        )?;
         sketches.write_all(rec)?;
         index.extend_from_slice(&(name.len() as u64).to_le_bytes());
         index.extend_from_slice(name.as_bytes());
@@ -364,13 +412,13 @@ pub(crate) mod tests {
             })
             .collect();
         write_db(dir, &params, &records).unwrap();
-        // A real markers.bin has marker-only sketches: rewrite it that way.
+        // write_db must write markers.bin as skani does: marker-only sketches.
         let mut mb = raw.clone();
         mb.extend_from_slice(&(refs.len() as u64).to_le_bytes());
         for (n, m) in refs {
             mb.extend(sketch_bytes(n, m, false));
         }
-        fs::write(dir.join("markers.bin"), mb).unwrap();
+        assert_eq!(fs::read(dir.join("markers.bin")).unwrap(), mb);
         params
     }
 
