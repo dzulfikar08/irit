@@ -1,0 +1,6 @@
+user_genome	classification	fastani_reference
+bin.1	d__Bacteria;p__Pseudomonadota;c__Gammaproteobacteria;o__Burkholderiales;f__Burkholderiaceae;g__Ralstonia;s__	N/A
+bin.2	d__Bacteria;p__Nitrospirota;c__Nitrospiria;o__Nitrospirales;f__Nitrospiraceae;g__Nitrospira_A;s__	N/A
+bin.3	d__Bacteria;p__Patescibacteria;c__Paceibacteria;o__UBA9983;f__;g__;s__	N/A
+bin.4	d__Bacteria;p__Patescibacteria;c__Microgenomatia;o__;f__;g__;s__	N/A
+bin.5	d__Bacteria;p__Actinomycetota;c__Actinomycetes;o__;f__;g__;s__	N/A

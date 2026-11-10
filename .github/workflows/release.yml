@@ -40,7 +40,7 @@ jobs:
           name=leanbio-${GITHUB_REF_NAME}-${{ matrix.target }}
           mkdir "$name"
           ext=""; [[ "${{ matrix.target }}" == *windows* ]] && ext=".exe"
-          for b in sheetgen leanqc dblock; do cp "target/${{ matrix.target }}/release/$b$ext" "$name/"; done
+          for b in sheetgen leanqc isotable dblock; do cp "target/${{ matrix.target }}/release/$b$ext" "$name/"; done
           cp README.md LICENSE "$name/"
           if [[ "${{ matrix.target }}" == *windows* ]]; then 7z a "$name.zip" "$name"; else tar czf "$name.tar.gz" "$name"; fi
       - uses: softprops/action-gh-release@v2

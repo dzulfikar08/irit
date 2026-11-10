@@ -9,6 +9,8 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [x] `dblock`: database catalog, disk planning, resumable and streaming fetch, lock file, verify,
       tool-version check.
 - [x] Baseline of nf-core/bacass on a laptop ([setup](lab/setup.md), [benchmarks](benchmarks.md)).
+- [x] `isotable`: one graded row per sample from nine tools' outputs, isolate and MAG (MIMAG) modes,
+      with a note for reduced-genome lineages.
 - [x] Upstream report: GTDB R232 mock database checksum ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)).
 
 ## Next
@@ -19,11 +21,6 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [ ] **GTDB-Tk on a desktop: measure before building.** Peak memory and time for GTDB-Tk with and
       without `--scratch_dir`, and with gPlace and `--max_memory`, on a rented large-memory machine.
       See [GTDB-Tk and memory](research/gtdbtk-memory.md).
-- [ ] **`isotable`**: one row per isolate or genome (reads, species, assembly stats, completeness,
-      contamination, AMR) with pass/fail thresholds, as TSV and MultiQC table. For metagenome-
-      assembled genomes, flag lineages known to score low on completeness because their genomes are
-      reduced (for example Patescibacteria / CPR), after checking current literature on how CheckM2
-      handles them.
 - [ ] **MSA viewer** (Rust + GPUI): open 10^5–10^6 aligned sequences smoothly on a laptop; linked
       tree panel after. See [landscape](research/landscape.md#2-viewers).
 - [ ] **`dblock` additions**: deep verify (hash every file), AMRFinderPlus via `amrfinder_update`,
