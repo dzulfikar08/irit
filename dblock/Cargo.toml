@@ -11,7 +11,8 @@ clap = { version = "4.6.7", features = ["derive"] }
 flate2 = "1.1.11"
 fs4 = "1.1.0"
 humantime = "2.4.0"
-liblzma = "0.4.9"
+# Static: never link the build machine's liblzma (see leanqc/Cargo.toml).
+liblzma = { version = "0.4.9", features = ["static"] }
 md-5 = "0.11.0"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }

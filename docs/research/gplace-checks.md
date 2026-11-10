@@ -259,11 +259,12 @@ Runs: [42805650529](https://github.com/dzulfikar08/irit/actions/runs/42805650529
 - **Placement data shrinks to about 2.7 GB:** the fasttree.log copies are identical, so the mirror
   can store one copy and link it into each refpkg.
 
-## Possible upstream report (not sent)
+## Reported upstream
 
-Two things are worth sharing with the gPlace authors (cmc-aau/gPlace): the confirmation itself,
-and the loading-memory behaviour on the full bacterial tree. A draft is in the report to the
-user, in the conversation, and is not posted.
+Both the confirmation and the loading-memory behaviour on the full bacterial tree went to the gPlace
+authors as [cmc-aau/gPlace#5](https://github.com/cmc-aau/gPlace/issues/5), and a summary to
+[GTDBTk#728](https://github.com/Ecogenomics/GTDBTk/issues/728#issuecomment-6769095352)
+(2026-11-10).
 
 Reproduction for the second point:
 

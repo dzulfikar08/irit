@@ -8,6 +8,7 @@ use std::time::Instant;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use msaview::Loaded;
 use msaview::alphabet::SeqType;
@@ -128,7 +129,7 @@ impl MsaView {
         ];
         let mut v = MsaView {
             data: None,
-            status: "Open an alignment (FASTA, Clustal, Stockholm; .gz ok)".into(),
+            status: "Open an alignment (FASTA, Clustal, Stockholm; .gz ok), or try a sample".into(),
             path: None,
             ty,
             vp: Viewport { col0: 0.0, row0: 0.0, cw: 1.0, ch: 1.0, width: 0.0, height: 0.0 },
@@ -185,6 +186,33 @@ impl MsaView {
                     }
                 }
                 cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Write a synthetic 2,000 × 3,000 nucleotide alignment (a viral-surveillance-like test set)
+    /// to the temp folder and open it, so a first run has something to look at.
+    fn open_sample(&mut self, cx: &mut Context<Self>) {
+        self.status = "Making a sample alignment (2,000 sequences × 3,000 columns)…".into();
+        cx.notify();
+        let task = cx.background_executor().spawn(async move {
+            let path = std::env::temp_dir().join("msaview-sample-2000x3000.fa");
+            let spec = msaview::synth::Spec { rows: 2000, cols: 3000, kind: msaview::alphabet::Kind::Nucleotide, clades: 12, seed: 1 };
+            let mut out = std::io::BufWriter::new(std::fs::File::create(&path)?);
+            msaview::synth::write_fasta(&spec, &mut out)?;
+            std::io::Write::flush(&mut out)?;
+            std::io::Result::Ok(path)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |v, cx| match result {
+                Ok(p) => v.open(p, cx),
+                Err(e) => {
+                    v.status = format!("Error: couldn't write the sample alignment: {e}").into();
+                    cx.notify();
+                }
             })
             .ok();
         })
@@ -719,6 +747,9 @@ impl Render for MsaView {
                     .gap_2()
                     .p_2()
                     .child(Button::new("open").small().label("Open…").on_click(cx.listener(|v, _, _, cx| v.prompt_open(cx))))
+                    .when(self.data.is_none(), |row| {
+                        row.child(Button::new("sample").small().label("Try a sample").on_click(cx.listener(|v, _, _, cx| v.open_sample(cx))))
+                    })
                     .child(div().w(px(220.)).child(Input::new(&self.jump).small()))
                     .child(div().w(px(220.)).child(Input::new(&self.search).small()))
                     .child(Button::new("zoom-out").small().label("−").on_click(cx.listener(|v, _, _, cx| {

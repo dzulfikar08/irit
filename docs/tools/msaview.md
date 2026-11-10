@@ -198,6 +198,10 @@ Generated files are for testing only and are not kept in the repository.
 The [installer](../install.md) puts `msaview` in place with the other tools: a signed, notarised
 `msaview.app` on macOS, a binary on Linux (x86_64 and aarch64). There is no Windows build yet.
 
+Started without a file, msaview shows an empty window with **Open…** and **Try a sample** in the
+toolbar. The sample is a synthetic 2,000 × 3,000 nucleotide alignment (written to the temp folder),
+generated the same way as `msagen`'s test files. On the command line: `msaview my_alignment.fa`.
+
 ## Building
 
 `msaview` needs a desktop build environment (GPUI); the other irit tools do not. On
