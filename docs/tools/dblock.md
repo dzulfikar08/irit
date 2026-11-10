@@ -19,6 +19,7 @@ dblock catalog                     # what's available, with sizes and licence fl
 dblock add checkm2-db-v3 kraken2-standard-8gb-20261022
 dblock plan                        # will it fit, and how will it be fetched?
 dblock fetch                       # download, verify, unpack; writes dblock.lock
+dblock fetch --no-dedupe           # same, but keep identical files as separate copies
 dblock verify                      # same file names and sizes as locked? (seconds)
 dblock verify --deep               # same contents? re-hashes every file (minutes to hours)
 dblock check                       # do installed tool versions accept these databases?
@@ -80,6 +81,26 @@ Hashing happens after unpacking, so it reads the unpacked data once more (a few 
 GTDB-Tk's 100 GB on an SSD). Archive
 entries that would land outside that folder (absolute paths, `..`) are refused. A checksum mismatch
 is never retried against a mirror: a mirror serving the same bad file wouldn't fix it.
+
+### Identical files are hard-linked
+
+Some databases hold the same file several times: each of GTDB-Tk R232's ten bacterial pplacer
+refpkgs has its own copy of the 518 MB `gtdb_r232_bac120_fasttree.log`. After unpacking, and before
+the folder takes its final name, dblock replaces each regular file that has the same size,
+permissions and SHA-256 as another file in the same database with a hard link to one copy. It uses
+the SHA-256 sums it has just taken for `.dblock.sha256`, so nothing is read a second time. Empty
+files and symlinks are left alone, and nothing is linked across databases.
+
+Every name stays, with the same size and contents, so the manifest, the SHA-256 list, `verify`,
+`verify --deep` and GTDB-Tk's folder hashes give the same results as for separate copies. Tools
+that only read the database (GTDB-Tk, pplacer, gPlace) see no difference. Editing one name of a
+linked file in place changes all of them; `verify` reports that like any other edit.
+
+The marker and lock entry record `linked_files` (names that became links) and `linked_bytes` (bytes
+saved); `files` and `bytes` still count every name at full size. If the file system refuses a hard
+link (some network or FAT file systems), the copies are kept and the fetch says so in one line; it
+never fails for that. `--no-dedupe` keeps copies. `plan` still checks for the full unpacked size,
+as the copies exist on disk until they are linked.
 
 ### Formats
 
@@ -190,6 +211,9 @@ them as unchecked until they are fetched again. A database that can't be read (a
 permission, say) is reported as `ERROR` with the reason, and the others are still checked; `verify`
 exits non-zero if any database is missing, changed, unchecked or unreadable. Commit `dblock.lock` with the analysis.
 
+A database fetched with hard links also has `linked_files` and `linked_bytes` (see
+[Identical files are hard-linked](#identical-files-are-hard-linked)).
+
 `manifest_format = 2` means symlinks are part of both fingerprints. Markers and lock entries
 without it come from dblock 0.1.0, which left symlinks out; dblock checks those the old way, so a
 database with symlinks fetched by 0.1.0 is still reused and verifies as before. The first `dblock
@@ -279,6 +303,7 @@ but is not independent of the mirror.
 | Parts | 12 | 11 (no `gtdbtk-r232-pplacer-bac120-full-tree.tar.zst`) |
 | Download | 279,636,147 bytes | 175,495,212 bytes |
 | Unpacked | 7,368,346,876 bytes | 5,887,238,603 bytes (251 files) |
+| On disk, identical files hard-linked (default) | 2,706,448,384 bytes (18 files linked) | 1,743,392,768 bytes (16 files linked) |
 | `GTDBTK_DATA_PATH` | `<store>/gtdbtk-r232-placement/release232` | `.../gtdbtk-r232-placement-lite/release232` |
 | Folder hashes checked | 8 (7 against `REF_HASHES`, plus `split`) | 7 (`pplacer` left out) |
 | `classify --full_tree` | yes | no |
@@ -314,6 +339,7 @@ Against the real servers on 2026-11-10:
 | `gtdbtk-r232-client` from the real 26 MB archive (served locally), both modes | 188 files, 79,826,896 bytes kept; all three folder hashes match, and GTDB-Tk 2.8.0's own `sha1_dir` gives the same values on the result |
 | One byte of a `masks/` file changed, then `verify --deep` | Reported as a folder hash mismatch for `masks/` |
 | `gtdbtk-r232-placement-lite` from the GitHub mirror (download mode) | 11 parts, 175 MB in 2 min 5 s; every part's MD5 and SHA-256 ok; 251 files, 5,887,238,603 bytes; all 7 folder hashes match; `verify --deep` ok; every file's SHA-256 matches the mirror's `MANIFEST.tsv` |
+| Both placement entries fetched with and without `--no-dedupe` on a GitHub Ubuntu runner (ext4), [run 42829677529](https://github.com/dzulfikar08/irit/actions/runs/42829677529) | `du` of the database folder: full 7,369,129,984 → 2,706,448,384 bytes, lite 5,887,987,712 → 1,743,392,768 bytes. Linked: the ten copies of `gtdb_r232_bac120_fasttree.log` (517,985,300 bytes each) and of the refpkgs' `phylo_model*.json` (78,656 bytes each; one copy of each is in the bac120 full-tree part, so lite links 8 + 8). `verify` and `verify --deep` ok, every folder hash matches |
 | `pplacer/` of the full entry (bac120 part unpacked next to the ar53 refpkg) | `4e8ffa11...`, GTDB-Tk 2.8.0's `REF_HASHES` value (hashed with a Python re-typing of `sha1_dir`, not by a dblock fetch of the full entry) |
 
 The test suite also runs fetches against a local HTTP server: two fetches of one database at
@@ -325,6 +351,10 @@ folder), `keep` in both modes (only listed folders written, skipped entries stil
 folders refused), `verify_dirs` passing and failing (nothing kept on mismatch) and outside `keep`
 (catalog refused), `verify --deep` reporting an unreadable database and going on to the next,
 `tar.zst` archives made with a 2^28 window (which a default zstd decoder refuses) in both modes,
+hard links (identical files in different folders become one file, verified by inode on Linux and
+macOS; a same-size file with other contents, empty files and files with other permissions are
+left alone; `verify`, `verify --deep` and a `verify_dirs` folder hash pass afterwards; `--no-dedupe`
+keeps copies; a link the file system refuses keeps the copy and leaves nothing behind),
 and multi-part entries: three parts into one folder in both modes, a corrupt part (same size, one
 byte changed; nothing kept, with MD5 alone and with MD5 + SHA-256), resuming after it (a complete
 part re-read from disk, a partial one resumed with a `Range` request), a folder hash mismatch
@@ -341,3 +371,6 @@ the measured figure.
 - Locking uses OS file locks (`flock` / `LockFileEx`), which some network file systems don't honour.
 - Tool version rules exist only where the publisher states one (none for Kraken 2 or CARD).
 - No parallel downloads; one database at a time.
+- On Windows dblock can't tell whether two names are already one file (Rust has no stable API for
+  the file id there), so an archive that itself contains hard links has them linked again and
+  counted in `linked_bytes` although nothing more is saved.
