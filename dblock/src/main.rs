@@ -70,6 +70,9 @@ enum Cmd {
         /// Keep the downloaded archive in <store>/archives.
         #[arg(long)]
         keep_archive: bool,
+        /// Keep byte-identical files as separate copies instead of hard-linking them.
+        #[arg(long)]
+        no_dedupe: bool,
     },
     /// Check that the locked databases are still on disk, unchanged (file names and sizes).
     Verify {
@@ -91,8 +94,8 @@ fn main() -> Result<()> {
         Cmd::Add { ids, store } => cmd_add(&cli.dir, &entries, &ids, store),
         Cmd::Remove { ids, delete_data, force } => cmd_remove(&cli.dir, &ids, delete_data, force),
         Cmd::Plan => cmd_plan(&cli.dir, &entries),
-        Cmd::Fetch { ids, stream, keep_archive } => {
-            cmd_fetch(&cli.dir, &entries, &ids, &fetch::Opts { force_stream: stream, keep_archive })
+        Cmd::Fetch { ids, stream, keep_archive, no_dedupe } => {
+            cmd_fetch(&cli.dir, &entries, &ids, &fetch::Opts { force_stream: stream, keep_archive, dedupe: !no_dedupe })
         }
         Cmd::Verify { deep } => cmd_verify(&cli.dir, deep),
         Cmd::Check => cmd_check(&cli.dir, &entries),
@@ -225,7 +228,7 @@ fn cmd_plan(dir: &Path, entries: &[Entry]) -> Result<()> {
     let p = require_project(dir)?;
     let store = p.store_dir()?;
     println!("store: {}", store.display());
-    let opts = fetch::Opts { force_stream: false, keep_archive: false };
+    let opts = fetch::Opts { force_stream: false, keep_archive: false, dedupe: true };
     let mut total = 0;
     for id in &p.databases {
         let e = catalog::find(entries, id)?;
@@ -285,7 +288,18 @@ fn cmd_fetch(dir: &Path, entries: &[Entry], only: &[String], opts: &fetch::Opts)
                 lock.upsert(found);
             }
             Ok((l, false)) => {
-                eprintln!("  done: {} files, {} at {}", l.files, human(l.bytes), l.data_path);
+                if l.linked_files > 0 {
+                    eprintln!(
+                        "  done: {} files, {} ({} on disk: {} hard-linked) at {}",
+                        l.files,
+                        human(l.bytes),
+                        human(l.bytes - l.linked_bytes),
+                        l.linked_files,
+                        l.data_path
+                    );
+                } else {
+                    eprintln!("  done: {} files, {} at {}", l.files, human(l.bytes), l.data_path);
+                }
                 if e.non_commercial {
                     eprintln!("  licence: {}", e.licence);
                 }
@@ -498,6 +512,8 @@ mod remove_tests {
             licence: String::new(),
             non_commercial: false,
             verify_dirs: Default::default(),
+            linked_files: 0,
+            linked_bytes: 0,
             parts: Vec::new(),
         }
     }

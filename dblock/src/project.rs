@@ -102,10 +102,21 @@ pub struct Locked {
     /// Folder -> GTDB-Tk folder hash (`sha1_dir`) the catalog required; `verify --deep` checks them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub verify_dirs: BTreeMap<String, String>,
+    /// Files that were replaced at fetch time by a hard link to a byte-identical file in the same
+    /// database. `files` and `bytes` still count every name at its full size.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub linked_files: u64,
+    /// Bytes those links saved on disk.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub linked_bytes: u64,
     /// For a multi-part entry, each archive it was made from. `archive_md5` is then the MD5 of
     /// their `MD5SUMS` lines and `archive_bytes` their total.
     #[serde(default, rename = "part", skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<LockedPart>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// One archive of a multi-part database, as fetched.
