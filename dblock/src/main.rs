@@ -149,12 +149,12 @@ fn cmd_remove(dir: &Path, ids: &[String], delete_data: bool, force: bool) -> Res
         let store = p.store_dir()?;
         for id in ids {
             match lock.databases.iter().find(|d| &d.id == id) {
-                Some(l) => doomed.push(deletable(&store, l)?),
+                Some(l) => doomed.push((deletable(&store, l)?, l.clone())),
                 None => println!("{id} is not in {}; no files to delete", project::LOCK_FILE),
             }
         }
         if !doomed.is_empty() && !force {
-            for d in &doomed {
+            for (d, _) in &doomed {
                 println!("would delete {}", d.display());
             }
             bail!(
@@ -171,21 +171,33 @@ fn cmd_remove(dir: &Path, ids: &[String], delete_data: bool, force: bool) -> Res
         }
         lock.databases.retain(|d| &d.id != id);
     }
-    for d in &doomed {
-        // Hold the database's lock so a fetch of the same id in another project can't be
-        // reusing or moving this folder while it is deleted.
-        let id = d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut kept = Vec::new();
+    for (d, l) in &doomed {
+        // Hold the database's lock so a fetch of the same id in another project isn't moving a
+        // new copy into place while this one is deleted. The lock only serialises the two runs:
+        // a project that already uses the folder is not tracked and loses it (hence --force).
         let store = d.parent().context("database folder has no parent")?;
-        let _lock = fetch::lock_database(store, &id)?;
+        let _lock = fetch::lock_database(store, &l.id)?;
         if d.symlink_metadata().is_err() {
             println!("{} is already gone", d.display());
+            fetch::prune_tmp(store, &l.id);
+            continue;
+        }
+        // While we waited for the lock, another run may have replaced the folder: check again.
+        if let Err(err) = deletable(store, l) {
+            println!("not deleted: {err:#}");
+            kept.push(d.display().to_string());
             continue;
         }
         std::fs::remove_dir_all(d).with_context(|| format!("deleting {}", d.display()))?;
+        fetch::prune_tmp(store, &l.id);
         println!("deleted {} (the store is shared; other projects that used it must fetch it again)", d.display());
     }
     p.save(dir)?;
     lock.save(dir)?;
+    if !kept.is_empty() {
+        bail!("left in place because they changed while waiting: {}", kept.join(", "));
+    }
     Ok(())
 }
 
@@ -306,7 +318,7 @@ fn cmd_verify(dir: &Path, deep: bool) -> Result<()> {
             bad += 1;
             continue;
         }
-        let (files, bytes, md5) = fetch::manifest(path)?;
+        let (files, bytes, md5) = fetch::manifest_as(path, l.manifest_format)?;
         if md5 != l.manifest_md5 {
             println!(
                 "CHANGED  {}: now {} files / {}, locked {} files / {}",
@@ -329,14 +341,18 @@ fn cmd_verify(dir: &Path, deep: bool) -> Result<()> {
             continue;
         };
         eprintln!("  hashing {} ({})", l.id, human(bytes));
-        let now = fetch::sums(path)?;
+        let now = fetch::sums_as(path, l.manifest_format)?;
         if &fetch::sha256_hex(&now) == want {
             println!("ok       {}: {} files, {}, every file's SHA-256 matches", l.id, files, human(bytes));
             continue;
         }
         bad += 1;
         // Name the files, using the list stored with the data if it still matches the lock.
-        let stored = std::fs::read_to_string(path.join(project::SUMS)).ok().filter(|t| &fetch::sha256_hex(t) == want);
+        // (A list upgraded from the v0.1.0 format also has symlink lines; leave those out.)
+        let stored = std::fs::read_to_string(path.join(project::SUMS))
+            .ok()
+            .map(|t| if l.manifest_format.is_none() { fetch::without_links(&t) } else { t })
+            .filter(|t| &fetch::sha256_hex(t) == want);
         match stored {
             Some(old) => {
                 let old: std::collections::BTreeSet<&str> = old.lines().collect();
@@ -438,6 +454,7 @@ mod remove_tests {
             bytes: 0,
             manifest_md5: String::new(),
             contents_sha256: None,
+            manifest_format: None,
             env: None,
             licence: String::new(),
             non_commercial: false,
@@ -485,5 +502,40 @@ mod remove_tests {
             remover.join().unwrap().unwrap();
         });
         assert!(!db.exists());
+    }
+
+    #[test]
+    fn delete_data_checks_again_after_waiting_and_prunes_temp_folders() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        let db = store.join("mydb");
+        std::fs::create_dir_all(&db).unwrap();
+        std::fs::create_dir_all(store.join(".tmp/mydb")).unwrap();
+        project::write_marker(&db, &locked("mydb", &db)).unwrap();
+        let proj = root.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let save = || {
+            Project { store: Some(store.display().to_string()), databases: vec!["mydb".into()] }.save(&proj).unwrap();
+            Lock { databases: vec![locked("mydb", &db)] }.save(&proj).unwrap();
+        };
+        save();
+
+        // While remove waits for the lock, the folder is replaced by something it must not delete.
+        let held = fetch::lock_database(&store, "mydb").unwrap();
+        std::thread::scope(|s| {
+            let remover = s.spawn(|| cmd_remove(&proj, &["mydb".into()], true, true));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            std::fs::remove_file(db.join(project::MARKER)).unwrap();
+            drop(held);
+            let err = remover.join().unwrap().unwrap_err().to_string();
+            assert!(err.contains("changed while waiting"), "{err}");
+        });
+        assert!(db.is_dir(), "deleted a folder that changed while waiting for the lock");
+
+        // Normal removal also clears the empty <store>/.tmp/<id>/.
+        project::write_marker(&db, &locked("mydb", &db)).unwrap();
+        save();
+        cmd_remove(&proj, &["mydb".into()], true, true).unwrap();
+        assert!(!db.exists() && !store.join(".tmp").exists());
     }
 }

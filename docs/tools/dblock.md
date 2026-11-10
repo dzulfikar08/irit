@@ -45,8 +45,11 @@ and must not contain `..`. MD5s are accepted in either case.
 Two `dblock fetch` runs (from two projects, or two terminals) can share a store safely: each
 database has a lock file, `<store>/.lock-<id>`, held while it is planned, downloaded and moved into
 place. The second run waits, then reuses what the first one fetched. `remove --delete-data` takes
-the same lock before deleting, so it never deletes a folder another run is reusing or moving into
-place.
+the same lock before deleting and checks the folder again once it has it, so it never deletes a
+folder while a fetch is moving it into place, nor one that was replaced while it waited. The lock
+only serialises the two runs: dblock doesn't track which projects use a database, so a project that
+already uses the folder loses it (which is why deleting needs `--force`). Empty temporary folders
+(`<store>/.tmp/<id>/`) are removed after each fetch and delete.
 
 `remove --delete-data` deletes only `<store>/<id>` itself, and only when it is a real folder with a
 marker for that id; any other path written in a lock file is refused. Because the store is shared,
@@ -92,6 +95,7 @@ files = 16
 bytes = 1230959768
 manifest_md5 = "5ba2e1f3f4d99b3b0a0ff77b16dd98bc"
 contents_sha256 = "..."
+manifest_format = 2
 ```
 
 `manifest_md5` fingerprints the unpacked folder's file names and sizes, so `dblock verify` notices
@@ -100,6 +104,13 @@ notice an edit that keeps a file's size. `contents_sha256` is the SHA-256 of the
 list taken at fetch time; `dblock verify --deep` re-hashes every file, compares, and names the files
 that changed. Databases fetched by dblock 0.1 have no `contents_sha256`; `verify --deep` reports
 them as unchecked until they are fetched again. Commit `dblock.lock` with the analysis.
+
+`manifest_format = 2` means symlinks are part of both fingerprints. Markers and lock entries
+without it come from dblock 0.1.0, which left symlinks out; dblock checks those the old way, so a
+database with symlinks fetched by 0.1.0 is still reused and verifies as before. The first `dblock
+fetch` that reuses such a database upgrades its marker (and its `.dblock.sha256` list, by adding
+the symlink lines to the recorded sums, without re-hashing) and that project's lock entry; other
+projects' lock entries keep verifying the old way until they run `dblock fetch`.
 
 `dblock env` single-quotes paths for the shell (a `'` in a path is written as `'\''`).
 

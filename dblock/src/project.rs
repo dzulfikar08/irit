@@ -89,6 +89,10 @@ pub struct Locked {
     /// Missing for databases fetched by dblock 0.1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contents_sha256: Option<String>,
+    /// How `manifest_md5` and the SHA-256 list were made. 2: symlinks are listed with their
+    /// target. Missing (the v0.1.0 release): symlinks were left out of both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_format: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
     pub licence: String,
