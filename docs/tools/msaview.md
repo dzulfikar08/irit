@@ -214,6 +214,34 @@ It uses GPUI through Longbridge's `gpui-kit` 0.9.1, which pins a GPUI snapshot (
 0.3.12); the `gpui` crate on crates.io is from October 2025. Versions are pinned exactly because the
 API changes often.
 
+## Planned redesign
+
+These are **mockups**, not the current app: a static drawing of the planned main window at its
+default size (1280 × 800). It shows 40 of the 73 sequences of Pfam's globin seed alignment
+([PF00042](https://www.ebi.ac.uk/interpro/entry/pfam/PF00042/)), ordered by a tree computed from
+those rows for the drawing only.
+
+![Planned msaview main window, light theme: sequence names with a tree, Clustal X colours, a hover card, and an overview panel](../images/msaview/redesign-mockup-light.png)
+
+![The same window in the dark theme](../images/msaview/redesign-mockup-dark.png)
+
+What the redesign adds, in order of priority:
+
+- Light and dark themes, a title bar with file tabs, a toolbar with shortcuts, and a status bar.
+- A resizable sequence-name panel, and opening at a zoom where names and residues are readable.
+  Fit, Fit width and Fit height replace the single fit-everything zoom.
+- At low zoom, blocks coloured by how strongly they agree with the column consensus instead of
+  sub-pixel cells, plus an overview panel with the visible area marked.
+- A hover card: sequence, residue and its position in the ungapped sequence, column, consensus.
+- Colour schemes: Clustal X, percent identity, hydrophobicity, nucleotide, differences from the
+  consensus, and conservation.
+- Hiding insert columns (Stockholm lowercase and `.`) and gappy columns, with the ruler keeping the
+  original column numbers.
+- A Newick tree panel with collapsible clades, rows in tree order.
+- Row, column and block selection, copy, FASTA export, drag-and-drop to open, keyboard movement.
+
+Each step has to keep the load and paint times in [Measured](#measured) within 5% and 1 ms.
+
 ## Known gaps
 
 - Single machine tested (Linux, Wayland). macOS and Windows builds are untested.

@@ -47,8 +47,9 @@ What's done, what's next, and what's further out. Items move up as evidence come
       the ten identical `fasttree.log` files once (7.4 GB unpacked to 2.7 GB).
 - [ ] **The ANI species check on a laptop**: its database is 85 GB; fetch only the reference sketches
       a genome needs (range reads), per the [design](research/split-gtdb.md).
-- [ ] **`msaview` additions**: linked tree panel, multi-threaded gzip, alignments larger than RAM,
-      macOS/Windows testing, desktop packaging.
+- [ ] **`msaview` redesign** ([mockups](tools/msaview.md#planned-redesign)): themes, sequence names,
+      readable default zoom, hover card, colour schemes, hiding insert and gappy columns, a tree
+      panel, selection and export. Later: multi-threaded gzip, alignments larger than RAM.
 - [ ] **`dblock` additions**: AMRFinderPlus via `amrfinder_update`, GTDB-Tk split download, parallel
       downloads.
 - [ ] **`leanqc` additions**: long-read views (N50, quality by length).
