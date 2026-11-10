@@ -49,6 +49,11 @@ jobs:
             echo "FastQC: $(grep 'peak MB' fastqc-mem.txt | awk '{print $3}') MB peak (container cgroup)"
           } | tee -a "$GITHUB_STEP_SUMMARY"
           python3 scripts/compare_fastqc.py fastqc leanqc > /dev/null
+      - name: Synthetic corpus (re-record FastQC's verdicts, then compare)
+        run: |
+          ./scripts/fastqc_corpus.sh
+          git diff --exit-code leanqc/tests/corpus/fastqc_verdicts.tsv
+          cargo test --release -p leanqc --test corpus
       - uses: actions/upload-artifact@v4
         if: always()
         with:

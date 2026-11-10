@@ -1,0 +1,4 @@
+# Places where leanqc deliberately disagrees with FastQC 0.12.1 on the corpus.
+file	module	fastqc	leanqc	reason
+hiq_phred33.fastq.gz	Per base sequence quality	fail	pass	FastQC reads quality characters that never go below '@' as Phred+64 (Q0-9); leanqc needs a character above 'J' for that and reads this file as Phred+33 (Q31-40).
+hiq_phred33.fastq.gz	Per sequence quality scores	fail	pass	Same encoding difference.

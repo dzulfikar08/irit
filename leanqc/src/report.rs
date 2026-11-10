@@ -145,18 +145,18 @@ fn quality_chart(r: &Report) -> String {
     let pts = |f: &dyn Fn(&crate::stats::PosStat) -> Option<f64>| -> Vec<(f64, f64)> {
         r.per_position.iter().filter_map(|p| f(p).map(|v| (p.pos as f64, v))).collect()
     };
-    let median = pts(&|p| p.median.map(f64::from));
+    let median = pts(&|p| p.median);
     let mean = pts(&|p| p.mean_q);
-    let ymax = r.per_position.iter().filter_map(|p| p.p90).max().unwrap_or(40).max(40) as f64 + 2.0;
+    let ymax = r.per_position.iter().filter_map(|p| p.p90).fold(40.0, f64::max) + 2.0;
     let iqr: Vec<(f64, f64, f64)> = r
         .per_position
         .iter()
-        .filter_map(|p| Some((p.pos as f64, f64::from(p.p25?), f64::from(p.p75?))))
+        .filter_map(|p| Some((p.pos as f64, p.p25?, p.p75?)))
         .collect();
     let decile: Vec<(f64, f64, f64)> = r
         .per_position
         .iter()
-        .filter_map(|p| Some((p.pos as f64, f64::from(p.p10?), f64::from(p.p90?))))
+        .filter_map(|p| Some((p.pos as f64, p.p10?, p.p90?)))
         .collect();
     let bands = move |a: &Axes| {
         let zone = |lo: f64, hi: f64, c: &str| {
@@ -190,7 +190,7 @@ fn quality_chart(r: &Report) -> String {
 
 /// Heatmap of tile × position quality deviation. Only cells below the tile average are drawn
 /// (white = at or above average, deepening red = further below), so the SVG stays small.
-fn tile_heatmap(tiles: &[u32], deviation: &[Vec<f32>]) -> String {
+fn tile_heatmap(tiles: &[u32], positions: &[usize], deviation: &[Vec<f32>]) -> String {
     let npos = deviation.iter().map(Vec::len).max().unwrap_or(0);
     if npos == 0 || tiles.is_empty() {
         return String::new();
@@ -215,14 +215,15 @@ fn tile_heatmap(tiles: &[u32], deviation: &[Vec<f32>]) -> String {
                 continue;
             }
             let d = cells.iter().map(|&v| v as f64).sum::<f64>() / cells.len() as f64;
-            if d >= -1.0 {
+            if d.abs() < 1.0 {
                 continue;
             }
-            // -1 → faint, -10 or worse → full red.
-            let a = ((-d - 1.0) / 9.0).clamp(0.08, 1.0);
+            // 1 → faint, 10 or more → full colour; red below the average, blue above.
+            let a = ((d.abs() - 1.0) / 9.0).clamp(0.08, 1.0);
+            let colour = if d < 0.0 { "#c0392b" } else { "#2c6fbb" };
             let _ = write!(
                 s,
-                r##"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="#c0392b" fill-opacity="{a:.2}"/>"##,
+                r##"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="{colour}" fill-opacity="{a:.2}"/>"##,
                 x0 + c as f64 * cw,
                 y0 + r as f64 * row_h,
                 cw + 0.3,
@@ -230,9 +231,10 @@ fn tile_heatmap(tiles: &[u32], deviation: &[Vec<f32>]) -> String {
             );
         }
     }
-    let ax = Axes { x0: 1.0, x1: npos as f64, y0: 0.0, y1: 1.0 };
-    for t in ticks(1.0, npos as f64, 8) {
-        let _ = write!(s, r#"<text x="{:.1}" y="{:.1}" class="tk" text-anchor="middle">{}</text>"#, ax.x(t), y0 + ph + 16.0, fmt_tick(t));
+    // Columns are position groups; label a few with the position they start at.
+    for c in (0..cols).step_by(cols.div_ceil(8).max(1)) {
+        let Some(p) = positions.get(c * step) else { continue };
+        let _ = write!(s, r#"<text x="{:.1}" y="{:.1}" class="tk" text-anchor="middle">{}</text>"#, x0 + (c as f64 + 0.5) * cw, y0 + ph + 16.0, fmt_tick(*p as f64));
     }
     let label_every = (rows / 12).max(1);
     for (r, t) in tiles.iter().enumerate().step_by(label_every) {
@@ -303,8 +305,11 @@ code{{font-size:12px;word-break:break-all}}
         row(&mut b, "Quality encoding", format!("Phred+{off}"));
     }
     b.push_str("</table>");
-    if let Some(cap) = r.positions_capped_at {
-        let _ = write!(b, r#"<p class="muted">Per-position charts stop at {cap} bp; whole-read figures use every base.</p>"#);
+    for w in &r.warnings {
+        let _ = write!(b, r#"<p class="muted">Note: {}</p>"#, esc(w));
+    }
+    if r.per_position.iter().any(|p| p.end > p.pos) {
+        b.push_str(r#"<p class="muted">Positions are grouped as FastQC groups them (single bases up to 9, then equal-width groups); each point is plotted at the start of its group.</p>"#);
     }
 
     b.push_str("<h2>Checks</h2><table>");
@@ -318,10 +323,10 @@ code{{font-size:12px;word-break:break-all}}
         b.push_str(&quality_chart(r));
 
         match &r.per_tile {
-            PerTile::Measured { tiles, deviation, .. } => {
+            PerTile::Measured { tiles, positions, deviation, .. } => {
                 b.push_str("<h2>Quality by flowcell tile</h2>");
-                b.push_str(&tile_heatmap(tiles, deviation));
-                b.push_str(r#"<p class="muted">Rows are tiles, columns positions. Red marks where a tile's mean quality falls below the average of all tiles (full red: 10 or more below). White is at or above average.</p>"#);
+                b.push_str(&tile_heatmap(tiles, positions, deviation));
+                b.push_str(r#"<p class="muted">Rows are tiles, columns position groups. Red marks where a tile's mean quality falls below the average of all tiles, blue where it is above (full colour: 10 or more away). The check, like FastQC's, counts the largest difference either way.</p>"#);
             }
             PerTile::Skipped { reason } => {
                 let _ = write!(b, r#"<h2>Quality by flowcell tile</h2><p class="muted">Skipped: {}.</p>"#, esc(reason));
@@ -360,14 +365,14 @@ code{{font-size:12px;word-break:break-all}}
         .adapters
         .iter()
         .enumerate()
-        .map(|(i, a)| (a.name, COLORS[i % COLORS.len()], a.cumulative_percent.iter().enumerate().map(|(p, v)| ((p + 1) as f64, *v)).collect::<Vec<_>>()))
+        .map(|(i, a)| (a.name, COLORS[i % COLORS.len()], a.positions.iter().zip(&a.percent).map(|(p, v)| (*p as f64, *v)).collect::<Vec<_>>()))
         .collect();
     let amax = r.adapters.iter().map(|a| a.max_percent).fold(0.0, f64::max);
     b.push_str(&line_chart(&series, "Position in read (bp)", "% of reads with adapter by here", Some((0.0, (amax * 1.2).max(10.0))), &|_| String::new()));
 
     b.push_str("<h2>Overrepresented sequences</h2>");
     if r.overrepresented.is_empty() {
-        let _ = write!(b, "<p>None above 0.1% of the first {} reads.</p>", thousands(r.duplication.reads_sampled));
+        let _ = write!(b, "<p>None above 0.1% of all {} reads.</p>", thousands(r.duplication.reads));
     } else {
         b.push_str("<table><tr><th>Sequence</th><th>Count</th><th>%</th><th>Possible source</th></tr>");
         for o in &r.overrepresented {

@@ -30,9 +30,14 @@ struct Cli {
     #[arg(short, long, default_value_t = default_threads())]
     threads: usize,
 
-    /// Reads examined for duplication and overrepresented sequences.
+    /// Distinct sequences tracked for duplication and overrepresented sequences (FastQC: 100,000).
+    /// Tracked sequences are counted through the whole file.
     #[arg(long, default_value_t = 100_000)]
-    dup_sample: u64,
+    dup_distinct: usize,
+
+    /// Quality encoding, instead of detecting it: 33 (Sanger, Illumina 1.8+) or 64 (Illumina 1.3–1.7).
+    #[arg(long, value_parser = ["33", "64"])]
+    phred: Option<String>,
 
     /// Skip the HTML reports (JSON and TSV only).
     #[arg(long)]
@@ -54,15 +59,15 @@ fn stem(path: &Path) -> String {
     name.into_owned()
 }
 
-fn analyse(path: &Path, dup_sample: u64) -> Result<Report> {
+fn analyse(path: &Path, dup_distinct: usize, phred: Option<u8>) -> Result<Report> {
     let mut reader = needletail::parse_fastx_file(path).with_context(|| format!("opening {}", path.display()))?;
-    let mut acc = stats::Acc::new(dup_sample);
+    let mut acc = stats::Acc::new(dup_distinct);
     while let Some(rec) = reader.next() {
         let rec = rec.with_context(|| format!("reading {}", path.display()))?;
         let seq = rec.seq();
         acc.add(rec.id(), &seq, rec.qual());
     }
-    Ok(acc.finish(path.file_name().unwrap_or_default().to_string_lossy().into_owned()))
+    Ok(acc.finish(path.file_name().unwrap_or_default().to_string_lossy().into_owned(), phred))
 }
 
 fn main() -> Result<()> {
@@ -76,13 +81,14 @@ fn main() -> Result<()> {
     }
     rayon::ThreadPoolBuilder::new().num_threads(cli.threads.max(1)).build_global()?;
     let version = env!("CARGO_PKG_VERSION");
+    let phred: Option<u8> = cli.phred.as_deref().map(|p| p.parse()).transpose()?;
 
     let results: Vec<(PathBuf, Result<(Report, f64)>)> = cli
         .files
         .par_iter()
         .map(|f| {
             let t = Instant::now();
-            let r = analyse(f, cli.dup_sample).and_then(|rep| {
+            let r = analyse(f, cli.dup_distinct, phred).and_then(|rep| {
                 let s = stem(f);
                 let json = serde_json::to_vec(&rep)?;
                 std::fs::write(cli.outdir.join(format!("{s}_leanqc.json")), json)?;
@@ -130,6 +136,9 @@ fn main() -> Result<()> {
                     fails.len(),
                     warns.len()
                 );
+                for w in &r.warnings {
+                    eprintln!("  warning: {w}");
+                }
             }
             Err(e) => {
                 failed += 1;

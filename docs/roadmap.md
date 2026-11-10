@@ -5,7 +5,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
 ## Done
 
 - [x] `sheetgen`: schema-driven sample sheets, validated by an nf-core/bacass stub run.
-- [x] `leanqc`: FastQC-equivalent QC including per-tile quality; verdicts match FastQC on test data.
+- [x] `leanqc`: FastQC-equivalent QC including per-tile quality; verdicts match FastQC 0.12.1 on the four bacass test files (40 of 40) and on a synthetic corpus (88 of 90, two deliberate encoding differences).
 - [x] `dblock`: database catalog, disk planning, resumable and streaming fetch, lock file, verify,
       tool-version check.
 - [x] Baseline of nf-core/bacass on a laptop ([setup](lab/setup.md), [benchmarks](benchmarks.md)).
