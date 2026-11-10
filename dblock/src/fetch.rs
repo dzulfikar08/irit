@@ -1744,7 +1744,7 @@ mod tests {
             assert_eq!(l.parts[1].file, "p-split.tar.zst");
             assert_eq!(l.parts[1].url, format!("{base}/p-split.tar.zst"));
             assert!(l.parts.iter().all(|p| p.sha256.is_some()));
-            assert!(l.data_path.ends_with("mydb/rel"), "{}", l.data_path);
+            assert!(Path::new(&l.data_path).ends_with("mydb/rel"), "{}", l.data_path);
             assert_eq!(log.lock().unwrap().len(), 3, "one request per part");
             // Archives are removed once unpacked, and the store reuses the folder next time.
             assert!(fs::read_dir(store.join(".partial")).map(|d| d.count() == 0).unwrap_or(true));
