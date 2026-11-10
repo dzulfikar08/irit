@@ -16,6 +16,17 @@ use super::fonts::tabular;
 use super::metrics::*;
 use super::tokens::tokens;
 
+/// A residue letter shaped for the current cell size: its glyph, the x offset that centres it
+/// in a cell, and the font metrics to place its baseline.
+#[derive(Clone, Copy)]
+struct CellGlyph {
+    font: FontId,
+    id: GlyphId,
+    dx: Pixels,
+    ascent: Pixels,
+    descent: Pixels,
+}
+
 fn rgb_h(c: u32) -> Hsla {
     rgb(c).into()
 }
@@ -121,15 +132,21 @@ impl MsaScope {
                 let cell_y = |r: usize| to_y(r as f64 * chd - off_y);
                 let (cw_px, ch_px) = (px(vp.cw as f32), px(vp.ch as f32));
                 let font_px = px((vp.ch.min(vp.cw * 1.4) * 0.75).clamp(7.0, 16.0) as f32);
-                let mut glyphs: HashMap<u8, ShapedLine> = HashMap::new();
-                let mut glyph = |ch: u8, window: &mut Window| {
-                    glyphs
-                        .entry(ch)
-                        .or_insert_with(|| {
-                            let s: SharedString = (ch as char).to_string().into();
-                            window.text_system().shape_line(s, font_px, &[run(&mono_font, 1, t.res_ink)], None)
-                        })
-                        .clone()
+                // Each residue letter is shaped once per frame; cells then paint its glyph directly,
+                // which skips the per-line work of `ShapedLine::paint` (thousands of cells a frame).
+                let mut glyphs: HashMap<u8, Option<CellGlyph>> = HashMap::new();
+                let mut glyph = |ch: u8, window: &mut Window| -> Option<CellGlyph> {
+                    *glyphs.entry(ch).or_insert_with(|| {
+                        let s: SharedString = (ch as char).to_string().into();
+                        let line = window.text_system().shape_line(s, font_px, &[run(&mono_font, 1, t.res_ink)], None);
+                        let run = line.runs.first()?;
+                        let g = run.glyphs.first()?;
+                        Some(CellGlyph { font: run.font_id, id: g.id, dx: (cw_px - line.width) / 2.0 + g.position.x, ascent: line.ascent, descent: line.descent })
+                    })
+                };
+                let paint_letter = |g: CellGlyph, x: Pixels, y: Pixels, line_h: Pixels, window: &mut Window| {
+                    let baseline = (line_h - g.ascent - g.descent) / 2.0 + g.ascent;
+                    let _ = window.paint_glyph(point(x + g.dx, y + baseline), g.font, g.id, font_px, t.res_ink);
                 };
                 // A gap at letter zoom: a small centred dot instead of a dash.
                 let dot = px((vp.cw.min(vp.ch) * 0.16).clamp(1.5, 3.0) as f32);
@@ -145,9 +162,9 @@ impl MsaScope {
                                     window.paint_quad(fill(Bounds::new(o, size(dot, dot)), t.gap_ink).corner_radii(dot / 2.0));
                                     continue;
                                 }
-                                let g = glyph(d.aln.symbol(code), window);
-                                let x = cell_x(c) + (cw_px - g.width) / 2.0;
-                                let _ = g.paint(point(x, cell_y(r)), ch_px, TextAlign::Left, None, window, cx);
+                                if let Some(g) = glyph(d.aln.symbol(code), window) {
+                                    paint_letter(g, cell_x(c), cell_y(r), ch_px, window);
+                                }
                             }
                         }
                     }
@@ -282,9 +299,9 @@ impl MsaScope {
                             if code == GAP {
                                 continue;
                             }
-                            let g = glyph(d.aln.symbol(code), window);
-                            let x = cell_x(c) + (cw_px - g.width) / 2.0;
-                            let _ = g.paint(point(x, cons_y), px(CONS_H), TextAlign::Left, None, window, cx);
+                            if let Some(g) = glyph(d.aln.symbol(code), window) {
+                                paint_letter(g, cell_x(c), cons_y, px(CONS_H), window);
+                            }
                         }
                     }
                 });
