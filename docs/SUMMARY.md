@@ -1,6 +1,7 @@
 # Summary
 
 [Introduction](introduction.md)
+[Installing and verifying downloads](install.md)
 
 # Tools
 

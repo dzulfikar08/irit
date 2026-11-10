@@ -27,9 +27,26 @@ QC; see [how they compare](docs/tools/leanqc.md#leanqc-and-fastqc-rust).
 
 ## Install
 
-Download the archive for your system from the [latest release](https://github.com/dzulfikar08/irit/releases/latest)
-(Linux x86_64/ARM64, macOS Intel/Apple Silicon, Windows), unpack it and put the binaries on your
-`PATH`. The Linux builds are statically linked and run on old distributions too.
+Linux and macOS, no sudo (installs into `~/.local/bin`; on macOS msaview goes to `~/Applications`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dzulfikar08/irit/main/scripts/install.sh | sh
+```
+
+`sh -s -- --no-gui` skips msaview, `sh -s -- --uninstall` removes what it installed, and
+`IRIT_VERSION=v0.2.0` in front of `sh` picks a release.
+
+Or download from the [latest release](https://github.com/dzulfikar08/irit/releases/latest):
+
+- **macOS** (Apple Silicon and Intel): `msaview.dmg` and `irit-universal-macos.tar.gz`, signed with a
+  Developer ID and notarised by Apple.
+- **Linux** (x86_64, ARM64): `irit-<arch>-linux.tar.gz`, statically linked, runs on old distributions
+  too; `msaview-<arch>-linux.tar.gz` needs glibc 2.39 or newer.
+- **Windows** (x86_64): `irit-x86_64-windows.zip` with sheetgen, leanqc, isotable and dblock. Not
+  code-signed, so SmartScreen may warn the first time.
+
+Check downloads against the release's `SHA256SUMS`; see
+[installing and verifying downloads](docs/install.md) for that and for checking the macOS signatures.
 
 Or build with Rust:
 
