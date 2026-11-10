@@ -65,8 +65,8 @@ binning) and the fix are described in [leanqc](tools/leanqc.md#checks).
 ### Synthetic corpus
 
 The bacass files are all 75 bp Illumina reads with good quality, so they can't show how leanqc
-behaves on anything else. `scripts/make_fastq_corpus.py` writes twelve small files from fixed
-seeds (2.6 MB in all, in `leanqc/tests/corpus/`), each aimed at one behaviour:
+behaves on anything else. `scripts/make_fastq_corpus.py` writes fourteen small files from fixed
+seeds (5 MB in all, in `leanqc/tests/corpus/`), each aimed at one behaviour:
 
 | File | What it exercises | FastQC 0.12.1 | leanqc |
 |---|---|---|---|
@@ -82,6 +82,8 @@ seeds (2.6 MB in all, in `leanqc/tests/corpus/`), each aimed at one behaviour:
 | `low_quality_tail` | quality falling to ~Q7 over the last 30 of 150 bases | per-base quality fail | same |
 | `truncated_gzip` | gzip stream cut in half | "Failed to process file", no report, **exit 0** | error, exit 1 |
 | `truncated_record` | last record has no quality line | "Failed to process file", no report, exit 0 | error, exit 1 |
+| `bad_tile` | 16,000 CASAVA reads over 8 tiles; tile 1103 drops to Q12 over positions 40–75 (per-tile module and its every-10th-read sampling after 10,000) | pending | per-tile fail, rest pass |
+| `ultra_long` | 120 reads of 105–110 kb, Q35 except Q2 from position 104,001 (position groups past 100 kb) | pending | per-base quality fail; base content, length and overrepresented warn |
 
 Over the ten readable files, 90 module verdicts are compared and 88 agree; the two that differ
 are the deliberate encoding rule ([leanqc](tools/leanqc.md#quality-encoding)). Writing the corpus
@@ -92,7 +94,14 @@ does both.
 FastQC's verdicts are recorded in `leanqc/tests/corpus/fastqc_verdicts.tsv` by
 `scripts/fastqc_corpus.sh` (Docker), and `cargo test` checks leanqc against them, allowing only the
 differences listed with reasons in `expected_differences.tsv`. The validation workflow re-records
-FastQC's verdicts on every run and fails if they no longer match the recorded file.
+FastQC's verdicts for every corpus file on every run and fails if any recorded verdict changed.
+
+"Pending" files were added on a machine without Docker: their FastQC verdicts haven't been
+recorded yet. `pending_verdicts.tsv` holds leanqc's own verdicts for them, which `cargo test` holds
+leanqc to. The workflow records FastQC's verdicts for them on GitHub's runner, lists them in the run
+summary, and runs the corpus test against them, so a disagreement fails the run; the re-recorded
+`fastqc_verdicts.tsv` is in the run's `qc-reports` artifact, to be committed (and the pending rows
+removed).
 
 ## nf-core/bacass baseline
 

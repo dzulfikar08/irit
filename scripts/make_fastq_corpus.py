@@ -152,6 +152,37 @@ def low_quality_tail(rng):
     return out
 
 
+def bad_tile(rng):
+    # CASAVA 1.8 headers over 8 tiles; tile 1103 drops to Q12 over positions 40-75. 16,000 reads,
+    # so FastQC's per-tile sampling (every 10th read after the first 10,000) is exercised too.
+    tiles = [1101, 1102, 1103, 1104, 2101, 2102, 2103, 2104]
+    out = []
+    for i in range(16000):
+        tile = tiles[i % len(tiles)]
+        qs = quals(rng, 75)
+        if tile == 1103:
+            qs = qs[:39] + [round(rng.gauss(12, 2)) for _ in range(36)]
+        name = f"M001:7:000000000-FC:1:{tile}:{rng.randint(1000, 29000)}:{rng.randint(1000, 29000)} 1:N:0:ACGTACGT"
+        out.append(record(name, rand_seq(rng, 75), phred33(qs)))
+    return out
+
+
+def ultra_long(rng):
+    # 120 reads of 105-110 kb (FastQC judges a position only when more than 100 reads cover it),
+    # Q35 throughout except Q2 from position 104,001: only a tool that judges positions past
+    # 100 kb (FastQC's 2,000 bp groups there) sees the drop. After a random 50 bp start, reads
+    # are built from 16 shared 1 kb blocks so the file compresses to a few hundred KB.
+    blocks = [rand_seq(rng, 1000) for _ in range(16)]
+    out = []
+    for i in range(120):
+        n = rng.randint(105000, 110000)
+        body = "".join(rng.choice(blocks) for _ in range(n // 1000 + 1))
+        s = (rand_seq(rng, 50) + body)[:n]
+        q = "D" * 104000 + "#" * (n - 104000)
+        out.append(record(f"ultra{i}", s, q))
+    return out
+
+
 def main():
     out = Path(sys.argv[1])
     out.mkdir(parents=True, exist_ok=True)
@@ -166,6 +197,9 @@ def main():
         "gc_bimodal": gc_bimodal,
         "duplicates": duplicates,
         "low_quality_tail": low_quality_tail,
+        # Added later: new files go at the end so earlier files keep their seeds.
+        "bad_tile": bad_tile,
+        "ultra_long": ultra_long,
     }
     for i, (name, make) in enumerate(files.items()):
         rng = random.Random(1000 + i)

@@ -1,9 +1,23 @@
 //! Single-pass accumulation of read statistics, then summarising into a serialisable report.
 //!
-//! The verdicts follow FastQC 0.12.1's modules (reimplemented from its documented behaviour and
-//! source, not copied): per-position modules are judged on FastQC's linear position groups,
-//! per-read GC is compared with a normal curve centred on the histogram's mode, and duplication
-//! tracks the first 100,000 distinct sequences through the whole file and extrapolates.
+//! The verdicts follow FastQC 0.12.1's modules: per-position modules are judged on FastQC's
+//! linear position groups, per-read GC is compared with a normal curve centred on the
+//! histogram's mode, and duplication tracks the first 100,000 distinct sequences through the
+//! whole file and extrapolates.
+//!
+//! Portions of this file are translated from FastQC 0.12.1
+//! (<https://www.bioinformatics.babraham.ac.uk/projects/fastqc/>), Copyright 2010-17 Simon
+//! Andrews, Babraham Bioinformatics, licensed under the GNU GPL version 3 or any later version
+//! (as is this file; see LICENSE). Translated from, in `uk.ac.babraham.FastQC`:
+//! `Graphs.BaseGroup` (linear position groups), `Modules.GCModel.GCModel` (GC claims),
+//! `Modules.OverRepresentedSeqs` and `Modules.DuplicationLevel` (duplicate tracking and the
+//! corrected count), `Sequence.QualityEncoding.PhredEncoding` (encoding detection, changed),
+//! `Modules.PerBaseQualityScores` / `Utilities.QualityCount` (percentiles),
+//! `Modules.PerSequenceGCContent` (read truncation, normal-curve fit), `Modules.AdapterContent`
+//! (cumulative adapter positions), `Modules.PerSequenceQualityScores` (mode),
+//! `Modules.PerTileQualityScores` (tile field, sampling, deviations), and the defaults in
+//! `Configuration/adapter_list.txt` and `Configuration/limits.txt`. Each translated item says
+//! which FastQC code it ports.
 
 use memchr::memmem::Finder;
 use serde::Serialize;
@@ -21,14 +35,17 @@ const FINE_SLOTS: usize = (FINE_END - EXACT) / FINE;
 /// Phred+33 characters `!`..=`~`.
 const QBINS: usize = 94;
 /// Duplication and overrepresented sequences use the first 50 bases of longer reads (FastQC 0.12).
+// Port of FastQC OverRepresentedSeqs.processSequence (truncation to 50 bp).
 const DUP_KEY_LEN: usize = 50;
 /// FastQC skips a position's quality percentiles unless more than this many reads cover it.
+// Port of FastQC PerBaseQualityScores.getPercentages (minimum coverage).
 const MIN_QUAL_COVER: u64 = 100;
 /// Per-tile tracking covers the first 1,000 positions and switches off above 2,500 tiles.
 const TILE_MAX_POS: usize = 1000;
 const MAX_TILES: usize = 2500;
 
 /// FastQC's default adapter list.
+// Port of FastQC Configuration/adapter_list.txt.
 pub const ADAPTERS: &[(&str, &[u8])] = &[
     ("Illumina Universal", b"AGATCGGAAGAG"),
     ("Illumina Small RNA 3'", b"TGGAATTCTCGG"),
@@ -65,6 +82,7 @@ fn slot_span(s: usize) -> (usize, usize) {
 
 /// FastQC's linear position groups for reads up to `max_len` (1-based, inclusive): single
 /// positions up to 9, then equal-width groups chosen so there are fewer than 75 in all.
+// Port of FastQC BaseGroup.makeLinearBaseGroups and BaseGroup.getLinearInterval.
 pub fn base_groups(max_len: usize) -> Vec<(usize, usize)> {
     if max_len <= 75 {
         return (1..=max_len).map(|p| (p, p)).collect();
@@ -119,6 +137,7 @@ fn base_index(b: u8) -> usize {
 
 /// How many GC counts claim each percentage bin for reads of `len` bases (FastQC's GC model):
 /// a read with `g` GC bases covers the bins from `round((g-0.5)/len)` to `round((g+0.5)/len)`.
+// Port of FastQC GCModel.GCModel (the claim range of each GC count).
 fn gc_range(g: usize, len: usize) -> (usize, usize) {
     let lo = (g as f64 - 0.5).clamp(0.0, len as f64);
     let hi = (g as f64 + 0.5).clamp(0.0, len as f64);
@@ -126,6 +145,7 @@ fn gc_range(g: usize, len: usize) -> (usize, usize) {
     (pct(lo), pct(hi))
 }
 
+// Port of FastQC GCModel.GCModel (claims per bin).
 fn gc_claims(len: usize) -> [u32; 101] {
     let mut claims = [0u32; 101];
     for g in 0..=len {
@@ -139,6 +159,7 @@ fn gc_claims(len: usize) -> [u32; 101] {
 
 /// FastQC's duplication tracking: the first `limit` distinct sequences are counted through
 /// the whole file; sequences first seen after that are not tracked.
+// Port of FastQC OverRepresentedSeqs.processSequence (the 100,000-sequence limit).
 struct Dup {
     counts: HashMap<Box<[u8]>, u32>,
     reads: u64,
@@ -168,6 +189,7 @@ impl Dup {
     /// Percent of reads left after deduplication, extrapolated as FastQC does: for each
     /// duplication level, the number of distinct sequences tracked is corrected for the chance
     /// that a sequence at that level was first seen only after tracking stopped.
+    // Port of FastQC DuplicationLevel.calculateLevels.
     fn remaining_percent(&self) -> f64 {
         let mut by_level: HashMap<u32, u64> = HashMap::new();
         for &c in self.counts.values() {
@@ -183,6 +205,7 @@ impl Dup {
     }
 }
 
+// Port of FastQC DuplicationLevel.getCorrectedCount.
 fn corrected_count(at_limit: u64, total: u64, level: u64, seen: u64) -> f64 {
     if at_limit == total || total - seen < at_limit {
         return seen as f64;
@@ -276,6 +299,7 @@ impl Acc {
         }
         // GC per read over the read truncated to a multiple of 100 (or 1,000) bases, Ns
         // included in the length, as FastQC does.
+        // Port of FastQC PerSequenceGCContent.processSequence / truncateSequence.
         let trunc = if len > 1000 { len / 1000 * 1000 } else if len > 100 { len / 100 * 100 } else { len };
         let gc = seq[..trunc].iter().filter(|&&b| matches!(b, b'G' | b'C' | b'g' | b'c')).count();
         let claims = self.gc_claims.entry(trunc).or_insert_with(|| gc_claims(trunc));
@@ -427,6 +451,7 @@ fn pct(a: u64, b: u64) -> f64 {
 
 /// FastQC's per-position percentile: the first score whose cumulative count reaches
 /// `total * p / 100` (integer), counting from the encoding's zero.
+// Port of FastQC QualityCount.getPercentile.
 fn fq_percentile(hist: &[u64; QBINS], shift: usize, p: u64) -> f64 {
     let total: u64 = hist.iter().sum();
     let target = total * p / 100;
@@ -449,6 +474,7 @@ fn hist_mean(hist: &[u64; QBINS], shift: usize) -> Option<f64> {
 /// Encoding from the lowest and highest quality characters. FastQC calls anything whose lowest
 /// character is `@` (64) or above Phred+64, which misreads high-quality Phred+33 data (Q31–Q40
 /// only, `@`..`I`). Here Phred+64 also needs a character above `J` (74), the Phred+33 maximum.
+// Port of FastQC PhredEncoding.getFastQEncodingOffset, with the Phred+64 rule changed as above.
 fn phred_offset(min: u8, max: u8, forced: Option<u8>, warnings: &mut Vec<String>) -> u8 {
     if let Some(f) = forced {
         if f == 64 && min < 64 {
@@ -538,6 +564,7 @@ impl Acc {
         length_distribution.sort_unstable();
 
         // FastQC tracks adapter starts up to (longest read - adapter length + 1) positions.
+        // Port of FastQC AdapterContent.processSequence / calculateEnrichment.
         let apos = (self.max_len + 1).saturating_sub(ADAPTER_LEN);
         let agroups = base_groups(apos);
         let adapters = ADAPTERS
@@ -639,6 +666,7 @@ fn span(p: &PosStat) -> String {
 }
 
 /// Thresholds are FastQC 0.12.1's defaults (`Configuration/limits.txt`).
+// Port of FastQC Configuration/limits.txt and each module's raisesError/raisesWarning.
 fn checks(r: &Report, zero_len: u64, over_total: usize) -> Vec<Check> {
     let mut out = Vec::new();
     if r.phred_offset.is_some() {
@@ -661,6 +689,7 @@ fn checks(r: &Report, zero_len: u64, over_total: usize) -> Vec<Check> {
         };
         out.push(Check { name: "Per-position quality", status, detail });
         // Most common mean quality; ties go to the lower score, as in FastQC.
+        // Port of FastQC PerSequenceQualityScores.raisesError/raisesWarning.
         let mode = r.read_mean_quality.iter().fold((0u32, 0u64), |best, &(q, c)| if c > best.1 { (q, c) } else { best }).0 as f64;
         let status = if mode <= 20.0 {
             Status::Fail
@@ -748,6 +777,7 @@ fn checks(r: &Report, zero_len: u64, over_total: usize) -> Vec<Check> {
 /// FastQC's per-sequence GC check: fit a normal curve centred on the histogram's mode (the
 /// average of the bins within 10% of the peak, unless that run reaches either end), with the
 /// spread measured around that mode, and count how far the histogram is from it.
+// Port of FastQC PerSequenceGCContent.calculateDistribution.
 fn gc_check(hist: &[f64]) -> Check {
     let n: f64 = hist.iter().sum();
     if n == 0.0 {
@@ -811,6 +841,7 @@ fn gc_check(hist: &[f64]) -> Check {
 /// Follows FastQC: the first read's header decides which `:`-separated field holds the tile, a
 /// later header that doesn't fit switches the module off, and after the first 10,000 reads only
 /// every 10th read is used.
+// Port of FastQC PerTileQualityScores.processSequence.
 enum Tiles {
     Unknown,
     On { field: usize, reads: u64, map: HashMap<u32, TileAcc> },
@@ -826,6 +857,7 @@ struct TileAcc {
 /// Which `:`-separated field of a header holds the tile, using FastQC's rule: with 7+ fields
 /// (CASAVA 1.8+, `@M00:RUN:FC:LANE:TILE:X:Y 1:N:0:...`) the 5th, with 5–6 fields (older
 /// `@HWI:LANE:TILE:X:Y#IDX/1`) the 3rd.
+// Port of FastQC PerTileQualityScores.processSequence (choosing the tile field).
 fn tile_field(id: &[u8]) -> Option<usize> {
     match memchr::memchr_iter(b':', id).count() + 1 {
         n if n >= 7 => Some(4),
@@ -884,6 +916,7 @@ impl Acc {
 /// Each tile's mean quality per position group (the mean of its per-position means; 0 where
 /// the tile has no data, as in FastQC), minus the average over tiles. The check uses the
 /// largest deviation either way.
+// Port of FastQC PerTileQualityScores.getPercentages.
 fn tile_summary(map: HashMap<u32, TileAcc>) -> PerTile {
     let mut tiles: Vec<_> = map.into_iter().collect();
     tiles.sort_unstable_by_key(|(t, _)| *t);
