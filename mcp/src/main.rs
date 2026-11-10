@@ -1,5 +1,6 @@
 //! irit-mcp: the irit command-line tools as MCP tools, with replayable run records.
 
+mod external;
 mod params;
 mod record;
 mod results;
@@ -11,9 +12,10 @@ use std::path::PathBuf;
 
 const USAGE: &str = "irit-mcp: MCP server (stdio) for the irit tools
 
-Usage: irit-mcp [--bin-dir DIR] [--runs-dir DIR] [--run-id ID] [--root DIR] [--allow-outside-root]
+Usage: irit-mcp [--bin-dir DIR] [--tool-path NAME=PATH]... [--runs-dir DIR] [--run-id ID] [--root DIR] [--allow-outside-root]
 
   --bin-dir DIR          Folder with the irit binaries (env IRIT_BIN_DIR). Default: PATH.
+  --tool-path NAME=PATH  Where a third-party tool is: fastp, bakta, checkm2 or gtdbtk. Default: PATH.
   --runs-dir DIR         Where run records go (env IRIT_RUNS_DIR). Default: ./irit-runs
   --run-id ID            Name of this session's run folder. Default: <UTC time>-<pid>
   --root DIR             Tools may only write inside this folder. Default: the working directory.
@@ -26,6 +28,7 @@ fn main() -> anyhow::Result<()> {
     let mut runs_dir = std::env::var_os("IRIT_RUNS_DIR").map(PathBuf::from).unwrap_or_else(|| "irit-runs".into());
     let mut run_id = record::new_run_id();
     let mut root: Option<PathBuf> = None;
+    let mut tool_paths = std::collections::HashMap::new();
     let mut allow_outside_root = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -44,6 +47,13 @@ fn main() -> anyhow::Result<()> {
                 );
             }
             "--root" => root = Some(value()?.into()),
+            "--tool-path" => {
+                let v = value()?;
+                let (name, path) = v.split_once('=').ok_or_else(|| anyhow::anyhow!("--tool-path takes NAME=PATH, got {v}"))?;
+                let names: Vec<&str> = external::PINNED.iter().map(|p| p.tool).collect();
+                anyhow::ensure!(names.contains(&name), "--tool-path: {name} is not one of {}", names.join(", "));
+                tool_paths.insert(name.to_string(), PathBuf::from(path));
+            }
             "--allow-outside-root" => allow_outside_root = true,
             "-V" | "--version" => {
                 println!("irit-mcp {}", record::IRIT_MCP_VERSION);
@@ -62,6 +72,7 @@ fn main() -> anyhow::Result<()> {
     anyhow::ensure!(root.is_dir(), "--root {} is not a folder", root.display());
     let cfg = server::Config {
         bin_dir: bin_dir.map(|d| std::fs::canonicalize(cwd.join(&d)).unwrap_or_else(|_| cwd.join(d))),
+        tool_paths: tool_paths.into_iter().map(|(k, p)| (k, cwd.join(p))).collect(),
         runs_root: cwd.join(&runs_dir),
         ctx: validate::Ctx::new(cwd.clone(), root, allow_outside_root, &cwd.join(&runs_dir)),
         run_id,

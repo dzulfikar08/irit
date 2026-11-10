@@ -21,21 +21,40 @@ pub struct Invocation {
     /// Environment the tool's path resolution depends on, as resolved values (e.g. the
     /// `DBLOCK_STORE` dblock will use). Passed to the tool, recorded, and exported by replay.sh.
     pub env: BTreeMap<String, String>,
+    /// A third-party program (fastp, Bakta, ...) rather than an irit binary: found on PATH or
+    /// through `--tool-path`, never in `--bin-dir`.
+    pub external: bool,
+    /// Files the tool must have written (new or changed) when it exits 0; in each group at least
+    /// one. A zero exit without them is recorded as a failure.
+    pub expect: Vec<Vec<PathBuf>>,
+    /// File-name endings of outputs that differ between identical runs (logs, dated files);
+    /// recorded with their hash, but replay.sh only checks they exist.
+    pub volatile: &'static [&'static str],
 }
 
 impl Invocation {
-    fn new(tool: &'static str) -> Self {
-        Invocation { tool, args: Vec::new(), inputs: Vec::new(), outputs: Vec::new(), stdout_is_output: false, env: BTreeMap::new() }
+    pub(crate) fn new(tool: &'static str) -> Self {
+        Invocation {
+            tool,
+            args: Vec::new(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            stdout_is_output: false,
+            env: BTreeMap::new(),
+            external: false,
+            expect: Vec::new(),
+            volatile: &[],
+        }
     }
-    fn opt(&mut self, name: &str, value: impl ToString) {
+    pub(crate) fn opt(&mut self, name: &str, value: impl ToString) {
         self.args.push(format!("--{name}={}", value.to_string()));
     }
-    fn flag(&mut self, name: &str, on: bool) {
+    pub(crate) fn flag(&mut self, name: &str, on: bool) {
         if on {
             self.args.push(format!("--{name}"));
         }
     }
-    fn positionals(&mut self, values: &[String]) {
+    pub(crate) fn positionals(&mut self, values: &[String]) {
         if !values.is_empty() {
             self.args.push("--".into());
             self.args.extend(values.iter().cloned());
