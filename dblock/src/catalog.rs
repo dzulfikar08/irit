@@ -72,7 +72,17 @@ pub fn load(extra: Option<&Path>) -> Result<Vec<Entry>> {
             entries.push(e);
         }
     }
-    for e in &entries {
+    for e in &mut entries {
+        // Ids become folder and file names in the store.
+        let id_ok = !e.id.is_empty()
+            && !e.id.starts_with('.')
+            && !e.id.contains("..")
+            && e.id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        if !id_ok {
+            bail!("catalog entry id `{}` must use only A-Z a-z 0-9 . _ - and not start with `.` or contain `..`", e.id);
+        }
+        // Publishers print MD5s in either case; downloads are compared in lower case.
+        e.md5 = e.md5.to_ascii_lowercase();
         if e.urls.is_empty() {
             bail!("catalog entry {} has no URL", e.id);
         }
@@ -118,6 +128,33 @@ mod tests {
         assert!(c.len() >= 10);
         assert!(find(&c, "checkm2-db-v3").is_ok());
         assert!(find(&c, "nope").is_err());
+    }
+
+    fn user_catalog(json: &str) -> Result<Vec<Entry>> {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("c.json");
+        std::fs::write(&p, json).unwrap();
+        load(Some(&p))
+    }
+
+    fn entry_json(id: &str, md5: &str) -> String {
+        format!(
+            r#"[{{"id":"{id}","name":"t","version":"1","tool":"t","urls":["http://127.0.0.1:1/x.tar.gz"],"format":"tar.gz","size":1,"extracted":1,"md5":"{md5}","md5_source":"t","env":null,"compat":null,"licence":"x"}}]"#
+        )
+    }
+
+    #[test]
+    fn uppercase_md5_is_lowercased() {
+        let c = user_catalog(&entry_json("mydb", "E3113558D456816BA2C70706932F02C8")).unwrap();
+        assert_eq!(find(&c, "mydb").unwrap().md5, "e3113558d456816ba2c70706932f02c8");
+    }
+
+    #[test]
+    fn ids_that_are_not_plain_names_are_refused() {
+        for bad in ["../evil", "a/b", "..", ".hidden", "a..b", "a b", ""] {
+            assert!(user_catalog(&entry_json(bad, "e3113558d456816ba2c70706932f02c8")).is_err(), "{bad}");
+        }
+        assert!(user_catalog(&entry_json("ok.db_v1-2", "e3113558d456816ba2c70706932f02c8")).is_ok());
     }
 
     #[test]

@@ -19,10 +19,12 @@ dblock catalog                     # what's available, with sizes and licence fl
 dblock add checkm2-db-v3 kraken2-standard-8gb-20261022
 dblock plan                        # will it fit, and how will it be fetched?
 dblock fetch                       # download, verify, unpack; writes dblock.lock
-dblock verify                      # are the files still exactly as locked?
+dblock verify                      # same file names and sizes as locked? (seconds)
+dblock verify --deep               # same contents? re-hashes every file (minutes to hours)
 dblock check                       # do installed tool versions accept these databases?
 eval "$(dblock env)"               # export GTDBTK_DATA_PATH, CHECKM2DB, BAKTA_DB ...
-dblock remove card-4.0.2           # drop from the project (add --delete-data to delete files)
+dblock remove card-4.0.2           # drop from the project; files stay in the store
+dblock remove card-4.0.2 --delete-data --force   # also delete the folder from the shared store
 ```
 
 Global options: `-C DIR` (project folder), `--catalog FILE` (extra or overriding catalog entries,
@@ -33,6 +35,20 @@ same JSON format as the built-in one).
 Databases live in one store shared by all projects: `store = "..."` in `dblock.toml`, else
 `$DBLOCK_STORE`, else `~/.local/share/dblock`. Each database gets a folder named after its id with a
 `.dblock.toml` marker, so a second project that wants the same database reuses it instantly.
+Before reusing a folder, dblock checks its file names and sizes against the marker; a folder that
+changed, has no marker, or holds a different release is reported and left alone, never reused or
+overwritten.
+
+Catalog ids become folder names, so they may only use `A-Z a-z 0-9 . _ -`, must not start with `.`
+and must not contain `..`. MD5s are accepted in either case.
+
+Two `dblock fetch` runs (from two projects, or two terminals) can share a store safely: each
+database has a lock file, `<store>/.lock-<id>`, held while it is planned, downloaded and moved into
+place. The second run waits, then reuses what the first one fetched.
+
+`remove --delete-data` deletes only `<store>/<id>` itself, and only when it is a real folder with a
+marker for that id; any other path written in a lock file is refused. Because the store is shared,
+it prints what it would delete and stops unless `--force` is given.
 
 ## How fetching works
 
@@ -48,8 +64,12 @@ Databases live in one store shared by all projects: `store = "..."` in `dblock.t
 If neither fits, it stops before downloading and says how much space is needed. A 2 GB reserve is
 always kept free.
 
-Either way, files are unpacked into a temporary folder that takes its final name only after the
-checksum matches, so a half-finished or corrupt database is never mistaken for a good one. Archive
+Either way, files are unpacked into a uniquely named temporary folder. Once the checksum matches,
+dblock records every file's size and SHA-256 (in `.dblock.sha256`) and writes the marker inside that
+folder, and only then renames it to its final name. A half-finished or corrupt database is never
+mistaken for a good one, and a crash can't leave a folder under the final name without its marker.
+Hashing happens after unpacking, so it reads the unpacked data once more (a few minutes for
+GTDB-Tk's 100 GB on an SSD). Archive
 entries that would land outside that folder (absolute paths, `..`) are refused. A checksum mismatch
 is never retried against a mirror: a mirror serving the same bad file wouldn't fix it.
 
@@ -66,11 +86,17 @@ data_path = ".../kraken2-viral-20261022"
 files = 16
 bytes = 1230959768
 manifest_md5 = "5ba2e1f3f4d99b3b0a0ff77b16dd98bc"
+contents_sha256 = "..."
 ```
 
-`manifest_md5` fingerprints the unpacked folder (every relative path and size), so `dblock verify`
-notices files added, removed or truncated without re-reading 100 GB. Commit `dblock.lock` with the
-analysis.
+`manifest_md5` fingerprints the unpacked folder's file names and sizes, so `dblock verify` notices
+files added, removed, truncated or grown in seconds, without re-reading 100 GB. It does **not**
+notice an edit that keeps a file's size. `contents_sha256` is the SHA-256 of the per-file SHA-256
+list taken at fetch time; `dblock verify --deep` re-hashes every file, compares, and names the files
+that changed. Databases fetched by dblock 0.1 have no `contents_sha256`; `verify --deep` reports
+them as unchecked until they are fetched again. Commit `dblock.lock` with the analysis.
+
+`dblock env` single-quotes paths for the shell (a `'` in a path is written as `'\''`).
 
 ## Catalog
 
@@ -109,11 +135,18 @@ Against the real servers on 2026-11-10:
 | `verify`, `env`, `check` | As expected |
 | GTDB mock database with GTDB's published checksum | **Rejected: real upstream mismatch** (see [report](../research/upstream-reports.md)) |
 
+The test suite also runs fetches against a local HTTP server: two fetches of one database at
+once (one download, the other waits and reuses it), an MD5 written in upper case, a leftover partial
+download larger than the file, a database folder without a marker, a same-size edit (caught only by
+the SHA-256 list), and a `glob:` entry that matches two files (an error, not a silent fallback to the
+folder).
+
 Measured: Kraken 2 viral unpacks to 1.23 GB, not the 0.6 GB its index page lists; the catalog uses
 the measured figure.
 
 ## Known gaps
 
-- `verify` checks names and sizes, not contents. A deep mode that hashes every file is planned.
+- Plain `verify` checks names and sizes only; use `verify --deep` to check contents.
+- Locking uses OS file locks (`flock` / `LockFileEx`), which some network file systems don't honour.
 - Tool version rules exist only where the publisher states one (none for Kraken 2 or CARD).
 - No parallel downloads; one database at a time.

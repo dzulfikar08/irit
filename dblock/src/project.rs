@@ -8,6 +8,8 @@ pub const PROJECT_FILE: &str = "dblock.toml";
 pub const LOCK_FILE: &str = "dblock.lock";
 /// Written inside each database folder so other projects can reuse it.
 pub const MARKER: &str = ".dblock.toml";
+/// Per-file SHA-256 sums written next to the marker at fetch time (for `verify --deep`).
+pub const SUMS: &str = ".dblock.sha256";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Project {
@@ -83,6 +85,10 @@ pub struct Locked {
     /// md5 of the sorted `relative path<TAB>size` list: changes if any file is added,
     /// removed or changes size.
     pub manifest_md5: String,
+    /// SHA-256 of the folder's `.dblock.sha256` list (every file's SHA-256, size and path).
+    /// Missing for databases fetched by dblock 0.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contents_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
     pub licence: String,
