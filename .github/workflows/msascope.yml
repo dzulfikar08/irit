@@ -60,6 +60,20 @@ jobs:
                  xattr -dr com.apple.quarantine .
           EOF
           sed -i.bak 's/^          //' "$d/README.txt" && rm -f "$d/README.txt.bak"
+      # The app bundle and DMG scripts release.yml uses, ad-hoc signed (no Developer ID here).
+      - name: msascope.app and DMG (ad-hoc signed, Apple Silicon only)
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: |
+          set -euo pipefail
+          brew install librsvg
+          ./scripts/build-dmg.sh --name msascope-test target/${{ matrix.target }}/release/msascope dist
+          plutil -p dist/msascope.app/Contents/Info.plist | grep -E 'CFBundle(Identifier|Executable|Name)'
+          grep -q '<string>com.dzulfikar.irit.msascope</string>' dist/msascope.app/Contents/Info.plist
+          dist/msascope.app/Contents/MacOS/msascope --help > /dev/null
+          mnt="$(mktemp -d)"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" dist/msascope-test.dmg
+          test -d "$mnt/msascope.app" && test -L "$mnt/Applications"
+          hdiutil detach "$mnt"
       - uses: actions/upload-artifact@v4
         with:
           name: msascope-${{ matrix.name }}
