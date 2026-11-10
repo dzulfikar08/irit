@@ -45,8 +45,7 @@ struct Cli {
     #[arg(long)]
     name_from_dir: bool,
 
-    /// Treat unpaired files as long reads (goes in the schema's long-read column). Turns off
-    /// pairing on a bare `_1`/`_2` suffix, which would pair numbered Nanopore chunks.
+    /// Treat unpaired files as long reads (goes in the schema's long-read column).
     #[arg(long)]
     long: bool,
 
@@ -77,6 +76,11 @@ struct Cli {
     /// instead of skipping them.
     #[arg(long)]
     include_undetermined: bool,
+
+    /// List Nanopore reads that failed MinKNOW's quality filter (`_fail_` in the name, or files
+    /// under a `fastq_fail/` folder) instead of skipping them.
+    #[arg(long)]
+    include_fail: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -100,16 +104,41 @@ struct Fastq {
     sample: String,
     lane: String,
     mate: Mate,
+    /// File name without the FASTQ extension.
+    stem: String,
     /// File stem with the mate token blanked: R1 and R2 of one pair share it.
     pair_stem: String,
-    /// The mate came from a bare `_1`/`_2` suffix rather than `R1`/`R2`.
-    numeric: bool,
+    /// The mate token as written (`R1`, `r2`, `1`), empty when unpaired.
+    token: String,
+    /// The sample name came from the folder (`--name-from-dir`), not the file name.
+    named_by_dir: bool,
     /// Looks like Oxford Nanopore MinKNOW output (`barcodeNN/` folder, `_pass_`/`_fail_` name).
     ont: bool,
 }
 
-/// How a file stem was read: sample, lane, mate (`None` for index reads), pair stem, numeric.
-type Classified = (String, String, Option<Mate>, String, bool);
+impl Fastq {
+    /// The mate came from a bare `_1`/`_2` or a lowercase `_r1`/`_r2`, which are also used for
+    /// replicates and chunks, rather than from `R1`/`R2`.
+    fn weak(&self) -> bool {
+        is_weak(&self.token)
+    }
+}
+
+fn is_weak(token: &str) -> bool {
+    token.starts_with(|c: char| c.is_ascii_digit() || c == 'r')
+}
+
+/// How a file stem was read.
+#[derive(Debug, Clone, PartialEq)]
+struct Classified {
+    sample: String,
+    lane: String,
+    /// `None` for index reads (I1/I2).
+    mate: Option<Mate>,
+    pair_stem: String,
+    /// Mate token as written, empty when unpaired.
+    token: String,
+}
 
 /// One output row: one sample, one lane.
 #[derive(Debug, Clone)]
@@ -118,7 +147,9 @@ pub struct Unit {
     pub r1: Option<PathBuf>,
     pub r2: Option<PathBuf>,
     pub long: Option<PathBuf>,
-    /// R1/R2 were matched only on a bare `_1`/`_2` suffix.
+    /// Lane token (`001`, or `1`/`01` in BGI/MGI names); empty when there is none.
+    pub lane: String,
+    /// R1/R2 were matched only on a bare `_1`/`_2` or lowercase `_r1`/`_r2` suffix.
     pub numeric_pair: bool,
 }
 
@@ -126,16 +157,19 @@ static FASTQ_EXT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\.f(ast)?q(\.gz|\.bz2|\.zst)?$").unwrap());
 // bcl2fastq/BCL Convert: Sample_S1_L001_R1_001.fastq.gz
 static ILLUMINA: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?P<s>.+?)_S\d+(?:_L(?P<lane>\d{1,3}))?_(?P<r>[RIri][12])_\d{3}$").unwrap()
+    Regex::new(r"^(?P<s>.+?)_S\d+(?:_L(?P<lane>\d{3}))?_(?P<r>[RIri][12])_\d{3}$").unwrap()
 });
-// sample_R1, sample_r1, sample_1, sample.R2, sample_L002_R1_001, sample_R1_001; lanes may have
-// 1-3 digits: Novogene/BGI `S1_EKDL01_HGV_L1_1`, MGI `FP150002315_L01_1`.
+// Novogene/BGI `S1_EKDL01_HGV_L1_1`, MGI `FP150002315_L01_1`: a 1-2 digit lane only directly
+// before a bare numeric mate. Elsewhere `_L1` is part of the name (`strain_L1_R1`).
+static BGI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?P<s>.+?)_L(?P<lane>\d{1,2})_(?P<r>[12])$").unwrap());
+// sample_R1, sample_r1, sample_1, sample.R2, sample_L002_R1_001, sample_R1_001.
 static GENERIC: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?P<s>.+?)(?:_L(?P<lane>\d{1,3}))?[._-](?P<r>[RIri]?[12])(?:_\d{3})?$").unwrap()
+    Regex::new(r"^(?P<s>.+?)(?:_L(?P<lane>\d{3}))?[._-](?P<r>[RIri]?[12])(?:_\d{3})?$").unwrap()
 });
 // MinKNOW: barcode01/FAX123_pass_barcode01_abc_0.fastq.gz; chunk numbers are not mates.
 static ONT_DIR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(barcode\d+|unclassified)$").unwrap());
 static ONT_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_(pass|fail)_").unwrap());
+static ONT_FAIL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_fail_").unwrap());
 static UNDETERMINED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^undetermined_S0_").unwrap());
 
 fn main() -> Result<()> {
@@ -144,14 +178,17 @@ fn main() -> Result<()> {
 
     let opts = ScanOpts {
         name_from_dir: cli.name_from_dir,
-        pair_numeric: !cli.no_pair_numeric && !cli.long,
+        // Numeric pairing stays on with --long: hybrid SRA/fetchngs downloads are `x_1`, `x_2`
+        // (short) next to `x` (long). Nanopore chunks are never paired (see `scan`).
+        pair_numeric: !cli.no_pair_numeric,
         include_undetermined: cli.include_undetermined,
+        include_fail: cli.include_fail,
     };
     let (files, notes) = scan(&cli.dirs, &opts)?;
     if files.is_empty() {
         bail!("no FASTQ files found under {}", show_dirs(&cli.dirs));
     }
-    let (mut units, mut warnings) = pair(files, cli.long)?;
+    let (mut units, mut warnings) = pair(files, &PairOpts { long: cli.long, no_pair_numeric: cli.no_pair_numeric })?;
     warnings.extend(notes);
     check_names(&units, cli.allow_merge, &mut warnings)?;
     if let Some(dir) = &cli.link_into {
@@ -219,8 +256,15 @@ fn main() -> Result<()> {
     if !numeric.is_empty() {
         let list: Vec<_> = numeric.into_iter().collect();
         eprintln!(
-            "  note: paired only because of a bare _1/_2 suffix: {} (SRA-style names; if these are separate single-end samples, rerun with --no-pair-numeric)",
+            "  note: paired only because of a bare _1/_2 or lowercase _r1/_r2 suffix: {} (SRA-style names; if these are separate single-end samples or replicates, rerun with --no-pair-numeric for _1/_2, or rename _r1/_r2 files)",
             list.join(", ")
+        );
+    }
+    let short_lanes = merged_short_lanes(&units);
+    if !short_lanes.is_empty() {
+        eprintln!(
+            "  note: lanes merged into one sample on a short _L<n> token (BGI/MGI style): {} (if these are different samples, rename the files)",
+            short_lanes.join(", ")
         );
     }
     for w in &warnings {
@@ -244,10 +288,24 @@ fn parse_sets(sets: &[String]) -> Result<BTreeMap<String, String>> {
         .collect()
 }
 
+/// Samples whose rows come from several 1-2 digit lanes (`x_L1_1`, `x_L2_1`), as `x (L1, L2)`.
+fn merged_short_lanes(units: &[Unit]) -> Vec<String> {
+    let mut lanes: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for u in units.iter().filter(|u| (1..=2).contains(&u.lane.len())) {
+        lanes.entry(&u.sample).or_default().insert(&u.lane);
+    }
+    lanes
+        .into_iter()
+        .filter(|(_, l)| l.len() > 1)
+        .map(|(s, l)| format!("{s} ({})", l.into_iter().map(|l| format!("L{l}")).collect::<Vec<_>>().join(", ")))
+        .collect()
+}
+
 struct ScanOpts {
     name_from_dir: bool,
     pair_numeric: bool,
     include_undetermined: bool,
+    include_fail: bool,
 }
 
 /// Walk the folders and classify every FASTQ file. Returns the files and notes about files
@@ -256,6 +314,7 @@ fn scan(dirs: &[PathBuf], opts: &ScanOpts) -> Result<(Vec<Fastq>, Vec<String>)> 
     let mut files = Vec::new();
     let mut notes = Vec::new();
     let mut seen = BTreeSet::new();
+    let mut failed = 0usize;
     for dir in dirs {
         let dir = dir
             .canonicalize()
@@ -290,48 +349,119 @@ fn scan(dirs: &[PathBuf], opts: &ScanOpts) -> Result<(Vec<Fastq>, Vec<String>)> 
                 ));
                 continue;
             }
+            // MinKNOW's failed reads: `_fail_` in the name, or a `fastq_fail/` folder below the
+            // scanned one (pointing sheetgen at fastq_fail/ itself is taken as meant).
+            let in_fail_dir = path
+                .strip_prefix(&dir)
+                .ok()
+                .and_then(Path::parent)
+                .is_some_and(|rel| rel.components().any(|c| c.as_os_str().eq_ignore_ascii_case("fastq_fail")));
+            if !opts.include_fail && (ONT_FAIL.is_match(stem) || in_fail_dir) {
+                failed += 1;
+                continue;
+            }
             let parent = path.parent().and_then(|p| p.file_name()).map(|p| p.to_string_lossy().into_owned());
             let ont = ONT_NAME.is_match(stem) || parent.as_deref().is_some_and(|p| ONT_DIR.is_match(p));
-            let (mut sample, lane, mate, pair_stem, numeric) = if ont {
+            let c = if ont {
                 // Never pair Nanopore chunks: `_0`, `_1`, ... are chunk numbers, not mates.
-                (stem.to_string(), String::new(), Some(Mate::Unpaired), stem.to_string(), false)
+                unpaired(stem)
             } else {
                 classify(stem, opts.pair_numeric)
             };
-            let Some(mate) = mate else {
+            let Some(mate) = c.mate else {
                 notes.push(format!("skipped index read file {}", path.display()));
                 continue;
             };
-            if opts.name_from_dir
-                && let Some(parent) = parent {
-                    sample = parent;
-                }
-            files.push(Fastq { path, sample, lane, mate, pair_stem, numeric, ont });
+            let (sample, named_by_dir) = match parent {
+                Some(p) if opts.name_from_dir => (p, true),
+                _ => (c.sample, false),
+            };
+            files.push(Fastq {
+                path,
+                sample,
+                lane: c.lane,
+                mate,
+                stem: stem.to_string(),
+                pair_stem: c.pair_stem,
+                token: c.token,
+                named_by_dir,
+                ont,
+            });
         }
+    }
+    if failed > 0 {
+        notes.push(format!(
+            "skipped {failed} Nanopore files that failed MinKNOW's quality filter (`_fail_` in the name or under fastq_fail/); --include-fail lists them"
+        ));
     }
     Ok((files, notes))
 }
 
+fn unpaired(stem: &str) -> Classified {
+    Classified {
+        sample: stem.to_string(),
+        lane: String::new(),
+        mate: Some(Mate::Unpaired),
+        pair_stem: stem.to_string(),
+        token: String::new(),
+    }
+}
+
 /// Split a file stem into sample, lane, mate (`None` for an index read I1/I2), the stem with
-/// the mate token blanked (shared by the two files of a pair) and whether the mate came from
-/// a bare `_1`/`_2`. Without `pair_numeric`, bare `_1`/`_2` are part of the sample name.
+/// the mate token blanked (shared by the two files of a pair) and the mate token. Without
+/// `pair_numeric`, bare `_1`/`_2` are part of the sample name.
 fn classify(stem: &str, pair_numeric: bool) -> Classified {
-    let unpaired = || (stem.to_string(), String::new(), Some(Mate::Unpaired), stem.to_string(), false);
-    let caps = ILLUMINA.captures(stem).or_else(|| GENERIC.captures(stem));
-    let Some(c) = caps else { return unpaired() };
+    let caps = ILLUMINA.captures(stem).or_else(|| BGI.captures(stem)).or_else(|| GENERIC.captures(stem));
+    let Some(c) = caps else { return unpaired(stem) };
     let r = c.name("r").unwrap();
     let numeric = !r.as_str().starts_with(['R', 'r', 'I', 'i']);
     if numeric && !pair_numeric {
-        return unpaired();
+        return unpaired(stem);
     }
-    let lane = c.name("lane").map(|m| m.as_str().to_string()).unwrap_or_default();
     let mate = match r.as_str().to_ascii_uppercase().as_str() {
         "R1" | "1" => Some(Mate::R1),
         "R2" | "2" => Some(Mate::R2),
         _ => None, // I1 / I2
     };
-    let pair_stem = format!("{}\u{0}{}", &stem[..r.start()], &stem[r.end()..]);
-    (c["s"].to_string(), lane, mate, pair_stem, numeric)
+    Classified {
+        sample: c["s"].to_string(),
+        lane: c.name("lane").map(|m| m.as_str().to_string()).unwrap_or_default(),
+        mate,
+        pair_stem: format!("{}\u{0}{}", &stem[..r.start()], &stem[r.end()..]),
+        token: r.as_str().to_string(),
+    }
+}
+
+/// A file next to a weak pair (`x_1`/`x_2`, `x_r1`/`x_r2`) numbered beyond 2 or 0 (`x_3`,
+/// `x_r3`, `x_0`): the numbers then count replicates or chunks, not mates.
+fn numbered_sibling<'a>(pair_stem: &str, token: &str, stems: &'a BTreeSet<String>) -> Option<&'a str> {
+    let (pre, post) = pair_stem.split_once('\u{0}')?;
+    let head = format!("{pre}{}", &token[..token.len() - 1]);
+    stems.iter().map(String::as_str).find(|s| {
+        s.strip_prefix(head.as_str())
+            .and_then(|rest| rest.strip_suffix(post))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && n != "1" && n != "2")
+    })
+}
+
+/// The other mate's file stem for a weak mate token (`x_1` → `x_2`), if `stem` has one.
+fn weak_counterpart(stem: &str) -> Option<String> {
+    let c = classify(stem, true);
+    if !is_weak(&c.token) {
+        return None;
+    }
+    let other = match c.mate? {
+        Mate::R1 => '2',
+        Mate::R2 => '1',
+        Mate::Unpaired => return None,
+    };
+    let (pre, post) = c.pair_stem.split_once('\u{0}')?;
+    Some(format!("{pre}{}{other}{post}", &c.token[..c.token.len() - 1]))
+}
+
+struct PairOpts {
+    long: bool,
+    no_pair_numeric: bool,
 }
 
 /// Pair mates and make one unit per pair or unpaired file.
@@ -340,8 +470,14 @@ fn classify(stem: &str, pair_numeric: bool) -> Classified {
 /// mate token (`A_R1` / `A_R2`). Several pairs for one sample (lanes, runs in other folders)
 /// become several rows, which nf-core pipelines merge. Two files claiming the same mate of the
 /// same pair (`A_R1.fq.gz` next to `A_R1.fastq.gz`) are an error.
-fn pair(files: Vec<Fastq>, long: bool) -> Result<(Vec<Unit>, Vec<String>)> {
+fn pair(files: Vec<Fastq>, opts: &PairOpts) -> Result<(Vec<Unit>, Vec<String>)> {
+    let long = opts.long;
     type Key = (String, String, PathBuf, String);
+    let dir_of = |f: &Fastq| f.path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let mut stems: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+    for f in &files {
+        stems.entry(dir_of(f)).or_default().insert(f.stem.clone());
+    }
     let mut groups: BTreeMap<Key, Vec<Fastq>> = BTreeMap::new();
     let mut unpaired = Vec::new();
     for f in files {
@@ -349,11 +485,36 @@ fn pair(files: Vec<Fastq>, long: bool) -> Result<(Vec<Unit>, Vec<String>)> {
             unpaired.push(f);
             continue;
         }
-        let dir = f.path.parent().map(Path::to_path_buf).unwrap_or_default();
-        groups.entry((f.sample.clone(), f.lane.clone(), dir, f.pair_stem.clone())).or_default().push(f);
+        groups.entry((f.sample.clone(), f.lane.clone(), dir_of(&f), f.pair_stem.clone())).or_default().push(f);
     }
     let mut units = Vec::new();
     let mut warnings = Vec::new();
+    // `ctrl_r1`, `ctrl_r2` next to `ctrl_r3` are replicates, not mates: keep them apart.
+    let mut kept = BTreeMap::new();
+    for (key, fs) in groups {
+        let sibling = match fs.iter().all(Fastq::weak) {
+            true => numbered_sibling(&key.3, &fs[0].token, &stems[&key.2]),
+            false => None,
+        };
+        let Some(sibling) = sibling else {
+            kept.insert(key, fs);
+            continue;
+        };
+        let names: Vec<_> = fs.iter().map(|f| f.stem.as_str()).collect();
+        warnings.push(format!(
+            "not paired: {} ({sibling} next to them suggests numbered replicates or chunks, not mates; name mates _R1/_R2 to pair them)",
+            names.join(", ")
+        ));
+        for mut f in fs {
+            if !f.named_by_dir {
+                f.sample = f.stem.clone();
+            }
+            f.lane.clear();
+            f.mate = Mate::Unpaired;
+            unpaired.push(f);
+        }
+    }
+    let groups = kept;
     let ont = unpaired.iter().filter(|f| f.ont).count();
     if ont > 0 && !long {
         warnings.push(format!(
@@ -377,8 +538,8 @@ fn pair(files: Vec<Fastq>, long: bool) -> Result<(Vec<Unit>, Vec<String>)> {
             (None, Some(p)) => orphans.push(p.display().to_string()),
             _ => {}
         }
-        let numeric_pair = a.is_some() && b.is_some() && fs.iter().all(|f| f.numeric);
-        units.push(Unit { sample, r1: a, r2: b, long: None, numeric_pair });
+        let numeric_pair = a.is_some() && b.is_some() && fs.iter().all(Fastq::weak);
+        units.push(Unit { sample, r1: a, r2: b, long: None, lane, numeric_pair });
     }
     if !orphans.is_empty() {
         bail!(
@@ -386,6 +547,8 @@ fn pair(files: Vec<Fastq>, long: bool) -> Result<(Vec<Unit>, Vec<String>)> {
             orphans.join("\n  ")
         );
     }
+    unpaired.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut mate_like = Vec::new();
     for f in unpaired {
         if long {
             // Hybrid assembly: put long reads on the sample's short-read row if it has one.
@@ -398,9 +561,27 @@ fn pair(files: Vec<Fastq>, long: bool) -> Result<(Vec<Unit>, Vec<String>)> {
                 u.long = Some(f.path.clone());
                 continue;
             }
-            units.push(Unit { sample: f.sample, r1: None, r2: None, long: Some(f.path), numeric_pair: false });
+            // A long-only `x_1` next to `x_2` is almost certainly a short-read mate.
+            if !f.ont
+                && let Some(other) = weak_counterpart(&f.stem)
+                && stems[&dir_of(&f)].contains(&other)
+            {
+                mate_like.push(format!("{} (next to {other})", f.path.display()));
+            }
+            units.push(Unit { sample: f.sample, r1: None, r2: None, long: Some(f.path), lane: String::new(), numeric_pair: false });
         } else {
-            units.push(Unit { sample: f.sample, r1: Some(f.path), r2: None, long: None, numeric_pair: false });
+            units.push(Unit { sample: f.sample, r1: Some(f.path), r2: None, long: None, lane: String::new(), numeric_pair: false });
+        }
+    }
+    if !mate_like.is_empty() {
+        let list = mate_like.join("\n  ");
+        if opts.no_pair_numeric {
+            warnings.push(format!("listed as long reads although the names look like short-read mates (--no-pair-numeric):\n  {list}"));
+        } else {
+            bail!(
+                "these files would become long-read-only rows, but their names look like short-read mates:\n  {list}\n\
+                 name short-read mates _R1/_R2, or pass --no-pair-numeric if they really are separate long-read samples"
+            );
         }
     }
     // Keep each sample's rows together.
@@ -639,8 +820,8 @@ mod tests {
     #[test]
     fn classifies_common_names() {
         let c = |s| {
-            let (a, l, m, _, _) = classify(s, true);
-            (a, l, m)
+            let c = classify(s, true);
+            (c.sample, c.lane, c.mate)
         };
         assert_eq!(c("Ecoli_S3_L002_R1_001"), ("Ecoli".into(), "002".into(), Some(Mate::R1)));
         assert_eq!(c("Ecoli_S3_R2_001"), ("Ecoli".into(), "".into(), Some(Mate::R2)));
@@ -660,19 +841,124 @@ mod tests {
     }
 
     fn opts(pair_numeric: bool) -> ScanOpts {
-        ScanOpts { name_from_dir: false, pair_numeric, include_undetermined: false }
+        ScanOpts { name_from_dir: false, pair_numeric, include_undetermined: false, include_fail: false }
     }
+
+    const SHORT: PairOpts = PairOpts { long: false, no_pair_numeric: false };
+    const LONG: PairOpts = PairOpts { long: true, no_pair_numeric: false };
 
     fn units_of(root: &Path, pair_numeric: bool) -> Result<Vec<Unit>> {
         let (files, _) = scan(&[root.to_path_buf()], &opts(pair_numeric))?;
-        Ok(pair(files, false)?.0)
+        Ok(pair(files, &PairOpts { long: false, no_pair_numeric: !pair_numeric })?.0)
     }
 
     /// Scan and pair the way `main` does for `--long [--name-from-dir]`.
     fn long_units(root: &Path, name_from_dir: bool) -> Result<(Vec<Unit>, Vec<String>)> {
-        let o = ScanOpts { name_from_dir, pair_numeric: false, include_undetermined: false };
+        let o = ScanOpts { name_from_dir, ..opts(true) };
         let (files, _) = scan(&[root.to_path_buf()], &o)?;
-        pair(files, true)
+        pair(files, &LONG)
+    }
+
+    fn file_name(p: &Option<PathBuf>) -> Option<String> {
+        p.as_ref().map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn hybrid_sra_and_fetchngs_names_pair_under_long() {
+        for (short, long) in [
+            (["SRR1_1.fastq.gz", "SRR1_2.fastq.gz"], "SRR1.fastq.gz"),
+            (["SRX1_SRR1_1.fastq.gz", "SRX1_SRR1_2.fastq.gz"], "SRX1_SRR1.fastq.gz"),
+        ] {
+            let t = tempfile::tempdir().unwrap();
+            touch(t.path(), &[short[0], short[1], long]);
+            let (u, _) = long_units(t.path(), false).unwrap();
+            assert_eq!(u.len(), 1, "{u:?}");
+            assert_eq!(u[0].sample, long.trim_end_matches(".fastq.gz"));
+            assert_eq!(file_name(&u[0].r1).as_deref(), Some(short[0]));
+            assert_eq!(file_name(&u[0].r2).as_deref(), Some(short[1]));
+            assert_eq!(file_name(&u[0].long).as_deref(), Some(long));
+            // bacass: one row with R1, R2 and LongFastQ.
+            let s = bacass();
+            let fmt = |p: &Path| p.display().to_string();
+            let (_, rows) = s.build(&u, &BTreeMap::new(), &fmt, &mut Vec::new()).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert!(rows[0][3].ends_with(long), "{:?}", rows[0]);
+        }
+    }
+
+    #[test]
+    fn long_only_rows_that_look_like_mates_are_refused() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["SRR1_1.fastq.gz", "SRR1_2.fastq.gz"]);
+        let (files, _) = scan(&[t.path().to_path_buf()], &opts(false)).unwrap();
+        // --no-pair-numeric --long: allowed (asked for), with a warning.
+        let (u, w) = pair(files, &PairOpts { long: true, no_pair_numeric: true }).unwrap();
+        assert_eq!(u.len(), 2);
+        assert!(w.iter().any(|w| w.contains("look like short-read mates")), "{w:?}");
+        // Replicate-looking names demoted under --long: refused.
+        touch(t.path(), &["rep/x_r1.fastq.gz", "rep/x_r2.fastq.gz", "rep/x_r3.fastq.gz"]);
+        let err = long_units(&t.path().join("rep"), false).unwrap_err().to_string();
+        assert!(err.contains("look like short-read mates"), "{err}");
+    }
+
+    #[test]
+    fn short_lane_tokens_need_the_bgi_shape() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["strain_L1_R1.fastq.gz", "strain_L1_R2.fastq.gz", "strain_L2_R1.fastq.gz", "strain_L2_R2.fastq.gz"]);
+        let u = units_of(t.path(), true).unwrap();
+        let names: Vec<_> = u.iter().map(|u| u.sample.as_str()).collect();
+        assert_eq!(names, ["strain_L1", "strain_L2"]);
+        assert!(merged_short_lanes(&u).is_empty());
+        // The BGI shape still merges, and says so.
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["S1_EKDL01_HGV_L1_1.fq.gz", "S1_EKDL01_HGV_L1_2.fq.gz", "S1_EKDL01_HGV_L2_1.fq.gz", "S1_EKDL01_HGV_L2_2.fq.gz"]);
+        let u = units_of(t.path(), true).unwrap();
+        assert_eq!(merged_short_lanes(&u), ["S1_EKDL01_HGV (L1, L2)"]);
+        // Illumina lanes always have three digits.
+        assert_eq!(classify("x_S1_L1_R1_001", true).sample, "x_S1_L1");
+    }
+
+    #[test]
+    fn numbered_replicates_are_not_paired() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["ctrl_r1.fastq.gz", "ctrl_r2.fastq.gz", "ctrl_r3.fastq.gz", "x_0.fq.gz", "x_1.fq.gz", "x_2.fq.gz"]);
+        let (files, _) = scan(&[t.path().to_path_buf()], &opts(true)).unwrap();
+        let (u, w) = pair(files, &SHORT).unwrap();
+        let names: Vec<_> = u.iter().map(|u| (u.sample.as_str(), u.r2.is_some())).collect();
+        assert_eq!(
+            names,
+            [("ctrl_r1", false), ("ctrl_r2", false), ("ctrl_r3", false), ("x_0", false), ("x_1", false), ("x_2", false)]
+        );
+        assert_eq!(w.iter().filter(|w| w.contains("not paired")).count(), 2, "{w:?}");
+        // Two lowercase mates alone pair, flagged like bare _1/_2.
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["ctrl_r1.fastq.gz", "ctrl_r2.fastq.gz", "B_R1.fq.gz", "B_R2.fq.gz", "B_R3.fq.gz"]);
+        let u = units_of(t.path(), true).unwrap();
+        let flagged: Vec<_> = u.iter().map(|u| (u.sample.as_str(), u.numeric_pair)).collect();
+        assert_eq!(flagged, [("B", false), ("B_R3", false), ("ctrl", true)]);
+    }
+
+    #[test]
+    fn nanopore_fail_reads_are_skipped_unless_asked() {
+        let t = tempfile::tempdir().unwrap();
+        touch(
+            t.path(),
+            &[
+                "run/fastq_pass/barcode01/FAX1_pass_barcode01_abc_0.fastq.gz",
+                "run/fastq_fail/barcode01/FAX1_fail_barcode01_abc_0.fastq.gz",
+                "run/fastq_fail/barcode01/other_0.fastq.gz",
+                "run/FAX1_fail_barcode01_abc_1.fastq.gz",
+            ],
+        );
+        let o = ScanOpts { name_from_dir: true, ..opts(true) };
+        let (files, notes) = scan(&[t.path().to_path_buf()], &o).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(notes.iter().any(|n| n.contains("skipped 3 Nanopore") && n.contains("--include-fail")), "{notes:?}");
+        let o = ScanOpts { include_fail: true, ..o };
+        assert_eq!(scan(&[t.path().to_path_buf()], &o).unwrap().0.len(), 4);
+        // Pointing at fastq_fail/ itself is taken as meant (only the `_fail_` name is skipped).
+        let (files, _) = scan(&[t.path().join("run/fastq_fail")], &opts(true)).unwrap();
+        assert_eq!(files.len(), 1);
     }
 
     fn bacass() -> schema::Schema {
@@ -741,7 +1027,7 @@ mod tests {
 
         // Even with numeric pairing on and no --long: no pairing, no "mate missing" error.
         let (files, _) = scan(&[t.path().to_path_buf()], &opts(true)).unwrap();
-        let (u, w) = pair(files, false).unwrap();
+        let (u, w) = pair(files, &SHORT).unwrap();
         assert_eq!(u.len(), 4);
         assert!(u.iter().all(|u| u.r2.is_none()));
         assert!(w.iter().any(|w| w.contains("Oxford Nanopore") && w.contains("--long")), "{w:?}");
@@ -750,7 +1036,7 @@ mod tests {
     #[test]
     fn pass_fail_names_outside_barcode_folders_are_not_paired() {
         let t = tempfile::tempdir().unwrap();
-        touch(t.path(), &["run/FAX9_fail_x_1.fastq.gz", "run/FAX9_fail_x_2.fastq.gz"]);
+        touch(t.path(), &["run/FAX9_pass_x_1.fastq.gz", "run/FAX9_pass_x_2.fastq.gz"]);
         let u = units_of(t.path(), true).unwrap();
         assert_eq!(u.len(), 2);
         assert!(u.iter().all(|u| u.r2.is_none()));
@@ -778,9 +1064,9 @@ mod tests {
             rows,
             vec![("FP150002315", true), ("S1_EKDL01_HGV", true), ("S1_EKDL01_HGV", true), ("a", true)]
         );
-        let (_, l, m, _, numeric) = classify("a_r1", true);
-        assert_eq!((l.as_str(), m, numeric), ("", Some(Mate::R1), false));
-        assert_eq!(classify("x_S1_L1_r2_001", true).1, "1");
+        let c = classify("a_r1", true);
+        assert_eq!((c.lane.as_str(), c.mate, c.token.as_str()), ("", Some(Mate::R1), "r1"));
+        assert_eq!(classify("x_S1_L001_r2_001", true).lane, "001");
     }
 
     #[cfg(unix)]
