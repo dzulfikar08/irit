@@ -18,6 +18,7 @@ use crate::project::{self, Locked};
 use anyhow::{Context, Result, bail};
 use md5::{Digest, Md5};
 use sha2::Sha256;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -88,7 +89,7 @@ pub fn existing(store: &Path, e: &Entry) -> Stored {
             e.md5
         ));
     }
-    match manifest(&dir) {
+    match manifest_as(&dir, marker.manifest_format) {
         Ok((_, _, m)) if m == marker.manifest_md5 => {}
         Ok((files, bytes, _)) => {
             return Stored::Bad(format!(
@@ -167,16 +168,27 @@ pub fn obtain(store: &Path, e: &Entry, opts: &Opts) -> Result<(Locked, bool)> {
     // Held until `lock` drops at the end of this function.
     let lock = lock_database(store, &e.id)?;
     match existing(store, e) {
+        Stored::Ready(l) if l.manifest_format.is_none() => return Ok((upgrade_marker(&target_dir(store, e), *l)?, true)),
         Stored::Ready(l) => return Ok((*l, true)),
         Stored::Bad(why) => bail!(why),
         Stored::Absent => {}
     }
     // Temporary folders left by a crashed run (nobody else can be using them: we hold the lock).
     clean_tmp(store, &e.id)?;
-    let plan = plan(store, e, opts)?;
-    let locked = fetch(store, e, &plan, opts)?;
+    let fetched = plan(store, e, opts).and_then(|plan| fetch(store, e, &plan, opts));
+    prune_tmp(store, &e.id);
     drop(lock);
-    Ok((locked, false))
+    Ok((fetched?, false))
+}
+
+/// Remove `<store>/.tmp/<id>/`, and `<store>/.tmp/`, if they are empty. Call with the lock held.
+pub fn prune_tmp(store: &Path, id: &str) {
+    let parent = tmp_parent(store, id);
+    if fs::remove_dir(&parent).is_ok()
+        && let Some(tmp) = parent.parent()
+    {
+        let _ = fs::remove_dir(tmp);
+    }
 }
 
 /// Decide how to fetch, or explain why it won't fit.
@@ -276,6 +288,7 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
         bytes,
         manifest_md5,
         contents_sha256: Some(contents_sha256),
+        manifest_format: Some(MANIFEST_FORMAT),
         env: e.env.clone(),
         licence: e.licence.clone(),
         non_commercial: e.non_commercial,
@@ -548,13 +561,30 @@ enum Item {
     Link(String),
 }
 
+/// The manifest format new markers get: symlinks listed with their target.
+pub const MANIFEST_FORMAT: u32 = 2;
+
 /// Counted files, total bytes and a fingerprint of the folder's file list and sizes. Symlinks
 /// count as entries with their target, so retargeting one changes the fingerprint; folders
 /// without links get the same fingerprint as before links were recorded.
 pub fn manifest(dir: &Path) -> Result<(u64, u64, String)> {
+    manifest_as(dir, Some(MANIFEST_FORMAT))
+}
+
+/// Everything `walk` finds, sorted; without symlinks for markers from before they were recorded.
+fn items_as(dir: &Path, format: Option<u32>) -> Result<Vec<(String, Item)>> {
     let mut items = Vec::new();
     walk(dir, dir, &mut items)?;
+    if format.is_none() {
+        items.retain(|(_, i)| matches!(i, Item::File(_)));
+    }
     items.sort();
+    Ok(items)
+}
+
+/// `manifest` the way a marker of the given format computed it (`None`: v0.1.0, links left out).
+pub fn manifest_as(dir: &Path, format: Option<u32>) -> Result<(u64, u64, String)> {
+    let items = items_as(dir, format)?;
     let mut h = Md5::new();
     let mut bytes = 0;
     for (rel, item) in &items {
@@ -593,14 +623,17 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, Item)>) -> Result<()> {
 /// `sha256  size  path` for every file, sorted by path (`/` separators on every platform).
 /// A symlink is listed as `link  0  path -> target`: its target is recorded, not followed.
 pub fn sums(dir: &Path) -> Result<String> {
-    let mut items = Vec::new();
-    walk(dir, dir, &mut items)?;
-    items.sort();
+    sums_as(dir, Some(MANIFEST_FORMAT))
+}
+
+/// `sums` the way a marker of the given format computed it (`None`: v0.1.0, links left out).
+pub fn sums_as(dir: &Path, format: Option<u32>) -> Result<String> {
+    let items = items_as(dir, format)?;
     let mut out = String::new();
     let mut buf = vec![0u8; 1 << 20];
     for (rel, item) in &items {
         if let Item::Link(target) = item {
-            out.push_str(&format!("link  0  {} -> {target}\n", rel.replace('\\', "/")));
+            out.push_str(&link_line(rel, target));
             continue;
         }
         let path = dir.join(rel);
@@ -618,6 +651,61 @@ pub fn sums(dir: &Path) -> Result<String> {
         out.push_str(&format!("{}  {size}  {}\n", hex(&h.finalize()), rel.replace('\\', "/")));
     }
     Ok(out)
+}
+
+fn link_line(rel: &str, target: &str) -> String {
+    format!("link  0  {} -> {target}\n", rel.replace('\\', "/"))
+}
+
+/// A SHA-256 list with the symlink lines taken out: what the v0.1.0 list of the same folder was.
+pub fn without_links(text: &str) -> String {
+    text.lines().filter(|l| !l.starts_with("link  0  ")).flat_map(|l| [l, "\n"]).collect()
+}
+
+/// Bring a v0.1.0 marker (symlinks left out of its manifest and SHA-256 list) up to the current
+/// format, after `existing` has accepted the folder the old way. The new SHA-256 list is the old
+/// one (if it still matches the marker) with the symlink lines added, so nothing is re-hashed.
+/// Call with the database's lock held.
+fn upgrade_marker(dir: &Path, mut l: Locked) -> Result<Locked> {
+    let contents = match &l.contents_sha256 {
+        None => None,
+        Some(want) => {
+            let old = fs::read_to_string(dir.join(project::SUMS)).ok().filter(|t| &sha256_hex(t) == want);
+            // The list was lost or edited: keep the old format rather than vouch for it.
+            let Some(old) = old else { return Ok(l) };
+            let mut by_path: BTreeMap<String, String> = old
+                .lines()
+                .filter_map(|line| Some((line.splitn(3, "  ").nth(2)?.to_string(), format!("{line}\n"))))
+                .collect();
+            for (rel, item) in items_as(dir, Some(MANIFEST_FORMAT))? {
+                if let Item::Link(target) = item {
+                    by_path.insert(rel.replace('\\', "/"), link_line(&rel, &target));
+                }
+            }
+            Some(by_path)
+        }
+    };
+    let (files, bytes, manifest_md5) = manifest(dir)?;
+    if let Some(by_path) = contents {
+        // Same order as `sums`: sorted by path.
+        let text: String = by_path.into_values().collect();
+        fs::write(dir.join(project::SUMS), &text)?;
+        l.contents_sha256 = Some(sha256_hex(&text));
+    }
+    l.files = files;
+    l.bytes = bytes;
+    l.manifest_md5 = manifest_md5;
+    l.manifest_format = Some(MANIFEST_FORMAT);
+    // The marker keeps the paths it was written with; `existing` rewrites them on every read.
+    let mut on_disk = project::read_marker(dir).context("marker vanished while upgrading it")?;
+    on_disk.files = l.files;
+    on_disk.bytes = l.bytes;
+    on_disk.manifest_md5 = l.manifest_md5.clone();
+    on_disk.contents_sha256 = l.contents_sha256.clone();
+    on_disk.manifest_format = l.manifest_format;
+    project::write_marker(dir, &on_disk)?;
+    eprintln!("  upgraded its marker to record symlinks (it was written by dblock 0.1.0)");
+    Ok(l)
 }
 
 pub fn sha256_hex(text: &str) -> String {
@@ -744,7 +832,8 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
             .collect();
         assert!(leftovers.is_empty());
-        assert_eq!(fs::read_dir(tmp_parent(store.path(), "mydb")).unwrap().count(), 0);
+        // Empty temp folders are removed too.
+        assert!(!tmp_parent(store.path(), "mydb").exists() && !store.path().join(".tmp").exists());
         assert!(store.path().join("mydb").join(project::MARKER).is_file());
         assert!(results[0].0.data_path.ends_with("mydb/mydb") || results[0].0.data_path.ends_with("mydb\\mydb"));
     }
@@ -840,6 +929,50 @@ mod tests {
         let mut h = Md5::new();
         h.update(b"a.txt\t5\nb.txt\t5\n");
         assert_eq!(manifest(d.path()).unwrap().2, hex(&h.finalize()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn v010_markers_with_symlinks_are_reused_and_upgraded() {
+        let (body, md5) = archive();
+        let (url, hits) = serve(body.clone());
+        let e = entry(&url, &md5, body.len(), "dir");
+        let store = tempfile::tempdir().unwrap();
+        obtain(store.path(), &e, &opts()).unwrap();
+        // Turn it into what dblock 0.1.0 left: a symlink in the data, and a marker and SHA-256
+        // list that leave links out and carry no manifest_format.
+        let dir = target_dir(store.path(), &e);
+        std::os::unix::fs::symlink("a.txt", dir.join("mydb/current")).unwrap();
+        let old_sums = sums_as(&dir, None).unwrap();
+        assert!(!old_sums.contains("link"));
+        fs::write(dir.join(project::SUMS), &old_sums).unwrap();
+        let mut m = project::read_marker(&dir).unwrap();
+        let (_, _, old_md5) = manifest_as(&dir, None).unwrap();
+        m.manifest_md5 = old_md5.clone();
+        m.contents_sha256 = Some(sha256_hex(&old_sums));
+        m.manifest_format = None;
+        project::write_marker(&dir, &m).unwrap();
+        let text = fs::read_to_string(dir.join(project::MARKER)).unwrap();
+        assert!(!text.contains("manifest_format"), "{text}");
+        // The current format would call it changed; the marker's own format accepts it.
+        assert_ne!(manifest(&dir).unwrap().2, old_md5);
+        assert!(matches!(existing(store.path(), &e), Stored::Ready(_)));
+
+        let (l, reused) = obtain(store.path(), &e, &opts()).unwrap();
+        assert!(reused);
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "downloaded again");
+        assert_eq!(l.manifest_format, Some(MANIFEST_FORMAT));
+        assert_eq!(l.manifest_md5, manifest(&dir).unwrap().2);
+        let on_disk = project::read_marker(&dir).unwrap();
+        assert_eq!((on_disk.manifest_format, &on_disk.manifest_md5), (Some(MANIFEST_FORMAT), &l.manifest_md5));
+        // The upgraded list is exactly what a fresh fetch would write, and matches the marker.
+        let new_sums = fs::read_to_string(dir.join(project::SUMS)).unwrap();
+        assert_eq!(new_sums, sums(&dir).unwrap());
+        assert_eq!(on_disk.contents_sha256, Some(sha256_hex(&new_sums)));
+        // Other projects' dblock.lock still hold the 0.1.0 entry: it still verifies the old way.
+        assert_eq!(manifest_as(&dir, None).unwrap().2, old_md5);
+        assert_eq!(sha256_hex(&without_links(&new_sums)), sha256_hex(&old_sums));
+        assert!(matches!(existing(store.path(), &e), Stored::Ready(_)));
     }
 
     #[test]
