@@ -67,6 +67,11 @@ pub fn plain_relative(p: &str) -> bool {
         && path.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
+/// `./a/./b` -> `a/b`, for comparing paths component by component.
+fn clean(p: &str) -> std::path::PathBuf {
+    Path::new(p).components().filter(|c| !matches!(c, Component::CurDir)).collect()
+}
+
 fn default_points_to() -> String {
     "dir".into()
 }
@@ -130,6 +135,10 @@ pub fn load(extra: Option<&Path>) -> Result<Vec<Entry>> {
         for (dir, hash) in &mut e.verify_dirs {
             if !plain_relative(dir) {
                 bail!("catalog entry {}: verify_dirs folder `{dir}` must be relative, without `..`", e.id);
+            }
+            // With `keep`, a folder outside it would never be written, so its hash can't match.
+            if !e.keep.is_empty() && !e.keep.iter().any(|k| clean(dir).starts_with(clean(k))) {
+                bail!("catalog entry {}: verify_dirs folder `{dir}` is not inside any `keep` path", e.id);
             }
             *hash = hash.to_ascii_lowercase();
             if hash.len() != 40 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -217,6 +226,16 @@ mod tests {
         }
         assert!(with(r#""verify_dirs":{"a/../../b":"163f542c3f0a40f59df45d453aa235b39aa96e27"}"#).is_err());
         assert!(with(r#""verify_dirs":{"a":"abc"}"#).is_err());
+        // With `keep`, verify_dirs folders must be inside a kept path (component-wise).
+        let h = "163f542c3f0a40f59df45d453aa235b39aa96e27";
+        let v = |keep: &str, dir: &str| with(&format!(r#""keep":["{keep}"],"verify_dirs":{{"{dir}":"{h}"}}"#));
+        assert!(v("db/markers", "db/markers").is_ok());
+        assert!(v("./db", "db/markers").is_ok());
+        assert!(v("db/markers", "./db/markers/sub").is_ok());
+        let err = format!("{:#}", v("db/markers", "db/masks").unwrap_err());
+        assert!(err.contains("`db/masks` is not inside any `keep` path"), "{err}");
+        assert!(v("db/markers", "db/markers2").is_err());
+        assert!(v("db/markers", "db").is_err());
         // Without kept_size, `keep` falls back to `extracted`.
         assert_eq!(find(&with(r#""keep":["db"]"#).unwrap(), "mydb").unwrap().on_disk(), 1);
     }

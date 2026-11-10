@@ -312,79 +312,103 @@ fn cmd_verify(dir: &Path, deep: bool) -> Result<()> {
     }
     let mut bad = 0;
     for l in &lock.databases {
-        let path = Path::new(&l.path);
-        if !path.is_dir() {
-            println!("MISSING  {}: {} is gone", l.id, l.path);
+        let mut out = String::new();
+        let ok = verify_one(l, deep, &mut out);
+        print!("{out}");
+        if !ok {
             bad += 1;
-            continue;
-        }
-        let (files, bytes, md5) = fetch::manifest_as(path, l.manifest_format)?;
-        if md5 != l.manifest_md5 {
-            println!(
-                "CHANGED  {}: now {} files / {}, locked {} files / {}",
-                l.id,
-                files,
-                human(bytes),
-                l.files,
-                human(l.bytes)
-            );
-            bad += 1;
-            continue;
-        }
-        if !deep {
-            println!("ok       {}: {} files, {} (names and sizes)", l.id, files, human(bytes));
-            continue;
-        }
-        let Some(want) = &l.contents_sha256 else {
-            println!("UNCHECKED {}: no SHA-256 sums recorded (fetched by dblock 0.1); fetch it again to record them", l.id);
-            bad += 1;
-            continue;
-        };
-        eprintln!("  hashing {} ({})", l.id, human(bytes));
-        // GTDB-Tk's own folder hashes, when the catalog named some: they come from the publisher,
-        // so they also vouch for what was fetched, not just that it hasn't changed since.
-        if !l.verify_dirs.is_empty() {
-            let wrong = fetch::check_dirs(path, &l.verify_dirs)?;
-            if !wrong.is_empty() {
-                println!("CHANGED  {}: GTDB-Tk folder hash mismatch: {}", l.id, wrong.join("; "));
-                bad += 1;
-                continue;
-            }
-        }
-        let now = fetch::sums_as(path, l.manifest_format)?;
-        if &fetch::sha256_hex(&now) == want {
-            let dirs = if l.verify_dirs.is_empty() {
-                String::new()
-            } else {
-                format!(" and {} GTDB-Tk folder hash(es) match", l.verify_dirs.len())
-            };
-            println!("ok       {}: {} files, {}, every file's SHA-256 matches{dirs}", l.id, files, human(bytes));
-            continue;
-        }
-        bad += 1;
-        // Name the files, using the list stored with the data if it still matches the lock.
-        // (A list upgraded from the v0.1.0 format also has symlink lines; leave those out.)
-        let stored = std::fs::read_to_string(path.join(project::SUMS))
-            .ok()
-            .map(|t| if l.manifest_format.is_none() { fetch::without_links(&t) } else { t })
-            .filter(|t| &fetch::sha256_hex(t) == want);
-        match stored {
-            Some(old) => {
-                let old: std::collections::BTreeSet<&str> = old.lines().collect();
-                let changed: Vec<&str> = now
-                    .lines()
-                    .filter(|line| !old.contains(line))
-                    .filter_map(|line| line.splitn(3, "  ").nth(2))
-                    .collect();
-                println!("CHANGED  {}: content differs in {}", l.id, changed.join(", "));
-            }
-            None => println!("CHANGED  {}: content differs (and its {} list was altered too)", l.id, project::SUMS),
         }
     }
     if bad > 0 {
-        bail!("{bad} database(s) differ from dblock.lock");
+        bail!("{bad} database(s) differ from dblock.lock or couldn't be read");
     }
     Ok(())
+}
+
+/// Check one locked database, writing its result line(s) to `out`; `false` if it differs or
+/// couldn't be read. A read error (an unreadable file, say) is reported as `ERROR` for this
+/// database only, so the others are still checked.
+fn verify_one(l: &project::Locked, deep: bool, out: &mut String) -> bool {
+    match verify_inner(l, deep, out) {
+        Ok(ok) => ok,
+        Err(err) => {
+            out.push_str(&format!("ERROR    {}: couldn't check it: {err:#}\n", l.id));
+            false
+        }
+    }
+}
+
+fn verify_inner(l: &project::Locked, deep: bool, out: &mut String) -> Result<bool> {
+    macro_rules! say {
+        ($($t:tt)*) => {{
+            out.push_str(&format!($($t)*));
+            out.push('\n');
+        }};
+    }
+    let path = Path::new(&l.path);
+    if !path.is_dir() {
+        say!("MISSING  {}: {} is gone", l.id, l.path);
+        return Ok(false);
+    }
+    let (files, bytes, md5) = fetch::manifest_as(path, l.manifest_format)?;
+    if md5 != l.manifest_md5 {
+        say!(
+            "CHANGED  {}: now {} files / {}, locked {} files / {}",
+            l.id,
+            files,
+            human(bytes),
+            l.files,
+            human(l.bytes)
+        );
+        return Ok(false);
+    }
+    if !deep {
+        say!("ok       {}: {} files, {} (names and sizes)", l.id, files, human(bytes));
+        return Ok(true);
+    }
+    let Some(want) = &l.contents_sha256 else {
+        say!("UNCHECKED {}: no SHA-256 sums recorded (fetched by dblock 0.1); fetch it again to record them", l.id);
+        return Ok(false);
+    };
+    eprintln!("  hashing {} ({})", l.id, human(bytes));
+    // GTDB-Tk's own folder hashes, when the catalog named some: they come from the publisher,
+    // so they also vouch for what was fetched, not just that it hasn't changed since.
+    if !l.verify_dirs.is_empty() {
+        let wrong = fetch::check_dirs(path, &l.verify_dirs)?;
+        if !wrong.is_empty() {
+            say!("CHANGED  {}: GTDB-Tk folder hash mismatch: {}", l.id, wrong.join("; "));
+            return Ok(false);
+        }
+    }
+    let now = fetch::sums_as(path, l.manifest_format)?;
+    if &fetch::sha256_hex(&now) == want {
+        let dirs = if l.verify_dirs.is_empty() {
+            String::new()
+        } else {
+            format!(" and {} GTDB-Tk folder hash(es) match", l.verify_dirs.len())
+        };
+        say!("ok       {}: {} files, {}, every file's SHA-256 matches{dirs}", l.id, files, human(bytes));
+        return Ok(true);
+    }
+    // Name the files, using the list stored with the data if it still matches the lock.
+    // (A list upgraded from the v0.1.0 format also has symlink lines; leave those out.)
+    let stored = std::fs::read_to_string(path.join(project::SUMS))
+        .ok()
+        .map(|t| if l.manifest_format.is_none() { fetch::without_links(&t) } else { t })
+        .filter(|t| &fetch::sha256_hex(t) == want);
+    match stored {
+        Some(old) => {
+            let old: std::collections::BTreeSet<&str> = old.lines().collect();
+            let changed: Vec<&str> = now
+                .lines()
+                .filter(|line| !old.contains(line))
+                .filter_map(|line| line.splitn(3, "  ").nth(2))
+                .collect();
+            say!("CHANGED  {}: content differs in {}", l.id, changed.join(", "));
+        }
+        None => say!("CHANGED  {}: content differs (and its {} list was altered too)", l.id, project::SUMS),
+    }
+    Ok(false)
 }
 
 fn cmd_check(dir: &Path, entries: &[Entry]) -> Result<()> {
@@ -475,6 +499,38 @@ mod remove_tests {
             non_commercial: false,
             verify_dirs: Default::default(),
         }
+    }
+
+    /// A lock entry for `dir` as `fetch` would record it, SHA-256 list included.
+    fn locked_with_sums(id: &str, dir: &Path) -> project::Locked {
+        let mut l = locked(id, dir);
+        (l.files, l.bytes, l.manifest_md5) = fetch::manifest(dir).unwrap();
+        l.contents_sha256 = Some(fetch::sha256_hex(&fetch::sums(dir).unwrap()));
+        l.manifest_format = Some(fetch::MANIFEST_FORMAT);
+        l
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deep_verify_reports_an_unreadable_database_and_goes_on() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let (a, b) = (root.path().join("a"), root.path().join("b"));
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("x"), b"data").unwrap();
+        }
+        let (la, lb) = (locked_with_sums("a", &a), locked_with_sums("b", &b));
+        std::fs::set_permissions(a.join("x"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(a.join("x")).is_ok() {
+            return; // running as root: nothing is unreadable
+        }
+        let mut out = String::new();
+        let results: Vec<bool> = [&la, &lb].iter().map(|l| verify_one(l, true, &mut out)).collect();
+        std::fs::set_permissions(a.join("x"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(results, [false, true], "{out}");
+        assert!(out.lines().next().unwrap().starts_with("ERROR    a: couldn't check it"), "{out}");
+        assert!(out.lines().nth(1).unwrap().starts_with("ok       b:"), "{out}");
     }
 
     #[test]

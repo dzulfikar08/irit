@@ -493,16 +493,76 @@ fn tar_unpack(r: impl Read, dest: &Path, keep: &[String]) -> Result<()> {
     fs::create_dir_all(dest).with_context(ctx)?;
     // As `Archive::unpack` does, so the inside-`dest` check compares canonical paths.
     let dest = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
+    let kept = |p: &Path| keep.iter().any(|k| p.starts_with(k));
+    // As `Archive::unpack` does: folders are created as their files need them and get their own
+    // entry (and mode) only at the end, deepest first, so a read-only folder in the archive
+    // doesn't stop its files from being written. Folder entries carry no data, so holding them
+    // back doesn't disturb the stream.
+    let mut dirs = Vec::new();
     for entry in ar.entries().with_context(ctx)? {
         let mut entry = entry.with_context(ctx)?;
         let path = without_dots(&entry.path().with_context(ctx)?);
         // Component-wise: `markers` keeps `markers/x`, not `markers2/x`.
-        if keep.iter().any(|k| path.starts_with(k)) {
-            // Same per-entry routine `unpack` uses: `..` and absolute paths can't escape `dest`.
-            entry.unpack_in(&dest).with_context(ctx)?;
+        if !kept(&path) {
+            continue;
         }
+        let kind = entry.header().entry_type();
+        if kind.is_dir() {
+            dirs.push((path, entry));
+            continue;
+        }
+        // A link out of the kept folders would point at something never written.
+        if kind.is_symlink()
+            && let Some(target) = entry.link_name().with_context(ctx)?
+            && !link_target(&path, &target).is_some_and(|t| kept(&t))
+        {
+            bail!(
+                "symlink `{}` -> `{}` points outside the kept folders ({}); it would be left dangling. Add its target to the entry's `keep`",
+                path.display(),
+                target.display(),
+                keep.iter().map(|k| k.display().to_string()).collect::<Vec<_>>().join(", ")
+            );
+        }
+        // A hard link's target is an archive path; one outside `keep` was never written.
+        if kind.is_hard_link()
+            && let Some(target) = entry.link_name().with_context(ctx)?
+            && !kept(&without_dots(&target))
+        {
+            bail!(
+                "hard link `{}` -> `{}` points outside the kept folders ({}). Add its target to the entry's `keep`",
+                path.display(),
+                target.display(),
+                keep.iter().map(|k| k.display().to_string()).collect::<Vec<_>>().join(", ")
+            );
+        }
+        // Same per-entry routine `unpack` uses: `..` and absolute paths can't escape `dest`.
+        entry.unpack_in(&dest).with_context(ctx)?;
+    }
+    dirs.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, mut entry) in dirs {
+        entry.unpack_in(&dest).with_context(ctx)?;
     }
     Ok(())
+}
+
+/// Where a symlink at archive path `link` with target `target` points, as an archive path;
+/// `None` if the target is absolute or climbs above the archive's root.
+fn link_target(link: &Path, target: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in link.parent()?.join(target).components() {
+        match c {
+            Component::Normal(n) => out.push(n),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(out)
 }
 
 /// `./a/./b` -> `a/b`, so archive paths written with a leading `./` match `keep` prefixes.
@@ -1165,6 +1225,109 @@ mod tests {
         let err = format!("{:#}", obtain(store.path(), &e, &opts()).unwrap_err());
         assert!(err.contains("`db/taxonomy` matched nothing"), "{err}");
         assert!(!store.path().join("mydb").exists());
+    }
+
+    /// A `.tar.gz` of raw headers: (path, type, mode, link target, body).
+    fn archive_raw(items: &[(&str, tar::EntryType, u32, &str, &[u8])]) -> (Vec<u8>, String) {
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()));
+        for (name, kind, mode, link, body) in items {
+            let mut h = tar::Header::new_gnu();
+            h.set_path(name).unwrap();
+            h.set_entry_type(*kind);
+            h.set_mode(*mode);
+            h.set_size(body.len() as u64);
+            if !link.is_empty() {
+                h.set_link_name(link).unwrap();
+            }
+            h.set_cksum();
+            tar.append(&h, *body).unwrap();
+        }
+        let bytes = tar.into_inner().unwrap().finish().unwrap();
+        let md5 = hex(&Md5::digest(&bytes));
+        (bytes, md5)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keep_unpacks_files_into_read_only_folders_in_both_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        use tar::EntryType::{Directory, Regular};
+        let (body, md5) = archive_raw(&[
+            ("db/", Directory, 0o755, "", b""),
+            ("db/markers/", Directory, 0o555, "", b""),
+            ("db/markers/sub/", Directory, 0o555, "", b""),
+            ("db/markers/a", Regular, 0o444, "", b"A"),
+            ("db/markers/sub/b", Regular, 0o444, "", b"B"),
+            ("db/other/c", Regular, 0o644, "", b"C"),
+        ]);
+        for stream in [false, true] {
+            let (url, _) = serve(body.clone());
+            let mut e = entry(&url, &md5, body.len(), "dir");
+            e.keep = vec!["db/markers".into()];
+            let store = tempfile::tempdir().unwrap();
+            let r = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false });
+            let dir = target_dir(store.path(), &e);
+            let markers = dir.join("db/markers");
+            let mode = markers.metadata().map(|m| m.permissions().mode() & 0o777);
+            // Let the temp folder be cleaned up whatever happened.
+            for d in [markers.join("sub"), markers.clone()] {
+                let _ = fs::set_permissions(&d, fs::Permissions::from_mode(0o755));
+            }
+            r.unwrap_or_else(|err| panic!("stream={stream}: {err:#}"));
+            assert_eq!(listing(&dir), ["db/markers/a", "db/markers/sub/b"], "stream={stream}");
+            assert_eq!(mode.unwrap(), 0o555, "stream={stream}");
+        }
+    }
+
+    #[test]
+    fn kept_symlinks_must_stay_inside_the_kept_folders() {
+        use tar::EntryType::{Regular, Symlink};
+        let make = |link: &str| {
+            archive_raw(&[
+                ("db/markers/a", Regular, 0o644, "", b"A"),
+                ("db/radii/r", Regular, 0o644, "", b"R"),
+                ("db/markers/l", Symlink, 0o777, link, b""),
+            ])
+        };
+        for (link, ok) in [("a", true), ("../markers/a", true), ("../radii/r", false), ("/etc/passwd", false), ("../../../x", false)] {
+            let (body, md5) = make(link);
+            for stream in [false, true] {
+                let (url, _) = serve(body.clone());
+                let mut e = entry(&url, &md5, body.len(), "dir");
+                e.keep = vec!["db/markers".into()];
+                let store = tempfile::tempdir().unwrap();
+                let r = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false });
+                if ok {
+                    r.unwrap_or_else(|err| panic!("{link}: {err:#}"));
+                } else {
+                    let err = format!("{:#}", r.unwrap_err());
+                    assert!(err.contains("points outside the kept folders") && err.contains("db/markers/l"), "{link}: {err}");
+                    assert!(!target_dir(store.path(), &e).exists());
+                }
+            }
+        }
+        // Hard links: the target is an archive path.
+        use tar::EntryType::Link;
+        for (target, ok) in [("db/markers/a", true), ("./db/markers/a", true), ("db/radii/r", false)] {
+            let (body, md5) = archive_raw(&[
+                ("db/markers/a", Regular, 0o644, "", b"A"),
+                ("db/radii/r", Regular, 0o644, "", b"R"),
+                ("db/markers/h", Link, 0o644, target, b""),
+            ]);
+            let (url, _) = serve(body.clone());
+            let mut e = entry(&url, &md5, body.len(), "dir");
+            e.keep = vec!["db/markers".into()];
+            let store = tempfile::tempdir().unwrap();
+            let r = obtain(store.path(), &e, &opts());
+            if ok {
+                r.unwrap_or_else(|err| panic!("{target}: {err:#}"));
+            } else {
+                let err = format!("{:#}", r.unwrap_err());
+                assert!(err.contains("hard link `db/markers/h`") && err.contains("outside the kept folders"), "{err}");
+            }
+        }
+        assert_eq!(link_target(Path::new("a/b/l"), Path::new("../c")), Some(PathBuf::from("a/c")));
+        assert_eq!(link_target(Path::new("a/l"), Path::new("../../c")), None);
     }
 
     #[test]

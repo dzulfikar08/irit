@@ -91,6 +91,15 @@ manifest and `.dblock.sha256` cover only the kept files. A `keep` path that matc
 the fetch. `plan` and `catalog` use `kept_size` (bytes kept) when the entry gives it, else
 `extracted`.
 
+Folders are unpacked the way tar does it: their files first, then each folder's own entry (and
+mode) deepest first, so a read-only folder in the archive (`markers/` at mode 0555) still gets its
+files and keeps its mode. Links must stay inside the kept folders: a symlink whose target (resolved
+from where the link sits) is outside every `keep` path, absolute, or above the archive root fails
+the fetch, since it would be left dangling (and GTDB-Tk's `sha1_dir` would then fail on it). A hard
+link to a file outside the kept folders fails the same way. Add the target's folder to `keep`.
+When `keep` is set, every `verify_dirs` folder must be inside a `keep` path; the catalog is refused
+otherwise.
+
 ### GTDB-Tk folder hashes (`verify_dirs`)
 
 `verify_dirs` maps folders inside the database to the hash GTDB-Tk itself expects for them
@@ -127,7 +136,9 @@ files added, removed, truncated or grown in seconds, without re-reading 100 GB. 
 notice an edit that keeps a file's size. `contents_sha256` is the SHA-256 of the per-file SHA-256
 list taken at fetch time; `dblock verify --deep` re-hashes every file, compares, and names the files
 that changed. Databases fetched by dblock 0.1 have no `contents_sha256`; `verify --deep` reports
-them as unchecked until they are fetched again. Commit `dblock.lock` with the analysis.
+them as unchecked until they are fetched again. A database that can't be read (a file without read
+permission, say) is reported as `ERROR` with the reason, and the others are still checked; `verify`
+exits non-zero if any database is missing, changed, unchecked or unreadable. Commit `dblock.lock` with the analysis.
 
 `manifest_format = 2` means symlinks are part of both fingerprints. Markers and lock entries
 without it come from dblock 0.1.0, which left symlinks out; dblock checks those the old way, so a
@@ -147,7 +158,7 @@ Every URL, size and checksum in the built-in catalog was checked against the pub
 |---|---|---|---|
 | `gtdbtk-r232` | 60.8 GB | ~100 GB | GTDB-Tk ≥ 2.7.0 (2.7.1+ recommended). Needs ~140 GB RAM to run: see [GTDB-Tk and memory](../research/gtdbtk-memory.md). |
 | `gtdbtk-r232-client` | 26 MB | 80 MB | Client data for [gtdbprep](gtdbprep.md): `markers/`, `masks/`, `metadata/`, `taxonomy/` from the mockup archive. **Can't classify.** MD5 observed, not published; see below. |
-| `gtdbtk-r232-mockup` | 26 MB | ~120 MB | Test database. Currently refused: the served file doesn't match GTDB's checksum ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)). |
+| `gtdbtk-r232-mockup` | 26 MB | ~120 MB | Test database. Currently refused: the served file doesn't match GTDB's checksum ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)). For gtdbprep use `gtdbtk-r232-client` (below). |
 | `checkm2-db-v3` | 1.7 GB | ~3.5 GB | CheckM2 ≥ 1.1.0 only. |
 | `silva-144-qiime2-full` | 274 MB | same | QIIME 2 ≥ 2026.4. |
 | `silva-144-qiime2-v4` | 79 MB | same | 515F/806R amplicons only. |
@@ -212,7 +223,9 @@ once (one download, the other waits and reuses it), an MD5 written in upper case
 download larger than the file, a database folder without a marker, a same-size edit (caught only by
 the SHA-256 list), and a `glob:` entry that matches two files (an error, not a silent fallback to the
 folder), `keep` in both modes (only listed folders written, skipped entries still checksummed, a
-`keep` path that matches nothing), and `verify_dirs` passing and failing (nothing kept on mismatch).
+`keep` path that matches nothing, a read-only kept folder, symlinks and hard links out of the kept
+folders refused), `verify_dirs` passing and failing (nothing kept on mismatch) and outside `keep`
+(catalog refused), and `verify --deep` reporting an unreadable database and going on to the next.
 `sha1_dir` is cross-checked against GTDB-Tk's Python function when `GTDBTK_PYTHON` (or
 `/tmp/mm/gtdbtk/bin/python`) has GTDB-Tk installed; otherwise that test is skipped.
 
