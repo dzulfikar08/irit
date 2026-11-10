@@ -60,6 +60,34 @@ Compression is an open question rather than a known result:
 Any of these would have to reproduce GTDB-Tk's classifications on a large test set (GTDB's own
 genomes give one) before it means anything.
 
+## Using hosted data instead of downloading it
+
+Two separate problems: disk and download (61 GB archive, ~100 GB unpacked) and RAM (~140 GB).
+Hosting the data elsewhere helps only the first.
+
+- **Reading from the publisher's storage doesn't work as shipped.** GTDB is one `.tar.gz`; gzip
+  can't be read from the middle, so a run can't fetch just the part it needs, and GTDB-Tk expects
+  every file on local disk.
+- **Unpacked, individually addressable files would help disk.** If GTDB's files were hosted unpacked
+  (for example on Cloudflare R2: about $1.50/month for 100 GB, no egress fees; GTDB's CC BY-SA
+  licence allows redistribution with attribution), a tool could fetch only the backbone tree and the
+  class-level parts a run touches. RAM stays the same: placement still loads its tree into memory.
+- **Splitting the work helps both.** GTDB-Tk's light steps (finding and aligning the 120 marker
+  genes; sketching the genome for the ANI species check) can run on a laptop and produce a few kB to
+  MB per genome. The heavy step (placement on the tree held in RAM) can run once on a shared server
+  that keeps the tree loaded for many users, needing ~44 GB with gPlace. Genomes stay on the
+  laptop; only marker alignments and sketches are sent. Someone must run that server (on-demand
+  cloud machines or a host institution); serverless platforms such as Cloudflare Workers and
+  Containers have memory limits far below this.
+
+Hosted options that exist today (2026-11-10):
+
+- [KBase GTDB-Tk app](https://kbase.us/applist/apps/kb_gtdbtk/run_kb_gtdbtk_classify_wf/release):
+  free, browser-based, GTDB-Tk 2.3.2 (older than the current 2.7/2.8).
+- [Galaxy Europe](https://usegalaxy.eu/root?tool_id=gtdbtk_classify_wf): GTDB-Tk 2.7.2 for R232, but
+  users [report](https://help.galaxyproject.org/t/gtdb-tk-database-galaxy-version-2-6-0-galaxy0/18605)
+  its database isn't loaded yet; older tool versions work.
+
 ## Plan
 
 1. Measure first: GTDB-Tk with and without `--scratch_dir`, and with gPlace and `--max_memory`, on a
