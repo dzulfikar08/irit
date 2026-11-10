@@ -1,0 +1,48 @@
+name: Release
+
+# Push a tag like v0.1.0 to build binaries for every platform and attach them to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds are static (musl), so they run on old distributions too.
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, cross: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, cross: true }
+          - { target: x86_64-apple-darwin, os: macos-latest, cross: false }
+          - { target: aarch64-apple-darwin, os: macos-latest, cross: false }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, cross: false }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then tool=cross; else tool=cargo; fi
+          $tool build --release --workspace --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          name=leanbio-${GITHUB_REF_NAME}-${{ matrix.target }}
+          mkdir "$name"
+          ext=""; [[ "${{ matrix.target }}" == *windows* ]] && ext=".exe"
+          for b in sheetgen leanqc dblock; do cp "target/${{ matrix.target }}/release/$b$ext" "$name/"; done
+          cp README.md LICENSE-MIT LICENSE-APACHE "$name/"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then 7z a "$name.zip" "$name"; else tar czf "$name.tar.gz" "$name"; fi
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: leanbio-*.*

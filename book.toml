@@ -1,0 +1,9 @@
+[book]
+title = "leanbio"
+description = "Lean bioinformatics tools for ordinary laptops"
+language = "en"
+src = "docs"
+
+[output.html]
+git-repository-url = "https://github.com/dzulfikar08/leanbio"
+edit-url-template = "https://github.com/dzulfikar08/leanbio/edit/main/{path}"

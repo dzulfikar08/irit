@@ -1,0 +1,12 @@
+[package]
+name = "sheetgen"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+regex = "1.13.1"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+walkdir = "2.5.0"

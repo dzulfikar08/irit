@@ -1,0 +1,296 @@
+[
+  {
+    "id": "gtdbtk-r232",
+    "name": "GTDB-Tk reference data, GTDB release 232 (full package)",
+    "version": "R232",
+    "tool": "GTDB-Tk",
+    "urls": [
+      "https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz",
+      "https://data.ace.uq.edu.au/public/gtdb/data/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz"
+    ],
+    "format": "tar.gz",
+    "size": 60806405195,
+    "extracted": 100000000000,
+    "md5": "25a59e0352b1fd150c589f56559767d4",
+    "md5_source": "https://data.gtdb.ecogenomic.org/releases/release232/232.0/MD5SUM.txt",
+    "env": "GTDBTK_DATA_PATH",
+    "env_points_to": "dir",
+    "compat": {
+      "command": [
+        "gtdbtk",
+        "--version"
+      ],
+      "min": "2.7.0",
+      "source": "https://ecogenomics.github.io/GTDBTk/installing/index.html"
+    },
+    "licence": "CC BY-SA 4.0",
+    "non_commercial": false,
+    "notes": "GTDB-Tk 2.7.1+ recommended (2.7.1 fixed an MD5 check in check_install). About 100 GB once extracted."
+  },
+  {
+    "id": "gtdbtk-r232-mockup",
+    "name": "GTDB-Tk R232 mock database (tests only, results are not meaningful)",
+    "version": "R232",
+    "tool": "GTDB-Tk",
+    "urls": [
+      "https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/mockup_db/r232_mockup.tar.gz"
+    ],
+    "format": "tar.gz",
+    "size": 26324952,
+    "extracted": 120000000,
+    "md5": "2c710f35d7e6296615bcf9026ee1c951",
+    "md5_source": "https://data.gtdb.ecogenomic.org/releases/release232/232.0/MD5SUM.txt",
+    "env": "GTDBTK_DATA_PATH",
+    "env_points_to": "dir",
+    "compat": {
+      "command": [
+        "gtdbtk",
+        "--version"
+      ],
+      "min": "2.7.0",
+      "source": "https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/mockup_db/HOWTO.txt"
+    },
+    "licence": "CC BY-SA 4.0",
+    "non_commercial": false,
+    "notes": "For checking that a pipeline runs; classifications against it are fake. As of 2026-11-10 the file served (md5 59512f60fa48010647977460bb855666, same size) does not match GTDB's MD5SUM.txt, so dblock refuses it until GTDB fixes one or the other."
+  },
+  {
+    "id": "checkm2-db-v3",
+    "name": "CheckM2 DIAMOND database (UniRef100/KO), version 3",
+    "version": "3",
+    "tool": "CheckM2",
+    "urls": [
+      "https://zenodo.org/records/14897628/files/checkm2_database.tar.gz"
+    ],
+    "format": "tar.gz",
+    "size": 1735095710,
+    "extracted": 3500000000,
+    "md5": "07c10655620843b517d0df0c160d911f",
+    "md5_source": "https://zenodo.org/api/records/14897628",
+    "env": "CHECKM2DB",
+    "env_points_to": "glob:*.dmnd",
+    "compat": {
+      "command": [
+        "checkm2",
+        "--version"
+      ],
+      "min": "1.1.0",
+      "source": "https://github.com/chklovski/CheckM2/releases/tag/1.1.0"
+    },
+    "licence": "CC BY 4.0",
+    "non_commercial": false,
+    "notes": "Not usable with CheckM2 1.0.x or older (they need database v2, Zenodo record 5571251). Extracted size is our estimate."
+  },
+  {
+    "id": "silva-144-qiime2-full",
+    "name": "SILVA 144 SSU Ref NR99 QIIME 2 classifier, full-length 16S/18S",
+    "version": "144 (trained with QIIME 2 2026.7)",
+    "tool": "QIIME 2",
+    "urls": [
+      "https://www.arb-silva.de/fileadmin/silva_databases/release_144/QIIME2/2026.7/SSU/full-length/uniform/SILVA_144_SSURef_NR99_uniform_classifier_full-length.qza"
+    ],
+    "format": "file",
+    "size": 273598878,
+    "extracted": 273598878,
+    "md5": "e16b9bc78dafa2f344563e570bbf25ba",
+    "md5_source": "published .md5 file next to the download",
+    "env": null,
+    "env_points_to": "glob:*.qza",
+    "compat": {
+      "command": [
+        "qiime",
+        "--version"
+      ],
+      "min": "2026.4",
+      "source": "https://www.arb-silva.de/documentation/classifiers/qiime-2"
+    },
+    "licence": "CC BY 4.0",
+    "non_commercial": false,
+    "notes": "Classifiers trained with QIIME 2 2026.7 load in QIIME 2 2026.4 and later."
+  },
+  {
+    "id": "silva-144-qiime2-v4",
+    "name": "SILVA 144 SSU Ref NR99 QIIME 2 classifier, V4 region (515F/806R)",
+    "version": "144 (trained with QIIME 2 2026.7)",
+    "tool": "QIIME 2",
+    "urls": [
+      "https://www.arb-silva.de/fileadmin/silva_databases/release_144/QIIME2/2026.7/SSU/V4-515f-806r/uniform/SILVA_144_SSURef_NR99_uniform_classifier_V4-515f-806r.qza"
+    ],
+    "format": "file",
+    "size": 79326205,
+    "extracted": 79326205,
+    "md5": "683a71dcd81ce90d724add22d2ad4d0f",
+    "md5_source": "published .md5 file next to the download",
+    "env": null,
+    "env_points_to": "glob:*.qza",
+    "compat": {
+      "command": [
+        "qiime",
+        "--version"
+      ],
+      "min": "2026.4",
+      "source": "https://www.arb-silva.de/documentation/classifiers/qiime-2"
+    },
+    "licence": "CC BY 4.0",
+    "non_commercial": false,
+    "notes": "Only for amplicons from the 515F/806R primers; use the full-length classifier otherwise."
+  },
+  {
+    "id": "kraken2-standard-8gb-20261022",
+    "name": "Kraken 2 + Bracken Standard-8 (capped at 8 GB)",
+    "version": "2026-10-22",
+    "tool": "Kraken 2",
+    "urls": [
+      "https://genome-idx.s3.amazonaws.com/kraken/k2_standard_08_GB_20261022.tar.gz"
+    ],
+    "format": "tar.gz",
+    "size": 5936595768,
+    "extracted": 7500000000,
+    "md5": "7447d230ea402d0b523c14d217b5c20b",
+    "md5_source": "https://genome-idx.s3.amazonaws.com/kraken/standard_08_GB_20261022/standard_08_GB.md5",
+    "env": null,
+    "env_points_to": "dir",
+    "compat": null,
+    "licence": "No extra terms from the index host; NCBI RefSeq terms apply",
+    "non_commercial": false,
+    "notes": "Fits in 8 GB of RAM. Sensitivity is lower than the full Standard index."
+  },
+  {
+    "id": "kraken2-standard-16gb-20261022",
+    "name": "Kraken 2 + Bracken Standard-16 (capped at 16 GB)",
+    "version": "2026-10-22",
+    "tool": "Kraken 2",
+    "urls": [
+      "https://genome-idx.s3.amazonaws.com/kraken/k2_standard_16_GB_20261022.tar.gz"
+    ],
+    "format": "tar.gz",
+    "size": 11989783342,
+    "extracted": 14900000000,
+    "md5": "98dfe7527064392b05b17999c9c084bc",
+    "md5_source": "https://genome-idx.s3.amazonaws.com/kraken/standard_16_GB_20261022/standard_16_GB.md5",
+    "env": null,
+    "env_points_to": "dir",
+    "compat": null,
+    "licence": "No extra terms from the index host; NCBI RefSeq terms apply",
+    "non_commercial": false,
+    "notes": "Needs about 16 GB of RAM to run."
+  },
+  {
+    "id": "kraken2-pluspf-8gb-20261022",
+    "name": "Kraken 2 + Bracken PlusPF-8 (adds protozoa and fungi, capped at 8 GB)",
+    "version": "2026-10-22",
+    "tool": "Kraken 2",
+    "urls": [
+      "https://genome-idx.s3.amazonaws.com/kraken/k2_pluspf_08_GB_20261022.tar.gz"
+    ],
+    "format": "tar.gz",
+    "size": 5911997880,
+    "extracted": 7500000000,
+    "md5": "a6810ec65da5681334c76f1b23b42f92",
+    "md5_source": "https://genome-idx.s3.amazonaws.com/kraken/pluspf_08_GB_20261022/pluspf_08_GB.md5",
+    "env": null,
+    "env_points_to": "dir",
+    "compat": null,
+    "licence": "No extra terms from the index host; NCBI RefSeq terms apply",
+    "non_commercial": false,
+    "notes": "Fits in 8 GB of RAM."
+  },
+  {
+    "id": "kraken2-viral-20261022",
+    "name": "Kraken 2 + Bracken Viral (RefSeq viral)",
+    "version": "2026-10-22",
+    "tool": "Kraken 2",
+    "urls": [
+      "https://genome-idx.s3.amazonaws.com/kraken/k2_viral_20261022.tar.gz"
+    ],
+    "format": "tar.gz",
+    "size": 589941425,
+    "extracted": 1230959768,
+    "md5": "2c8c97686c45474d1d82cf940b4d9893",
+    "md5_source": "https://genome-idx.s3.amazonaws.com/kraken/viral_20261022/viral.md5",
+    "env": null,
+    "env_points_to": "dir",
+    "compat": null,
+    "licence": "No extra terms from the index host; NCBI RefSeq terms apply",
+    "non_commercial": false,
+    "notes": "Viruses only. Small enough for quick end-to-end tests. Unpacks to 1.23 GB (measured; the index page says 0.6 GB)."
+  },
+  {
+    "id": "bakta-db-v6-full",
+    "name": "Bakta annotation database, schema 6.0 (full)",
+    "version": "6.0",
+    "tool": "Bakta",
+    "urls": [
+      "https://s3.computational.bio.uni-giessen.de/bakta-db/db-v6.0.tar.xz",
+      "https://zenodo.org/records/14916843/files/db.tar.xz"
+    ],
+    "format": "tar.xz",
+    "size": 31921769288,
+    "extracted": 84000000000,
+    "md5": "4c1115e40abfa2b464ae5dd988bdd88e",
+    "md5_source": "https://zenodo.org/api/records/14916843",
+    "env": "BAKTA_DB",
+    "env_points_to": "dir",
+    "compat": {
+      "command": [
+        "bakta",
+        "--version"
+      ],
+      "min": "1.11.0",
+      "max_exclusive": "2.0.0",
+      "source": "https://zenodo.org/records/14916843/files/db-versions.json"
+    },
+    "licence": "CC BY 4.0",
+    "non_commercial": false,
+    "notes": "Bakta accepts a database only when its major schema version matches its own (6 for Bakta 1.11-1.12). Run `amrfinder_update --database <db>/amrfinderplus-db` afterwards, as `bakta_db install` would."
+  },
+  {
+    "id": "bakta-db-v6-light",
+    "name": "Bakta annotation database, schema 6.0 (light)",
+    "version": "6.0",
+    "tool": "Bakta",
+    "urls": [
+      "https://s3.computational.bio.uni-giessen.de/bakta-db/db-light-v6.0.tar.xz",
+      "https://zenodo.org/records/14916843/files/db-light.tar.xz"
+    ],
+    "format": "tar.xz",
+    "size": 1344199496,
+    "extracted": 3900000000,
+    "md5": "4a6e059ded39e9c5537ef4137d2f5648",
+    "md5_source": "https://zenodo.org/api/records/14916843",
+    "env": "BAKTA_DB",
+    "env_points_to": "dir",
+    "compat": {
+      "command": [
+        "bakta",
+        "--version"
+      ],
+      "min": "1.11.0",
+      "max_exclusive": "2.0.0",
+      "source": "https://zenodo.org/records/14916843/files/db-versions.json"
+    },
+    "licence": "CC BY 4.0",
+    "non_commercial": false,
+    "notes": "The laptop-sized Bakta database. Run `amrfinder_update --database <db>/amrfinderplus-db` afterwards."
+  },
+  {
+    "id": "card-4.0.2",
+    "name": "CARD antibiotic resistance data (broadstreet)",
+    "version": "4.0.2",
+    "tool": "RGI",
+    "urls": [
+      "https://card.mcmaster.ca/download/0/broadstreet-v4.0.2.tar.bz2"
+    ],
+    "format": "tar.bz2",
+    "size": 4366637,
+    "extracted": 50292963,
+    "md5": "8d62fd062940868384462364513ed114",
+    "md5_source": "not published by CARD; computed by us on 2026-11-10 from this exact URL",
+    "env": null,
+    "env_points_to": "dir",
+    "compat": null,
+    "licence": "Free for non-commercial use at academic, government and non-profit institutions only. Commercial organisations, even for research, need a paid licence from McMaster University. The ARO ontology is CC BY 4.0.",
+    "non_commercial": true,
+    "notes": "Check the licence before using this in a company."
+  }
+]
