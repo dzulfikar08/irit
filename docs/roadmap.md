@@ -11,13 +11,12 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [x] Baseline of nf-core/bacass on a laptop ([setup](lab/setup.md), [benchmarks](benchmarks.md)).
 - [x] `isotable`: one graded row per sample from nine tools' outputs, isolate and MAG (MIMAG) modes,
       with a note for reduced-genome lineages.
+- [x] v0.1.0 release with static binaries for Linux (x86_64, ARM64), macOS (Intel, Apple Silicon)
+      and Windows, built by GitHub Actions on each tag.
 - [x] Upstream report: GTDB R232 mock database checksum ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)).
 
 ## Next
 
-- [ ] **Release binaries for every platform**: Linux (x86_64 and ARM64, statically linked so old
-      distributions work), macOS (Intel and Apple Silicon), Windows. A single binary only helps if
-      people can download one for their machine.
 - [ ] **GTDB-Tk on a desktop: measure before building.** Peak memory and time for GTDB-Tk with and
       without `--scratch_dir`, and with gPlace and `--max_memory`, on a rented large-memory machine.
       See [GTDB-Tk and memory](research/gtdbtk-memory.md).
