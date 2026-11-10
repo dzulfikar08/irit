@@ -494,9 +494,17 @@ IRIT_BIN_DIR=/opt/irit/bin sh irit-runs/<run-id>/replay.sh # or from a folder
 Third-party tools (fastp, bakta, checkm2, gtdbtk) are always taken from `PATH`, so activate their
 conda environment first. `IRIT_BIN_DIR` applies to the irit tools only.
 
-Some third-party outputs differ between two identical runs: logs with timestamps, for example.
-They are recorded with `"volatile": true` and their hash, and `replay.sh` only checks that they
-exist (`check_exists`). Every other output is checked by hash.
+Some third-party outputs differ between two identical runs. They are recorded with
+`"volatile": true` and their hash, and `replay.sh` only checks that they exist (`check_exists`).
+Every other output is checked by hash. The lists come from running each tool twice with the same
+inputs and paths in the real-tools workflow (below) and comparing every file:
+
+| Tool | Volatile outputs | Why they differ |
+|---|---|---|
+| fastp | `.html` | The HTML report; the JSON report is identical. |
+| bakta | `.log`, `.gbff`, `.embl`, `.json`, `.svg` | Run times and dates (GenBank `LOCUS` date; in the JSON only `run.start` and `run.end`). |
+| checkm2 | `checkm2.log` | Timestamps. |
+| gtdbtk | `.log`, `gtdbtk.json`, `.gz` | Timestamps (in `gtdbtk.json` only each step's start and end); gzip headers carry a time. |
 
 The script warns when a tool's `--version` (its first line) differs from the recorded one (a tool whose version
 couldn't be read in the run gets one "version unknown" line instead), exports each call's recorded
@@ -585,6 +593,16 @@ run but does not carry the data.
   over stdio, checks the summaries, a failed run, an exit 0 without outputs, a version warning and
   the run record, then deletes the outputs, replays and gets the same hashes. A second test checks
   the install hint when a tool is missing.
+- With the real programs: the opt-in workflow
+  [`mcp-real-tools.yml`](https://github.com/dzulfikar08/irit/blob/main/.github/workflows/mcp-real-tools.yml)
+  installs fastp 1.4.0, Bakta 1.12.2, CheckM2 1.1.0 and GTDB-Tk 2.8.0 from Bioconda (one
+  environment each), fetches the Bakta light and CheckM2 databases through `dblock_add` and
+  `dblock_fetch`, and runs the four tools through irit-mcp on *Mycoplasma genitalium* G37 (reads
+  simulated from it for fastp) and on GTDB's mock database and test genome for GTDB-Tk. It runs
+  each tool twice to find the volatile outputs, deletes the outputs and runs `replay.sh`. It only
+  runs by hand: `gh workflow run mcp-real-tools.yml`. First result (2026-11-10): all calls
+  succeeded; fastp 40,000 reads, Bakta 522 CDSs / 36 tRNAs / 3 rRNAs, CheckM2 98.9% complete and
+  0.08% contaminated, GTDB-Tk classified the mock test genome with ANI 100.
 - By hand: a session with sheetgen → leanqc → isotable → dblock_catalog replayed with all 7 outputs
   matching; dblock_add, plan, verify, env and check against a local project.
 
@@ -602,8 +620,16 @@ run but does not carry the data.
   is writing.
 - The RO-Crate does not include the data, and has no `agent` (who ran it) yet.
 - No streamable HTTP transport.
-- The third-party wrappers are tested with stand-ins, not the real programs and databases (see
-  Tested).
+- The real programs are only checked by the opt-in workflow, on a small genome and GTDB's mock
+  database: GTDB-Tk has not been run through irit-mcp with the full R232 data.
+- Bakta: the AMRFinderPlus data inside the Bakta v6 databases (`amrfinderplus-db/`) may be older
+  than the `amrfinder` Bioconda installs with Bakta 1.12.2, and Bakta then fails with "amrfinder
+  error". Run `amrfinder_update --force_update --database <BAKTA_DB>/amrfinderplus-db` once (as
+  Bakta's message says). This changes the dblock-managed folder, so `dblock_verify` will then
+  report it as changed.
+- CheckM2 1.1.0 from Bioconda can fail to load TensorFlow on newer glibc ("cannot enable
+  executable stack"). Setting `GLIBC_TUNABLES=glibc.rtld.execstack=2` for CheckM2 works around it
+  (the workflow does this in a wrapper script).
 - No wrapper yet for an assembler, mlst or AMRFinderPlus, so the isolate path still has a step
   outside the record.
 - A long Bakta or GTDB-Tk call blocks until it ends; there is no progress reporting or

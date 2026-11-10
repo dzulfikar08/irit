@@ -526,7 +526,10 @@ fn bakta_db(field: &str, shown: &str, dir: &Path) -> Check<PathBuf> {
 pub fn bakta(ctx: &Ctx, p: &BaktaParams) -> Check<Invocation> {
     let cwd = ctx.cwd.as_path();
     let mut inv = external("bakta");
-    inv.volatile = &[".log"];
+    // Seen in the real-tools workflow: the log, GenBank/EMBL (LOCUS date), the JSON (run start and
+    // end only) and the SVG plot differ between identical runs. The .txt, GFF3, TSV and FASTA
+    // outputs don't, and are hash-checked.
+    inv.volatile = &[".log", ".gbff", ".embl", ".json", ".svg"];
     let genome = v::existing_file(cwd, "genome", &p.genome)?;
     v::sequence_file(&genome, "genome", &p.genome, Seq::Fasta)?;
     inv.inputs.push(genome);
