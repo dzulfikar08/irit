@@ -49,7 +49,11 @@ jobs:
           sudo mkdir -p "$base/gtdb" && sudo chown "$USER" "$base/gtdb"
           echo "DATA=$base/gtdb" >> "$GITHUB_ENV"
           # skani loads every reference's markers (markers.bin, 9.9 GB) for the full search.
-          sudo fallocate -l 16G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap /swapfile2 && sudo swapon /swapfile2
+          # Swap on the other disk when there is one (the data disk fills up otherwise).
+          if [[ $base == /mnt ]]; then sw=$HOME/swapfile2; else sw=/mnt/swapfile2; fi
+          [[ -d $(dirname "$sw") ]] || sw=/swapfile2
+          sudo fallocate -l 12G "$sw" && sudo chmod 600 "$sw" && sudo mkswap "$sw" && sudo swapon "$sw"
+          echo "swap at $sw"
           free -g; df -h / /mnt || true
           mkdir -p "$GITHUB_WORKSPACE/results"
 
@@ -118,12 +122,13 @@ jobs:
             ln "$DATA/idx/markers.idx" "$DATA/idx/refs.bin" "$d/"; cp "$DATA/idx/meta.json" "$d/"
             "$G" ani-index gz-attach --index "$d" --scan "$DATA/scan" --every $every
           done
+          rm "$DATA/scan/gz-full.idx"
           cp "$DATA/idx4/meta.json" results/meta.json
           ls -la "$DATA"/idx*/ | tee results/index-files.txt
-          # How well the files compress for download.
-          for f in "$DATA/idx/markers.idx" "$DATA/idx/refs.bin" "$DATA/idx1/gz.idx" "$DATA/idx4/gz.idx" "$DATA/idx16/gz.idx"; do
+          for f in "$DATA/idx/markers.idx" "$DATA/idx/refs.bin" "$DATA/idx4/gz.idx" "$DATA/idx16/gz.idx"; do
             echo "$f $(stat -c %s "$f") zstd-19: $(zstd -19 -T4 -c "$f" | wc -c)"
           done | tee results/compression.txt
+          df -h "$DATA" | tee -a results/df.txt
 
       - name: Reference - GTDB-Tk's ANI screen on the full database (skani 0.3.1 and 0.4.0)
         run: |
@@ -134,37 +139,57 @@ jobs:
               --skani "${!s}" --allow-skani-version --data "$REL" --env "$GTDB_ENV" --cpus 4 --full-db "$REL/skani/database" \
               > results/full-$v.txt 2>&1 || echo "full $v failed: $?"
             tail -5 results/full-$v.txt
+            cp -r "ref$v/logs" "results/logs-ref$v" || true
           done
+          mkdir -p results/ref031-out && cp -r ref031/out/classify results/ref031-out/ || true
+          df -h "$DATA" | tee -a results/df.txt
 
       - name: Client - local sketches.db as the source
         run: |
           set -euo pipefail
           /usr/bin/time -v -o results/time-local.txt "$G" ani --genomes genomes --index "$DATA/idx" --source "$REL/skani/database/sketches.db" \
             --work local --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 | tee results/local.txt
+          du -sh local/* | tee results/du-local.txt
+          exp/ani/compare.sh ref031/out local/out | tee results/compare-local.txt || true
+          rm -rf local/db local/cache local/query_sketch
+          df -h "$DATA" | tee -a results/df.txt
 
-      - name: Client - GTDB's server with Range requests (seek index every 1, 4, 16 MiB)
+      - name: Upload results so far
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ani-laptop-results-part1
+          path: results/
+
+      - name: Client - GTDB's server with Range requests (seek index every 4, 16, 1 MiB)
         run: |
           set -euo pipefail
-          for every in 4 1 16; do
+          for every in 4 16 1; do
             /usr/bin/time -v -o results/time-gtdb-$every.txt "$G" ani --genomes genomes --index "$DATA/idx$every" --source gtdb \
               --work "gtdb$every" --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 | tee results/gtdb-$every.txt
+            exp/ani/compare.sh ref031/out "gtdb$every/out" | tee results/compare-gtdb-$every.txt || true
+            if [[ $every == 4 ]]; then
+              # Second run with a warm cache: nothing to fetch.
+              "$G" ani --genomes genomes --index "$DATA/idx4" --source gtdb --work gtdb4 \
+                --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 | tee results/gtdb-4-warm.txt
+            fi
+            du -sh "gtdb$every"/* | tee -a results/du-gtdb.txt
+            rm -rf "gtdb$every/db" "gtdb$every/cache" "gtdb$every/query_sketch"
+            df -h "$DATA" | tee -a results/df.txt
           done
-          # Second run with a warm cache: nothing to fetch.
-          "$G" ani --genomes genomes --index "$DATA/idx4" --source gtdb --work gtdb4 --cache gtdb4/cache \
-            --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 | tee results/gtdb-4-warm.txt
 
       - name: Compare
         run: |
           set -uo pipefail
           st=0
-          for t in local gtdb4 gtdb1 gtdb16; do
+          for t in local gtdb4 gtdb16 gtdb1; do
             echo "== $t vs GTDB-Tk + skani 0.3.1 (full database)" | tee -a results/compare.txt
             exp/ani/compare.sh ref031/out "$t/out" | tee -a results/compare.txt || st=1
           done
           echo "== GTDB-Tk + skani 0.4.0 vs skani 0.3.1, both full database" | tee -a results/compare.txt
           exp/ani/compare.sh ref031/out ref040/out | tee -a results/compare.txt || true
-          for f in ref031/out/classify/ani_screen/*.tsv; do echo "--- $f"; cat "$f"; done | tee results/ani_summary_ref.txt
-          zcat ref031/out/classify/ani_screen/gtdbtk.ani_screen_unassigned_hits.tsv.gz | tee results/unassigned_ref.txt | head -40
+          for f in ref031/out/classify/ani_screen/*.tsv; do echo "--- $f"; cat "$f"; done > results/ani_summary_ref.txt
+          zcat ref031/out/classify/ani_screen/gtdbtk.ani_screen_unassigned_hits.tsv.gz > results/unassigned_ref.txt || true
           exit $st
 
       - name: Over 50 genomes (skani's inverted-index path)
@@ -174,6 +199,7 @@ jobs:
           set -uo pipefail
           /usr/bin/time -v -o results/time-c51.txt "$G" ani --genomes genomes51 --index "$DATA/idx" --source "$REL/skani/database/sketches.db" \
             --work c51 --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 > results/c51.txt 2>&1
+          rm -rf c51/db c51/cache
           /usr/bin/time -v -o results/time-full51.txt "$G" ani --genomes genomes51 --index "$DATA/idx" --work ref51 \
             --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 --full-db "$REL/skani/database" > results/full51.txt 2>&1
           exp/ani/compare.sh ref51/out c51/out | tee results/compare51.txt
