@@ -5,6 +5,8 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+# Unused directly: switches needletail's gzip decoding from miniz_oxide to the faster zlib-rs.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 memchr = "2.8.3"
