@@ -248,6 +248,60 @@ GTDBPREP_SKANI=/path/to/skani-0.3.1 \
 cargo test --release -- --ignored
 ```
 
+## The ANI species screen without the 85 GB database (`ani`)
+
+`gtdbprep ani` runs GTDB-Tk's ANI screen (the first step of `classify_wf`, which gives species
+names) on a laptop. It does not need the 85 GB skani database. How it works and what was
+measured: [The ANI species check on a laptop](../research/ani-laptop.md).
+
+```sh
+gtdbprep ani --genomes mags/ -x fna --work ani-work \
+    --index ani-screen-r232/ --source gtdb \
+    --data release232/ --env ~/micromamba/envs/gtdbtk --skani /path/to/skani-0.3.1
+```
+
+1. skani 0.3.1 sketches the genomes, with the database's parameters.
+2. The genomes are screened against the *screen index*: every reference's marker count and
+   32-bit fingerprints of its marker k-mers. This keeps every reference `skani search` would
+   compare in full (and perhaps a few more).
+3. Only those references' full sketches are fetched, by HTTP range requests, into a cache
+   (`--cache`, default `<work>/cache`). Each is checked against a hash in the index.
+4. They are written as a small skani database, and GTDB-Tk's own `ANIScreener` runs against it.
+   So the species rule (closest reference with AF >= 0.5, within its radius) and the output files
+   are GTDB-Tk's: `<work>/out/classify/ani_screen/gtdbtk.{bac120,ar53}.ani_summary.tsv` and
+   `gtdbtk.ani_screen_unassigned_hits.tsv.gz`.
+
+Options:
+
+- `--source gtdb` (default) reads the sketches from GTDB's own `gtdbtk_r232_data.tar.gz`, through
+  the seek index in the screen index folder (`gz.idx`). `--gtdb-url` points at another copy.
+- `--source <path or URL of sketches.db>` reads an unpacked `sketches.db`, local or hosted.
+- `--source '<url>/sketches.db.{part}' --part-size N` reads one split into numbered parts.
+- `--data` needs `taxonomy/`, `radii/` and `metadata/` (the `gtdbtk-r232-placement-lite` mirror
+  has them). `--env` is a GTDB-Tk 2.8.0 environment.
+- `--skani` must be the version the database was made with (0.3.1 for R232), or pass
+  `--allow-skani-version`. Bioconda's GTDB-Tk 2.8.0 brings skani 0.4.0 unless you pin it.
+- `--full-db <skani/database>` is for testing: it runs the same GTDB-Tk call on a full database.
+
+It prints, per genome, the number of marker k-mers and of references screened in, and the bytes
+fetched.
+
+**Making the screen index** (maintainers; needs the full database once):
+
+```sh
+gtdbprep ani-index build --db release232/skani/database --out ani-screen-r232 --release r232
+curl -s "$URL" | gtdbprep ani-index gz-scan --input - --out scan --url "$URL"
+gtdbprep ani-index gz-attach --index ani-screen-r232 --scan scan --every 4
+```
+
+`gz-scan` reads the archive once (it can share one download with `tar -x`) and keeps a checkpoint
+every `--spacing` bytes (default 1 MiB) of `sketches.db`. `gz-attach --every N` keeps every N-th
+checkpoint: a smaller index, but more data downloaded per sketch.
+
+**Privacy.** Nothing about the genomes leaves the laptop. The requests name byte ranges of the
+public reference database, so the server can see which references were fetched, and so roughly
+which taxa the genomes belong to.
+
 ## Known gaps
 
 - **Mockup only.** The round trip ran against GTDB's mockup database (5 reference genomes, full
@@ -257,7 +311,8 @@ cargo test --release -- --ignored
 - **Three bacterial genomes.** No archaea, no translation table 4, no genomes below 10% alignment,
   no Prodigal failures, no batch where every genome is ANI-assigned, no borderline bac/ar calls.
 - **The ANI screen still needs the genomes.** `classify` screens the renamed FASTA files locally,
-  so it runs where the genomes and the skani database both are. Sketches are produced and pinned to
+  so it runs where the genomes and the skani database both are. (`gtdbprep ani` runs the screen on
+  the laptop without the database; `classify` doesn't use it yet.) Sketches are produced and pinned to
   skani 0.3.1, but nothing consumes them yet: the server-side shim that maps sketch queries back to
   opaque IDs (design, section 4) is not built.
 - **`--place_species` is not supported** (its `classify_wf` behaviour differs and is untested).

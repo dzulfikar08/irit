@@ -86,7 +86,7 @@ jobs:
             unzip -p "dl/$acc.zip" "ncbi_dataset/data/$acc/*.fna" > "genomes/$label.fna"
           done < exp/ani/genomes.tsv
           # A 400 kb piece of E. coli: a small, partial genome.
-          awk 'NR==1{print ">piece"; next} /^>/{exit} {print}' genomes/Ecoli_K12_MG1655.fna | head -n 5000 > genomes/Ecoli_400kb_piece.fna
+          awk 'NR==1{print ">piece"; next} /^>/ || NR>5001 {exit} {print}' genomes/Ecoli_K12_MG1655.fna > genomes/Ecoli_400kb_piece.fna
           for f in genomes/*.fna; do echo "$f $(grep -c '>' "$f") contigs $(grep -v '>' "$f" | tr -d '\n' | wc -c) bp"; done | tee results/genomes.txt
           # 51 genomes (copies) so that skani takes its >50-query code path.
           mkdir -p genomes51
