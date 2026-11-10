@@ -1,6 +1,6 @@
 //! isotable: one row per sample from the outputs of the usual QC, assembly and typing tools.
 //!
-//! Point it at a results folder; it finds fastp, leanqc, QUAST, BUSCO, CheckM2, GTDB-Tk,
+//! Point it at a results folder; it finds fastp, leanqc, FastQC, QUAST, BUSCO, CheckM2, GTDB-Tk,
 //! Kraken 2, mlst and AMRFinderPlus outputs by name, joins them by sample, and grades each
 //! sample against thresholds you can change. Two files that disagree about one sample make a
 //! `conflict`; a sample missing a required measurement is `incomplete`, never `pass`.
@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(version, about = "One QC row per sample from fastp, leanqc, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs")]
+#[command(version, about = "One QC row per sample from fastp, leanqc, FastQC, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs")]
 struct Cli {
     /// Folders to search (recursively) for tool outputs.
     #[arg(required = true)]
@@ -146,6 +146,8 @@ struct Row {
     fastp: Vec<Record>,
     /// leanqc failed checks per read file.
     leanqc: BTreeMap<String, String>,
+    /// FastQC reports per read file (a zip and its extracted folder are two reports of one file).
+    fastqc: BTreeMap<String, Vec<Record>>,
     notes: Vec<String>,
 }
 
@@ -156,6 +158,10 @@ const COLUMNS: &[(&str, &str)] = &[
     ("q30_trimmed", "q30_trimmed"),
     ("duplication", "duplication"),
     ("leanqc_fails", "leanqc_fails"),
+    ("fastqc_sequences", "fastqc_sequences"),
+    ("fastqc_gc", "fastqc_gc"),
+    ("fastqc_fails", "fastqc_fails"),
+    ("fastqc_warns", "fastqc_warns"),
     ("kraken_top", "kraken_top_species"),
     ("kraken_top_pct", "kraken_top_pct"),
     ("contigs", "contigs"),
@@ -293,6 +299,7 @@ fn join(records: Vec<Record>, sheet: &[String]) -> Joined {
         let row = rows.entry(sample).or_default();
         match r.tool {
             "fastp" => row.fastp.push(r),
+            "FastQC" => row.fastqc.entry(r.raw_name.clone()).or_default().push(r),
             "leanqc" => {
                 for (_, v) in r.fields {
                     row.leanqc.insert(r.raw_name.clone(), v.show());
@@ -327,7 +334,7 @@ fn put(cells: &mut BTreeMap<&'static str, Cell>, k: &'static str, v: Value, sour
     }
 }
 
-/// Pool fastp runs, fold in leanqc, and add the MIMAG tier.
+/// Pool fastp runs, fold in leanqc and FastQC, and add the MIMAG tier.
 fn finish(mut rows: BTreeMap<String, Row>, mode: Mode) -> BTreeMap<String, Row> {
     for row in rows.values_mut() {
         pool_fastp(row);
@@ -337,6 +344,7 @@ fn finish(mut rows: BTreeMap<String, Row>, mode: Mode) -> BTreeMap<String, Row> 
             let value = Value::Text(fails.into_iter().collect::<Vec<_>>().join(","));
             row.cells.insert("leanqc_fails", Cell::One { value, sources });
         }
+        merge_fastqc(row);
         if mode == Mode::Mag
             && let (Some(c), Some(x)) = (num(row, "completeness"), num(row, "contamination"))
         {
@@ -344,6 +352,69 @@ fn finish(mut rows: BTreeMap<String, Row>, mode: Mode) -> BTreeMap<String, Row> 
         }
     }
     rows
+}
+
+/// FastQC reports of a sample's read files (R1 and R2, lanes): sequences add up, %GC is weighted
+/// by sequences, failed and warned modules are merged. Several reports of one read file (the zip
+/// and its extracted folder) must agree; if they don't, the fields that differ are conflicts.
+fn merge_fastqc(row: &mut Row) {
+    let files = std::mem::take(&mut row.fastqc);
+    if files.is_empty() {
+        return;
+    }
+    let mut per_file: Vec<BTreeMap<&'static str, Value>> = Vec::new();
+    let mut sources = Vec::new();
+    for reports in files.values() {
+        let mut cells = BTreeMap::new();
+        for r in reports {
+            sources.push(r.source.clone());
+            for (k, v) in &r.fields {
+                put(&mut cells, k, v.clone(), &r.source);
+            }
+        }
+        let mut values = BTreeMap::new();
+        for (k, c) in cells {
+            match c {
+                Cell::One { value, .. } => {
+                    values.insert(k, value);
+                }
+                conflict => {
+                    row.cells.insert(k, conflict);
+                }
+            }
+        }
+        per_file.push(values);
+    }
+    let int = |m: &BTreeMap<&str, Value>| match m.get("fastqc_sequences") {
+        Some(Value::Int(n)) => Some(*n),
+        _ => None,
+    };
+    let gc = |m: &BTreeMap<&str, Value>| match m.get("fastqc_gc") {
+        Some(Value::Num(x)) => Some(*x),
+        _ => None,
+    };
+    let mut out: Vec<(&'static str, Value)> = Vec::new();
+    if let Some(total) = per_file.iter().map(int).sum::<Option<u64>>() {
+        out.push(("fastqc_sequences", Value::Int(total)));
+        let weighted: Option<f64> = per_file.iter().map(|m| Some(gc(m)? * int(m)? as f64)).sum();
+        if let Some(w) = weighted.filter(|_| total > 0) {
+            out.push(("fastqc_gc", Value::Num(w / total as f64)));
+        }
+    }
+    for k in ["fastqc_fails", "fastqc_warns"] {
+        let modules: BTreeSet<&str> = per_file
+            .iter()
+            .filter_map(|m| m.get(k))
+            .flat_map(|v| match v {
+                Value::Text(t) => t.split(',').filter(|s| !s.is_empty()).collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        out.push((k, Value::Text(modules.into_iter().collect::<Vec<_>>().join(","))));
+    }
+    for (k, v) in out {
+        row.cells.entry(k).or_insert(Cell::One { value: v, sources: sources.clone() });
+    }
 }
 
 /// Two fastp reports describe the same raw reads. When both carry fastp's `before_filtering`
@@ -560,6 +631,11 @@ fn grade(row: &Row, l: &Limits, mode: Mode, required: &[&str]) -> (Status, Vec<S
     }
     if let Some(f) = row.cells.get("leanqc_fails").map(Cell::show).filter(|f| !f.is_empty()) {
         flag(Status::Warn, format!("leanqc failed {f}"));
+    }
+    // Separate evidence from leanqc, shown as its own reason; the status is the worst either way,
+    // so a problem both tools see still makes one `warn`.
+    if let Some(f) = row.cells.get("fastqc_fails").map(Cell::show).filter(|f| !f.is_empty()) {
+        flag(Status::Warn, format!("FastQC failed {f}"));
     }
     if let Some(c) = num(row, "contigs") {
         let c = c as u64;
@@ -910,6 +986,90 @@ mod tests {
         write(t.path(), "solo_1_leanqc.json", &lq("solo_1.fastq.gz"));
         let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
         assert_eq!(rows.keys().collect::<Vec<_>>(), ["iso", "solo_1"]);
+    }
+
+    /// The FastQC fixtures: R1 as `_fastqc.zip`, R2 as an extracted `_fastqc/` folder.
+    fn fastqc_fixtures(to: &Path) {
+        let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/fastqc");
+        std::fs::copy(from.join("ERR044595_1M_1_fastqc.zip"), to.join("ERR044595_1M_1_fastqc.zip")).unwrap();
+        for f in ["fastqc_data.txt", "summary.txt"] {
+            let body = std::fs::read_to_string(from.join("ERR044595_1M_2_fastqc").join(f)).unwrap();
+            write(to, &format!("ERR044595_1M_2_fastqc/{f}"), &body);
+        }
+    }
+
+    #[test]
+    fn fastqc_zip_and_folder_mates_join_and_warn() {
+        let t = tempfile::tempdir().unwrap();
+        fastqc_fixtures(t.path());
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["ERR044595_1M"]);
+        let (status, why, row) = &rows["ERR044595_1M"];
+        assert_eq!(*status, Status::Warn, "{why:?}");
+        assert_eq!(cell(row, "fastqc_sequences"), "2000000");
+        assert_eq!(cell(row, "fastqc_gc"), "39"); // 38 and 40, weighted by sequences
+        assert_eq!(cell(row, "fastqc_fails"), "Adapter Content,Per base sequence quality");
+        assert_eq!(cell(row, "fastqc_warns"), "Sequence Duplication Levels");
+        assert!(why.iter().any(|w| w == "warn: FastQC failed Adapter Content,Per base sequence quality"), "{why:?}");
+
+        // With a sheet: read-file suffixes (`_1M_1.fastq.gz`) join the sheet name.
+        let rows = table(t.path(), &["ERR044595"], Mode::Isolate, Some(&["none"]));
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["ERR044595"]);
+        assert_eq!(cell(&rows["ERR044595"].2, "fastqc_sequences"), "2000000");
+    }
+
+    #[test]
+    fn fastqc_single_mate_keeps_its_name() {
+        let t = tempfile::tempdir().unwrap();
+        fastqc_fixtures(t.path());
+        std::fs::remove_dir_all(t.path().join("ERR044595_1M_2_fastqc")).unwrap();
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["ERR044595_1M_1"]);
+        let row = &rows["ERR044595_1M_1"].2;
+        assert_eq!((cell(row, "fastqc_sequences"), cell(row, "fastqc_fails")), ("1000000".into(), "Adapter Content".into()));
+    }
+
+    #[test]
+    fn fastqc_zip_and_its_extracted_folder_count_once() {
+        // `fastqc --extract` leaves both the zip and the folder.
+        let t = tempfile::tempdir().unwrap();
+        fastqc_fixtures(t.path());
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(t.path().join("ERR044595_1M_1_fastqc.zip")).unwrap()).unwrap();
+        for f in ["fastqc_data.txt", "summary.txt"] {
+            let name = format!("ERR044595_1M_1_fastqc/{f}");
+            let mut body = String::new();
+            std::io::Read::read_to_string(&mut zip.by_name(&name).unwrap(), &mut body).unwrap();
+            write(t.path(), &name, &body);
+        }
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
+        let (status, why, row) = &rows["ERR044595_1M"];
+        assert_eq!(*status, Status::Warn, "{why:?}");
+        assert_eq!(cell(row, "fastqc_sequences"), "2000000"); // not 3,000,000
+
+        // A different report of the same read file is a conflict, not a second file.
+        let data = t.path().join("ERR044595_1M_1_fastqc/fastqc_data.txt");
+        let body = std::fs::read_to_string(&data).unwrap().replace("Total Sequences\t1000000", "Total Sequences\t900000");
+        std::fs::write(&data, body).unwrap();
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
+        let (status, why, row) = &rows["ERR044595_1M"];
+        assert_eq!(*status, Status::Conflict, "{why:?}");
+        assert_eq!(cell(row, "fastqc_sequences"), "CONFLICT");
+    }
+
+    #[test]
+    fn leanqc_and_fastqc_on_one_sample_are_both_reported_once_each() {
+        let t = tempfile::tempdir().unwrap();
+        fastqc_fixtures(t.path());
+        let lq = |f: &str| format!(r#"{{"file":"{f}","checks":[{{"name":"Adapters","status":"fail"}}]}}"#);
+        write(t.path(), "ERR044595_1M_1_leanqc.json", &lq("ERR044595_1M_1.fastq.gz"));
+        write(t.path(), "ERR044595_1M_2_leanqc.json", &lq("ERR044595_1M_2.fastq.gz"));
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["ERR044595_1M"]);
+        let (status, why, row) = &rows["ERR044595_1M"];
+        assert_eq!(*status, Status::Warn, "{why:?}");
+        assert_eq!(cell(row, "leanqc_fails"), "Adapters");
+        assert_eq!(why.len(), 2, "{why:?}");
+        assert!(why[0].contains("leanqc failed Adapters") && why[1].contains("FastQC failed"), "{why:?}");
     }
 
     #[test]

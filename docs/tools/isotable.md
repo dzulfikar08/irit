@@ -35,6 +35,7 @@ Found anywhere under the given folders, by file name:
 |---|---|---|
 | fastp | `*.fastp.json` (one per sample, named after it) | raw and trimmed reads, Q30 after trimming, duplication |
 | leanqc | `*_leanqc.json` (one per read file) | failed checks (R1 and R2 merged) |
+| FastQC, [FastQC-Rust](https://github.com/ewels/FastQC-Rust) | `*_fastqc.zip`, or an extracted `*_fastqc/` folder (`fastqc_data.txt` and `summary.txt`), one per read file | sequences, %GC, failed and warned modules (R1 and R2 merged) |
 | Kraken 2 | `*kraken2*.txt`, `*.kreport`, `*.report` whose content is a Kraken 2 report | top species and its % |
 | QUAST | `transposed_report.tsv` | contigs, length, N50, GC |
 | BUSCO | `short_summary.*.json` | complete %, lineage |
@@ -43,7 +44,18 @@ Found anywhere under the given folders, by file name:
 | mlst | `*mlst*.tsv` | scheme, sequence type |
 | AMRFinderPlus | `*amrfinder*.tsv` | AMR genes |
 
-Only columns with data appear in the output. Kraken 2 files are recognised by their content (six
+Only columns with data appear in the output.
+
+FastQC 0.12.x, 0.13 and FastQC-Rust write the same files, so all of them work. The zip is read in
+place, without extracting it. `summary.txt` gives each module's PASS/WARN/FAIL; without it, the
+`>>Module<TAB>status` lines of `fastqc_data.txt` do. The read file a report belongs to is the
+`Filename` FastQC records (`ERR044595_1M_1.fastq.gz`), or the report's name when FastQC read stdin.
+Columns: `fastqc_sequences` (total sequences, summed over a sample's read files), `fastqc_gc` (%GC,
+weighted by sequences), `fastqc_fails` and `fastqc_warns` (module names, merged and sorted). They
+sit beside leanqc's `leanqc_fails` rather than in a shared column, because the two tools name and
+judge their checks differently.
+
+Kraken 2 files are recognised by their content (six
 or eight tab-separated columns with a rank code), read line by line; per-read output such as
 `*.kraken2.classifiedreads.txt` is skipped (and listed) instead of being read into memory.
 
@@ -60,7 +72,7 @@ Each tool names things differently (`ERR044595.fastp.json`, `ERR044595-unicycler
   sample `patient`: it is reported as unmatched and gets its own row. Every join that isn't an exact
   name match is printed as a note.
 - **Without a sheet**: extensions and assembler tags are stripped. A mate suffix is stripped only
-  from per-file read QC (leanqc), and only when the other mate's report is there too and no other
+  from per-file read QC (leanqc, FastQC), and only when the other mate's report is there too and no other
   tool uses the unstripped name; fastp reports, assemblies, bins and genomes keep their names. So
   `patient_1` and `patient_2` stay two samples. Subsampling tags are not stripped without a sheet.
 
@@ -92,6 +104,10 @@ Each value remembers which file it came from.
   the sample shows `CONFLICT` with each report's own numbers, the status is `conflict`, and a note
   names the reports that differ. Remove the reports that don't belong and rerun.
 - leanqc: failed checks from all of a sample's read files are merged.
+- FastQC: reports of different read files (R1 and R2, lanes) are merged: sequences add up, %GC is
+  weighted by sequences, failed and warned modules are joined. Reports of the **same** read file
+  (`fastqc --extract` leaves both the zip and the folder) count once if they agree; if they don't
+  (FastQC run twice with other settings), the fields that differ show `CONFLICT`.
 
 ## Grading
 
@@ -117,11 +133,19 @@ isotable results/ --require contigs,n50,completeness
 | Reads after trimming (all runs) | | < 100,000 |
 | Q30 after trimming | < 80% | |
 | leanqc | any failed check | |
+| FastQC | any failed module | |
 | Contigs | > 300 | > 600 |
 | N50 | < 10,000 | < 5,000 |
 | BUSCO complete | < 95% | < 90% |
 | CheckM2 completeness | < 95% | < 90% |
 | CheckM2 contamination | > 2% | > 5% |
+
+FastQC warnings are shown in `fastqc_warns` but don't change the grade. If leanqc and FastQC both
+ran on a sample, each tool's failures are listed as their own reason (`leanqc failed ...`,
+`FastQC failed ...`), but they are the same kind of evidence about the same reads, so together they
+still make one `warn`: the status is the worst of the checks, never a count of them. FastQC's
+sequence count is shown, not graded, and doesn't satisfy `--require reads`: FastQC may have run on
+raw or trimmed reads, and the read floor is about reads after trimming.
 
 These thresholds are starting points chosen from common practice for bacterial isolates, not a
 standard. 100,000 reads is a floor for "something went wrong" (about 3× coverage of a 5 Mb genome
@@ -158,6 +182,11 @@ added; the verdict is not changed. Evidence:
   bases are pooled, and adding a rerun of one of them flags only that pair; a 5-read fastp file
   fails and a
   sample without assembly data is `incomplete`; a per-read Kraken 2 file doesn't replace the report.
+- Synthetic FastQC 0.12.1 outputs (in `isotable/testdata/fastqc/`, made up and cut down to four
+  modules): R1 as a `_fastqc.zip` and R2 as an extracted folder join into one sample with and
+  without a sheet, and a failed module makes it `warn`; a lone R1 keeps its name; a zip next to its
+  own extracted folder counts once, and a disagreeing copy gives `conflict`; leanqc and FastQC
+  failures on one sample give two reasons and one `warn`.
 - Synthetic CheckM2 and GTDB-Tk files (in `isotable/testdata/mag/`, made up for the test) in MAG
   mode: tiers as expected, including a 92%-complete bin failing on 12.5% contamination, and the
   note on both Patescibacteria bins.

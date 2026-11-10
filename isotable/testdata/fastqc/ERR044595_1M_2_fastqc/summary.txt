@@ -1,0 +1,4 @@
+PASS	Basic Statistics	ERR044595_1M_2.fastq.gz
+FAIL	Per base sequence quality	ERR044595_1M_2.fastq.gz
+WARN	Sequence Duplication Levels	ERR044595_1M_2.fastq.gz
+PASS	Adapter Content	ERR044595_1M_2.fastq.gz

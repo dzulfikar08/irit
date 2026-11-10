@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::Value as Json;
 use std::collections::BTreeMap;
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -31,7 +31,7 @@ impl Value {
 /// What a record's name refers to, which decides how it may be matched to a sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// One read file (leanqc runs per file): `x_R1.fastq.gz`. Mate suffixes may be stripped.
+    /// One read file (leanqc and FastQC run per file): `x_R1.fastq.gz`. Mate suffixes may be stripped.
     ReadFile,
     /// One sample's reads as a whole (fastp, Kraken 2 report): named after the sample.
     Sample,
@@ -79,6 +79,10 @@ pub fn scan(dirs: &[std::path::PathBuf]) -> Result<Scan> {
                 Some(("fastp", fastp(path, &name)))
             } else if name.ends_with("_leanqc.json") {
                 Some(("leanqc", leanqc(path)))
+            } else if name.ends_with("_fastqc.zip") {
+                Some(("FastQC", fastqc_zip(path)))
+            } else if name == "fastqc_data.txt" {
+                Some(("FastQC", fastqc_dir(path)))
             } else if name == "transposed_report.tsv" {
                 Some(("QUAST", quast(path)))
             } else if name.starts_with("short_summary") && name.ends_with(".json") {
@@ -200,6 +204,89 @@ fn leanqc(path: &Path) -> Result<Vec<Record>> {
         .map(|a| a.iter().filter(|c| c["status"] == "fail").filter_map(|c| c["name"].as_str()).collect())
         .unwrap_or_default();
     Ok(vec![rec(file, Kind::ReadFile, vec![("leanqc_fails", Value::Text(fails.join(",")))])])
+}
+
+/// FastQC (0.12.x, 0.13, FastQC-Rust): `<name>_fastqc.zip`, read without extracting.
+fn fastqc_zip(path: &Path) -> Result<Vec<Record>> {
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(path)?)?;
+    // FastQC puts everything in one `<name>_fastqc/` folder inside the zip.
+    let names: Vec<String> = zip.file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
+    let find = |want: &str| names.iter().find(|n| n.rsplit('/').next() == Some(want) && n.matches('/').count() <= 1).cloned();
+    let (Some(data_name), summary_name) = (find("fastqc_data.txt"), find("summary.txt")) else {
+        bail!("no fastqc_data.txt inside the zip");
+    };
+    let mut read = |n: &str| -> Result<String> {
+        let mut s = String::new();
+        std::io::Read::take(zip.by_name(n)?, 64 << 20).read_to_string(&mut s)?;
+        Ok(s)
+    };
+    let data = read(&data_name)?;
+    let summary = summary_name.map(|n| read(&n)).transpose()?;
+    let stem = path.file_name().unwrap_or_default().to_string_lossy();
+    Ok(vec![fastqc(&data, summary.as_deref(), stem.trim_end_matches(".zip"))?])
+}
+
+/// FastQC's extracted `<name>_fastqc/` folder: `fastqc_data.txt` and the `summary.txt` beside it.
+fn fastqc_dir(path: &Path) -> Result<Vec<Record>> {
+    let data = std::fs::read_to_string(path)?;
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let summary_path = dir.join("summary.txt");
+    let summary = if summary_path.is_file() { Some(std::fs::read_to_string(summary_path)?) } else { None };
+    let stem = dir.file_name().unwrap_or_default().to_string_lossy();
+    Ok(vec![fastqc(&data, summary.as_deref(), &stem)?])
+}
+
+/// One FastQC report: total sequences, %GC, and failed and warned modules. Module statuses come
+/// from `summary.txt` (`FAIL<TAB>module<TAB>file`), or from the `>>module<TAB>status` lines in
+/// `fastqc_data.txt` when there is no summary. Named after the read file FastQC records.
+fn fastqc(data: &str, summary: Option<&str>, stem: &str) -> Result<Record> {
+    if !data.starts_with("##FastQC") {
+        bail!("fastqc_data.txt does not start with ##FastQC");
+    }
+    let mut file = None;
+    let mut fields = Vec::new();
+    let mut from_data = Vec::new();
+    for line in data.lines() {
+        let Some((key, value)) = line.split_once('\t') else { continue };
+        let value = value.trim();
+        match key {
+            "Filename" => file = Some(value.to_string()),
+            "Total Sequences" => {
+                if let Ok(n) = value.replace(',', "").parse() {
+                    fields.push(("fastqc_sequences", Value::Int(n)));
+                }
+            }
+            "%GC" => {
+                if let Ok(x) = value.parse() {
+                    fields.push(("fastqc_gc", Value::Num(x)));
+                }
+            }
+            _ => {
+                if let Some(module) = key.strip_prefix(">>") {
+                    from_data.push((value.to_ascii_uppercase(), module.to_string()));
+                }
+            }
+        }
+    }
+    let statuses: Vec<(String, String)> = match summary {
+        Some(s) => s
+            .lines()
+            .filter_map(|l| {
+                let mut c = l.split('\t');
+                Some((c.next()?.trim().to_ascii_uppercase(), c.next()?.trim().to_string()))
+            })
+            .collect(),
+        None => from_data,
+    };
+    let with = |want: &str| statuses.iter().filter(|(s, _)| s == want).map(|(_, m)| m.as_str()).collect::<Vec<_>>().join(",");
+    fields.push(("fastqc_fails", Value::Text(with("FAIL"))));
+    fields.push(("fastqc_warns", Value::Text(with("WARN"))));
+    // FastQC records the base name of the read file; `stdin` when reading a pipe.
+    let raw = file
+        .map(|f| f.rsplit(['/', '\\']).next().unwrap_or(&f).to_string())
+        .filter(|f| !f.is_empty() && f != "stdin")
+        .unwrap_or_else(|| stem.trim_end_matches("_fastqc").to_string());
+    Ok(rec(raw, Kind::ReadFile, fields))
 }
 
 fn quast(path: &Path) -> Result<Vec<Record>> {
@@ -504,6 +591,24 @@ mod tests {
         assert_eq!(mate_parts("x_2"), Some(("x".into(), "x_1".into())));
         assert_eq!(mate_parts("x_R1_001"), Some(("x".into(), "x_R2_001".into())));
         assert_eq!(mate_parts("x"), None);
+    }
+
+    #[test]
+    fn fastqc_statuses_from_summary_or_module_lines() {
+        let data = "##FastQC\t0.12.1\n>>Basic Statistics\tpass\n#Measure\tValue\nFilename\treads/x_R1.fq.gz\nTotal Sequences\t42\n%GC\t51\n>>END_MODULE\n>>Per base sequence quality\tfail\n>>END_MODULE\n>>Adapter Content\twarn\n>>END_MODULE\n";
+        let get = |r: &Record, k: &str| r.fields.iter().find(|(f, _)| *f == k).map(|(_, v)| v.show()).unwrap();
+        // No summary.txt: the module lines decide.
+        let r = fastqc(data, None, "x_R1_fastqc").unwrap();
+        assert_eq!((r.raw_name.as_str(), r.kind), ("x_R1.fq.gz", Kind::ReadFile));
+        assert_eq!((get(&r, "fastqc_sequences"), get(&r, "fastqc_gc")), ("42".into(), "51".into()));
+        assert_eq!((get(&r, "fastqc_fails"), get(&r, "fastqc_warns")), ("Per base sequence quality".into(), "Adapter Content".into()));
+        // summary.txt wins when present.
+        let r = fastqc(data, Some("PASS\tBasic Statistics\tx\nFAIL\tAdapter Content\tx\n"), "x").unwrap();
+        assert_eq!((get(&r, "fastqc_fails"), get(&r, "fastqc_warns")), ("Adapter Content".into(), String::new()));
+        // Reading stdin: named after the report instead.
+        let r = fastqc(&data.replace("reads/x_R1.fq.gz", "stdin"), None, "y_2_fastqc").unwrap();
+        assert_eq!(r.raw_name, "y_2");
+        assert!(fastqc("not fastqc", None, "x").is_err());
     }
 
     #[test]
