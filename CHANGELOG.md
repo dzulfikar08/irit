@@ -21,7 +21,8 @@
     the call fails with a Bioconda install hint.
   - Inputs are checked before running (FASTQ or FASTA, plain or gzip, not empty). So are the
     databases: Bakta's `version.json` and files, CheckM2's `.dmnd`, and GTDB-Tk's data folders,
-    including `skani/`, which `classify_wf` always needs.
+    including `skani/`, which `classify_wf` always needs, and the split-tree files unless
+    `full_tree` is set.
   - The program's `--version` is recorded. A version other than the pinned one adds a warning to
     the result; `replay.sh` warns on a mismatch.
   - Exit 0 without the files the program always writes is an error (`missing_outputs`), recorded

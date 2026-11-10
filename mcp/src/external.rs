@@ -838,7 +838,11 @@ pub struct GtdbtkClassifyWfParams {
 /// Folders classify_wf reads in GTDB-Tk 2.8.0 (`gtdbtk/config/common.py`).
 const GTDBTK_DIRS: [&str; 9] = ["markers", "masks", "metadata", "mrca_red", "pplacer", "radii", "split", "taxonomy", "skani"];
 
-fn gtdbtk_data(field: &str, shown: &str, dir: &Path) -> Check<PathBuf> {
+/// Files the split-tree placement reads (GTDB-Tk 2.8.0 `config/common.py`: BACKBONE_PPLACER_REF_PKG,
+/// CLASS_LEVEL_TREE_MAPPING_FILE). Without them pplacer fails after the ANI screen and marker steps.
+const GTDBTK_SPLIT_FILES: [&str; 2] = ["split/backbone/pplacer/gtdbtk_package_backbone.refpkg", "split/class_level/tree_mapping.tsv"];
+
+fn gtdbtk_data(field: &str, shown: &str, dir: &Path, full_tree: bool) -> Check<PathBuf> {
     if !dir.is_dir() {
         return v::invalid(field, format!("{shown} is not a folder"));
     }
@@ -868,6 +872,19 @@ fn gtdbtk_data(field: &str, shown: &str, dir: &Path) -> Check<PathBuf> {
     if !missing.is_empty() {
         return v::invalid(field, format!("{shown} is missing {} (incomplete GTDB-Tk data?)", missing.join(", ")));
     }
+    if !full_tree {
+        let missing: Vec<&str> = GTDBTK_SPLIT_FILES.iter().copied().filter(|f| !dir.join(f).exists()).collect();
+        if !missing.is_empty() {
+            return v::invalid(
+                field,
+                format!(
+                    "{shown} has no {}, which classify_wf needs to place genomes on the split tree. \
+                     GTDB's mock database has an empty split/ and needs full_tree: true",
+                    missing.join(" or ")
+                ),
+            );
+        }
+    }
     Ok(meta)
 }
 
@@ -895,7 +912,7 @@ pub fn gtdbtk_classify_wf(ctx: &Ctx, p: &GtdbtkClassifyWfParams) -> Check<Invoca
     inv.inputs.extend(files);
     inv.opt("genome_dir", &p.genome_dir);
     let (data_text, data) = db_location(ctx, "data_path", &p.data_path, "GTDBTK_DATA_PATH")?;
-    inv.inputs.push(gtdbtk_data("data_path", &data_text, &data)?);
+    inv.inputs.push(gtdbtk_data("data_path", &data_text, &data, p.full_tree)?);
     // GTDB-Tk has no data-path flag: it reads GTDBTK_DATA_PATH, recorded and exported by replay.sh.
     inv.env.insert("GTDBTK_DATA_PATH".into(), v::resolve(&data).to_string_lossy().into_owned());
     let out = v::output_dir(ctx, "out_dir", &p.out_dir, Some(p.overwrite), true)?;
@@ -979,6 +996,8 @@ mod tests {
                 std::fs::create_dir_all(dir.join(d)).unwrap();
             }
         }
+        std::fs::create_dir_all(dir.join(GTDBTK_SPLIT_FILES[0])).unwrap();
+        write(dir, GTDBTK_SPLIT_FILES[1], "");
     }
 
     #[test]
@@ -1208,6 +1227,13 @@ mod tests {
         assert_eq!(bad(base(json!({"min_af": 1.5}))).field, "min_af");
         assert_eq!(bad(base(json!({"scratch_dir": "/tmp"}))).field, "scratch_dir");
         assert_eq!(bad(base(json!({"data_path": "genomes"}))).field, "data_path");
+        // an empty split/ (GTDB's mock database) is refused unless full_tree is set
+        fake_gtdbtk_data(&d.path().join("mock/release232"), true);
+        std::fs::remove_dir_all(d.path().join("mock/release232/split")).unwrap();
+        std::fs::create_dir(d.path().join("mock/release232/split")).unwrap();
+        let e = bad(base(json!({"data_path": "mock/release232"})));
+        assert!(e.field == "data_path" && e.message.contains("full_tree"), "{}", e.message);
+        assert!(gtdbtk_classify_wf(&cx, &parse(base(json!({"data_path": "mock/release232", "full_tree": true})))).is_ok());
         fake_gtdbtk_data(&d.path().join("placement/release232"), false);
         let e = bad(base(json!({"data_path": "placement/release232"})));
         assert!(e.message.contains("skani") && e.message.contains("no option to skip"), "{}", e.message);

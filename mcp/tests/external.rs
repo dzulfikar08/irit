@@ -171,6 +171,8 @@ fn setup() -> Setup {
     for d in ["markers", "masks", "mrca_red", "pplacer", "radii", "split", "taxonomy", "skani"] {
         std::fs::create_dir_all(work.join("db/gtdbtk/release232").join(d)).unwrap();
     }
+    std::fs::create_dir_all(work.join("db/gtdbtk/release232/split/backbone/pplacer/gtdbtk_package_backbone.refpkg")).unwrap();
+    write(&work, "db/gtdbtk/release232/split/class_level/tree_mapping.tsv", "");
     let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap_or_default());
     Setup { _tmp: tmp, work, path }
 }

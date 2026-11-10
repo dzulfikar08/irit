@@ -342,6 +342,10 @@ Laptop options in GTDB-Tk 2.8.0, checked against [the research notes](../researc
   command-line option skips it. So the placement-only data (dblock `gtdbtk-r232-placement`, no
   `skani/`) can't run classify_wf: the server refuses it and points to the launcher in
   [the placement test](../research/gtdb-placement-test.md).
+- **The split tree needs its files.** Unless `full_tree` is set, the data must hold
+  `split/backbone/pplacer/gtdbtk_package_backbone.refpkg` and `split/class_level/tree_mapping.tsv`.
+  Without them pplacer would fail after the ANI screen and marker steps, so the server refuses
+  first. GTDB's mock database has an empty `split/` and needs `full_tree: true`.
 - **No `--max_memory`.** That is a gPlace option. GTDB-Tk calls pplacer by name, so gPlace is used
   through a `pplacer` shim on `PATH` (see the same page), not through a GTDB-Tk flag.
 - `--mash_db` went away in GTDB-Tk 2.5.0 (skani replaced Mash) and isn't offered.
