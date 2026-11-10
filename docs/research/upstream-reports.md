@@ -1,6 +1,6 @@
 # Problems reported upstream
 
-Problems found in other projects' data or tools while building leanbio, and what was reported.
+Problems found in other projects' data or tools while building irit, and what was reported.
 
 ## GTDB R232 mock database doesn't match its published checksum
 
