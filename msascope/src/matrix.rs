@@ -82,6 +82,31 @@ impl Matrix {
         }
     }
 
+    /// Non-gap codes in row `r` before column `c` (columns `0..c`).
+    pub fn residues_before(&self, r: usize, c: usize) -> usize {
+        let row = self.row_bytes(r);
+        let c = c.min(self.cols);
+        if self.bits == 8 {
+            return row[..c].iter().filter(|&&b| b != 0).count();
+        }
+        // Whole bytes hold two columns; count non-zero nibbles 8 bytes at a time: after the two
+        // OR-shifts, bit 0 of each nibble is set when any bit of that nibble is.
+        let whole = &row[..c / 2];
+        let mut n = 0usize;
+        let (words, rest) = whole.as_chunks::<8>();
+        for w in words {
+            let x = u64::from_le_bytes(*w);
+            let y = x | (x >> 1);
+            let y = y | (y >> 2);
+            n += (y & 0x1111_1111_1111_1111).count_ones() as usize;
+        }
+        n += rest.iter().map(|&b| (b & 0x0F != 0) as usize + (b & 0xF0 != 0) as usize).sum::<usize>();
+        if c % 2 == 1 {
+            n += (row[c / 2] & 0x0F != 0) as usize;
+        }
+        n
+    }
+
     /// Re-encode as `to` (8 bits per residue) by symbol, when a later row needs a wider alphabet.
     /// Lossless except that a `?` stored as N in a nucleotide alphabet stays N: the parser reads the
     /// input again instead when that would matter.
@@ -179,6 +204,22 @@ mod tests {
         assert_eq!(encode_at(&DNA, b"G-T", row, 2), Ok(3));
         let s: Vec<u8> = (0..5).map(|c| DNA.symbol(m.get(0, c))).collect();
         assert_eq!(s, b"ACG-T");
+    }
+
+    #[test]
+    fn residues_before_packed_and_bytes() {
+        let seqs: [&[u8]; 4] = [b"A-CG--T-ACGTACGTACGT-", b"---------------------", b"ACGTACGTACGTACGTACGTA", b"-A"];
+        for s in seqs {
+            for (alpha, bits) in [(&DNA, 4), (&PROTEIN, 8)] {
+                let mut m = Matrix::empty(s.len(), bits);
+                encode_row(alpha, s, m.push_row()).unwrap();
+                for c in 0..=s.len() {
+                    let want = s[..c].iter().filter(|&&b| b != b'-').count();
+                    assert_eq!(m.residues_before(0, c), want, "{} bits {bits} c {c}", String::from_utf8_lossy(s));
+                }
+                assert_eq!(m.residues_before(0, s.len() + 5), s.iter().filter(|&&b| b != b'-').count());
+            }
+        }
     }
 
     #[test]

@@ -48,6 +48,54 @@ const SAMPLE: usize = 64 << 10;
 
 type Reader<'a> = Box<dyn BufRead + 'a>;
 
+/// Lower case and `.` mark insert states (A2M, Stockholm from HMMER and Pfam).
+#[inline]
+fn insert_mark(b: u8) -> bool {
+    b.is_ascii_lowercase() || b == b'.'
+}
+
+/// Set bit `start + k` of `bits` for every residue or gap `k` of `seq` that is not an insert mark
+/// (upper case, `-`, `~`, `*`, `?`), growing `bits` as needed. Whitespace and digits are skipped,
+/// as the encoder skips them. A column is an insert column when no row sets its bit.
+fn match_marks(seq: &[u8], start: usize, bits: &mut Vec<u64>) {
+    let mut k = start;
+    for &b in seq {
+        if b.is_ascii_whitespace() || b.is_ascii_digit() {
+            continue;
+        }
+        if !insert_mark(b) {
+            if bits.len() <= k / 64 {
+                bits.resize(k / 64 + 1, 0);
+            }
+            bits[k / 64] |= 1 << (k % 64);
+        }
+        k += 1;
+    }
+}
+
+/// Insert columns from match marks: the columns in `0..cols` no row marked as a match.
+fn inserts_from(marks: &[u64], cols: usize) -> Vec<u64> {
+    let mut v: Vec<u64> = (0..cols.div_ceil(64)).map(|i| !marks.get(i).copied().unwrap_or(0)).collect();
+    if let Some(last) = v.last_mut()
+        && !cols.is_multiple_of(64)
+    {
+        *last &= (1u64 << (cols % 64)) - 1;
+    }
+    if v.iter().all(|&w| w == 0) { Vec::new() } else { v }
+}
+
+/// Insert columns from a Stockholm `#=GC RF` line: `.`, `-`, `~` and `_` are inserts, anything
+/// else (`x`, or residues) a match column.
+fn inserts_from_rf(rf: &[u8]) -> Vec<u64> {
+    let mut v = vec![0u64; rf.len().div_ceil(64)];
+    for (c, &b) in rf.iter().enumerate() {
+        if matches!(b, b'.' | b'-' | b'~' | b'_') {
+            v[c / 64] |= 1 << (c % 64);
+        }
+    }
+    if v.iter().all(|&w| w == 0) { Vec::new() } else { v }
+}
+
 impl Format {
     pub fn name(self) -> &'static str {
         match self {
@@ -150,6 +198,9 @@ struct Builder {
     matrix: Option<Matrix>,
     /// Some packed row came from a `?`, stored as N in nucleotide alphabets.
     question: bool,
+    /// Columns some row marked as a match ([`match_marks`]); `None` once a row with no insert
+    /// mark at all was seen, which makes every column a match column.
+    matches: Option<Vec<u64>>,
 }
 
 type Record<'a> = (&'a [u8], &'a [u8]);
@@ -167,6 +218,7 @@ impl Builder {
             names: Vec::new(),
             matrix: None,
             question: false,
+            matches: Some(Vec::new()),
         }
     }
 
@@ -230,6 +282,31 @@ impl Builder {
                 Ok(n) => bail!(not_aligned(&name, n, cols)),
             }
         }
+        if self.matches.is_some() {
+            // Most files have no insert marks: the first row without one settles it.
+            if recs.par_iter().any(|(_, s)| !s.iter().any(|&b| insert_mark(b))) {
+                self.matches = None;
+            } else {
+                let batch = recs
+                    .par_iter()
+                    .fold(Vec::new, |mut acc, (_, s)| {
+                        match_marks(s, 0, &mut acc);
+                        acc
+                    })
+                    .reduce(Vec::new, |mut a, b| {
+                        if a.len() < b.len() {
+                            a.resize(b.len(), 0);
+                        }
+                        a.iter_mut().zip(&b).for_each(|(x, y)| *x |= y);
+                        a
+                    });
+                let m = self.matches.as_mut().unwrap();
+                if m.len() < batch.len() {
+                    m.resize(batch.len(), 0);
+                }
+                m.iter_mut().zip(&batch).for_each(|(x, y)| *x |= y);
+            }
+        }
         if self.alpha.kind == Kind::Nucleotide && !self.question {
             self.question = recs.par_iter().any(|(_, s)| memchr::memchr(b'?', s).is_some());
         }
@@ -239,7 +316,8 @@ impl Builder {
 
     fn finish(self) -> Result<Alignment> {
         let Some(matrix) = self.matrix else { bail!("no sequences found") };
-        Ok(Alignment { names: self.names, matrix, alpha: self.alpha })
+        let inserts = self.matches.map_or_else(Vec::new, |m| inserts_from(&m, matrix.cols));
+        Ok(Alignment { names: self.names, matrix, alpha: self.alpha, inserts, accessions: Vec::new() })
     }
 }
 
@@ -312,6 +390,10 @@ enum Line<'a> {
     Seq(&'a [u8], &'a [u8]),
     /// Blank line or Clustal consensus line: the end of a block.
     Break,
+    /// Stockholm `#=GC RF` markup: one block's part of the reference annotation.
+    Rf(&'a [u8]),
+    /// Stockholm `#=GS <name> AC <accession>`.
+    Accession(&'a [u8], &'a [u8]),
 }
 
 /// Call `f` with the 1-based line number for every sequence line and block break of a Clustal or
@@ -336,6 +418,18 @@ fn lines(mut r: impl BufRead, format: Format, mut f: impl FnMut(usize, Line) -> 
         match format {
             _ if blank => f(ln, Line::Break)?,
             Format::Stockholm if line.starts_with(b"//") => return Ok(()),
+            Format::Stockholm if line.starts_with(b"#=GC") => {
+                let mut parts = line.split(|b| b.is_ascii_whitespace()).filter(|p| !p.is_empty());
+                if let (Some(_), Some(b"RF"), Some(rf)) = (parts.next(), parts.next(), parts.next()) {
+                    f(ln, Line::Rf(rf))?;
+                }
+            }
+            Format::Stockholm if line.starts_with(b"#=GS") => {
+                let mut parts = line.split(|b| b.is_ascii_whitespace()).filter(|p| !p.is_empty());
+                if let (Some(_), Some(name), Some(b"AC"), Some(acc)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
+                    f(ln, Line::Accession(name, acc))?;
+                }
+            }
             Format::Stockholm if line.starts_with(b"#") => {}
             // Consensus lines in Clustal start with whitespace.
             Format::Clustal if line[0].is_ascii_whitespace() => f(ln, Line::Break)?,
@@ -361,8 +455,15 @@ fn interleaved<'a>(open: &dyn Fn() -> Result<Reader<'a>>, format: Format, ty: Op
     let mut seen: Vec<usize> = Vec::new();
     let (mut block, mut in_block) = (1usize, false);
     let mut census = Census::default();
+    let mut marks: Vec<u64> = Vec::new();
+    let mut rf: Vec<u8> = Vec::new();
+    let mut acc: HashMap<Vec<u8>, Box<str>> = HashMap::new();
     lines(open()?, format, |ln, l| {
         match l {
+            Line::Rf(seg) => rf.extend(seg.iter().filter(|b| !b.is_ascii_whitespace())),
+            Line::Accession(name, a) => {
+                acc.insert(name.to_vec(), lossy(a).into_boxed_str());
+            }
             Line::Break => {
                 block += in_block as usize;
                 in_block = false;
@@ -386,6 +487,7 @@ fn interleaved<'a>(open: &dyn Fn() -> Result<Reader<'a>>, format: Format, ty: Op
                     );
                 }
                 seen[i] = block;
+                match_marks(seq, lens[i], &mut marks);
                 lens[i] += seq.iter().filter(|b| !b.is_ascii_whitespace() && !b.is_ascii_digit()).count();
                 census.add(seq, usize::MAX);
             }
@@ -417,7 +519,10 @@ fn interleaved<'a>(open: &dyn Fn() -> Result<Reader<'a>>, format: Format, ty: Op
         bail!("input changed while reading");
     }
     drop(rows);
-    Ok(Alignment { names: names.iter().map(|n| lossy(n)).collect(), matrix: m, alpha })
+    // RF wins over the marks when it covers every column.
+    let inserts = if rf.len() == cols { inserts_from_rf(&rf) } else { inserts_from(&marks, cols) };
+    let accessions = if acc.is_empty() { Vec::new() } else { names.iter().map(|n| acc.get(n).cloned()).collect() };
+    Ok(Alignment { names: names.iter().map(|n| lossy(n)).collect(), matrix: m, alpha, inserts, accessions })
 }
 #[cfg(test)]
 mod tests {
@@ -645,6 +750,56 @@ mod tests {
         // Odd block widths land on the right nibble.
         let a = parse_bytes(b"# STOCKHOLM 1.0\nx A\ny C\n\nx CGT\ny GTA\n\nx A-\ny -A\n//\n").unwrap();
         assert_eq!(seqs(&a), ["ACGTA-", "CGTA-A"]);
+    }
+
+    fn insert_cols(a: &Alignment) -> Vec<usize> {
+        (0..a.cols()).filter(|&c| a.is_insert(c)).collect()
+    }
+
+    /// Pfam/HMMER Stockholm: match columns are upper case with `-` gaps, insert columns lower case
+    /// with `.` gaps. Lower case is stored as upper case and `.` as a gap; the columns are kept.
+    #[test]
+    fn stockholm_inserts_from_case() {
+        let text = b"# STOCKHOLM 1.0\n#=GS x/1-6 AC P12345.1\nx/1-6 AC.gT\ny/3-7 A-tGT\n\nx/1-6 .a\ny/3-7 ..\n//\n";
+        let a = parse_bytes(text).unwrap();
+        assert_eq!(seqs(&a), ["AC-GT-A", "A-TGT--"]);
+        // column 2 has '.' and 't'; column 5 '.' and '.'; column 6 'a' and '.'
+        assert_eq!(insert_cols(&a), [2, 5, 6]);
+        assert_eq!(a.insert_count(), 3);
+        assert_eq!(a.accession(0), Some("P12345.1"));
+        assert_eq!(a.accession(1), None);
+        // Pfam seed style: '.' gaps, upper case residues, no inserts
+        let seed = b"# STOCKHOLM 1.0\nx ACD.E\ny AC..E\n//\n";
+        let a = parse_bytes(seed).unwrap();
+        assert_eq!(insert_cols(&a), [3]); // only the all-'.' column
+        assert!(a.accessions.is_empty());
+    }
+
+    #[test]
+    fn stockholm_rf_wins() {
+        // RF says columns 0 and 3 are inserts, although the residues are upper case there.
+        let text = b"# STOCKHOLM 1.0\nx ACGT\ny AC.t\n#=GC RF .xx.\n\nx A\ny a\n#=GC RF x\n//\n";
+        let a = parse_bytes(text).unwrap();
+        assert_eq!(insert_cols(&a), [0, 3]);
+        // an RF line that doesn't cover the alignment is ignored
+        let text = b"# STOCKHOLM 1.0\nx ACGt\ny AC.t\n#=GC RF xx\n//\n";
+        assert_eq!(insert_cols(&parse_bytes(text).unwrap()), [3]);
+    }
+
+    /// A2M-style FASTA, in one batch and in tiny batches.
+    #[test]
+    fn a2m_fasta_inserts() {
+        let text = b">a\nAC.gT\n>b\nA-tG.\n>c\nACaGT\n";
+        for a in all_ways(text) {
+            assert_eq!(seqs(&a), ["AC-GT", "A-TG-", "ACAGT"]);
+            assert_eq!(insert_cols(&a), [2]);
+        }
+        // a row with no insert marks makes every column a match column
+        for a in all_ways(b">a\nAC.gT\n>b\nACGGT\n") {
+            assert!(a.inserts.is_empty());
+        }
+        // plain upper-case FASTA: none
+        assert!(parse_bytes(b">a\nACGT\n>b\nAC-T\n").unwrap().inserts.is_empty());
     }
 
     #[test]

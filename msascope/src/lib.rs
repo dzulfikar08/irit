@@ -17,6 +17,21 @@ pub struct Alignment {
     pub matrix: Matrix,
     /// DNA, RNA, DNA/RNA (T and U kept apart) or protein.
     pub alpha: &'static Alphabet,
+    /// Insert columns as a bitset (bit `c % 64` of word `c / 64`): from Stockholm's `#=GC RF`
+    /// line when present, otherwise the columns where every row has lower case or `.` (the A2M and
+    /// Pfam convention for insert states). Empty when there are none. Residues are still stored as
+    /// upper case and `.` as a gap.
+    pub inserts: Vec<u64>,
+    /// Stockholm `#=GS <name> AC <accession>`, per row; empty when the file has none.
+    pub accessions: Vec<Option<Box<str>>>,
+}
+
+/// The `start-end` range after the last `/` of a Pfam/HMMER-style name (`GLB2_TYLHE/32-143`).
+pub fn name_range(name: &str) -> Option<(usize, usize)> {
+    let (_, r) = name.rsplit_once('/')?;
+    let (a, b) = r.split_once('-')?;
+    let (a, b) = (a.trim().parse().ok()?, b.trim().parse().ok()?);
+    (a >= 1).then_some((a, b))
 }
 
 impl Alignment {
@@ -38,6 +53,31 @@ impl Alignment {
 
     pub fn symbol(&self, code: u8) -> u8 {
         self.alpha.symbol(code)
+    }
+
+    pub fn is_insert(&self, c: usize) -> bool {
+        self.inserts.get(c / 64).is_some_and(|w| w >> (c % 64) & 1 == 1)
+    }
+
+    pub fn insert_count(&self) -> usize {
+        self.inserts.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    pub fn accession(&self, r: usize) -> Option<&str> {
+        self.accessions.get(r).and_then(|a| a.as_deref())
+    }
+
+    /// The number of residue `c` of row `r` in its sequence, 1-based, counted from the name's
+    /// `/start-end` when it has one: `(position, start, end)` where start and end are the range
+    /// the row covers. `None` for a gap.
+    pub fn seq_position(&self, r: usize, c: usize) -> Option<(usize, usize, usize)> {
+        if self.matrix.get(r, c) == alphabet::GAP {
+            return None;
+        }
+        let before = self.matrix.residues_before(r, c);
+        let len = self.matrix.residues_before(r, self.cols());
+        let start = name_range(&self.names[r]).map_or(1, |(a, _)| a);
+        Some((start + before, start, start + len.max(1) - 1))
     }
 }
 
