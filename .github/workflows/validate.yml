@@ -103,7 +103,7 @@ jobs:
       - name: nf-core/bacass accepts the sheet (stub run)
         run: |
           nextflow run nf-core/bacass -r 2.7.0 -profile test,docker -stub-run \
-            --input sheet.tsv --outdir out -ansi-log false | tee bacass.log
+            --input sheet.tsv --outdir out -ansi-log false 2>&1 | tee bacass.log
           grep -E "Pipeline completed successfully" bacass.log
           {
             echo "## sheetgen → nf-core/bacass 2.7.0 (stub run)"
@@ -112,7 +112,7 @@ jobs:
             cat sheet.tsv
             echo '```'
             echo
-            grep -E '^\[SUCCESS\]' bacass.log || true
+            echo "Steps submitted: $(grep -c 'Submitted process' bacass.log || true)"
             echo "Lane-merge steps run: $(grep -c 'CAT_FASTQ_SHORT' bacass.log || true)"
           } >> "$GITHUB_STEP_SUMMARY"
 
