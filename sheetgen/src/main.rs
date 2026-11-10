@@ -1,8 +1,9 @@
 //! sheetgen: build a pipeline sample sheet from a folder of FASTQ files.
 //!
-//! Pairs R1/R2, keeps lanes as separate rows (nf-core pipelines merge rows that share a
-//! sample name), and, given a pipeline's `schema_input.json`, writes the exact columns
-//! that pipeline expects and checks every value against the schema before you launch.
+//! Pairs R1/R2 files that sit in the same folder and differ only in the mate token, keeps
+//! lanes and runs as separate rows (nf-core pipelines merge rows that share a sample name),
+//! and, given a pipeline's `schema_input.json`, writes the exact columns that pipeline
+//! expects and checks the rows against the schema before you launch.
 
 mod schema;
 
@@ -56,6 +57,20 @@ struct Cli {
     /// list those instead of the original paths. The original files are not touched.
     #[arg(long, value_name = "DIR")]
     link_into: Option<PathBuf>,
+
+    /// Don't pair files on a bare `_1`/`_2` (or `.1`/`.2`) suffix; only `R1`/`R2` names pair.
+    /// Use when `x_1.fq.gz` and `x_2.fq.gz` are two single-end samples.
+    #[arg(long)]
+    no_pair_numeric: bool,
+
+    /// Allow different sample names that become the same after cleaning (`s 1`, `s_1`); the
+    /// pipeline then merges them into one sample.
+    #[arg(long)]
+    allow_merge: bool,
+
+    /// Write the sheet even if the schema has rules sheetgen can't evaluate.
+    #[arg(long)]
+    allow_unchecked: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -79,7 +94,14 @@ struct Fastq {
     sample: String,
     lane: String,
     mate: Mate,
+    /// File stem with the mate token blanked: R1 and R2 of one pair share it.
+    pair_stem: String,
+    /// The mate came from a bare `_1`/`_2` suffix rather than `R1`/`R2`.
+    numeric: bool,
 }
+
+/// How a file stem was read: sample, lane, mate (`None` for index reads), pair stem, numeric.
+type Classified = (String, String, Option<Mate>, String, bool);
 
 /// One output row: one sample, one lane.
 #[derive(Debug, Clone)]
@@ -88,6 +110,8 @@ pub struct Unit {
     pub r1: Option<PathBuf>,
     pub r2: Option<PathBuf>,
     pub long: Option<PathBuf>,
+    /// R1/R2 were matched only on a bare `_1`/`_2` suffix.
+    pub numeric_pair: bool,
 }
 
 static FASTQ_EXT: LazyLock<Regex> =
@@ -105,15 +129,15 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let fixed = parse_sets(&cli.set)?;
 
-    let (files, skipped) = scan(&cli.dirs, cli.name_from_dir)?;
+    let (files, skipped) = scan(&cli.dirs, cli.name_from_dir, !cli.no_pair_numeric)?;
     if files.is_empty() {
         bail!("no FASTQ files found under {}", show_dirs(&cli.dirs));
     }
-    let (mut units, mut warnings) = pair(files, cli.long);
+    let (mut units, mut warnings) = pair(files, cli.long)?;
     for s in &skipped {
         warnings.push(format!("skipped index read file {s}"));
     }
-    check_names(&units, &mut warnings);
+    check_names(&units, cli.allow_merge, &mut warnings)?;
     if let Some(dir) = &cli.link_into {
         link_into(&mut units, dir)?;
     }
@@ -134,7 +158,7 @@ fn main() -> Result<()> {
     };
 
     let table = if let Some(path) = &schema_path {
-        let schema = schema::Schema::load(path)?;
+        let schema = schema::Schema::load(path, cli.allow_unchecked)?;
         schema.build(&units, &fixed, &fmt_path, &mut warnings)?
     } else {
         match cli.format {
@@ -173,6 +197,14 @@ fn main() -> Result<()> {
             .map(|p| format!(", columns from {}", p.display()))
             .unwrap_or_default()
     );
+    let numeric: BTreeSet<&str> = units.iter().filter(|u| u.numeric_pair).map(|u| u.sample.as_str()).collect();
+    if !numeric.is_empty() {
+        let list: Vec<_> = numeric.into_iter().collect();
+        eprintln!(
+            "  note: paired only because of a bare _1/_2 suffix: {} (SRA-style names; if these are separate single-end samples, rerun with --no-pair-numeric)",
+            list.join(", ")
+        );
+    }
     for w in &warnings {
         eprintln!("  warning: {w}");
     }
@@ -195,7 +227,7 @@ fn parse_sets(sets: &[String]) -> Result<BTreeMap<String, String>> {
 }
 
 /// Walk the folders and classify every FASTQ file. Returns the files and skipped index reads.
-fn scan(dirs: &[PathBuf], name_from_dir: bool) -> Result<(Vec<Fastq>, Vec<String>)> {
+fn scan(dirs: &[PathBuf], name_from_dir: bool, pair_numeric: bool) -> Result<(Vec<Fastq>, Vec<String>)> {
     let mut files = Vec::new();
     let mut skipped = Vec::new();
     let mut seen = BTreeSet::new();
@@ -217,7 +249,7 @@ fn scan(dirs: &[PathBuf], name_from_dir: bool) -> Result<(Vec<Fastq>, Vec<String
                 continue; // same folder given twice, or nested in another argument
             }
             let stem = &name[..m.start()];
-            let (mut sample, lane, mate) = classify(stem);
+            let (mut sample, lane, mate, pair_stem, numeric) = classify(stem, pair_numeric);
             if mate.is_none() {
                 skipped.push(path.display().to_string());
                 continue;
@@ -226,95 +258,149 @@ fn scan(dirs: &[PathBuf], name_from_dir: bool) -> Result<(Vec<Fastq>, Vec<String
                 && let Some(parent) = path.parent().and_then(|p| p.file_name()) {
                     sample = parent.to_string_lossy().into_owned();
                 }
-            files.push(Fastq { path, sample, lane, mate: mate.unwrap() });
+            files.push(Fastq { path, sample, lane, mate: mate.unwrap(), pair_stem, numeric });
         }
     }
     Ok((files, skipped))
 }
 
-/// Split a file stem into (sample, lane, mate). `None` mate means an index read (I1/I2).
-fn classify(stem: &str) -> (String, String, Option<Mate>) {
+/// Split a file stem into sample, lane, mate (`None` for an index read I1/I2), the stem with
+/// the mate token blanked (shared by the two files of a pair) and whether the mate came from
+/// a bare `_1`/`_2`. Without `pair_numeric`, bare `_1`/`_2` are part of the sample name.
+fn classify(stem: &str, pair_numeric: bool) -> Classified {
+    let unpaired = || (stem.to_string(), String::new(), Some(Mate::Unpaired), stem.to_string(), false);
     let caps = ILLUMINA.captures(stem).or_else(|| GENERIC.captures(stem));
-    let Some(c) = caps else {
-        return (stem.to_string(), String::new(), Some(Mate::Unpaired));
-    };
+    let Some(c) = caps else { return unpaired() };
+    let r = c.name("r").unwrap();
+    let numeric = !r.as_str().starts_with(['R', 'r', 'I', 'i']);
+    if numeric && !pair_numeric {
+        return unpaired();
+    }
     let lane = c.name("lane").map(|m| m.as_str().to_string()).unwrap_or_default();
-    let mate = match c["r"].to_ascii_uppercase().as_str() {
+    let mate = match r.as_str().to_ascii_uppercase().as_str() {
         "R1" | "1" => Some(Mate::R1),
         "R2" | "2" => Some(Mate::R2),
         _ => None, // I1 / I2
     };
-    (c["s"].to_string(), lane, mate)
+    let pair_stem = format!("{}\u{0}{}", &stem[..r.start()], &stem[r.end()..]);
+    (c["s"].to_string(), lane, mate, pair_stem, numeric)
 }
 
-/// Group files into (sample, lane) units and pair mates.
-fn pair(files: Vec<Fastq>, long: bool) -> (Vec<Unit>, Vec<String>) {
-    let mut groups: BTreeMap<(String, String), Vec<Fastq>> = BTreeMap::new();
+/// Pair mates and make one unit per pair or unpaired file.
+///
+/// Two files are mates only if they sit in the same folder and their names differ only in the
+/// mate token (`A_R1` / `A_R2`). Several pairs for one sample (lanes, runs in other folders)
+/// become several rows, which nf-core pipelines merge. Two files claiming the same mate of the
+/// same pair (`A_R1.fq.gz` next to `A_R1.fastq.gz`) are an error.
+fn pair(files: Vec<Fastq>, long: bool) -> Result<(Vec<Unit>, Vec<String>)> {
+    type Key = (String, String, PathBuf, String);
+    let mut groups: BTreeMap<Key, Vec<Fastq>> = BTreeMap::new();
+    let mut unpaired = Vec::new();
     for f in files {
-        groups.entry((f.sample.clone(), f.lane.clone())).or_default().push(f);
+        if f.mate == Mate::Unpaired {
+            unpaired.push(f);
+            continue;
+        }
+        let dir = f.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        groups.entry((f.sample.clone(), f.lane.clone(), dir, f.pair_stem.clone())).or_default().push(f);
     }
     let mut units = Vec::new();
     let mut warnings = Vec::new();
-    for ((sample, lane), fs) in groups {
+    let mut orphans = Vec::new();
+    for ((sample, lane, _, _), fs) in groups {
         let at = if lane.is_empty() { sample.clone() } else { format!("{sample} lane {lane}") };
         let pick = |m: Mate| -> Vec<&Fastq> { fs.iter().filter(|f| f.mate == m).collect() };
-        let (r1, r2, un) = (pick(Mate::R1), pick(Mate::R2), pick(Mate::Unpaired));
+        let (r1, r2) = (pick(Mate::R1), pick(Mate::R2));
         if r1.len() > 1 || r2.len() > 1 {
             let list: Vec<_> = fs.iter().map(|f| f.path.display().to_string()).collect();
-            warnings.push(format!(
-                "{at}: several files claim the same mate, each gets its own row: {}",
-                list.join(", ")
-            ));
+            bail!("{at}: several files claim the same mate of one pair, so it's unclear which belong together: {}", list.join(", "));
         }
-        let n = r1.len().max(r2.len());
-        for i in 0..n {
-            let a = r1.get(i).map(|f| f.path.clone());
-            let b = r2.get(i).map(|f| f.path.clone());
-            match (&a, &b) {
-                (Some(_), None) => warnings.push(format!("{at}: R1 without R2, written as single-end")),
-                (None, Some(p)) => warnings.push(format!(
-                    "{at}: R2 without R1 ({}); check the file name",
-                    p.display()
-                )),
-                _ => {}
-            }
-            units.push(Unit { sample: sample.clone(), r1: a, r2: b, long: None });
+        let a = r1.first().map(|f| f.path.clone());
+        let b = r2.first().map(|f| f.path.clone());
+        match (&a, &b) {
+            (Some(p), None) => warnings.push(format!("{at}: R1 without R2 ({}), written as single-end", p.display())),
+            (None, Some(p)) => orphans.push(p.display().to_string()),
+            _ => {}
         }
-        for f in un {
-            if long {
-                // Hybrid assembly: put long reads on the sample's short-read row if it has one.
-                if let Some(u) = units
-                    .iter_mut()
-                    .rev()
-                    .find(|u| u.sample == sample && u.long.is_none() && u.r1.is_some())
-                {
-                    u.long = Some(f.path.clone());
-                    continue;
-                }
-                units.push(Unit { sample: sample.clone(), r1: None, r2: None, long: Some(f.path.clone()) });
-            } else {
-                units.push(Unit { sample: sample.clone(), r1: Some(f.path.clone()), r2: None, long: None });
+        let numeric_pair = a.is_some() && b.is_some() && fs.iter().all(|f| f.numeric);
+        units.push(Unit { sample, r1: a, r2: b, long: None, numeric_pair });
+    }
+    if !orphans.is_empty() {
+        bail!(
+            "R2 files without an R1 next to them (mates are paired only within one folder, by names that differ only in R1/R2 or _1/_2):\n  {}",
+            orphans.join("\n  ")
+        );
+    }
+    for f in unpaired {
+        if long {
+            // Hybrid assembly: put long reads on the sample's short-read row if it has one.
+            if let Some(u) = units
+                .iter_mut()
+                .rev()
+                .find(|u| u.sample == f.sample && u.long.is_none() && u.r1.is_some())
+            {
+                u.long = Some(f.path.clone());
+                continue;
             }
+            units.push(Unit { sample: f.sample, r1: None, r2: None, long: Some(f.path), numeric_pair: false });
+        } else {
+            units.push(Unit { sample: f.sample, r1: Some(f.path), r2: None, long: None, numeric_pair: false });
         }
     }
-    (units, warnings)
+    // Keep each sample's rows together.
+    units.sort_by(|a, b| a.sample.cmp(&b.sample));
+    // nf-core pipelines refuse a sample whose runs are partly single-end, partly paired; it
+    // usually means a mate file is missing or misnamed.
+    let mut kinds: BTreeMap<&str, BTreeSet<bool>> = BTreeMap::new();
+    for u in units.iter().filter(|u| u.r1.is_some() || u.r2.is_some()) {
+        kinds.entry(&u.sample).or_default().insert(u.r1.is_some() && u.r2.is_some());
+    }
+    let mixed: Vec<&str> = kinds.into_iter().filter(|(_, k)| k.len() > 1).map(|(s, _)| s).collect();
+    if !mixed.is_empty() {
+        let detail: Vec<String> = units
+            .iter()
+            .filter(|u| mixed.contains(&u.sample.as_str()))
+            .map(|u| {
+                let show = |p: &Option<PathBuf>| p.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "-".into());
+                format!("{}: {} + {}", u.sample, show(&u.r1), show(&u.r2))
+            })
+            .collect();
+        bail!(
+            "these samples have both single-end and paired rows, which pipelines reject; a mate is probably missing or named differently:\n  {}",
+            detail.join("\n  ")
+        );
+    }
+    Ok((units, warnings))
 }
 
-/// Make names safe for pipelines (no spaces or shell-hostile characters) and catch collisions.
-fn check_names(units: &[Unit], warnings: &mut Vec<String>) {
+/// Different names that become the same after cleaning would be merged into one sample by the
+/// pipeline: an error unless `allow_merge`.
+fn check_names(units: &[Unit], allow_merge: bool, warnings: &mut Vec<String>) -> Result<()> {
     let mut by_clean: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
     for u in units {
         by_clean.entry(clean_name(&u.sample)).or_default().insert(&u.sample);
     }
+    let mut clashes = Vec::new();
     for (clean, originals) in by_clean {
         if originals.len() > 1 {
-            let list: Vec<_> = originals.into_iter().collect();
-            warnings.push(format!(
-                "samples {} all become `{clean}` after cleaning; rename the files",
-                list.join(", ")
-            ));
+            let list: Vec<_> = originals.into_iter().map(|o| format!("`{o}`")).collect();
+            clashes.push(format!("{} all become `{clean}`", list.join(", ")));
         }
     }
+    if clashes.is_empty() {
+        return Ok(());
+    }
+    if !allow_merge {
+        bail!(
+            "sample names collide after cleaning, and the pipeline would merge them into one sample:\n  {}\n\
+             rename the files, or pass --allow-merge if they really are one sample",
+            clashes.join("\n  ")
+        );
+    }
+    for c in clashes {
+        warnings.push(format!("merged as one sample (--allow-merge): {c}"));
+    }
+    Ok(())
 }
 
 /// Replace every path with a clean symlink in `dir`, numbered per sample so lanes stay apart.
@@ -456,7 +542,7 @@ mod tests {
     #[test]
     fn classifies_common_names() {
         let c = |s| {
-            let (a, l, m) = classify(s);
+            let (a, l, m, _, _) = classify(s, true);
             (a, l, m)
         };
         assert_eq!(c("Ecoli_S3_L002_R1_001"), ("Ecoli".into(), "002".into(), Some(Mate::R1)));
@@ -466,6 +552,85 @@ mod tests {
         assert_eq!(c("ERR044595_1M_2"), ("ERR044595_1M".into(), "".into(), Some(Mate::R2)));
         assert_eq!(c("sample.R1"), ("sample".into(), "".into(), Some(Mate::R1)));
         assert_eq!(c("barcode07"), ("barcode07".into(), "".into(), Some(Mate::Unpaired)));
+    }
+
+    fn touch(root: &Path, names: &[&str]) {
+        for n in names {
+            let p = root.join(n);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "").unwrap();
+        }
+    }
+
+    fn units_of(root: &Path, pair_numeric: bool) -> Result<Vec<Unit>> {
+        let (files, _) = scan(&[root.to_path_buf()], false, pair_numeric)?;
+        Ok(pair(files, false)?.0)
+    }
+
+    fn rel(root: &Path, p: &Option<PathBuf>) -> Option<String> {
+        let root = root.canonicalize().unwrap();
+        p.as_ref().map(|p| p.strip_prefix(&root).unwrap().display().to_string().replace('\\', "/"))
+    }
+
+    #[test]
+    fn mates_pair_only_within_a_folder() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["runA/A_R1.fastq.gz", "runB/A_R1.fastq.gz", "runB/A_R2.fastq.gz"]);
+        // runA's lone R1 must not be paired with runB's R2; the sample is then half single-end.
+        let err = units_of(t.path(), true).unwrap_err().to_string();
+        assert!(err.contains("both single-end and paired rows"), "{err}");
+        touch(t.path(), &["runA/A_R2.fastq.gz"]);
+        let u = units_of(t.path(), true).unwrap();
+        let rows: Vec<_> = u.iter().map(|u| (rel(t.path(), &u.r1), rel(t.path(), &u.r2))).collect();
+        assert_eq!(
+            rows,
+            vec![
+                (Some("runA/A_R1.fastq.gz".into()), Some("runA/A_R2.fastq.gz".into())),
+                (Some("runB/A_R1.fastq.gz".into()), Some("runB/A_R2.fastq.gz".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn mates_in_different_folders_are_not_paired() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["input1/X_1.fastq.gz", "input2/X_2.fastq.gz"]);
+        let err = units_of(t.path(), true).unwrap_err().to_string();
+        assert!(err.contains("R2 files without an R1"), "{err}");
+    }
+
+    #[test]
+    fn two_files_for_one_mate_are_an_error() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["A_R1.fq.gz", "A_R1.fastq.gz", "A_R2.fq.gz"]);
+        let err = units_of(t.path(), true).unwrap_err().to_string();
+        assert!(err.contains("several files claim the same mate"), "{err}");
+    }
+
+    #[test]
+    fn names_colliding_after_cleaning_are_refused() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["s 1_R1.fastq.gz", "s 1_R2.fastq.gz", "s_1_R1.fastq.gz", "s_1_R2.fastq.gz"]);
+        let u = units_of(t.path(), true).unwrap();
+        let mut w = Vec::new();
+        let err = check_names(&u, false, &mut w).unwrap_err().to_string();
+        assert!(err.contains("`s 1`, `s_1` all become `s_1`"), "{err}");
+        assert!(check_names(&u, true, &mut w).is_ok());
+        assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn bare_numeric_pairs_are_flagged_or_kept_apart() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), &["patient_1.fq.gz", "patient_2.fq.gz", "ctrl_R1.fq.gz", "ctrl_R2.fq.gz"]);
+        let u = units_of(t.path(), true).unwrap();
+        assert_eq!(u.len(), 2);
+        let flagged: Vec<_> = u.iter().map(|u| (u.sample.as_str(), u.numeric_pair)).collect();
+        assert_eq!(flagged, vec![("ctrl", false), ("patient", true)]);
+
+        let u = units_of(t.path(), false).unwrap();
+        let names: Vec<_> = u.iter().map(|u| (u.sample.as_str(), u.r2.is_some())).collect();
+        assert_eq!(names, vec![("ctrl", true), ("patient_1", false), ("patient_2", false)]);
     }
 
     #[test]
