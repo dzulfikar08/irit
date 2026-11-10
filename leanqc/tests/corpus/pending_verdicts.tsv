@@ -1,0 +1,23 @@
+# leanqc's own verdicts for corpus files FastQC has not been run on yet. FastQC verdict pending:
+# recorded by the validate workflow on GitHub (scripts/fastqc_corpus.sh), then move the rows to
+# fastqc_verdicts.tsv and delete them here.
+file	module	leanqc
+bad_tile.fastq.gz	Per base sequence quality	pass
+bad_tile.fastq.gz	Per tile sequence quality	fail
+bad_tile.fastq.gz	Per sequence quality scores	pass
+bad_tile.fastq.gz	Per base sequence content	pass
+bad_tile.fastq.gz	Per sequence GC content	pass
+bad_tile.fastq.gz	Per base N content	pass
+bad_tile.fastq.gz	Sequence Length Distribution	pass
+bad_tile.fastq.gz	Sequence Duplication Levels	pass
+bad_tile.fastq.gz	Overrepresented sequences	pass
+bad_tile.fastq.gz	Adapter Content	pass
+ultra_long.fastq.gz	Per base sequence quality	fail
+ultra_long.fastq.gz	Per sequence quality scores	pass
+ultra_long.fastq.gz	Per base sequence content	warn
+ultra_long.fastq.gz	Per sequence GC content	pass
+ultra_long.fastq.gz	Per base N content	pass
+ultra_long.fastq.gz	Sequence Length Distribution	warn
+ultra_long.fastq.gz	Sequence Duplication Levels	pass
+ultra_long.fastq.gz	Overrepresented sequences	warn
+ultra_long.fastq.gz	Adapter Content	pass

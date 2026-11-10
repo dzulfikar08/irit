@@ -52,7 +52,9 @@ same thing in both tools.
 Adapters searched (FastQC's default list): Illumina Universal, Illumina Small RNA 3', Illumina
 Small RNA 5', Nextera, polyA, polyG.
 
-How the modules work (reimplemented from FastQC 0.12.1's source, not copied):
+How the modules work (ported from FastQC 0.12.1: several functions in `leanqc/src/stats.rs` are
+translations of FastQC's Java code, each marked with the FastQC class and method it ports; see
+[credit](#credit)):
 
 - **Position groups.** Per-position modules are judged on FastQC's linear groups: single positions
   up to 9, then equal-width groups chosen so there are fewer than 75 (reads up to 75 bp are not
@@ -102,7 +104,9 @@ See [benchmarks](../benchmarks.md#leanqc-against-fastqc). In short: on a 1-milli
 test file, 1.5 s and 13 MB against FastQC's 7.0 s and 483 MB. The ten graded modules give the
 same verdict as FastQC 0.12.1 on all four bacass test files (40 of 40) and on a synthetic corpus
 of ten more files (88 of 90; the two differences are the encoding rule above), and both tools
-refuse the two truncated files in the corpus.
+refuse the two truncated files in the corpus. Two newer corpus files (a bad flowcell tile, and
+reads over 100 kb) are checked against leanqc's own recorded verdicts until the validation
+workflow records FastQC's.
 
 ## Known gaps
 
@@ -114,3 +118,14 @@ refuse the two truncated files in the corpus.
   contaminant files are not supported.
 - Long-read specific views (read-length N50, quality by length) are not there yet.
 - Single-threaded per file: one huge file uses one core.
+
+## Credit
+
+leanqc's checks are ported from [FastQC](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/)
+0.12.1, Copyright 2010-17 Simon Andrews, Babraham Bioinformatics, released under the GNU GPL
+version 3 or any later version. leanqc (GPL-3.0-or-later) includes code translated from FastQC's
+`BaseGroup`, `GCModel`, `OverRepresentedSeqs`, `DuplicationLevel`, `PhredEncoding`,
+`QualityCount`, `PerBaseQualityScores`, `PerSequenceQualityScores`, `PerSequenceGCContent`,
+`AdapterContent` and `PerTileQualityScores`, and uses FastQC's default adapter list
+(`adapter_list.txt`) and thresholds (`limits.txt`). The encoding rule is deliberately changed (see
+[quality encoding](#quality-encoding)); everything else aims to give FastQC's verdicts.

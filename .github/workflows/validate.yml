@@ -49,10 +49,36 @@ jobs:
             echo "FastQC: $(grep 'peak MB' fastqc-mem.txt | awk '{print $3}') MB peak (container cgroup)"
           } | tee -a "$GITHUB_STEP_SUMMARY"
           python3 scripts/compare_fastqc.py fastqc leanqc > /dev/null
-      - name: Synthetic corpus (re-record FastQC's verdicts, then compare)
+      - name: Synthetic corpus (re-record FastQC's verdicts for every file, then compare)
         run: |
+          # Records FastQC's verdicts for all corpus files, including those in pending_verdicts.tsv.
           ./scripts/fastqc_corpus.sh
-          git diff --exit-code leanqc/tests/corpus/fastqc_verdicts.tsv
+          # Drift: any committed verdict that changed, or a new file not listed as pending, fails.
+          # Verdicts for pending files are new rows: shown in the summary, uploaded, and compared
+          # with leanqc by the corpus test below.
+          git show HEAD:leanqc/tests/corpus/fastqc_verdicts.tsv > committed_verdicts.tsv
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import sys
+          def rows(path):
+              lines = [l.rstrip("\n") for l in open(path) if l.strip() and not l.startswith("#")]
+              return {tuple(l.split("\t")[:2]): l.split("\t")[2] for l in lines[1:]}
+          old = rows("committed_verdicts.tsv")
+          new = rows("leanqc/tests/corpus/fastqc_verdicts.tsv")
+          pending = {k[0] for k in rows("leanqc/tests/corpus/pending_verdicts.tsv")}
+          old_files = {f for f, _ in old}
+          bad = [f"{f} / {m}: committed {v}, FastQC now {new.get((f, m))}" for (f, m), v in old.items() if new.get((f, m)) != v]
+          bad += [f"{f} / {m}: {v} (new row for a file that was already recorded)" for (f, m), v in new.items() if (f, m) not in old and f in old_files]
+          bad += [f"{f}: new corpus file, not in pending_verdicts.tsv" for f in {f for f, _ in new} - old_files - pending]
+          print("## FastQC verdicts on the synthetic corpus\n")
+          for f in sorted(pending):
+              got = sorted((m, v) for (g, m), v in new.items() if g == f)
+              print(f"- pending `{f}`: " + (", ".join(f"{m} {v}" for m, v in got) or "no verdicts"))
+          if bad:
+              print("\nDrift from the committed fastqc_verdicts.tsv:\n")
+              print("\n".join(f"- {b}" for b in bad))
+              sys.exit(1)
+          print("\nNo drift in committed verdicts. To record pending files, take fastqc_verdicts.tsv from the qc-reports artifact and empty pending_verdicts.tsv.")
+          PY
           cargo test --release -p leanqc --test corpus
       - uses: actions/upload-artifact@v4
         if: always()
@@ -61,6 +87,7 @@ jobs:
           path: |
             leanqc/
             fastqc/*.html
+            leanqc/tests/corpus/fastqc_verdicts.tsv
 
   sheetgen-bacass:
     runs-on: ubuntu-latest
