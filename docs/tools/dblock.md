@@ -44,7 +44,9 @@ and must not contain `..`. MD5s are accepted in either case.
 
 Two `dblock fetch` runs (from two projects, or two terminals) can share a store safely: each
 database has a lock file, `<store>/.lock-<id>`, held while it is planned, downloaded and moved into
-place. The second run waits, then reuses what the first one fetched.
+place. The second run waits, then reuses what the first one fetched. `remove --delete-data` takes
+the same lock before deleting, so it never deletes a folder another run is reusing or moving into
+place.
 
 `remove --delete-data` deletes only `<store>/<id>` itself, and only when it is a real folder with a
 marker for that id; any other path written in a lock file is refused. Because the store is shared,
@@ -64,8 +66,11 @@ it prints what it would delete and stops unless `--force` is given.
 If neither fits, it stops before downloading and says how much space is needed. A 2 GB reserve is
 always kept free.
 
-Either way, files are unpacked into a uniquely named temporary folder. Once the checksum matches,
-dblock records every file's size and SHA-256 (in `.dblock.sha256`) and writes the marker inside that
+Either way, files are unpacked into a uniquely named temporary folder under `<store>/.tmp/<id>/`
+(one folder per database, so cleaning up after a crashed `gtdbtk-r232` fetch never touches an
+unpack of `gtdbtk-r232-mockup` running at the same time). Once the checksum matches,
+dblock records every file's size and SHA-256 (in `.dblock.sha256`; symlinks inside the database are
+recorded with their target and not followed, so retargeting one shows up in `verify`) and writes the marker inside that
 folder, and only then renames it to its final name. A half-finished or corrupt database is never
 mistaken for a good one, and a crash can't leave a folder under the final name without its marker.
 Hashing happens after unpacking, so it reads the unpacked data once more (a few minutes for

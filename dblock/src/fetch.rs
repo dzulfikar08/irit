@@ -111,11 +111,10 @@ pub fn existing(store: &Path, e: &Entry) -> Stored {
     Stored::Ready(Box::new(marker))
 }
 
-/// Lock the database's slot in the store, then reuse what's there or fetch it.
-/// Returns the lock entry and whether it was already in the store.
-pub fn obtain(store: &Path, e: &Entry, opts: &Opts) -> Result<(Locked, bool)> {
+/// Take `<store>/.lock-<id>`, waiting for another dblock that holds it. Released on drop.
+pub fn lock_database(store: &Path, id: &str) -> Result<File> {
     fs::create_dir_all(store).with_context(|| format!("creating {}", store.display()))?;
-    let lock_path = store.join(format!(".lock-{}", e.id));
+    let lock_path = store.join(format!(".lock-{id}"));
     let lock = File::options()
         .create(true)
         .write(true)
@@ -125,24 +124,55 @@ pub fn obtain(store: &Path, e: &Entry, opts: &Opts) -> Result<(Locked, bool)> {
     match lock.try_lock() {
         Ok(()) => {}
         Err(fs::TryLockError::WouldBlock) => {
-            eprintln!("  another dblock is fetching {} into this store; waiting for it", e.id);
+            eprintln!("  another dblock is working on {id} in this store; waiting for it");
             lock.lock().with_context(|| format!("locking {}", lock_path.display()))?;
         }
         Err(fs::TryLockError::Error(err)) => return Err(err).with_context(|| format!("locking {}", lock_path.display())),
     }
+    Ok(lock)
+}
+
+/// Where one database's temporary folders go: `<store>/.tmp/<id>/`. A folder per id, so cleaning
+/// up after `gtdbtk-r232` can't touch `gtdbtk-r232-mockup`'s (a name prefix would).
+fn tmp_parent(store: &Path, id: &str) -> PathBuf {
+    store.join(".tmp").join(id)
+}
+
+/// Remove temporary folders a crashed run left for this database. Call with its lock held.
+fn clean_tmp(store: &Path, id: &str) -> Result<()> {
+    let parent = tmp_parent(store, id);
+    if parent.is_dir() {
+        for entry in fs::read_dir(&parent)?.flatten() {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+    // dblock 0.1 used `<store>/.tmp-<id>-XXXXXX`. Only exact matches: six random alphanumerics
+    // after the id, so `.tmp-<id>-mockup-XXXXXX` (another id's) is left alone.
+    let legacy = format!(".tmp-{id}-");
+    for entry in fs::read_dir(store)?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(rest) = name.strip_prefix(&legacy)
+            && rest.len() == 6
+            && rest.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+    Ok(())
+}
+
+/// Lock the database's slot in the store, then reuse what's there or fetch it.
+/// Returns the lock entry and whether it was already in the store.
+pub fn obtain(store: &Path, e: &Entry, opts: &Opts) -> Result<(Locked, bool)> {
     // Held until `lock` drops at the end of this function.
+    let lock = lock_database(store, &e.id)?;
     match existing(store, e) {
         Stored::Ready(l) => return Ok((*l, true)),
         Stored::Bad(why) => bail!(why),
         Stored::Absent => {}
     }
     // Temporary folders left by a crashed run (nobody else can be using them: we hold the lock).
-    let prefix = format!(".tmp-{}-", e.id);
-    for entry in fs::read_dir(store)?.flatten() {
-        if entry.file_name().to_string_lossy().starts_with(&prefix) {
-            let _ = fs::remove_dir_all(entry.path());
-        }
-    }
+    clean_tmp(store, &e.id)?;
     let plan = plan(store, e, opts)?;
     let locked = fetch(store, e, &plan, opts)?;
     drop(lock);
@@ -187,10 +217,12 @@ fn too_small(e: &Entry, free: u64, stored: u64) -> String {
 /// Download into a fresh temporary folder, write its marker there, then move it into place.
 /// Call through `obtain`, which holds the per-database lock.
 fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
+    let parent = tmp_parent(store, &e.id);
+    fs::create_dir_all(&parent).with_context(|| format!("creating {}", parent.display()))?;
     let tmp_dir = tempfile::Builder::new()
-        .prefix(&format!(".tmp-{}-", e.id))
-        .tempdir_in(store)
-        .with_context(|| format!("creating a temporary folder in {}", store.display()))?;
+        .prefix("fetch-")
+        .tempdir_in(&parent)
+        .with_context(|| format!("creating a temporary folder in {}", parent.display()))?;
     let tmp = tmp_dir.path();
 
     let mut last_err = None;
@@ -509,31 +541,49 @@ impl Progress {
     }
 }
 
-/// Counted files, total bytes and a fingerprint of the folder's file list and sizes.
+/// What `walk` found at a path: a regular file of some size, or a symlink (never followed).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Item {
+    File(u64),
+    Link(String),
+}
+
+/// Counted files, total bytes and a fingerprint of the folder's file list and sizes. Symlinks
+/// count as entries with their target, so retargeting one changes the fingerprint; folders
+/// without links get the same fingerprint as before links were recorded.
 pub fn manifest(dir: &Path) -> Result<(u64, u64, String)> {
     let mut items = Vec::new();
     walk(dir, dir, &mut items)?;
     items.sort();
     let mut h = Md5::new();
     let mut bytes = 0;
-    for (rel, size) in &items {
-        h.update(format!("{rel}\t{size}\n").as_bytes());
-        bytes += size;
+    for (rel, item) in &items {
+        match item {
+            Item::File(size) => {
+                h.update(format!("{rel}\t{size}\n").as_bytes());
+                bytes += size;
+            }
+            Item::Link(target) => h.update(format!("{rel}\t-> {target}\n").as_bytes()),
+        }
     }
     Ok((items.len() as u64, bytes, hex(&h.finalize())))
 }
 
-fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, u64)>) -> Result<()> {
+fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, Item)>) -> Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         let ft = entry.file_type()?;
+        let rel = || -> Result<String> { Ok(path.strip_prefix(root)?.to_string_lossy().into_owned()) };
         if ft.is_dir() {
             walk(root, &path, out)?;
+        } else if ft.is_symlink() {
+            let target = fs::read_link(&path).with_context(|| format!("reading link {}", path.display()))?;
+            out.push((rel()?, Item::Link(target.to_string_lossy().into_owned())));
         } else if ft.is_file() {
-            let rel = path.strip_prefix(root)?.to_string_lossy().into_owned();
+            let rel = rel()?;
             if rel != project::MARKER && rel != project::SUMS {
-                out.push((rel, entry.metadata()?.len()));
+                out.push((rel, Item::File(entry.metadata()?.len())));
             }
         }
     }
@@ -541,13 +591,18 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, u64)>) -> Result<()> {
 }
 
 /// `sha256  size  path` for every file, sorted by path (`/` separators on every platform).
+/// A symlink is listed as `link  0  path -> target`: its target is recorded, not followed.
 pub fn sums(dir: &Path) -> Result<String> {
     let mut items = Vec::new();
     walk(dir, dir, &mut items)?;
     items.sort();
     let mut out = String::new();
     let mut buf = vec![0u8; 1 << 20];
-    for (rel, _) in &items {
+    for (rel, item) in &items {
+        if let Item::Link(target) = item {
+            out.push_str(&format!("link  0  {} -> {target}\n", rel.replace('\\', "/")));
+            continue;
+        }
         let path = dir.join(rel);
         let mut f = File::open(&path).with_context(|| format!("reading {}", path.display()))?;
         let mut h = Sha256::new();
@@ -583,7 +638,7 @@ fn data_path(target: &Path, points_to: &str) -> Result<PathBuf> {
         let suffix = pattern.trim_start_matches('*');
         let mut items = Vec::new();
         walk(target, target, &mut items)?;
-        let hits: Vec<_> = items.iter().filter(|(r, _)| r.ends_with(suffix)).collect();
+        let hits: Vec<_> = items.iter().filter(|(r, i)| matches!(i, Item::File(_)) && r.ends_with(suffix)).collect();
         return match hits.as_slice() {
             [(one, _)] => Ok(target.join(one)),
             [] => bail!("no {pattern} file in the download"),
@@ -689,6 +744,7 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
             .collect();
         assert!(leftovers.is_empty());
+        assert_eq!(fs::read_dir(tmp_parent(store.path(), "mydb")).unwrap().count(), 0);
         assert!(store.path().join("mydb").join(project::MARKER).is_file());
         assert!(results[0].0.data_path.ends_with("mydb/mydb") || results[0].0.data_path.ends_with("mydb\\mydb"));
     }
@@ -737,6 +793,53 @@ mod tests {
         assert!(why.contains("changed since it was fetched"), "{why}");
         assert!(obtain(store.path(), &e, &opts()).is_err());
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cleanup_leaves_other_ids_temp_folders_alone() {
+        let (body, md5) = archive();
+        let (url, _) = serve(body.clone());
+        let mut e = entry(&url, &md5, body.len(), "dir");
+        e.id = "gtdbtk-r232".into();
+        let store = tempfile::tempdir().unwrap();
+        // An in-progress unpack of `gtdbtk-r232-mockup` (its own lock, not ours), in both the
+        // current layout and dblock 0.1's.
+        let theirs = tmp_parent(store.path(), "gtdbtk-r232-mockup").join("fetch-abc123");
+        fs::create_dir_all(&theirs).unwrap();
+        let theirs_legacy = store.path().join(".tmp-gtdbtk-r232-mockup-abc123");
+        fs::create_dir_all(&theirs_legacy).unwrap();
+        // Our own crashed leftovers, both layouts.
+        let ours = tmp_parent(store.path(), "gtdbtk-r232").join("fetch-zzz999");
+        fs::create_dir_all(&ours).unwrap();
+        let ours_legacy = store.path().join(".tmp-gtdbtk-r232-Xy12Zq");
+        fs::create_dir_all(&ours_legacy).unwrap();
+        obtain(store.path(), &e, &opts()).unwrap();
+        assert!(theirs.is_dir() && theirs_legacy.is_dir(), "deleted another database's temp folder");
+        assert!(!ours.exists() && !ours_legacy.exists());
+        assert!(store.path().join("gtdbtk-r232").join(project::MARKER).is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_recorded_in_manifest_and_sums() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("a.txt"), "hello").unwrap();
+        fs::write(d.path().join("b.txt"), "world").unwrap();
+        std::os::unix::fs::symlink("a.txt", d.path().join("current")).unwrap();
+        let (files, bytes, m1) = manifest(d.path()).unwrap();
+        assert_eq!((files, bytes), (3, 10));
+        let s1 = sums(d.path()).unwrap();
+        assert!(s1.contains("link  0  current -> a.txt"), "{s1}");
+        // Retarget the link: same names, same file sizes, but both fingerprints change.
+        fs::remove_file(d.path().join("current")).unwrap();
+        std::os::unix::fs::symlink("b.txt", d.path().join("current")).unwrap();
+        assert_ne!(manifest(d.path()).unwrap().2, m1);
+        assert_ne!(sums(d.path()).unwrap(), s1);
+        // A folder without links keeps the fingerprint format of dblock 0.1.
+        fs::remove_file(d.path().join("current")).unwrap();
+        let mut h = Md5::new();
+        h.update(b"a.txt\t5\nb.txt\t5\n");
+        assert_eq!(manifest(d.path()).unwrap().2, hex(&h.finalize()));
     }
 
     #[test]
