@@ -1,9 +1,0 @@
-[book]
-title = "irit"
-description = "Lean bioinformatics tools for ordinary laptops"
-language = "en"
-src = "docs"
-
-[output.html]
-git-repository-url = "https://github.com/dzulfikar08/irit"
-edit-url-template = "https://github.com/dzulfikar08/irit/edit/main/{path}"

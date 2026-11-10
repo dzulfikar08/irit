@@ -1,0 +1,101 @@
+---
+title: Bioinformatics tools that respect your hardware
+description: irit is a set of small Rust command-line tools for the manual steps around sequencing pipelines, built to run on ordinary laptops.
+template: splash
+editUrl: false
+pagefind: false
+hero:
+  title: Bioinformatics tools that respect your hardware
+  tagline: Small, fast command-line tools for the manual steps around sequencing pipelines, built to run on ordinary laptops. Each tool is one static Rust binary, with no Java, conda or containers to install.
+---
+
+import Measured from '../../components/Measured.astro';
+
+{/* Keep every number on this page in step with docs/. Nothing here should be claimed that docs/ doesn't measure. */}
+
+<p class="irit-name"><em>irit</em> is the Indonesian and Javanese word for frugal: getting the most out of modest resources.</p>
+
+<section class="irit-section irit-measured">
+
+## Measured on a laptop
+
+`leanqc` against FastQC 0.12.1 on one file of 1 million reads, on an AMD Ryzen 5 PRO 4650U laptop.
+
+<Measured />
+
+On a GitHub-hosted runner the same comparison covered 40 module verdicts across four files, and
+none differed from FastQC. How each number was taken is in the [benchmarks](/irit/benchmarks/).
+
+</section>
+
+<section class="irit-section irit-tools">
+
+## Four tools, one manual step each
+
+<dl class="irit-toollist">
+<div>
+<dt>[`sheetgen`](/irit/tools/sheetgen/)</dt>
+<dd>Builds a pipeline's sample sheet from a folder of FASTQ files and checks it against the pipeline's own schema.</dd>
+<dd class="size">2.4 MB</dd>
+</div>
+<div>
+<dt>[`leanqc`](/irit/tools/leanqc/)</dt>
+<dd>Read quality control with an offline HTML report, giving the verdicts FastQC gives.</dd>
+<dd class="size">1.6 MB</dd>
+</div>
+<div>
+<dt>[`isotable`](/irit/tools/isotable/)</dt>
+<dd>Joins fastp, leanqc, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs into one graded row per sample.</dd>
+<dd class="size">2.5 MB</dd>
+</div>
+<div>
+<dt>[`dblock`](/irit/tools/dblock/)</dt>
+<dd>Downloads, verifies and pins reference databases such as GTDB-Tk, CheckM2, Kraken 2 and Bakta, with a lock file.</dd>
+<dd class="size">5.1 MB</dd>
+</div>
+</dl>
+
+</section>
+
+<section class="irit-section irit-install">
+
+## Install
+
+<div class="irit-install-grid">
+<div>
+
+### Download a release
+
+Get the archive for your system from the [latest release](https://github.com/dzulfikar08/irit/releases/latest):
+Linux x86_64 and ARM64, macOS Intel and Apple Silicon, or Windows. Unpack it and put the binaries on
+your `PATH`. The Linux builds are statically linked, so they run on old distributions too.
+
+</div>
+<div>
+
+### Build with Cargo
+
+```sh
+cargo install \
+  --git https://github.com/dzulfikar08/irit \
+  sheetgen leanqc isotable dblock
+```
+
+Or run `cargo build --release` in a checkout; the binaries land in `target/release/`.
+
+</div>
+</div>
+
+</section>
+
+<section class="irit-section irit-next">
+
+## Read next
+
+<ul class="irit-nextlist">
+<li>[Introduction](/irit/introduction/): why these tools exist and the rules they follow.</li>
+<li>[Benchmarks](/irit/benchmarks/): every measurement, the machine and the test data.</li>
+<li>[Roadmap](/irit/roadmap/): what is done, what is next, and what is further out.</li>
+</ul>
+
+</section>
