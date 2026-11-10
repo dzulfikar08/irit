@@ -172,6 +172,15 @@ fn cmd_remove(dir: &Path, ids: &[String], delete_data: bool, force: bool) -> Res
         lock.databases.retain(|d| &d.id != id);
     }
     for d in &doomed {
+        // Hold the database's lock so a fetch of the same id in another project can't be
+        // reusing or moving this folder while it is deleted.
+        let id = d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let store = d.parent().context("database folder has no parent")?;
+        let _lock = fetch::lock_database(store, &id)?;
+        if d.symlink_metadata().is_err() {
+            println!("{} is already gone", d.display());
+            continue;
+        }
         std::fs::remove_dir_all(d).with_context(|| format!("deleting {}", d.display()))?;
         println!("deleted {} (the store is shared; other projects that used it must fetch it again)", d.display());
     }
@@ -452,5 +461,29 @@ mod remove_tests {
         assert!(deletable(&store, &locked("mydb", &elsewhere)).is_err());
         // The right folder under another id's name.
         assert!(deletable(&store, &locked("other", &db)).is_err());
+    }
+
+    #[test]
+    fn delete_data_waits_for_the_database_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        let db = store.join("mydb");
+        std::fs::create_dir_all(&db).unwrap();
+        project::write_marker(&db, &locked("mydb", &db)).unwrap();
+        let proj = root.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        Project { store: Some(store.display().to_string()), databases: vec!["mydb".into()] }.save(&proj).unwrap();
+        Lock { databases: vec![locked("mydb", &db)] }.save(&proj).unwrap();
+
+        // Another dblock is fetching (or reusing) mydb in this store.
+        let held = fetch::lock_database(&store, "mydb").unwrap();
+        std::thread::scope(|s| {
+            let remover = s.spawn(|| cmd_remove(&proj, &["mydb".into()], true, true));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            assert!(db.is_dir(), "deleted while another dblock held the lock");
+            drop(held);
+            remover.join().unwrap().unwrap();
+        });
+        assert!(!db.exists());
     }
 }
