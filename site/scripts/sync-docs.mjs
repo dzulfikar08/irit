@@ -3,13 +3,14 @@
 // For each page:
 //   - the first "# Heading" becomes the frontmatter title and is removed from the body;
 //   - relative links to other docs pages become site URLs (with the base path and anchors);
+//   - images inside docs/ are copied next to the pages and their relative links kept;
 //   - relative links to repository files outside docs/ become GitHub URLs;
 //   - an editUrl pointing at the original file in docs/ is added.
 // docs/SUMMARY.md (the mdBook table of contents) is skipped; astro.config.mjs reads it for the sidebar.
 //
 // Run by `npm run dev` and `npm run build`. The output folder is gitignored, except index.mdx and demos/.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BASE, REPO_URL, docSlug } from '../site.config.mjs';
@@ -44,6 +45,8 @@ function clean(dir, top = true) {
 	}
 }
 
+const IMAGE = /\.(png|jpe?g|gif|webp|avif|svg)$/i;
+
 const isExternal = (url) => /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith('//');
 
 // docRel: path of the current page relative to docs/, e.g. "tools/leanqc.md".
@@ -58,6 +61,13 @@ function rewriteUrl(url, docRel) {
 	const repoRel = posix.normalize(posix.join('docs', posix.dirname(docRel), decodeURI(pathPart)));
 	if (repoRel.startsWith('../')) {
 		console.warn(`sync-docs: ${docRel}: link "${url}" leaves the repository; left as is`);
+		return url;
+	}
+
+	// Images inside docs/ are copied next to the pages (below), so the relative link still works
+	// and Astro optimises and serves them from the site.
+	if (repoRel.startsWith('docs/') && IMAGE.test(repoRel)) {
+		if (!existsSync(join(repoRoot, repoRel))) console.warn(`sync-docs: ${docRel}: link to missing image "${repoRel}"`);
 		return url;
 	}
 
@@ -150,6 +160,12 @@ clean(outDir);
 let count = 0;
 for (const file of walk(docsDir)) {
 	const docRel = relative(docsDir, file).split('\\').join('/');
+	if (IMAGE.test(docRel)) {
+		const dest = join(outDir, docRel);
+		mkdirSync(dirname(dest), { recursive: true });
+		copyFileSync(file, dest);
+		continue;
+	}
 	if (!docRel.endsWith('.md') || SKIP.has(docRel)) continue;
 	const dest = join(outDir, docRel);
 	mkdirSync(dirname(dest), { recursive: true });
