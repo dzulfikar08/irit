@@ -21,7 +21,9 @@ pub struct Ctx {
     pub runs_root: Option<PathBuf>,
 }
 
-pub const RESOLUTION_VARS: [&str; 4] = ["HOME", "NXF_HOME", "DBLOCK_STORE", "XDG_DATA_HOME"];
+/// The last three are the database locations Bakta, CheckM2 and GTDB-Tk read when no path is
+/// given; the server resolves them up front and records the value it used.
+pub const RESOLUTION_VARS: [&str; 7] = ["HOME", "NXF_HOME", "DBLOCK_STORE", "XDG_DATA_HOME", "BAKTA_DB", "CHECKM2DB", "GTDBTK_DATA_PATH"];
 
 impl Ctx {
     pub fn new(cwd: PathBuf, root: PathBuf, allow_outside_root: bool, runs_root: &Path) -> Ctx {
@@ -238,6 +240,80 @@ pub fn text(field: &str, value: &str) -> Check<()> {
 pub fn range<T: PartialOrd + std::fmt::Display>(field: &str, v: T, lo: T, hi: T) -> Check<()> {
     if v < lo || v > hi {
         return invalid(field, format!("{v} is outside {lo}..={hi}"));
+    }
+    Ok(())
+}
+
+/// What a sequence file should hold.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Seq {
+    Fastq,
+    Fasta,
+}
+
+/// Reads the start of a FASTQ/FASTA file (plain or gzip) and refuses anything else: an empty
+/// file, a FASTA given as reads, a compression the tool can't read.
+pub fn sequence_file(path: &Path, field: &str, value: &str, kind: Seq) -> Check<()> {
+    use std::io::Read;
+    let io_err = |e: std::io::Error| Invalid { field: field.into(), message: format!("{value}: {e}") };
+    let mut head = Vec::new();
+    std::fs::File::open(path).and_then(|f| f.take(1 << 16).read_to_end(&mut head)).map_err(io_err)?;
+    match head.as_slice() {
+        [0x1f, 0x8b, ..] => {
+            // Only the first record matters, so one read of the decompressed stream is enough.
+            let mut buf = vec![0u8; 4096];
+            let mut gz = flate2::read::MultiGzDecoder::new(std::fs::File::open(path).map_err(io_err)?);
+            let n = gz.read(&mut buf).unwrap_or(0);
+            if n == 0 {
+                return invalid(field, format!("{value} is gzip, but it could not be decompressed or holds nothing"));
+            }
+            buf.truncate(n);
+            head = buf;
+        }
+        [b'B', b'Z', b'h', ..] | [0xfd, b'7', b'z', b'X', b'Z', 0x00, ..] | [0x28, 0xb5, 0x2f, 0xfd, ..] => {
+            return invalid(field, format!("{value} is compressed with bzip2, xz or zstd; this tool reads plain or gzip files only"));
+        }
+        _ => {}
+    }
+    let (want, name) = match kind {
+        Seq::Fastq => (b'@', "FASTQ (first record starting with @)"),
+        Seq::Fasta => (b'>', "FASTA (first record starting with >)"),
+    };
+    match head.iter().find(|b| !b.is_ascii_whitespace()) {
+        None => invalid(field, format!("{value} is empty")),
+        Some(&b) if b == want => Ok(()),
+        Some(&b'>') if kind == Seq::Fastq => invalid(field, format!("{value} looks like FASTA, not {name}")),
+        Some(&b'@') if kind == Seq::Fasta => invalid(field, format!("{value} looks like FASTQ, not {name}")),
+        Some(_) => invalid(field, format!("{value} does not look like {name}")),
+    }
+}
+
+/// Files directly in `dir` whose name ends with `.{extension}` (as GTDB-Tk and CheckM2 match them).
+pub fn files_with_extension(dir: &Path, extension: &str) -> Vec<PathBuf> {
+    let suffix = format!(".{}", extension.trim_start_matches('.'));
+    let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.to_string_lossy().ends_with(&suffix)).collect())
+        .unwrap_or_default();
+    out.sort();
+    out
+}
+
+/// A file name extension like `fna` or `fna.gz`: no separators, no leading dash.
+pub fn extension(field: &str, value: &str) -> Check<()> {
+    non_empty(field, value)?;
+    let ok = value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !ok || value.starts_with('-') {
+        return invalid(field, format!("{value:?} is not a file extension like fna or fna.gz"));
+    }
+    Ok(())
+}
+
+/// A name that becomes part of output file names (a prefix): no separators, no leading dot or dash.
+pub fn file_stem(field: &str, value: &str) -> Check<()> {
+    non_empty(field, value)?;
+    let ok = value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !ok || value.starts_with(['.', '-']) {
+        return invalid(field, format!("{value:?} must be letters, digits, . _ - (not starting with . or -)"));
     }
     Ok(())
 }

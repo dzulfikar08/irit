@@ -11,6 +11,30 @@
   entry record `linked_files` and `linked_bytes`. If the file system refuses hard links the copies
   are kept, with a note. `fetch --no-dedupe` keeps copies.
 
+### irit-mcp
+- **Third-party tools for the microbial isolate path**: `fastp`, `bakta`, `checkm2` and
+  `gtdbtk_classify_wf`. Each one offers exactly the flags of a pinned upstream version (fastp 1.4.0,
+  Bakta 1.12.2, CheckM2 1.1.0, GTDB-Tk 2.8.0), read from that release's source. The calls go into
+  the same run record and `replay.sh` as the irit tools, so a whole run from reads to taxonomy can
+  be replayed without the AI.
+  - The program is found on `PATH` or through the new `--tool-path NAME=PATH`. If it's missing,
+    the call fails with a Bioconda install hint.
+  - Inputs are checked before running (FASTQ or FASTA, plain or gzip, not empty). So are the
+    databases: Bakta's `version.json` and files, CheckM2's `.dmnd`, and GTDB-Tk's data folders,
+    including `skani/`, which `classify_wf` always needs.
+  - The program's `--version` is recorded. A version other than the pinned one adds a warning to
+    the result; `replay.sh` warns on a mismatch.
+  - Exit 0 without the files the program always writes is an error (`missing_outputs`), recorded
+    as a failed call.
+  - Results carry small summaries: fastp totals, Bakta feature counts, CheckM2 completeness and
+    contamination, and GTDB-Tk classifications. fastp, CheckM2 and GTDB-Tk files are read with
+    isotable's parsers.
+- `version` in run records is now the first line of `--version`, as the docs said.
+
+### isotable
+- The output parsers are now also a library (`isotable::parse`), so irit-mcp reads tool outputs the
+  same way isotable grades them. The command-line tool is unchanged.
+
 ## 0.2.1 (2026-11-10)
 
 ### Fixed

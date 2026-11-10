@@ -151,7 +151,7 @@ fn get_num(row: &BTreeMap<String, String>, key: &str) -> Option<f64> {
     row.get(key)?.parse().ok()
 }
 
-fn fastp(path: &Path, name: &str) -> Result<Vec<Record>> {
+pub fn fastp(path: &Path, name: &str) -> Result<Vec<Record>> {
     let j = json(path)?;
     let s = &j["summary"];
     let mut fields = Vec::new();
@@ -334,7 +334,7 @@ fn busco(path: &Path, name: &str) -> Result<Vec<Record>> {
     Ok(vec![rec(sample, Kind::Genome, fields)])
 }
 
-fn checkm2(path: &Path) -> Result<Vec<Record>> {
+pub fn checkm2(path: &Path) -> Result<Vec<Record>> {
     Ok(tsv(path)?
         .into_iter()
         .filter_map(|r| {
@@ -350,7 +350,7 @@ fn checkm2(path: &Path) -> Result<Vec<Record>> {
         .collect())
 }
 
-fn gtdbtk(path: &Path) -> Result<Vec<Record>> {
+pub fn gtdbtk(path: &Path) -> Result<Vec<Record>> {
     Ok(tsv(path)?
         .into_iter()
         .filter_map(|r| {
