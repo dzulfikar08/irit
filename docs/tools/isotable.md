@@ -71,15 +71,21 @@ Each value remembers which file it came from.
 - If two files give **different** values for the same field (two QUAST reports with different N50,
   say), the cell shows `CONFLICT`, the sample's status is `conflict`, and the reason names both files
   and values. Equal values from several files are fine.
-- fastp: identical reports (the same numbers, e.g. a copied results folder) count once. Two reports
-  on the **same raw reads** with different results (fastp rerun with other settings, kept in a
-  sibling folder) are a `conflict`, not two runs: the fields that differ show `CONFLICT` and a note
-  names both files. Reports count as the same raw reads when fastp's whole `before_filtering`
-  summary matches, or when the input file names in fastp's recorded `command` and the raw read
-  count both match. Only reports on different raw reads are pooled as separate runs of the sample:
-  reads add up, Q30 is pooled as total Q30 bases over total bases (fastp's `q30_bases` /
-  `total_bases` after filtering), and duplication is weighted by reads. Older fastp files without
-  base counts can't be pooled and Q30 is left out.
+- fastp: identical reports (the same numbers, e.g. a copied results folder) count once. Reports on
+  different raw reads are separate runs of the sample and are pooled: reads add up, Q30 is pooled
+  as total Q30 bases over total bases (fastp's `q30_bases` / `total_bases` after filtering), and
+  duplication is weighted by reads. Older fastp files without base counts can't be pooled and Q30
+  is left out.
+- Two reports on the **same raw reads** with different results (fastp rerun with other settings,
+  kept in a sibling folder) are not two runs. The sample's totals are worked out with each of them
+  in turn; fields that come out differently show `CONFLICT` (the reason lists the total each report
+  would give), the status is `conflict`, and a note names the reports. The sample's other runs are
+  still pooled in, so two runs plus a rerun of one of them flags only the rerun pair.
+- Reports count as the same raw reads when fastp's whole `before_filtering` summary (reads, bases,
+  Q20/Q30 bases, GC) matches. If both reports have that summary it alone decides, so two runs
+  staged under the same names (`S_1.fastq.gz`) with the same read count but different bases are
+  still two runs. Only when a report lacks the summary (older fastp) do the input file names in
+  fastp's recorded `command` plus the raw read count decide.
 - leanqc: failed checks from all of a sample's read files are merged.
 
 ## Grading
@@ -143,7 +149,9 @@ added; the verdict is not changed. Evidence:
   and without a sheet that lists `patient`; two QUAST reports with different N50 give `conflict`;
   a copied fastp report is counted once while two runs are pooled, and two fastp analyses of the
   same raw reads (the bacass ERR064912 report and a stricter rerun) give `conflict` instead of
-  doubling the reads; a 5-read fastp file fails and a
+  doubling the reads; two runs staged under the same names with the same read count but different
+  bases are pooled, and adding a rerun of one of them flags only that pair; a 5-read fastp file
+  fails and a
   sample without assembly data is `incomplete`; a per-read Kraken 2 file doesn't replace the report.
 - Synthetic CheckM2 and GTDB-Tk files (in `isotable/testdata/mag/`, made up for the test) in MAG
   mode: tiers as expected, including a 92%-complete bin failing on 12.5% contamination, and the

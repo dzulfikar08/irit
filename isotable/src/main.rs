@@ -346,25 +346,24 @@ fn finish(mut rows: BTreeMap<String, Row>, mode: Mode) -> BTreeMap<String, Row> 
     rows
 }
 
-/// fastp fields that identify the input rather than describe it; never shown.
-const FASTP_INPUT_KEYS: &[&str] = &["raw_summary", "raw_inputs"];
-
-/// Two fastp reports describe the same raw reads: fastp's whole `before_filtering` summary
-/// matches, or the input file names in its command match along with the raw read count.
+/// Two fastp reports describe the same raw reads. When both carry fastp's `before_filtering`
+/// summary (reads, bases, Q20/Q30 bases, GC), it alone decides. Only when one lacks it do the
+/// input file names in fastp's command plus the raw read count decide.
 fn same_input(a: &Record, b: &Record) -> bool {
     let get = |r: &Record, k: &str| r.fields.iter().find(|(f, _)| *f == k).map(|(_, v)| v.clone());
     let summary = |r| get(r, "raw_summary");
-    if summary(a).is_some() && summary(a) == summary(b) {
-        return true;
+    if let (Some(x), Some(y)) = (summary(a), summary(b)) {
+        return x == y;
     }
     let inputs = |r| get(r, "raw_inputs");
     inputs(a).is_some() && inputs(a) == inputs(b) && get(a, "reads_raw").is_some() && get(a, "reads_raw") == get(b, "reads_raw")
 }
 
-/// Several fastp reports for one sample: identical copies count once; distinct ones are separate
-/// runs, so reads add up and Q30 is pooled as total Q30 bases over total bases. Two reports on the
-/// same raw reads with different results (fastp rerun with other settings) are not runs to add up:
-/// their differing fields become conflicts.
+/// Several fastp reports for one sample: identical copies count once; reports on different raw
+/// reads are separate runs, so reads add up and Q30 is pooled as total Q30 bases over total bases.
+/// Two reports on the same raw reads with different results (fastp rerun with other settings) are
+/// not runs to add up: the sample's totals are computed with each of them in turn, and fields that
+/// come out differently become conflicts naming those reports. Other runs are still pooled in.
 fn pool_fastp(row: &mut Row) {
     let mut runs: Vec<Record> = Vec::new();
     for r in std::mem::take(&mut row.fastp) {
@@ -376,27 +375,61 @@ fn pool_fastp(row: &mut Row) {
     if runs.is_empty() {
         return;
     }
-    let reruns: Vec<(usize, usize)> = (0..runs.len())
-        .flat_map(|i| (i + 1..runs.len()).map(move |j| (i, j)))
-        .filter(|&(i, j)| same_input(&runs[i], &runs[j]))
-        .collect();
-    if !reruns.is_empty() {
-        for (i, j) in &reruns {
-            row.notes.push(format!(
-                "{} and {} analysed the same raw reads with different results; not added up",
-                runs[*i].source, runs[*j].source
-            ));
+    // Group reports on the same raw reads (transitively).
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for i in 0..runs.len() {
+        let hits: Vec<usize> =
+            (0..groups.len()).filter(|&g| groups[g].iter().any(|&j| same_input(&runs[i], &runs[j]))).collect();
+        let mut merged = vec![i];
+        for &g in hits.iter().rev() {
+            merged.extend(groups.remove(g));
         }
-        for r in runs {
-            for (k, v) in r.fields {
-                if !FASTP_INPUT_KEYS.contains(&k) && k != "q30_bases" && k != "bases_trimmed" {
-                    put(&mut row.cells, k, v, &r.source);
-                }
-            }
+        merged.sort();
+        groups.push(merged);
+    }
+    groups.sort();
+    let reps: Vec<&Record> = groups.iter().map(|g| &runs[g[0]]).collect();
+    let (base, note) = pooled(&reps);
+    if let Some(n) = note {
+        row.notes.push(n);
+    }
+    // For each rerun group, the totals with each of its reports standing in for the group.
+    let mut variants: Vec<(usize, &str, BTreeMap<&'static str, Value>)> = Vec::new();
+    for (gi, g) in groups.iter().enumerate().filter(|(_, g)| g.len() > 1) {
+        let names: Vec<&str> = g.iter().map(|&i| runs[i].source.as_str()).collect();
+        let others: Vec<&str> =
+            groups.iter().enumerate().filter(|(o, _)| *o != gi).map(|(_, o)| runs[o[0]].source.as_str()).collect();
+        let pooled_with = if others.is_empty() { String::new() } else { format!(" (pooled with the other runs: {})", others.join(", ")) };
+        row.notes.push(format!(
+            "{} analysed the same raw reads with different results; only one should count, so fields that depend on the choice show both{pooled_with}",
+            names.join(" and ")
+        ));
+        for &i in g {
+            let mut set = reps.clone();
+            set[gi] = &runs[i];
+            variants.push((gi, runs[i].source.as_str(), pooled(&set).0));
         }
-        return;
     }
     let sources: Vec<String> = runs.iter().map(|r| r.source.clone()).collect();
+    for (k, v) in base {
+        let differing: BTreeSet<usize> =
+            variants.iter().filter(|(_, _, m)| m.get(k) != Some(&v)).map(|(g, _, _)| *g).collect();
+        if differing.is_empty() {
+            row.cells.insert(k, Cell::One { value: v, sources: sources.clone() });
+        } else {
+            let all = variants
+                .iter()
+                .filter(|(g, _, _)| differing.contains(g))
+                .filter_map(|(_, src, m)| Some((src.to_string(), m.get(k)?.clone())))
+                .collect();
+            row.cells.insert(k, Cell::Conflict(all));
+        }
+    }
+}
+
+/// Totals over separate runs: reads add up, Q30 is total Q30 bases over total bases, duplication
+/// is weighted by reads. Returns a note when Q30 can't be pooled.
+fn pooled(runs: &[&Record]) -> (BTreeMap<&'static str, Value>, Option<String>) {
     let get = |r: &Record, k: &str| r.fields.iter().find(|(f, _)| *f == k).map(|(_, v)| v.clone());
     let int = |r: &Record, k: &str| match get(r, k) {
         Some(Value::Int(n)) => Some(n),
@@ -406,34 +439,36 @@ fn pool_fastp(row: &mut Row) {
         Some(Value::Num(x)) => Some(x),
         _ => None,
     };
-    let mut set = |k: &'static str, v: Value| {
-        row.cells.insert(k, Cell::One { value: v, sources: sources.clone() });
-    };
+    let mut out = BTreeMap::new();
+    let mut note = None;
     for k in ["reads_raw", "reads_trimmed"] {
         if let Some(sum) = runs.iter().map(|r| int(r, k)).sum::<Option<u64>>() {
-            set(k, Value::Int(sum));
+            out.insert(k, Value::Int(sum));
         }
     }
     let q30: Option<u64> = runs.iter().map(|r| int(r, "q30_bases")).sum();
     let bases: Option<u64> = runs.iter().map(|r| int(r, "bases_trimmed")).sum();
     match (q30, bases) {
-        (Some(q), Some(b)) if b > 0 => set("q30_trimmed", Value::Num(q as f64 * 100.0 / b as f64)),
+        (Some(q), Some(b)) if b > 0 => {
+            out.insert("q30_trimmed", Value::Num(q as f64 * 100.0 / b as f64));
+        }
         _ if runs.len() == 1 => {
-            if let Some(q) = fnum(&runs[0], "q30_trimmed") {
-                set("q30_trimmed", Value::Num(q));
+            if let Some(q) = fnum(runs[0], "q30_trimmed") {
+                out.insert("q30_trimmed", Value::Num(q));
             }
         }
         // Older fastp without base counts: no honest way to pool the rates.
-        _ => row.notes.push("several fastp reports without q30_bases/total_bases; Q30 left out".into()),
+        _ => note = Some("several fastp reports without q30_bases/total_bases; Q30 left out".into()),
     }
     let weights: Option<Vec<(f64, f64)>> =
         runs.iter().map(|r| Some((fnum(r, "duplication")?, int(r, "reads_raw")? as f64))).collect();
     if let Some(w) = weights {
         let total: f64 = w.iter().map(|(_, n)| n).sum();
         if total > 0.0 {
-            set("duplication", Value::Num(w.iter().map(|(d, n)| d * n).sum::<f64>() / total));
+            out.insert("duplication", Value::Num(w.iter().map(|(d, n)| d * n).sum::<f64>() / total));
         }
     }
+    (out, note)
 }
 
 fn num(row: &Row, k: &str) -> Option<f64> {
@@ -690,6 +725,42 @@ mod tests {
         assert_eq!(*status, Status::Pass, "{why:?}");
         assert_eq!(cell(row, "reads_raw"), "3000000");
         assert_eq!(cell(row, "reads_trimmed"), "2850000");
+    }
+
+    /// fastp report with nf-core's staged input names (`S_1.fastq.gz`, `S_2.fastq.gz`).
+    fn fastp_staged(raw_reads: u64, raw_bases: u64, trimmed: u64) -> String {
+        fastp_full(raw_reads, raw_bases, trimmed, "S").replace("S_R1", "S_1").replace("S_R2", "S_2")
+    }
+
+    #[test]
+    fn distinct_runs_with_the_same_names_and_read_count_pool() {
+        // Two sequencing runs of S, staged under the same names, 1,000,000 raw reads each, but
+        // different raw bases and Q30: fastp's before_filtering summary tells them apart.
+        let t = tempfile::tempdir().unwrap();
+        write(t.path(), "run1/S.fastp.json", &fastp_staged(1_000_000, 150_000_000, 980_000));
+        write(t.path(), "run2/S.fastp.json", &fastp_staged(1_000_000, 148_000_000, 970_000));
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["reads"]));
+        let (status, why, row) = &rows["S"];
+        assert_eq!(*status, Status::Pass, "{why:?}");
+        assert_eq!(cell(row, "reads_raw"), "2000000");
+        assert_eq!(cell(row, "reads_trimmed"), "1950000");
+        assert!(!row.notes.iter().any(|n| n.contains("same raw reads")), "{:?}", row.notes);
+
+        // A rerun of run1 next to them: run2 is still pooled in, only the choice between the two
+        // run1 reports is a conflict.
+        write(t.path(), "rerun1/S.fastp.json", &fastp_staged(1_000_000, 150_000_000, 900_000));
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["reads"]));
+        let (status, why, row) = &rows["S"];
+        assert_eq!(*status, Status::Conflict, "{why:?}");
+        assert_eq!(cell(row, "reads_raw"), "2000000"); // not 3,000,000
+        let Cell::Conflict(all) = &row.cells["reads_trimmed"] else { panic!("{:?}", row.cells["reads_trimmed"]) };
+        let mut got: Vec<(String, String)> = all.iter().map(|(s, v)| (s.clone(), v.show())).collect();
+        got.sort();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].0.contains("rerun1") && got[0].1 == "1870000", "{got:?}");
+        assert!(got[1].0.contains("run1") && got[1].1 == "1950000", "{got:?}");
+        let note = row.notes.iter().find(|n| n.contains("same raw reads")).unwrap();
+        assert!(note.contains("run1") && note.contains("rerun1") && note.contains("pooled with the other runs") && note.contains("run2"), "{note}");
     }
 
     #[test]
