@@ -196,6 +196,15 @@ jobs:
           echo "status $st"
           exit $st
 
+      - name: Upload results so far (2)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ani-laptop-results-part2
+          path: |
+            results/
+            */logs/
+
       - name: Over 50 genomes (skani's inverted-index path)
         continue-on-error: true
         timeout-minutes: 90
@@ -204,8 +213,12 @@ jobs:
           /usr/bin/time -v -o results/time-c51.txt "$G" ani --genomes genomes51 --index "$DATA/idx" --source "$REL/skani/database/sketches.db" \
             --work c51 --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 > results/c51.txt 2>&1
           rm -rf c51/db c51/cache
-          /usr/bin/time -v -o results/time-full51.txt "$G" ani --genomes genomes51 --index "$DATA/idx" --work ref51 \
-            --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 --full-db "$REL/skani/database" > results/full51.txt 2>&1
+          # GTDB-Tk on the full database with >50 genomes: skani builds an inverted index of all
+          # 644M marker k-mers. Run it in its own memory-capped cgroup so it can't take the runner down.
+          sudo -E systemd-run --scope --quiet --uid="$(id -u)" --gid="$(id -g)" -p MemoryMax=12G -p MemorySwapMax=6G -- \
+            /usr/bin/time -v -o results/time-full51.txt "$G" ani --genomes genomes51 --index "$DATA/idx" --work ref51 \
+            --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 --full-db "$REL/skani/database" > results/full51.txt 2>&1 \
+            && echo "full51 ok" || echo "full51 failed: $?"
           exp/ani/compare.sh ref51/out c51/out | tee results/compare51.txt
 
       - name: Upload results
