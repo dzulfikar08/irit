@@ -17,9 +17,10 @@ use std::sync::{Arc, Mutex};
 const INSTRUCTIONS: &str = "Tools for sequencing-data housekeeping from the irit project: \
 sheetgen (sample sheets from FASTQ folders, checked against a pipeline's schema), leanqc (read QC), \
 isotable (one graded QC row per sample from tool outputs) and dblock_* (reference databases); \
-plus the microbial isolate path with third-party tools: fastp (trimming), bakta (annotation), checkm2 \
-(completeness/contamination) and gtdbtk_classify_wf (taxonomy). Those need the program installed \
-(Bioconda) and, for the last three, a database (dblock_env shows dblock-managed paths); they can run for \
+plus the microbial isolate path with third-party tools: fastp (trimming), shovill (assembly), bakta \
+(annotation), checkm2 (completeness/contamination), gtdbtk_classify_wf (taxonomy), mlst (sequence type) and \
+amrfinder (AMRFinderPlus resistance genes). Those need the program installed (Bioconda) and, for bakta, \
+checkm2, gtdbtk_classify_wf and amrfinder, a database (dblock_env shows dblock-managed paths); they can run for \
 hours. Their results list `warnings` when the installed version isn't the one irit-mcp was checked against. \
 Parameters are checked before anything runs; unknown parameters are refused, so read each tool's schema \
 instead of guessing flags. A tool that exits non-zero returns isError with its stderr: report it, \
@@ -484,7 +485,7 @@ points, not a standard: say so when reporting grades.")]
         })
     }
 
-    #[tool(description = "List the reference databases dblock can fetch (GTDB-Tk, CheckM2, SILVA, Kraken 2, Bakta, CARD) with download \
+    #[tool(description = "List the reference databases dblock can fetch (GTDB-Tk, CheckM2, SILVA, Kraken 2, Bakta, CARD, AMRFinderPlus) with download \
 size, size on disk and licence notes. Read-only.")]
     async fn dblock_catalog(&self, Parameters(params): Parameters<p::DblockCatalogParams>) -> Result<CallToolResult, ErrorData> {
         let d = self.execute("dblock_catalog", &params, p::dblock_catalog(&self.cfg.ctx, &params)).await;
@@ -525,7 +526,7 @@ SHA-256 with deep: true (minutes to hours). Read-only.")]
         self.reply(d, |d, v| v["report"] = json!(d.stdout_text()))
     }
 
-    #[tool(description = "Environment variables (GTDBTK_DATA_PATH, CHECKM2DB, BAKTA_DB, ...) pointing at the locked databases, as a \
+    #[tool(description = "Environment variables (GTDBTK_DATA_PATH, CHECKM2DB, BAKTA_DB, AMRFINDER_DB, ...) pointing at the locked databases, as a \
 map and as shell export lines. Read-only.")]
     async fn dblock_env(&self, Parameters(params): Parameters<p::DblockProject>) -> Result<CallToolResult, ErrorData> {
         let d = self.execute("dblock_env", &params, p::dblock_simple(&self.cfg.ctx, "env", &params)).await;
@@ -545,6 +546,58 @@ Q30 % and duplication % (read by isotable's own fastp parser). Name `json` `<sam
         self.external_reply(d, |v| {
             v["report"] = json!({"json": params.json, "html": x::fastp_html(&params)});
             v["summary"] = results::fastp_summary(&json_path)?;
+            Ok(())
+        })
+    }
+
+    #[tool(description = "Shovill 1.4.2: assemble a bacterial isolate from paired-end Illumina reads (SPAdes by default, or SKESA, \
+MEGAHIT, Velvet). Writes `<outdir>/contigs.fa`; use one outdir per sample. Needs at least 8 GB RAM (`ram`) and can take tens of minutes; \
+skesa with nocorr is fastest. Returns the assembly's contig count, total length, N50, longest contig and GC %. Shovill always names the \
+file contigs.fa: give mlst a label and amrfinder an output named after the sample so isotable joins them.")]
+    async fn shovill(&self, Parameters(params): Parameters<x::ShovillParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("shovill", &params, x::shovill(&self.cfg.ctx, &params)).await;
+        let contigs = self.cfg.ctx.cwd.join(&params.outdir).join("contigs.fa");
+        self.external_reply(d, |v| {
+            v["contigs_file"] = json!(contigs);
+            v["assembly"] = results::assembly_stats(&contigs)?;
+            Ok(())
+        })
+    }
+
+    #[tool(description = "mlst 2.35.0: multi-locus sequence type of assemblies (FASTA) from the PubMLST schemes bundled with mlst, \
+scheme detected unless `scheme` is set. Writes a tab-separated table to `outfile` (name it `<sample>.mlst.tsv`; with one assembly the \
+sample part is used as the row's label, which isotable joins on). Returns per assembly: scheme, ST (`-` when no scheme matched, `~`/`?` \
+marks novel or partial alleles) and alleles.")]
+    async fn mlst(&self, Parameters(params): Parameters<x::MlstParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("mlst", &params, x::mlst(&self.cfg.ctx, &params)).await;
+        let table = self.cfg.ctx.cwd.join(&params.outfile);
+        self.external_reply(d, |v| {
+            v["results"] = json!(results::mlst_summary(&table)?);
+            v["outfile"] = json!(params.outfile);
+            Ok(())
+        })
+    }
+
+    #[tool(description = "AMRFinderPlus 4.2.7 (amrfinder): antimicrobial resistance genes and point mutations in an assembly \
+(`nucleotide`) and/or proteins (`protein`, with `gff` when both). Needs an indexed AMRFinderPlus database (`database`, or $AMRFINDER_DB; \
+dblock's amrfinderplus-db-4.2-2026-10-29.1 is fetched and indexed by dblock); its version, format and indexes are checked first. Set \
+`organism` (e.g. Staphylococcus_aureus, Escherichia) for point mutations; `plus` adds virulence and stress genes. Writes `output` \
+(name it `<sample>.amrfinder.tsv` for isotable). Returns the hits (gene, type, class, method, coverage, identity), counts per type and \
+the AMR gene list isotable reads.")]
+    async fn amrfinder(&self, Parameters(params): Parameters<x::AmrfinderParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("amrfinder", &params, x::amrfinder(&self.cfg.ctx, &params)).await;
+        let report = self.cfg.ctx.cwd.join(&params.output);
+        let db_version = d
+            .record
+            .inputs
+            .iter()
+            .find(|i| i.path.ends_with("version.txt"))
+            .and_then(|i| std::fs::read_to_string(&i.path).ok())
+            .map(|t| t.trim().to_string());
+        self.external_reply(d, |v| {
+            v["database_version"] = json!(db_version);
+            v["report"] = json!(params.output);
+            v["summary"] = results::amrfinder_summary(&report)?;
             Ok(())
         })
     }

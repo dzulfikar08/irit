@@ -1,10 +1,11 @@
-//! Third-party tools (fastp, Bakta, CheckM2, GTDB-Tk): typed parameters, checks before running,
-//! and their argument vectors.
+//! Third-party tools (fastp, Shovill, Bakta, CheckM2, GTDB-Tk, mlst, AMRFinderPlus): typed
+//! parameters, checks before running, and their argument vectors.
 //!
 //! Every flag here exists in the pinned upstream version (see [`PINNED`]); the comment above each
 //! builder names the source file it was read from. Nothing is passed that the pinned version
-//! doesn't have. Options are written `--name=value` (fastp's cmdline.h and Python's argparse both
-//! accept that form), so a value starting with `-` is never read as a flag.
+//! doesn't have. Options are written `--name=value` (fastp's cmdline.h, Python's argparse, Perl's
+//! Getopt::Long and NCBI's ShellApplication all accept that form), so a value starting with `-` is
+//! never read as a flag.
 
 use crate::params::Invocation;
 use crate::validate::{self as v, Check, Ctx, Seq};
@@ -20,11 +21,14 @@ pub struct Pinned {
     pub url: &'static str,
 }
 
-pub const PINNED: [Pinned; 4] = [
+pub const PINNED: [Pinned; 7] = [
     Pinned { tool: "fastp", version: "1.4.0", bioconda: "fastp=1.4.0", url: "https://github.com/OpenGene/fastp" },
+    Pinned { tool: "shovill", version: "1.4.2", bioconda: "shovill=1.4.2", url: "https://github.com/tseemann/shovill" },
     Pinned { tool: "bakta", version: "1.12.2", bioconda: "bakta=1.12.2", url: "https://github.com/oschwengers/bakta" },
     Pinned { tool: "checkm2", version: "1.1.0", bioconda: "checkm2=1.1.0", url: "https://github.com/chklovski/CheckM2" },
     Pinned { tool: "gtdbtk", version: "2.8.0", bioconda: "gtdbtk=2.8.0", url: "https://github.com/Ecogenomics/GTDBTk" },
+    Pinned { tool: "mlst", version: "2.35.0", bioconda: "mlst=2.35.0", url: "https://github.com/tseemann/mlst" },
+    Pinned { tool: "amrfinder", version: "4.2.7", bioconda: "ncbi-amrfinderplus=4.2.7", url: "https://github.com/ncbi/amr" },
 ];
 
 pub fn pinned(tool: &str) -> Option<&'static Pinned> {
@@ -332,6 +336,201 @@ pub fn fastp(ctx: &Ctx, p: &FastpParams) -> Check<Invocation> {
         ("dedup", p.dedup),
         ("overrepresentation_analysis", p.overrepresentation_analysis),
     ] {
+        inv.flag(name, on);
+    }
+    Ok(inv)
+}
+
+// ---------- Shovill ----------
+// Flags: Shovill v1.4.2 bin/shovill (`setOptions`, and the checks after it),
+// https://github.com/tseemann/shovill/blob/v1.4.2/bin/shovill; same list as `shovill --help` of the
+// bioconda shovill=1.4.2 package. Bioconda's current Shovill is 1.4.2, not 1.1.0: 1.4.x added
+// --plasmid and changed --mincov's default to 2.
+// Not offered: --opts (free text pasted into the assembler's shell command), --tmpdir (Shovill makes
+// its own temporary folder), --check, --version, --help.
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ShovillAssembler {
+    /// SPAdes (Shovill's default; needs SPAdes 3.14-3.x).
+    Spades,
+    /// SKESA: fast, conservative contigs.
+    Skesa,
+    Megahit,
+    Velvet,
+}
+
+impl ShovillAssembler {
+    fn name(self) -> &'static str {
+        match self {
+            ShovillAssembler::Spades => "spades",
+            ShovillAssembler::Skesa => "skesa",
+            ShovillAssembler::Megahit => "megahit",
+            ShovillAssembler::Velvet => "velvet",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShovillParams {
+    /// Read 1 FASTQ (plain or gzip), paired-end Illumina.
+    pub r1: String,
+    /// Read 2 FASTQ (plain or gzip).
+    pub r2: String,
+    /// Output folder, inside the root. The assembly is `<outdir>/contigs.fa`; use one folder per sample.
+    pub outdir: String,
+    /// Allow an outdir that already has files (Shovill replaces files of the same name). Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// Assembler. Shovill's default is spades.
+    #[serde(default)]
+    pub assembler: Option<ShovillAssembler>,
+    /// Estimated genome size, e.g. 2.8M or 5000000. Default: estimated from the reads with KMC.
+    #[serde(default)]
+    pub gsize: Option<String>,
+    /// Sub-sample the reads to this depth; 0 turns sub-sampling off. Default 150.
+    #[serde(default)]
+    pub depth: Option<u32>,
+    /// Drop contigs shorter than this; 0 = Shovill picks. Default 0.
+    #[serde(default)]
+    pub minlen: Option<u32>,
+    /// Drop contigs with lower coverage than this; 0 = Shovill picks. Default 2.
+    #[serde(default)]
+    pub mincov: Option<f64>,
+    /// Contig name format with one counter, e.g. `s1_%05d`. Default `contig%05d`.
+    #[serde(default)]
+    pub namefmt: Option<String>,
+    /// Keep intermediate files (reads, BAM, assembler folder).
+    #[serde(default)]
+    pub keepfiles: bool,
+    /// CPUs. Shovill's default is up to 8.
+    #[serde(default)]
+    pub cpus: Option<u32>,
+    /// RAM limit in GB, at least 8 (Shovill 1.4.2 refuses less) and no more than the machine has. Default: up to 16.
+    #[serde(default)]
+    pub ram: Option<f64>,
+    /// SPAdes plasmid mode (assembler spades only).
+    #[serde(default)]
+    pub plasmid: bool,
+    /// K-mers to use, comma-separated, e.g. 31,55,77. Default: chosen from the read length.
+    #[serde(default)]
+    pub kmers: Option<String>,
+    /// Trim adapters with Trimmomatic first (off by default; use fastp beforehand instead).
+    #[serde(default)]
+    pub trim: bool,
+    /// Skip read error correction (Lighter).
+    #[serde(default)]
+    pub noreadcorr: bool,
+    /// Skip read stitching (FLASH).
+    #[serde(default)]
+    pub nostitch: bool,
+    /// Skip post-assembly correction (Pilon). Faster.
+    #[serde(default)]
+    pub nocorr: bool,
+}
+
+/// Shovill 1.4.2's `$MIN_RAM_GB`.
+const SHOVILL_MIN_RAM_GB: f64 = 8.0;
+
+/// Shovill pastes the absolute output folder unquoted into a shell command (`seqkit stats
+/// $outdir/contigs.fa`), so the folder's path may only hold characters a shell leaves alone.
+fn shell_safe_path(field: &str, shown: &str, p: &Path) -> Check<()> {
+    let s = v::resolve(p).to_string_lossy().into_owned();
+    if let Some(c) = s.chars().find(|c| !(c.is_ascii_alphanumeric() || "/._-+,=@%".contains(*c))) {
+        return v::invalid(
+            field,
+            format!("{shown} resolves to {s}, which has {c:?}; Shovill passes this path to a shell unquoted, so use letters, digits and / . _ - + , = @ % only"),
+        );
+    }
+    Ok(())
+}
+
+pub fn shovill(ctx: &Ctx, p: &ShovillParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("shovill");
+    // shovill.log carries times and the machine's CPUs and RAM.
+    inv.volatile = &["shovill.log"];
+    let r1 = v::existing_file(cwd, "r1", &p.r1)?;
+    v::sequence_file(&r1, "r1", &p.r1, Seq::Fastq)?;
+    let r2 = v::existing_file(cwd, "r2", &p.r2)?;
+    if r2 == r1 {
+        return v::invalid("r2", "r2 is the same file as r1");
+    }
+    v::sequence_file(&r2, "r2", &p.r2, Seq::Fastq)?;
+    inv.inputs.extend([r1, r2]);
+    inv.opt("R1", &p.r1);
+    inv.opt("R2", &p.r2);
+    let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(p.overwrite), true)?;
+    shell_safe_path("outdir", &p.outdir, &outdir)?;
+    inv.outputs.push(outdir.clone());
+    inv.opt("outdir", &p.outdir);
+    // Shovill refuses any existing folder, even an empty one, without --force. irit-mcp has
+    // already refused a non-empty one unless overwrite is true, and replay.sh reruns into it.
+    inv.flag("force", true);
+    inv.expect = vec![vec![outdir.join("contigs.fa")]];
+    if let Some(a) = p.assembler {
+        inv.opt("assembler", a.name());
+    }
+    if p.plasmid && p.assembler.is_some_and(|a| a != ShovillAssembler::Spades) {
+        return v::invalid("plasmid", "plasmid mode needs assembler spades (Shovill 1.4.2 refuses it otherwise)");
+    }
+    if let Some(g) = &p.gsize {
+        // Shovill's parse_genome_size: digits and dots, then an optional G, M or K.
+        let num = g.trim_end_matches(['G', 'M', 'K', 'g', 'm', 'k']);
+        let ok = !num.is_empty() && num.chars().all(|c| c.is_ascii_digit() || c == '.') && num.parse::<f64>().is_ok_and(|x| x > 0.0);
+        if !ok || g.len() - num.len() > 1 {
+            return v::invalid("gsize", format!("{g:?} is not a genome size like 2.8M, 4500K or 5000000"));
+        }
+        inv.opt("gsize", g);
+    }
+    if let Some(d) = p.depth {
+        v::range("depth", d, 0, 100_000)?;
+        inv.opt("depth", d);
+    }
+    if let Some(m) = p.minlen {
+        inv.opt("minlen", m);
+    }
+    if let Some(c) = p.mincov {
+        if !c.is_finite() || c < 0.0 {
+            return v::invalid("mincov", "must be 0 or more");
+        }
+        inv.opt("mincov", c);
+    }
+    if let Some(f) = &p.namefmt {
+        // Shovill wants a `%<digits>d` counter; anything else printf would read is refused too.
+        let counters = f.matches('%').count();
+        let ok = counters == 1
+            && f.split_once('%').is_some_and(|(_, rest)| {
+                let digits = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+                digits.len() < rest.len() && digits.starts_with('d')
+            })
+            && f.chars().all(|c| c.is_ascii_alphanumeric() || "_.-%".contains(c));
+        if !ok {
+            return v::invalid("namefmt", format!("{f:?} needs exactly one counter like %05d, and only letters, digits and _ . -"));
+        }
+        inv.opt("namefmt", f);
+    }
+    inv.flag("keepfiles", p.keepfiles);
+    if let Some(c) = p.cpus {
+        v::range("cpus", c, 1, 1024)?;
+        inv.opt("cpus", c);
+    }
+    if let Some(r) = p.ram {
+        if !r.is_finite() || r < SHOVILL_MIN_RAM_GB {
+            return v::invalid("ram", format!("{r} GB is below the {SHOVILL_MIN_RAM_GB} GB Shovill 1.4.2 needs"));
+        }
+        inv.opt("ram", r);
+    }
+    inv.flag("plasmid", p.plasmid);
+    if let Some(k) = &p.kmers {
+        let ok = !k.is_empty() && k.split(',').all(|x| !x.is_empty() && x.chars().all(|c| c.is_ascii_digit()));
+        if !ok {
+            return v::invalid("kmers", format!("{k:?} is not a comma-separated list of k-mer sizes like 31,55,77"));
+        }
+        inv.opt("kmers", k);
+    }
+    for (name, on) in [("trim", p.trim), ("noreadcorr", p.noreadcorr), ("nostitch", p.nostitch), ("nocorr", p.nocorr)] {
         inv.flag(name, on);
     }
     Ok(inv)
@@ -961,6 +1160,437 @@ pub fn gtdbtk_classify_wf(ctx: &Ctx, p: &GtdbtkClassifyWfParams) -> Check<Invoca
     Ok(inv)
 }
 
+/// An output whose name isotable's file search must recognise: it ends in `.tsv` and holds `tag`
+/// (isotable/src/parse.rs `scan`: `mlst` for mlst, `amrfinder` for AMRFinderPlus, any case for the latter).
+fn isotable_name(field: &str, value: &str, tag: &str, example: &str) -> Check<()> {
+    let name = Path::new(value).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if !name.ends_with(".tsv") || !name.to_ascii_lowercase().contains(tag) {
+        return v::invalid(field, format!("{value}: name it like {example} (ending in .tsv, with \"{tag}\" in the name) so isotable finds it"));
+    }
+    Ok(())
+}
+
+/// The sample part of `<sample>.<tag>.tsv` (or `_<tag>`, `-<tag>`), if the name has one.
+fn sample_from_output(value: &str, tag: &str) -> Option<String> {
+    let name = Path::new(value).file_name()?.to_string_lossy().into_owned();
+    let stem = name.strip_suffix(".tsv")?;
+    let lower = stem.to_ascii_lowercase();
+    [".", "_", "-"].iter().find_map(|sep| {
+        let suffix = format!("{sep}{tag}");
+        lower.ends_with(&suffix).then(|| stem[..stem.len() - suffix.len()].to_string())
+    }).filter(|s| !s.is_empty())
+}
+
+// ---------- mlst ----------
+// Flags: mlst v2.35.0 bin/mlst (`setOptions` and the main block),
+// https://github.com/tseemann/mlst/blob/v2.35.0/bin/mlst; same list as `mlst --help` of bioconda
+// mlst=2.35.0. Not offered: --csv and --legacy (isotable reads the tab-separated layout), --blastdb and
+// --datadir (the PubMLST data comes with the installed mlst, so the pinned version fixes it), --fofn,
+// --list/--longlist/--info/--check (they don't type anything), --exclude, --quiet, --debug.
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MlstParams {
+    /// Assemblies, FASTA (plain or gzip). Usually one: `<outdir>/contigs.fa` from shovill.
+    pub contigs: Vec<String>,
+    /// Result table (tab-separated), inside the root. Name it `<sample>.mlst.tsv`: isotable finds files
+    /// with "mlst" in the name ending in .tsv, and the sample part becomes the default label.
+    pub outfile: String,
+    /// Replace existing output files. Default false: they are refused.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// Name in the FILE column instead of the file's path; one assembly only. Default, for one
+    /// assembly: the sample part of outfile (`s1.mlst.tsv` gives `s1`), so isotable joins the row to
+    /// that sample rather than to `contigs`.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Also write the results as JSON here (inside the root).
+    #[serde(default)]
+    pub json: Option<String>,
+    /// Write novel alleles to this FASTA file (inside the root).
+    #[serde(default)]
+    pub novel: Option<String>,
+    /// Use this PubMLST scheme instead of detecting it, e.g. saureus, ecoli_achtman_4. Sets minscore to 0.
+    #[serde(default)]
+    pub scheme: Option<String>,
+    /// More detailed table: adds a header row and STATUS and SCORE columns (isotable reads it too).
+    #[serde(default)]
+    pub full: bool,
+    /// % DNA identity of a full allele to call it similar (~). Default 95.
+    #[serde(default)]
+    pub minid: Option<f64>,
+    /// % DNA coverage to report a partial allele (?). Default 50.
+    #[serde(default)]
+    pub mincov: Option<f64>,
+    /// Minimum score out of 100 to match a scheme when detecting it. Default 50.
+    #[serde(default)]
+    pub minscore: Option<f64>,
+    /// BLAST threads. Default 1.
+    #[serde(default)]
+    pub threads: Option<u32>,
+}
+
+pub fn mlst(ctx: &Ctx, p: &MlstParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("mlst");
+    // Seen in the real-tools workflow: the JSON has the same values but its keys in another order
+    // each run (mlst writes it with to_json without `canonical`, and Perl randomises hash order).
+    // The table isotable reads is identical, and hash-checked.
+    inv.volatile = &[".json"];
+    v::non_empty_list("contigs", &p.contigs)?;
+    for c in &p.contigs {
+        let path = v::existing_file(cwd, "contigs", c)?;
+        v::sequence_file(&path, "contigs", c, Seq::Fasta)?;
+        inv.inputs.push(path);
+    }
+    isotable_name("outfile", &p.outfile, "mlst", "s1.mlst.tsv")?;
+    let out = v::output_file(ctx, "outfile", &p.outfile, p.overwrite)?;
+    inv.outputs.push(out.clone());
+    inv.opt("outfile", &p.outfile);
+    inv.expect = vec![vec![out.clone()]];
+    let mut written = vec![("outfile", out)];
+    for (field, val) in [("json", &p.json), ("novel", &p.novel)] {
+        if let Some(path) = output_file_opt(ctx, &mut inv, field, val, p.overwrite, field)? {
+            if field == "json" {
+                inv.expect.push(vec![path.clone()]);
+            }
+            written.push((field, path));
+        }
+    }
+    for (i, (field, a)) in written.iter().enumerate() {
+        if written[..i].iter().any(|(_, b)| b == a) || inv.inputs.contains(a) {
+            return v::invalid(field, format!("{} is used twice; give every input and output its own path", a.display()));
+        }
+    }
+    let label = match (&p.label, p.contigs.len()) {
+        (Some(_), n) if n > 1 => return v::invalid("label", "label works with one assembly only (mlst refuses it for several)"),
+        (Some(l), _) => Some(l.clone()),
+        (None, 1) => sample_from_output(&p.outfile, "mlst"),
+        (None, _) => None,
+    };
+    if let Some(l) = &label {
+        // It becomes the first column of a tab-separated table.
+        if l.is_empty() || l.contains(['\t', ',']) || l.chars().any(char::is_control) {
+            return v::invalid("label", format!("{l:?} can't be a table cell (no tabs, commas or control characters)"));
+        }
+        inv.opt("label", l);
+    }
+    if let Some(s) = &p.scheme {
+        if s.is_empty() || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return v::invalid("scheme", format!("{s:?} is not a PubMLST scheme name like saureus or ecoli_achtman_4"));
+        }
+        inv.opt("scheme", s);
+    }
+    inv.flag("full", p.full);
+    for (name, val) in [("minid", p.minid), ("mincov", p.mincov), ("minscore", p.minscore)] {
+        if let Some(x) = val {
+            v::percent(name, x)?;
+            inv.opt(name, x);
+        }
+    }
+    if let Some(t) = p.threads {
+        v::range("threads", t, 1, 1024)?;
+        inv.opt("threads", t);
+    }
+    let files: Vec<String> = p.contigs.iter().map(|c| list_item(c)).collect();
+    inv.positionals(&files);
+    Ok(inv)
+}
+
+// ---------- AMRFinderPlus ----------
+// Flags: AMRFinderPlus amrfinder_v4.2.7 amrfinder.cpp (`addKey`/`addFlag` calls and the checks in
+// `shellBody`), https://github.com/ncbi/amr/blob/amrfinder_v4.2.7/amrfinder.cpp; same list as
+// `amrfinder --help` of bioconda ncbi-amrfinderplus=4.2.7. Database files: amrfinder_update.cpp (what it
+// downloads) and amrfinder_index.cpp (what it builds). Not offered: --update/--force_update (they change
+// the database outside the record: fetch it with dblock instead), --blast_bin/--hmmer_bin, --pgap,
+// --gpipe_org, --parm (for NCBI's testing), --debug, --log, --quiet, --list_organisms, --database_version,
+// --nucleotide_flank5_output/_size.
+
+/// amrfinder.cpp 4.2.7 `dataVer_min`: older data is refused.
+const AMRFINDER_DATA_MIN: &str = "2025-09-22.2";
+
+/// Files amrfinder_update 4.2.7 downloads besides the per-organism AMR_DNA-* files and changes.txt.
+const AMRFINDER_DB_FILES: [&str; 11] = [
+    "AMR.LIB",
+    "AMRProt.fa",
+    "AMRProt-mutation.tsv",
+    "AMRProt-suppress.tsv",
+    "AMRProt-susceptible.fa",
+    "AMRProt-susceptible.tsv",
+    "AMR_CDS.fa",
+    "database_format_version.txt",
+    "fam.tsv",
+    "taxgroup.tsv",
+    "version.txt",
+];
+
+/// Indexes amrfinder_index 4.2.7 builds (hmmpress, makeblastdb) that amrfinder needs: AMRProt.fa.phr
+/// is amrfinder.cpp's own check; the other two are the HMM and nucleotide BLAST databases it searches.
+const AMRFINDER_INDEX_FILES: [&str; 3] = ["AMRProt.fa.phr", "AMR.LIB.h3m", "AMR_CDS.fa.nin"];
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AmrAnnotationFormat {
+    Bakta,
+    Genbank,
+    Microscope,
+    Patric,
+    Pgap,
+    Prodigal,
+    Prokka,
+    Pseudomonasdb,
+    Rast,
+    Standard,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AmrfinderParams {
+    /// Assembly (nucleotide FASTA, plain or gzip). Give this, protein, or both (both need gff).
+    #[serde(default)]
+    pub nucleotide: Option<String>,
+    /// Proteins (FASTA), e.g. Bakta's `<prefix>.faa`.
+    #[serde(default)]
+    pub protein: Option<String>,
+    /// GFF with the proteins' locations in `nucleotide`, e.g. Bakta's `<prefix>.gff3`; needs protein.
+    #[serde(default)]
+    pub gff: Option<String>,
+    /// Which tool wrote the GFF. AMRFinderPlus's default is genbank; use bakta for Bakta's GFF3.
+    #[serde(default)]
+    pub annotation_format: Option<AmrAnnotationFormat>,
+    /// AMRFinderPlus database folder (holding version.txt, indexed). Default: $AMRFINDER_DB as the server started with.
+    /// dblock_env shows the path of a dblock-managed one (amrfinderplus-db-4.2-2026-10-29.1).
+    #[serde(default)]
+    pub database: Option<String>,
+    /// Taxonomy group for point mutations and organism-specific genes, e.g. Escherichia,
+    /// Staphylococcus_aureus, Klebsiella_pneumoniae. Checked against the database's taxgroup.tsv.
+    #[serde(default)]
+    pub organism: Option<String>,
+    /// Also report the "plus" genes (virulence, stress, ...).
+    #[serde(default)]
+    pub plus: bool,
+    /// Report proteins common to the organism too; needs organism and plus.
+    #[serde(default)]
+    pub report_common: bool,
+    /// Report all equally scoring BLAST and HMM matches.
+    #[serde(default)]
+    pub report_all_equal: bool,
+    /// Minimum identity, 0-1, or -1 for the curated cut-offs (the default).
+    #[serde(default)]
+    pub ident_min: Option<f64>,
+    /// Minimum coverage of the reference protein, 0-1. Default 0.5.
+    #[serde(default)]
+    pub coverage_min: Option<f64>,
+    /// Genetic code for translated searches. Default 11.
+    #[serde(default)]
+    pub translation_table: Option<u8>,
+    /// Text for a first "Name" column on every row, e.g. the sample name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Report, inside the root. Name it `<sample>.amrfinder.tsv` so isotable finds it and takes the sample name from it.
+    pub output: String,
+    /// Also write every mutation position checked here (needs organism).
+    #[serde(default)]
+    pub mutation_all: Option<String>,
+    /// Write the reported proteins as FASTA here (needs protein).
+    #[serde(default)]
+    pub protein_output: Option<String>,
+    /// Write the reported nucleotide sequences as FASTA here (needs nucleotide).
+    #[serde(default)]
+    pub nucleotide_output: Option<String>,
+    /// Print the hierarchy node (family) of each hit.
+    #[serde(default)]
+    pub print_node: bool,
+    /// Threads. Default 4.
+    #[serde(default)]
+    pub threads: Option<u32>,
+    /// Replace existing output files. Default false: they are refused.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// `2025-09-22.2` as (date, release) for comparing.
+fn data_version(s: &str) -> Option<(String, u32)> {
+    let (date, n) = s.trim().split_once('.')?;
+    let ok = date.len() == 10 && date.chars().enumerate().all(|(i, c)| if i == 4 || i == 7 { c == '-' } else { c.is_ascii_digit() });
+    if !ok {
+        return None;
+    }
+    Some((date.to_string(), n.parse().ok()?))
+}
+
+/// `4.2.0` as numbers.
+fn dotted(s: &str) -> Option<Vec<u64>> {
+    s.trim().split('.').map(|x| x.parse().ok()).collect()
+}
+
+/// Organisms the database knows: first columns of taxgroup.tsv, AMRProt-mutation.tsv and
+/// AMRProt-susceptible.tsv, as amrfinder.cpp's `db2organisms` reads them.
+fn amrfinder_organisms(dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = ["taxgroup.tsv", "AMRProt-mutation.tsv", "AMRProt-susceptible.tsv"]
+        .iter()
+        .filter_map(|f| std::fs::read_to_string(dir.join(f)).ok())
+        .flat_map(|t| t.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).filter_map(|l| l.split('\t').next()).map(str::to_string).collect::<Vec<_>>())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Checks an AMRFinderPlus database folder the way amrfinder 4.2.7 does before it searches:
+/// present, indexed, a format this version reads and data new enough. Returns version.txt and
+/// the data version.
+fn amrfinder_db(field: &str, shown: &str, dir: &Path, organism: Option<&str>, nucleotide: bool) -> Check<(PathBuf, String)> {
+    if !dir.is_dir() {
+        return v::invalid(field, format!("{shown} is not a folder"));
+    }
+    let version_file = dir.join("version.txt");
+    let version = std::fs::read_to_string(&version_file).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let Some(version) = version else {
+        return v::invalid(
+            field,
+            format!("{shown} has no version.txt, so it is not an AMRFinderPlus database folder (amrfinder_update puts it in a dated folder with a `latest` link)"),
+        );
+    };
+    let missing: Vec<&str> = AMRFINDER_DB_FILES.iter().copied().filter(|f| !dir.join(f).is_file()).collect();
+    if !missing.is_empty() {
+        return v::invalid(field, format!("{shown} is missing {} (incomplete download?)", missing.join(", ")));
+    }
+    if let Some(idx) = AMRFINDER_INDEX_FILES.iter().find(|f| !dir.join(f).is_file()) {
+        return v::invalid(
+            field,
+            format!("{shown} is not indexed (no {idx}); run amrfinder_index on it, or fetch it with dblock (amrfinderplus-db-4.2-2026-10-29.1), which does"),
+        );
+    }
+    let format_text = std::fs::read_to_string(dir.join("database_format_version.txt")).unwrap_or_default();
+    match (dotted(&format_text), dotted(pinned("amrfinder").unwrap().version)) {
+        (Some(need), Some(have)) if need > have => {
+            return v::invalid(field, format!("{shown} is format {}, which needs AMRFinderPlus {} or newer; irit-mcp is checked against 4.2.7", format_text.trim(), format_text.trim()));
+        }
+        (Some(_), _) => {}
+        (None, _) => return v::invalid(field, format!("{shown}/database_format_version.txt is not a version like 4.2.0")),
+    }
+    match (data_version(&version), data_version(AMRFINDER_DATA_MIN)) {
+        (Some(got), Some(min)) if got < min => {
+            return v::invalid(field, format!("{shown} is data version {version}; AMRFinderPlus 4.2.7 needs {AMRFINDER_DATA_MIN} or newer"));
+        }
+        (Some(_), _) => {}
+        (None, _) => return v::invalid(field, format!("{shown}/version.txt holds {version:?}, not a version like 2026-10-29.1")),
+    }
+    if let Some(org) = organism {
+        let known = amrfinder_organisms(dir);
+        if !known.iter().any(|k| k == org) {
+            return v::invalid("organism", format!("{org:?} is not an organism in {shown}; it knows {}", known.join(", ")));
+        }
+        // amrfinder.cpp: with a nucleotide input, an organism with its own DNA file needs that file's BLAST index.
+        let dna = dir.join(format!("AMR_DNA-{org}.fa"));
+        let indexed = ["ndb", "nin"].iter().any(|ext| dir.join(format!("AMR_DNA-{org}.fa.{ext}")).is_file());
+        if nucleotide && dna.is_file() && !indexed {
+            return v::invalid(field, format!("{shown} has AMR_DNA-{org}.fa but no BLAST index for it; run amrfinder_index on the folder"));
+        }
+    }
+    Ok((version_file, version))
+}
+
+pub fn amrfinder(ctx: &Ctx, p: &AmrfinderParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("amrfinder");
+    if p.nucleotide.is_none() && p.protein.is_none() {
+        return v::invalid("nucleotide", "give nucleotide (an assembly), protein, or both");
+    }
+    for (field, val, flag) in [("protein", &p.protein, "protein"), ("nucleotide", &p.nucleotide, "nucleotide")] {
+        if let Some(f) = val {
+            let path = v::existing_file(cwd, field, f)?;
+            v::sequence_file(&path, field, f, Seq::Fasta)?;
+            inv.inputs.push(path);
+            inv.opt(flag, f);
+        }
+    }
+    match (&p.gff, p.protein.is_some(), p.nucleotide.is_some()) {
+        (Some(_), false, _) => return v::invalid("gff", "gff gives the proteins' locations, so it needs protein"),
+        (None, true, true) => return v::invalid("gff", "with both protein and nucleotide, AMRFinderPlus needs gff to link them"),
+        (Some(g), true, _) => {
+            inv.inputs.push(v::existing_file(cwd, "gff", g)?);
+            inv.opt("gff", g);
+        }
+        (None, _, _) => {}
+    }
+    if let Some(a) = p.annotation_format {
+        if p.gff.is_none() {
+            return v::invalid("annotation_format", "annotation_format describes the gff; give gff too");
+        }
+        inv.opt("annotation_format", serde_json::to_value(a).unwrap().as_str().unwrap());
+    }
+    let (db_text, db) = db_location(ctx, "database", &p.database, "AMRFINDER_DB")?;
+    if let Some(o) = &p.organism {
+        v::text("organism", o)?;
+    }
+    // version.txt only: the database itself is checked by dblock_verify.
+    let (version_file, _) = amrfinder_db("database", &db_text, &db, p.organism.as_deref(), p.nucleotide.is_some())?;
+    inv.inputs.push(version_file);
+    inv.opt("database", &db_text);
+    if let Some(o) = &p.organism {
+        inv.opt("organism", o);
+    }
+    if p.report_common && (p.organism.is_none() || !p.plus) {
+        return v::invalid("report_common", "report_common needs organism and plus (amrfinder refuses it otherwise)");
+    }
+    inv.flag("plus", p.plus);
+    inv.flag("report_common", p.report_common);
+    inv.flag("report_all_equal", p.report_all_equal);
+    if let Some(x) = p.ident_min {
+        if !(x == -1.0 || (0.0..=1.0).contains(&x)) {
+            return v::invalid("ident_min", format!("{x} is not -1 or between 0 and 1"));
+        }
+        inv.opt("ident_min", x);
+    }
+    if let Some(x) = p.coverage_min {
+        if !x.is_finite() || !(0.0..=1.0).contains(&x) {
+            return v::invalid("coverage_min", format!("{x} is not between 0 and 1"));
+        }
+        inv.opt("coverage_min", x);
+    }
+    if let Some(t) = p.translation_table {
+        v::range("translation_table", t, 1, 33)?;
+        inv.opt("translation_table", t);
+    }
+    if let Some(n) = &p.name {
+        v::text("name", n)?;
+        inv.opt("name", n);
+    }
+    isotable_name("output", &p.output, "amrfinder", "s1.amrfinder.tsv")?;
+    let out = v::output_file(ctx, "output", &p.output, p.overwrite)?;
+    inv.outputs.push(out.clone());
+    inv.opt("output", &p.output);
+    inv.expect = vec![vec![out.clone()]];
+    let mut written = vec![("output", out)];
+    // amrfinder.cpp refuses the last two without their input; mutation_all without organism only
+    // warns that no point mutations are screened, so the file would say nothing.
+    for (field, val, have, need) in [
+        ("mutation_all", &p.mutation_all, p.organism.is_some(), "organism"),
+        ("protein_output", &p.protein_output, p.protein.is_some(), "protein"),
+        ("nucleotide_output", &p.nucleotide_output, p.nucleotide.is_some(), "nucleotide"),
+    ] {
+        if val.is_some() && !have {
+            return v::invalid(field, format!("{field} needs {need}"));
+        }
+        if let Some(path) = output_file_opt(ctx, &mut inv, field, val, p.overwrite, field)? {
+            written.push((field, path));
+        }
+    }
+    for (i, (field, a)) in written.iter().enumerate() {
+        if written[..i].iter().any(|(_, b)| b == a) || inv.inputs.contains(a) {
+            return v::invalid(field, format!("{} is used twice; give every input and output its own path", a.display()));
+        }
+    }
+    inv.flag("print_node", p.print_node);
+    if let Some(t) = p.threads {
+        v::range("threads", t, 1, 1024)?;
+        inv.opt("threads", t);
+    }
+    Ok(inv)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1240,6 +1870,224 @@ mod tests {
         // flags that don't exist in GTDB-Tk 2.8.0 are refused by the schema
         for invented in ["skip_ani_screen", "max_memory", "mash_db"] {
             assert!(serde_json::from_value::<GtdbtkClassifyWfParams>(base(json!({invented: true}))).is_err(), "{invented}");
+        }
+    }
+
+    #[test]
+    fn shovill_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        write(d.path(), "reads/s1_R1.fq.gz.txt", "@a\nACGT\n+\nIIII\n");
+        write(d.path(), "reads/s1_R1.fq", "@a\nACGT\n+\nIIII\n");
+        write(d.path(), "reads/s1_R2.fq", "@a\nACGT\n+\nIIII\n");
+        write(d.path(), "asm.fa", ">c\nACGT\n");
+        std::fs::create_dir(d.path().join("asm")).unwrap();
+        let p: ShovillParams = parse(json!({
+            "r1": "reads/s1_R1.fq", "r2": "reads/s1_R2.fq", "outdir": "asm/s1", "assembler": "skesa", "gsize": "2.8M",
+            "depth": 40, "cpus": 4, "ram": 8, "nocorr": true, "namefmt": "s1_%05d", "kmers": "31,55"
+        }));
+        let inv = shovill(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            [
+                "--R1=reads/s1_R1.fq",
+                "--R2=reads/s1_R2.fq",
+                "--outdir=asm/s1",
+                "--force",
+                "--assembler=skesa",
+                "--gsize=2.8M",
+                "--depth=40",
+                "--namefmt=s1_%05d",
+                "--cpus=4",
+                "--ram=8",
+                "--kmers=31,55",
+                "--nocorr",
+            ]
+        );
+        assert!(inv.expect[0][0].ends_with("asm/s1/contigs.fa"));
+        assert_eq!(inv.inputs.len(), 2);
+
+        let base = json!({"r1": "reads/s1_R1.fq", "r2": "reads/s1_R2.fq", "outdir": "asm/x"});
+        let bad = |extra: serde_json::Value| {
+            let mut j = base.clone();
+            j.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            shovill(&cx, &parse(j)).unwrap_err()
+        };
+        assert_eq!(bad(json!({"r2": "reads/s1_R1.fq"})).field, "r2");
+        assert_eq!(bad(json!({"r1": "asm.fa"})).field, "r1"); // FASTA, not reads
+        assert_eq!(bad(json!({"ram": 4})).field, "ram");
+        assert_eq!(bad(json!({"gsize": "big"})).field, "gsize");
+        assert_eq!(bad(json!({"gsize": "2.8MM"})).field, "gsize");
+        assert_eq!(bad(json!({"namefmt": "contig"})).field, "namefmt");
+        assert_eq!(bad(json!({"namefmt": "c%s%05d"})).field, "namefmt");
+        assert_eq!(bad(json!({"kmers": "31;rm -rf"})).field, "kmers");
+        assert_eq!(bad(json!({"plasmid": true, "assembler": "skesa"})).field, "plasmid");
+        assert_eq!(bad(json!({"outdir": "../asm"})).field, "outdir");
+        assert_eq!(bad(json!({"outdir": "asm/s 1"})).field, "outdir"); // reaches a shell unquoted
+        write(d.path(), "asm/full/contigs.fa", ">c\nA\n");
+        assert_eq!(bad(json!({"outdir": "asm/full"})).field, "outdir");
+        assert!(shovill(&cx, &parse(json!({"r1": "reads/s1_R1.fq", "r2": "reads/s1_R2.fq", "outdir": "asm/full", "overwrite": true}))).is_ok());
+        // --opts would paste free text into a shell command; it is not a parameter
+        for invented in ["opts", "tmpdir", "check"] {
+            let mut j = base.clone();
+            j[invented] = json!("x");
+            assert!(serde_json::from_value::<ShovillParams>(j).is_err(), "{invented}");
+        }
+    }
+
+    #[test]
+    fn mlst_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        write(d.path(), "asm/s1/contigs.fa", ">c\nACGT\n");
+        write(d.path(), "asm/s2/contigs.fa", ">c\nACGT\n");
+        write(d.path(), "reads.fq", "@a\nACGT\n+\nIIII\n");
+        std::fs::create_dir(d.path().join("typing")).unwrap();
+        let p: MlstParams = parse(json!({
+            "contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.mlst.tsv", "json": "typing/s1.mlst.json",
+            "scheme": "saureus", "minid": 90, "threads": 2
+        }));
+        let inv = mlst(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            [
+                "--outfile=typing/s1.mlst.tsv",
+                "--json=typing/s1.mlst.json",
+                "--label=s1",
+                "--scheme=saureus",
+                "--minid=90",
+                "--threads=2",
+                "--",
+                "asm/s1/contigs.fa",
+            ]
+        );
+        assert_eq!(inv.expect.len(), 2);
+        // several assemblies: no label, each row named by its path
+        let p: MlstParams = parse(json!({"contigs": ["asm/s1/contigs.fa", "asm/s2/contigs.fa"], "outfile": "typing/all_mlst.tsv", "full": true}));
+        let inv = mlst(&cx, &p).unwrap();
+        assert_eq!(inv.args, ["--outfile=typing/all_mlst.tsv", "--full", "--", "asm/s1/contigs.fa", "asm/s2/contigs.fa"]);
+        assert_eq!(sample_from_output("typing/S-7_mlst.tsv", "mlst").as_deref(), Some("S-7"));
+        assert_eq!(sample_from_output("typing/mlst.tsv", "mlst"), None);
+        assert_eq!(sample_from_output("x/s1.AMRFinder.tsv", "amrfinder").as_deref(), Some("s1"));
+
+        let bad = |v: serde_json::Value| mlst(&cx, &parse(v)).unwrap_err().field;
+        assert_eq!(bad(json!({"contigs": [], "outfile": "typing/a.mlst.tsv"})), "contigs");
+        assert_eq!(bad(json!({"contigs": ["reads.fq"], "outfile": "typing/a.mlst.tsv"})), "contigs");
+        assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.tsv"})), "outfile"); // isotable wouldn't find it
+        assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.mlst.csv"})), "outfile");
+        assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa", "asm/s2/contigs.fa"], "outfile": "typing/a.mlst.tsv", "label": "x"})), "label");
+        assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/a.mlst.tsv", "label": "a\tb"})), "label");
+        assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/a.mlst.tsv", "scheme": "../x"})), "scheme");
+        assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/a.mlst.tsv", "minscore": 101})), "minscore");
+        assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/a.mlst.tsv", "json": "typing/a.mlst.tsv"})), "json");
+        assert!(serde_json::from_value::<MlstParams>(json!({"contigs": ["a"], "outfile": "a.mlst.tsv", "csv": true})).is_err());
+        assert!(serde_json::from_value::<MlstParams>(json!({"contigs": ["a"], "outfile": "a.mlst.tsv", "datadir": "x"})).is_err());
+    }
+
+    /// The files amrfinder_update 4.2.7 downloads and amrfinder_index's outputs, as empty stand-ins.
+    pub fn fake_amrfinder_db(dir: &Path, version: &str, format: &str, indexed: bool) {
+        for f in AMRFINDER_DB_FILES {
+            write(dir, f, "");
+        }
+        write(dir, "version.txt", &format!("{version}\n"));
+        write(dir, "database_format_version.txt", &format!("{format}\n"));
+        write(dir, "taxgroup.tsv", "#taxgroup\tgpipe_taxgroup\tnumber_of_nucl_ref_genes\nEscherichia\tEscherichia_coli_Shigella\t6\nStaphylococcus_aureus\tStaphylococcus_aureus\t2\nPseudomonas_aeruginosa\tPseudomonas_aeruginosa\t0\n");
+        write(dir, "AMR_DNA-Escherichia.fa", ">x\nA\n");
+        write(dir, "AMR_DNA-Staphylococcus_aureus.fa", ">x\nA\n");
+        if indexed {
+            for f in AMRFINDER_INDEX_FILES {
+                write(dir, f, "");
+            }
+            write(dir, "AMR_DNA-Escherichia.fa.ndb", "");
+        }
+    }
+
+    #[test]
+    fn amrfinder_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let mut cx = ctx(d.path());
+        write(d.path(), "asm/s1/contigs.fa", ">c\nACGT\n");
+        write(d.path(), "ann/s1.faa", ">p\nMKV\n");
+        write(d.path(), "ann/s1.gff3", "##gff-version 3\n");
+        std::fs::create_dir(d.path().join("typing")).unwrap();
+        fake_amrfinder_db(&d.path().join("amrdb"), "2026-10-29.1", "4.2.0", true);
+        let p: AmrfinderParams = parse(json!({
+            "nucleotide": "asm/s1/contigs.fa", "database": "amrdb", "organism": "Escherichia", "plus": true,
+            "output": "typing/s1.amrfinder.tsv", "threads": 4, "name": "s1", "ident_min": -1, "mutation_all": "typing/s1.mut.tsv"
+        }));
+        let inv = amrfinder(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            [
+                "--nucleotide=asm/s1/contigs.fa",
+                "--database=amrdb",
+                "--organism=Escherichia",
+                "--plus",
+                "--ident_min=-1",
+                "--name=s1",
+                "--output=typing/s1.amrfinder.tsv",
+                "--mutation_all=typing/s1.mut.tsv",
+                "--threads=4",
+            ]
+        );
+        assert!(inv.inputs.contains(&cx.root.join("amrdb/version.txt")));
+        assert_eq!(inv.outputs.len(), 2);
+        // proteins with their GFF (Bakta's), and the database from $AMRFINDER_DB
+        cx.vars.insert("AMRFINDER_DB".into(), cx.root.join("amrdb").into());
+        let p: AmrfinderParams = parse(json!({
+            "protein": "ann/s1.faa", "gff": "ann/s1.gff3", "nucleotide": "asm/s1/contigs.fa", "annotation_format": "bakta",
+            "output": "typing/s1_amrfinder.tsv"
+        }));
+        let inv = amrfinder(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            vec![
+                "--protein=ann/s1.faa".to_string(),
+                "--nucleotide=asm/s1/contigs.fa".into(),
+                "--gff=ann/s1.gff3".into(),
+                "--annotation_format=bakta".into(),
+                format!("--database={}", cx.root.join("amrdb").display()),
+                "--output=typing/s1_amrfinder.tsv".into(),
+            ]
+        );
+
+        let base = json!({"nucleotide": "asm/s1/contigs.fa", "database": "amrdb", "output": "typing/s1.amrfinder.tsv"});
+        let bad = |extra: serde_json::Value| {
+            let mut j = base.clone();
+            j.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            j.as_object_mut().unwrap().retain(|_, v| !v.is_null());
+            amrfinder(&cx, &parse(j)).unwrap_err()
+        };
+        assert_eq!(bad(json!({"nucleotide": null})).field, "nucleotide");
+        assert_eq!(bad(json!({"protein": "ann/s1.faa"})).field, "gff"); // both inputs need the GFF
+        assert_eq!(bad(json!({"gff": "ann/s1.gff3"})).field, "gff"); // a GFF needs proteins
+        assert_eq!(bad(json!({"annotation_format": "prokka"})).field, "annotation_format");
+        assert_eq!(bad(json!({"organism": "Escherichia_coli"})).field, "organism");
+        assert!(bad(json!({"organism": "Escherichia_coli"})).message.contains("Staphylococcus_aureus"));
+        assert_eq!(bad(json!({"report_common": true, "organism": "Escherichia"})).field, "report_common"); // needs plus
+        assert_eq!(bad(json!({"ident_min": 1.5})).field, "ident_min");
+        assert_eq!(bad(json!({"coverage_min": -0.1})).field, "coverage_min");
+        assert_eq!(bad(json!({"output": "typing/s1.tsv"})).field, "output");
+        assert_eq!(bad(json!({"mutation_all": "typing/m.tsv"})).field, "mutation_all"); // needs organism
+        assert_eq!(bad(json!({"protein_output": "typing/p.faa"})).field, "protein_output");
+        assert_eq!(bad(json!({"nucleotide_output": "typing/s1.amrfinder.tsv"})).field, "nucleotide_output");
+        assert_eq!(bad(json!({"database": "asm"})).field, "database");
+        // the database is checked the way amrfinder 4.2.7 does
+        fake_amrfinder_db(&d.path().join("raw"), "2026-10-29.1", "4.2.0", false);
+        assert!(bad(json!({"database": "raw"})).message.contains("not indexed"));
+        fake_amrfinder_db(&d.path().join("old"), "2025-07-16.1", "4.0.0", true);
+        assert!(bad(json!({"database": "old"})).message.contains("2025-09-22.2"));
+        fake_amrfinder_db(&d.path().join("new"), "2027-01-01.1", "4.4.0", true);
+        assert!(bad(json!({"database": "new"})).message.contains("format 4.4.0"));
+        // Staphylococcus_aureus has a DNA file without its BLAST index in the fake database
+        assert!(bad(json!({"organism": "Staphylococcus_aureus"})).message.contains("AMR_DNA-Staphylococcus_aureus.fa"));
+        assert!(amrfinder(&cx, &parse(json!({"protein": "ann/s1.faa", "database": "amrdb", "organism": "Staphylococcus_aureus", "output": "typing/p.amrfinder.tsv"}))).is_ok());
+        std::fs::remove_file(d.path().join("amrdb/fam.tsv")).unwrap();
+        assert!(bad(json!({})).message.contains("fam.tsv"));
+        for invented in ["update", "force_update", "blast_bin", "parm"] {
+            let mut j = base.clone();
+            j[invented] = json!(true);
+            assert!(serde_json::from_value::<AmrfinderParams>(j).is_err(), "{invented}");
         }
     }
 }

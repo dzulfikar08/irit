@@ -111,6 +111,11 @@ pub struct Locked {
     pub linked_bytes: u64,
     /// For a multi-part entry, each archive it was made from. `archive_md5` is then the MD5 of
     /// their `MD5SUMS` lines and `archive_bytes` their total.
+    /// The catalog's `prepare` program and its version (e.g. `amrfinder_index 4.2.7`), when the
+    /// folder holds files it built after the download (indexes, which record their build time).
+    /// Before `parts`: TOML writes plain values ahead of tables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared: Option<String>,
     #[serde(default, rename = "part", skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<LockedPart>,
 }

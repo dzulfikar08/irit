@@ -5,9 +5,10 @@ agents (Claude Code, Claude Desktop and other MCP clients) the irit tools as typ
 runs the real `sheetgen`, `leanqc`, `isotable` or `dblock` binary, and is written to a run record
 with a `replay.sh` that repeats the same commands without any AI.
 
-It also wraps four third-party tools for the microbial isolate path, so a whole run (trim,
-annotate, check quality, classify) is recorded and replayable the same way: fastp, Bakta, CheckM2
-and GTDB-Tk. See [Third-party tools](#third-party-tools).
+It also wraps seven third-party tools for the microbial isolate path, so a whole run (trim,
+assemble, annotate, check quality, classify, type, find resistance genes) is recorded and
+replayable the same way: fastp, Shovill, Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus. See
+[Third-party tools](#third-party-tools).
 
 ## Why
 
@@ -27,7 +28,8 @@ result be reproduced without the AI. `irit-mcp` handles each one:
 
 The server is a thin layer. It runs the binaries as subprocesses, so the CLI stays the single
 source of truth for what each tool does. The one exception: it links isotable's output parsers, so
-the fastp, CheckM2 and GTDB-Tk numbers it returns are read exactly as isotable grades them.
+the fastp, CheckM2, GTDB-Tk, mlst and AMRFinderPlus values it returns are read exactly as isotable
+grades them.
 
 ## Install and register
 
@@ -61,7 +63,7 @@ Any client that takes a JSON config (Claude Desktop's `claude_desktop_config.jso
 | Option | Effect |
 |---|---|
 | `--bin-dir DIR` | Folder holding the irit binaries (env `IRIT_BIN_DIR`). Default: search `PATH`. |
-| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `bakta`, `checkm2`, `gtdbtk`). Repeatable. Default: search `PATH`. |
+| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`). Repeatable. Default: search `PATH`. |
 | `--runs-dir DIR` | Where run records go (env `IRIT_RUNS_DIR`). Default `./irit-runs`. |
 | `--run-id ID` | Name of this session's run folder. Default `<UTC time>-<pid>`. |
 | `--root DIR` | Folder the tools may write in. Default: the server's working folder. |
@@ -72,8 +74,9 @@ Tools run in the server's working folder, and relative paths in parameters are r
 ### Where tools may write
 
 Every path a tool would write to must resolve inside the root: sheetgen `output` and `link_into`,
-leanqc `outdir`, isotable `output` and `mqc`, fastp `out1`, `out2`, `json` and `html`, Bakta and
-CheckM2 `outdir`, GTDB-Tk `out_dir` and `scratch_dir`, `dblock.toml` and `dblock.lock` in the `project_dir`
+leanqc `outdir`, isotable `output` and `mqc`, fastp `out1`, `out2`, `json` and `html`, Shovill, Bakta and
+CheckM2 `outdir`, GTDB-Tk `out_dir` and `scratch_dir`, mlst `outfile`, `json` and `novel`, AMRFinderPlus
+`output`, `mutation_all`, `protein_output` and `nucleotide_output`, `dblock.toml` and `dblock.lock` in the `project_dir`
 of `dblock_add` and `dblock_fetch` (the folder and each file are checked, since dblock writes
 through a symlinked `dblock.toml`), and `dblock_add`'s `store`. "Resolve" means after `..` and
 symlinks, including a symlink that doesn't point anywhere yet: `qc -> /elsewhere` or `../x.csv` is
@@ -109,8 +112,9 @@ Existing outputs are only replaced when the call says so:
   or missing folder is fine.
 - sheetgen `link_into` has no `overwrite`: sheetgen itself refuses to replace a link that points
   elsewhere.
-- fastp outputs work like sheetgen `output`. Bakta `outdir`, CheckM2 `outdir` and GTDB-Tk
-  `out_dir` work like leanqc `outdir`. Note that CheckM2 empties its `outdir` before it writes.
+- fastp, mlst and AMRFinderPlus outputs work like sheetgen `output`. Shovill, Bakta and CheckM2
+  `outdir` and GTDB-Tk `out_dir` work like leanqc `outdir`. Note that CheckM2 empties its `outdir`
+  before it writes.
 - `dblock_add` and `dblock_fetch` update `dblock.toml` / `dblock.lock` in place, as dblock does.
 The transport is stdio; streamable HTTP is not built in yet.
 
@@ -190,16 +194,23 @@ and `catalog` (extra catalog JSON).
 
 ### Third-party tools
 
-Four tools wrap programs irit doesn't ship. Each one is pinned to an upstream version: its
-parameters are exactly the flags that version has, read from its source at that release tag.
+Seven tools wrap programs irit doesn't ship. Each one is pinned to an upstream version: its
+parameters are exactly the flags that version has, read from its source at that release tag (for
+Shovill, mlst and AMRFinderPlus also compared with `--help` of the Bioconda package).
 Nothing else is offered, so an agent can't pass a flag the program doesn't know.
 
 | MCP tool | Program | Pinned version | Flags read from | Bioconda |
 |---|---|---|---|---|
 | `fastp` | fastp | 1.4.0 | [`src/main.cpp`](https://github.com/OpenGene/fastp/blob/v1.4.0/src/main.cpp) | `fastp=1.4.0` |
+| `shovill` | Shovill | 1.4.2 | [`bin/shovill`](https://github.com/tseemann/shovill/blob/v1.4.2/bin/shovill) (`setOptions` and the checks after it) | `shovill=1.4.2` |
 | `bakta` | Bakta | 1.12.2 | [`bakta/utils.py`](https://github.com/oschwengers/bakta/blob/v1.12.2/bakta/utils.py), DB check from [`bakta/db.py`](https://github.com/oschwengers/bakta/blob/v1.12.2/bakta/db.py) | `bakta=1.12.2` |
 | `checkm2` | CheckM2 `predict` | 1.1.0 | [`checkm2/main.py`](https://github.com/chklovski/CheckM2/blob/1.1.0/checkm2/main.py) | `checkm2=1.1.0` |
 | `gtdbtk_classify_wf` | GTDB-Tk `classify_wf` | 2.8.0 | [`gtdbtk/cli.py`](https://github.com/Ecogenomics/GTDBTk/blob/2.8.0/gtdbtk/cli.py), data folders from [`config/common.py`](https://github.com/Ecogenomics/GTDBTk/blob/2.8.0/gtdbtk/config/common.py) | `gtdbtk=2.8.0` |
+| `mlst` | mlst | 2.35.0 | [`bin/mlst`](https://github.com/tseemann/mlst/blob/v2.35.0/bin/mlst) (`setOptions` and the main block) | `mlst=2.35.0` |
+| `amrfinder` | AMRFinderPlus `amrfinder` | 4.2.7 | [`amrfinder.cpp`](https://github.com/ncbi/amr/blob/amrfinder_v4.2.7/amrfinder.cpp), DB files from [`amrfinder_update.cpp`](https://github.com/ncbi/amr/blob/amrfinder_v4.2.7/amrfinder_update.cpp) and [`amrfinder_index.cpp`](https://github.com/ncbi/amr/blob/amrfinder_v4.2.7/amrfinder_index.cpp) | `ncbi-amrfinderplus=4.2.7` |
+
+Bioconda's current Shovill is 1.4.2, not the older 1.1.0: 1.4.x added `--plasmid`, changed
+`--mincov`'s default to 2 and needs at least 8 GB for `--ram`.
 
 How they work:
 
@@ -209,25 +220,33 @@ How they work:
 - **Versions.** The first line of the program's `--version` goes into the run record. If the
   version isn't the pinned one, the call still runs, but its result has a `warnings` entry. Every
   result also has `version` and `checked_against`.
-- **Checks before running.** Inputs must exist and look right: FASTQ for fastp, FASTA for Bakta,
-  CheckM2 and GTDB-Tk (plain or gzip; bzip2, xz and zstd are refused, and so is an empty file).
-  Databases are checked for the files the program itself needs (below), so a wrong path fails in
-  a second instead of after an hour.
+- **Checks before running.** Inputs must exist and look right: FASTQ for fastp and Shovill, FASTA
+  for Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus (plain or gzip; bzip2, xz and zstd are
+  refused, and so is an empty file). Databases are checked for the files the program itself needs
+  (below), so a wrong path fails in a second instead of after an hour.
 - **Databases.** Pass the path, or leave it out to use the variable the program reads (`BAKTA_DB`,
-  `CHECKM2DB`, `GTDBTK_DATA_PATH`, as set when the server started). The server resolves it before
-  running and records it. `dblock_env` shows the paths of databases that dblock manages.
+  `CHECKM2DB`, `GTDBTK_DATA_PATH`, `AMRFINDER_DB`, as set when the server started). The server
+  resolves it before running and records it. `dblock_env` shows the paths of databases that dblock
+  manages. mlst's PubMLST schemes come with the installed mlst, so its pinned version fixes them.
 - **Failure.** A non-zero exit is `tool_failed`, as for the irit tools. An exit status of 0
   without the files the program always writes is `missing_outputs`: it is recorded as a failed
   call and `replay.sh` doesn't rerun it.
-- **Results.** Each result has a small summary parsed from the outputs (below). fastp, CheckM2 and
-  GTDB-Tk outputs are read with isotable's own parsers. If the summary can't be read, the result
-  is an error (`output_unreadable`), not an empty list.
-- **Time.** Bakta, CheckM2 and GTDB-Tk can run for minutes to hours. The call returns when the
-  program ends; an MCP client with a short request timeout may give up first.
+- **Results.** Each result has a small summary parsed from the outputs (below). fastp, CheckM2,
+  GTDB-Tk, mlst and AMRFinderPlus outputs are read with isotable's own parsers. If the summary
+  can't be read, the result is an error (`output_unreadable`), not an empty list.
+- **Time.** Shovill, Bakta, CheckM2 and GTDB-Tk can run for minutes to hours. The call returns when
+  the program ends; an MCP client with a short request timeout may give up first.
+- **Names isotable can join.** isotable finds outputs by name and joins them by sample. Shovill
+  always writes `<outdir>/contigs.fa`, which would make every assembly sample `contigs`, so: mlst's
+  `outfile` must contain `mlst` and end in `.tsv`, and with one assembly the sample part of the name
+  (`s1.mlst.tsv` → `s1`) becomes mlst's `--label`, the name in its FILE column; AMRFinderPlus's
+  `output` must contain `amrfinder` and end in `.tsv`, and isotable takes the sample from it
+  (`s1.amrfinder.tsv` → `s1`). Other names are refused with a message saying why. isotable's
+  parsers were not changed.
 
 The large databases are not hashed into the run record (they are tens of GB). Only their small
-version files are: Bakta's `version.json`, GTDB-Tk's `metadata/metadata.txt`. Use `dblock_verify`
-to check a database itself.
+version files are: Bakta's `version.json`, GTDB-Tk's `metadata/metadata.txt`, AMRFinderPlus's
+`version.txt`. Use `dblock_verify` to check a database itself.
 
 #### `fastp`
 
@@ -254,6 +273,35 @@ Returns `report` (JSON and HTML paths) and `summary`: `reads_raw`, `reads_trimme
 
 Not offered: `--stdin`, `--stdout`, `--interleaved_in`, `--unpaired1/2`, splitting, UMI and
 merging options, and `--dont_overwrite` (the server enforces `overwrite` itself).
+
+#### `shovill`
+
+Assembles one isolate from paired-end Illumina reads.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `r1`, `r2` | files (required) | Read 1 and read 2 FASTQ (e.g. fastp's `out1`, `out2`). |
+| `outdir` | folder (required) | Output folder; the assembly is `<outdir>/contigs.fa`. One per sample. |
+| `overwrite` | boolean | Allow an `outdir` that has files. Default `false`. |
+| `assembler` | `spades`, `skesa`, `megahit`, `velvet` | Default `spades`. |
+| `gsize` | text | Genome size like `2.8M`, `4500K`, `5000000`. Default: estimated from the reads. |
+| `depth` | integer | Sub-sample to this depth; `0` turns it off. Default 150. |
+| `minlen`, `mincov` | numbers | Drop short or low-coverage contigs; `0` lets Shovill choose. |
+| `namefmt` | text | Contig names, one counter like `s1_%05d`. |
+| `cpus` | integer | |
+| `ram` | number, at least 8 | GB; Shovill 1.4.2 refuses less than 8 and more than the machine has. |
+| `plasmid` | boolean | SPAdes plasmid mode (`assembler: spades` only). |
+| `kmers` | text | Comma-separated k-mer sizes, e.g. `31,55,77`. |
+| `trim`, `noreadcorr`, `nostitch`, `nocorr`, `keepfiles` | booleans | As the Shovill flags. `nocorr` skips Pilon, the slowest step. |
+
+The server always sends `--force` (Shovill refuses any existing folder without it, even an empty
+one) and refuses an `outdir` whose absolute path has spaces or shell characters: Shovill pastes it
+unquoted into a shell command. Returns `contigs_file` and `assembly`: `contigs`, `total_length`,
+`n50`, `longest` and `gc_percent`, counted from `contigs.fa`. `shovill.log` is volatile (times,
+the machine's CPUs and RAM).
+
+Not offered: `--opts` (free text pasted into the assembler's shell command), `--tmpdir` (Shovill
+makes its own), `--check`.
 
 #### `bakta`
 
@@ -350,25 +398,93 @@ Laptop options in GTDB-Tk 2.8.0, checked against [the research notes](../researc
   through a `pplacer` shim on `PATH` (see the same page), not through a GTDB-Tk flag.
 - `--mash_db` went away in GTDB-Tk 2.5.0 (skani replaced Mash) and isn't offered.
 
-#### Example: an isolate from reads to taxonomy
+#### `mlst`
+
+Multi-locus sequence type of assemblies, with the PubMLST schemes bundled with mlst.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `contigs` | list of files (required) | Assemblies, FASTA. Usually one: Shovill's `contigs.fa`. |
+| `outfile` | file (required) | Tab-separated table. Must contain `mlst` and end in `.tsv`; name it `<sample>.mlst.tsv`. |
+| `overwrite` | boolean | Replace existing outputs. Default `false`. |
+| `label` | text | Name in the FILE column instead of the path; one assembly only. Default: the sample part of `outfile`. |
+| `json`, `novel` | files | Also write JSON / novel alleles (FASTA). |
+| `scheme` | name | Force a scheme, e.g. `saureus`, `ecoli_achtman_4` (mlst then sets `minscore` to 0). |
+| `full` | boolean | Header row plus STATUS and SCORE columns; isotable reads this layout too. |
+| `minid`, `mincov`, `minscore` | 0-100 | As the mlst options. |
+| `threads` | integer | BLAST threads. |
+
+Returns `outfile` and `results`, one per assembly: `sample` (the name isotable joins on), `file`,
+`scheme`, `st` and `alleles` (with `full`: the table's own columns). mlst marks a novel allele `~`
+and a partial one `?`, and gives ST `-` when no scheme matched.
+
+Not offered: `--csv` and `--legacy` (isotable reads the tab-separated layout), `--blastdb` and
+`--datadir` (the schemes come with the installed mlst), `--fofn`, `--exclude`, and the listing
+options (`--list`, `--longlist`, `--info`, `--check`).
+
+#### `amrfinder`
+
+Antimicrobial resistance genes and point mutations with AMRFinderPlus.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `nucleotide` | file | Assembly, FASTA. |
+| `protein` | file | Proteins, FASTA (e.g. Bakta's `<prefix>.faa`). Give `nucleotide`, `protein` or both. |
+| `gff` | file | Protein locations (e.g. Bakta's `<prefix>.gff3`). Needs `protein`; required with both inputs. |
+| `annotation_format` | `bakta`, `genbank`, `microscope`, `patric`, `pgap`, `prodigal`, `prokka`, `pseudomonasdb`, `rast`, `standard` | Which tool wrote the GFF. Needs `gff`. |
+| `database` | folder | AMRFinderPlus database. Default `$AMRFINDER_DB`. |
+| `organism` | name | E.g. `Escherichia`, `Staphylococcus_aureus`: point mutations and organism-specific genes. Checked against the database. |
+| `plus` | boolean | Also virulence, stress and other "plus" genes. |
+| `report_common` | boolean | Needs `organism` and `plus`. |
+| `report_all_equal`, `print_node` | booleans | As the flags. |
+| `ident_min` | -1 or 0-1 | `-1` (default): curated cut-offs. |
+| `coverage_min` | 0-1 | Default 0.5. |
+| `translation_table` | 1-33 | Default 11. |
+| `name` | text | Adds a first `Name` column with this text. |
+| `output` | file (required) | Report. Must contain `amrfinder` and end in `.tsv`; name it `<sample>.amrfinder.tsv`. |
+| `mutation_all`, `protein_output`, `nucleotide_output` | files | Need `organism`, `protein`, `nucleotide` respectively. |
+| `threads` | integer | |
+| `overwrite` | boolean | Replace existing outputs. Default `false`. |
+
+The database check follows amrfinder 4.2.7's own: the folder has `version.txt` and the other files
+`amrfinder_update` downloads (`AMR.LIB`, `AMRProt.fa`, `AMR_CDS.fa`, `fam.tsv`, `taxgroup.tsv`,
+...); it is indexed (`AMRProt.fa.phr`, `AMR.LIB.h3m`, `AMR_CDS.fa.nin`, and with `organism` and a
+nucleotide input the organism's `AMR_DNA-<organism>.fa` BLAST index); `database_format_version.txt`
+is not newer than 4.2.7; and the data version is at least 2025-09-22.2 (`dataVer_min` in
+amrfinder.cpp). An unindexed folder (the raw files from NCBI) is refused with a hint to run
+`amrfinder_index` or to fetch it with dblock, which indexes it. dblock's
+`amrfinderplus-db-4.2-2026-10-29.1` passes.
+
+Returns `database_version`, `report` and `summary`: `amr_genes` (what isotable reports),
+`counts_by_type` (AMR, STRESS, VIRULENCE, ...) and `hits`, each with `element_symbol`,
+`element_name`, `type`, `subtype`, `class`, `subclass`, `method`, `contig_id` or `protein_id`,
+`coverage_of_reference` and `identity_to_reference`.
+
+Not offered: `--update` and `--force_update` (they change the database outside the record; fetch
+a pinned one with dblock instead), `--blast_bin`, `--hmmer_bin`, `--pgap`, `--gpipe_org`, `--parm`
+(NCBI's testing options), `--debug`, `--log`, `--quiet`, `--list_organisms`, `--database_version`
+and `--nucleotide_flank5_output` / `_size`.
+
+#### Example: an isolate from reads to resistance genes
 
 A session an agent might run (paths shortened):
 
 ```json
 {"name": "fastp", "arguments": {"in1": "reads/s1_R1.fastq.gz", "in2": "reads/s1_R2.fastq.gz",
   "out1": "trim/s1_R1.fastq.gz", "out2": "trim/s1_R2.fastq.gz", "json": "trim/s1.fastp.json"}}
-```
-
-Then assemble (outside irit-mcp for now), then:
-
-```json
+{"name": "shovill", "arguments": {"r1": "trim/s1_R1.fastq.gz", "r2": "trim/s1_R2.fastq.gz",
+  "outdir": "asm/s1", "assembler": "skesa", "ram": 8}}
 {"name": "dblock_env", "arguments": {}}
-{"name": "bakta", "arguments": {"genome": "asm/s1.fna", "outdir": "bakta/s1", "skip": ["plot"]}}
-{"name": "checkm2", "arguments": {"genome_dir": "asm", "outdir": "checkm2", "lowmem": true}}
-{"name": "gtdbtk_classify_wf", "arguments": {"genome_dir": "asm", "out_dir": "gtdbtk",
-  "pplacer_cpus": 1, "scratch_dir": "scratch"}}
-{"name": "isotable", "arguments": {"dirs": ["trim", "checkm2", "gtdbtk"]}}
+{"name": "bakta", "arguments": {"genome": "asm/s1/contigs.fa", "prefix": "s1", "outdir": "bakta/s1", "skip": ["plot"]}}
+{"name": "checkm2", "arguments": {"genomes": ["asm/s1/contigs.fa"], "outdir": "checkm2", "lowmem": true}}
+{"name": "mlst", "arguments": {"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.mlst.tsv"}}
+{"name": "amrfinder", "arguments": {"nucleotide": "asm/s1/contigs.fa", "organism": "Staphylococcus_aureus",
+  "plus": true, "output": "typing/s1.amrfinder.tsv"}}
+{"name": "isotable", "arguments": {"dirs": ["trim", "typing"], "require": ["reads", "q30", "mlst", "amr"]}}
 ```
+
+CheckM2 and GTDB-Tk name genomes after the file (`contigs` here); for several samples, give them a
+folder of `<sample>.fa` files instead.
 
 The run's `replay.sh` then has lines like these:
 
@@ -474,8 +590,9 @@ the record and the run agree, and `replay.sh` exports them before the call:
 | `sheetgen` with `pipeline` | `NXF_HOME` | `$NXF_HOME`, else `$HOME/.nextflow` |
 | `gtdbtk_classify_wf` | `GTDBTK_DATA_PATH` | `data_path`, else `$GTDBTK_DATA_PATH` |
 
-Bakta and CheckM2 get their database as a flag (`--db`, `--database_path`), resolved the same way
-from `BAKTA_DB` and `CHECKM2DB`, so it is in `argv`.
+Bakta, CheckM2 and AMRFinderPlus get their database as a flag (`--db`, `--database_path`,
+`--database`), resolved the same way from `BAKTA_DB`, `CHECKM2DB` and `AMRFINDER_DB`, so it is in
+`argv`.
 
 With `pipeline`, the `schema_input.json` sheetgen will use (same lookup as sheetgen: the
 `assets/<name>` checkout, else the newest clone) is also hashed into `inputs`.
@@ -495,8 +612,8 @@ sh irit-runs/<run-id>/replay.sh                            # binaries from PATH
 IRIT_BIN_DIR=/opt/irit/bin sh irit-runs/<run-id>/replay.sh # or from a folder
 ```
 
-Third-party tools (fastp, bakta, checkm2, gtdbtk) are always taken from `PATH`, so activate their
-conda environment first. `IRIT_BIN_DIR` applies to the irit tools only.
+Third-party tools (fastp, shovill, bakta, checkm2, gtdbtk, mlst, amrfinder) are always taken from
+`PATH`, so activate their conda environment first. `IRIT_BIN_DIR` applies to the irit tools only.
 
 Some third-party outputs differ between two identical runs. They are recorded with
 `"volatile": true` and their hash, and `replay.sh` only checks that they exist (`check_exists`).
@@ -506,6 +623,8 @@ inputs and paths in the real-tools workflow (below) and comparing every file:
 | Tool | Volatile outputs | Why they differ |
 |---|---|---|
 | fastp | `.html` | The HTML report; the JSON report is identical. |
+| shovill | `shovill.log` | Times, and the machine's CPUs and RAM. `contigs.fa` (SKESA) is identical. |
+| mlst | `.json` | Same values, keys in another order (mlst writes it without sorting, and Perl randomises hash order). The TSV is identical. |
 | bakta | `.log`, `.gbff`, `.embl`, `.json`, `.svg` | Run times and dates (GenBank `LOCUS` date; in the JSON only `run.start` and `run.end`). |
 | checkm2 | `checkm2.log` | Timestamps. |
 | gtdbtk | `.log`, `gtdbtk.json`, `.gz` | Timestamps (in `gtdbtk.json` only each step's start and end); gzip headers carry a time. |
@@ -596,7 +715,10 @@ run but does not carry the data.
   stand-in refuses any flag the wrapper isn't allowed to send. The test runs the isolate path
   over stdio, checks the summaries, a failed run, an exit 0 without outputs, a version warning and
   the run record, then deletes the outputs, replays and gets the same hashes. A second test checks
-  the install hint when a tool is missing.
+  the install hint when a tool is missing. A third runs stand-ins for shovill, mlst and amrfinder
+  (with a stand-in indexed database from `$AMRFINDER_DB`), then the real isotable binary, and checks
+  that the mlst row (labelled from `s1.mlst.tsv`) and the AMRFinderPlus report join to sample `s1`
+  although the assembly is `contigs.fa`, then replays.
 - With the real programs: the opt-in workflow
   [`mcp-real-tools.yml`](https://github.com/dzulfikar08/irit/blob/main/.github/workflows/mcp-real-tools.yml)
   installs fastp 1.4.0, Bakta 1.12.2, CheckM2 1.1.0 and GTDB-Tk 2.8.0 from Bioconda (one
@@ -608,6 +730,21 @@ run but does not carry the data.
   succeeded; fastp 40,000 reads, Bakta 522 CDSs / 36 tRNAs / 3 rRNAs, CheckM2 98.9% complete and
   0.08% contaminated, GTDB-Tk classified the mock test genome with ANI 100. `replay.sh` then re-ran 11 commands and all
   41 outputs matched ([run](https://github.com/dzulfikar08/irit/actions/runs/42850479255)).
+  Since then it also installs Shovill 1.4.2, mlst 2.35.0 and AMRFinderPlus 4.2.7, fetches
+  `amrfinderplus-db-4.2-2026-10-29.1` with `dblock_fetch` (dblock runs `amrfinder_index`), and runs
+  fastp → Shovill (SKESA, 30x, no Pilon) → mlst → AMRFinderPlus on real Illumina reads of
+  *S. aureus* ERR044595 (nf-core/bacass's 1M-pair test files), AMRFinderPlus on Bakta's proteins
+  and GFF3 for *M. genitalium*, and Bakta with the dblock AMRFinderPlus database as its
+  `amrfinderplus-db/latest` (a folder of links, no `amrfinder_update`). Results (2026-11-11): Shovill
+  2,760,249 bp in under 3 minutes; mlst `saureus` ST22 (EMRSA-15's type); AMRFinderPlus `mecA`,
+  `mecR1`, `blaZ`, `blaI`, `tet(38)`, `mepA`, and the point mutations `gyrA_S84L`, `parC_S80F`,
+  `dfrB_A135T`; isotable joined fastp, mlst and AMRFinderPlus into one passing row for `sa`; Bakta's
+  own AMRFinderPlus step ran on the dblock database; `dblock_verify` found every database folder
+  unchanged afterwards. Shovill's and AMRFinderPlus's outputs were identical between the two
+  runs (except `shovill.log`); mlst's JSON was not (see the volatile table). GTDB's mock database
+  now comes through `dblock_fetch` too (`gtdbtk-r232-mockup`, since GTDB fixed its MD5).
+  `replay.sh` re-ran 22 commands and all 53 outputs matched
+  ([run](https://github.com/dzulfikar08/irit/actions/runs/43045271505)).
 - By hand: a session with sheetgen → leanqc → isotable → dblock_catalog replayed with all 7 outputs
   matching; dblock_add, plan, verify, env and check against a local project.
 
@@ -629,13 +766,20 @@ run but does not carry the data.
   database: GTDB-Tk has not been run through irit-mcp with the full R232 data.
 - Bakta: the AMRFinderPlus data inside the Bakta v6 databases (`amrfinderplus-db/`) may be older
   than the `amrfinder` Bioconda installs with Bakta 1.12.2, and Bakta then fails with "amrfinder
-  error". Run `amrfinder_update --force_update --database <BAKTA_DB>/amrfinderplus-db` once (as
-  Bakta's message says). This changes the dblock-managed folder, so `dblock_verify` will then
-  report it as changed.
+  error". Give Bakta dblock's `amrfinderplus-db-4.2-2026-10-29.1` as `amrfinderplus-db/latest`
+  through a folder of links ([dblock](dblock.md#amrfinderplus-db-42-2026-10-291-the-amrfinderplus-database));
+  running `amrfinder_update` into the dblock Bakta folder also works, but `dblock_verify` then
+  reports that folder as changed.
+- Shovill 1.4.2 runs `spades.py --version` even when SKESA assembles; SPAdes 3.15.5's script fails
+  on the newest Python a Bioconda solve can pick, and Shovill then stops ("Can't parse spades
+  version"). Install it with `python=3.11` (`shovill=1.4.2 python=3.11`), as the workflow does.
+- SPAdes through Shovill was not run in the workflow (SKESA was, at 30x, without Pilon); whether
+  SPAdes's contigs are identical between two runs is not checked, so its outputs are not marked
+  volatile.
 - CheckM2 1.1.0 from Bioconda can fail to load TensorFlow on newer glibc ("cannot enable
   executable stack"). Setting `GLIBC_TUNABLES=glibc.rtld.execstack=2` for CheckM2 works around it
   (the workflow does this in a wrapper script).
-- No wrapper yet for an assembler, mlst or AMRFinderPlus, so the isolate path still has a step
-  outside the record.
+- mlst's PubMLST schemes ship inside the mlst package and are not hashed into the record; two
+  Bioconda builds of mlst 2.35.0 could in principle carry different scheme snapshots.
 - A long Bakta or GTDB-Tk call blocks until it ends; there is no progress reporting or
   cancellation beyond the client closing the connection.

@@ -526,7 +526,7 @@
     },
     "licence": "CC BY 4.0",
     "non_commercial": false,
-    "notes": "Bakta accepts a database only when its major schema version matches its own (6 for Bakta 1.11-1.12). Run `amrfinder_update --database <db>/amrfinderplus-db` afterwards, as `bakta_db install` would."
+    "notes": "Bakta accepts a database only when its major schema version matches its own (6 for Bakta 1.11-1.12). Bakta 1.12.2 also reads AMRFinderPlus data from <db>/amrfinderplus-db/latest: give it amrfinderplus-db-4.2-2026-10-29.1 there, through a folder of links so neither dblock folder changes (docs/tools/dblock.md), instead of running `amrfinder_update --database <db>/amrfinderplus-db` as `bakta_db install` would."
   },
   {
     "id": "bakta-db-v6-light",
@@ -555,7 +555,7 @@
     },
     "licence": "CC BY 4.0",
     "non_commercial": false,
-    "notes": "The laptop-sized Bakta database. Run `amrfinder_update --database <db>/amrfinderplus-db` afterwards."
+    "notes": "The laptop-sized Bakta database. For its AMRFinderPlus data (<db>/amrfinderplus-db/latest), use amrfinderplus-db-4.2-2026-10-29.1 through a folder of links (docs/tools/dblock.md) instead of running `amrfinder_update --database <db>/amrfinderplus-db`."
   },
   {
     "id": "card-4.0.2",
@@ -576,5 +576,260 @@
     "licence": "Free for non-commercial use at academic, government and non-profit institutions only. Commercial organisations, even for research, need a paid licence from McMaster University. The ARO ontology is CC BY 4.0.",
     "non_commercial": true,
     "notes": "Check the licence before using this in a company."
+  },
+  {
+    "id": "amrfinderplus-db-4.2-2026-10-29.1",
+    "name": "AMRFinderPlus database 2026-10-29.1 (format 4.2)",
+    "version": "2026-10-29.1",
+    "tool": "AMRFinderPlus",
+    "format": "file",
+    "base_url": "https://ftp.ncbi.nlm.nih.gov/pathogen/Antimicrobial_resistance/AMRFinderPlus/database/4.2/2026-10-29.1",
+    "extracted": 256400000,
+    "md5_source": "not published by NCBI; MD5 and SHA-256 of each file computed by us on 2026-11-11 from these exact URLs",
+    "env": "AMRFINDER_DB",
+    "env_points_to": "dir",
+    "compat": {
+      "command": [
+        "amrfinder",
+        "--version"
+      ],
+      "min": "4.2.0",
+      "max_exclusive": "4.3.0",
+      "source": "database_format_version.txt (4.2.0) in this release; AMRFinderPlus 4.2.7 amrfinder.cpp needs data version 2025-09-22.2 or newer"
+    },
+    "licence": "Public domain (US government work, NCBI)",
+    "non_commercial": false,
+    "notes": "The 38 files amrfinder_update 4.2.x downloads, then indexed with amrfinder_index (BLAST+ and HMMER) before the folder is sealed, as amrfinder_update does: needs AMRFinderPlus on PATH when fetching. The index files record their build time, so their SHA-256 differs between machines; the downloaded files are checked against the catalog. Use as amrfinder --database, or as <bakta-db>/amrfinderplus-db/latest (see docs/tools/dblock.md).",
+    "prepare": "amrfinder_index",
+    "parts": [
+      {
+        "file": "AMR.LIB",
+        "size": 109693661,
+        "md5": "7f2a578f68f6f6ec1be30fe1b0fcb763",
+        "sha256": "7720938a0e30da498bc49b3df0aa3413571723037be872eb5674ef655c486bd9"
+      },
+      {
+        "file": "AMRProt.fa",
+        "size": 4732322,
+        "md5": "def4069101bf8ddbee374ddfe9f2f3e2",
+        "sha256": "c60040cddf242e012601cc50beb295bcb4e721d290b8d9fe9e1992034902319f"
+      },
+      {
+        "file": "AMRProt-mutation.tsv",
+        "size": 207256,
+        "md5": "92daf58ed4d0fa84177bf1f3d9ef48ef",
+        "sha256": "d883ca3d9189200ddab5f7e8831ddc075c41bd0e735bdc4c446a80caf1f12a50"
+      },
+      {
+        "file": "AMRProt-suppress.tsv",
+        "size": 494,
+        "md5": "10ae803343960788371af339bdd41c61",
+        "sha256": "2b713905b359b464260526bde24ab53218a1f7c59f1c020d49fc3338d7293697"
+      },
+      {
+        "file": "AMRProt-susceptible.fa",
+        "size": 31111,
+        "md5": "4c8672bcca28609eeb2174f9b0d9d3dd",
+        "sha256": "14a9900f90f870dbfa6e72e08464be4a2db1dec2b7439bc3c1cdc7a34c2157a1"
+      },
+      {
+        "file": "AMRProt-susceptible.tsv",
+        "size": 8080,
+        "md5": "fd35fb906c4f387ceecaaba3849725c4",
+        "sha256": "5e98b47833a4770e2262a91ef23474c40b53b8acd0aea196f26f287a98978bb0"
+      },
+      {
+        "file": "AMR_CDS.fa",
+        "size": 11229150,
+        "md5": "a26bd31a4e99465f86892d01ce21b60d",
+        "sha256": "12edc653f90c83bf4bb636c0b65a12f58d93eeb8413f44e1fb32eec164e448bb"
+      },
+      {
+        "file": "database_format_version.txt",
+        "size": 6,
+        "md5": "3d3e24f7cb6d5ffc50e20a45dc94a52e",
+        "sha256": "8fb33dadbe981cf5847df269c10c2a3fe107f2b269d5ccb6db37d1f61ffc3bba"
+      },
+      {
+        "file": "fam.tsv",
+        "size": 344877,
+        "md5": "2d7d74866b2761ac54a9f1c002e08722",
+        "sha256": "621c56fd3904c48a54622b860de2293e2e9ed444d340e235cbe8fea973b174d7"
+      },
+      {
+        "file": "taxgroup.tsv",
+        "size": 1490,
+        "md5": "5968ee960d2b02475aa5dc91d2f331eb",
+        "sha256": "e44282d5b30a3fb2adf618a27a0ffda163b1b5b2041b406eb35363249cb1c172"
+      },
+      {
+        "file": "version.txt",
+        "size": 13,
+        "md5": "ecaa707ee8cdf513bb9805b4589af620",
+        "sha256": "c1a62817c6022142cdeb7c2e746759059f24538795e29609af3e718ec02de8f0"
+      },
+      {
+        "file": "AMR_DNA-Acinetobacter_baumannii.fa",
+        "size": 303,
+        "md5": "28779658bd28aaa761d85cb8569735e6",
+        "sha256": "472054eff1fb825a82f59c1b7ec5648eba113553cfc80d0e82547ec1ca07d8c2"
+      },
+      {
+        "file": "AMR_DNA-Acinetobacter_baumannii.tsv",
+        "size": 538,
+        "md5": "cb8da7b95c5b6b9aa21fb5409e86e68d",
+        "sha256": "99da88bc4e031f61dab5c5bcb17152b93f42c905f9c4f23a6072161276ddd00b"
+      },
+      {
+        "file": "AMR_DNA-Bordetella_pertussis.fa",
+        "size": 2961,
+        "md5": "8824cfb6e71a9331dcb662ad811cc1d9",
+        "sha256": "57a1fc5c7734c33901daad4040a13825913149acaefaf82fb7ddf1139383598b"
+      },
+      {
+        "file": "AMR_DNA-Bordetella_pertussis.tsv",
+        "size": 347,
+        "md5": "596da2d7129f6d0d77aab1459e32b764",
+        "sha256": "597ab237cd2ff52f79400f54d5506ee789353c9767fc0aaeb09447e9f076a4f2"
+      },
+      {
+        "file": "AMR_DNA-Campylobacter.fa",
+        "size": 6971,
+        "md5": "b3908fc391bcc1b8824f2115717a1833",
+        "sha256": "8fd355ba1ddc39184066d70fbf8419a2582da924c84e89d03144b0e815177134"
+      },
+      {
+        "file": "AMR_DNA-Campylobacter.tsv",
+        "size": 1670,
+        "md5": "f6a626b4901e1a33079437f00c2bc1ed",
+        "sha256": "ce6187e3292489d168b7e235c5c061f01fe22c6f9a8e91e5e744ad434f5a855b"
+      },
+      {
+        "file": "AMR_DNA-Clostridioides_difficile.fa",
+        "size": 3454,
+        "md5": "3464318edafc2f661274be7312c9d0f0",
+        "sha256": "ac00fd727c0c32bc001b4c527508142fa7af1a4ac6f5e37bd1ebd87866d474ce"
+      },
+      {
+        "file": "AMR_DNA-Clostridioides_difficile.tsv",
+        "size": 510,
+        "md5": "5fe702fc092b8e92ab2c830644dd77ab",
+        "sha256": "bf53151f2190dc2ea406abeb7e025247cf2cc8c5c787beab478d195a29f80d96"
+      },
+      {
+        "file": "AMR_DNA-Enterococcus_faecalis.fa",
+        "size": 2984,
+        "md5": "396b23c85b4582e88e9c78c2cbc3f3e8",
+        "sha256": "0916658691fdc453fdbe38ed90b0eccdfbfc99905c4fb3dd7843a2eede1d2aa8"
+      },
+      {
+        "file": "AMR_DNA-Enterococcus_faecalis.tsv",
+        "size": 446,
+        "md5": "68a5075f2731835adda0639bc8aacf69",
+        "sha256": "d10c34918f451fbca0fbed7dd0994446a21de71fa5cff585292e5dfa71a209a7"
+      },
+      {
+        "file": "AMR_DNA-Enterococcus_faecium.fa",
+        "size": 2989,
+        "md5": "01d707f308d7c601950ab1e4176a3377",
+        "sha256": "a0121244330f4f61059357906e56ea3558696d006b0a3283598e7ce7f18f2f4b"
+      },
+      {
+        "file": "AMR_DNA-Enterococcus_faecium.tsv",
+        "size": 444,
+        "md5": "7b252c387f449a9a13a0bc2262651935",
+        "sha256": "5dfab0b2b8e721eb212ee1736021522bbe826170c31c2b573f5d3b1a3d807b91"
+      },
+      {
+        "file": "AMR_DNA-Escherichia.fa",
+        "size": 7791,
+        "md5": "55ce5264cc01c7ab3b456c89d8f1f894",
+        "sha256": "920f32496f36cd35e5feffd95d878c17cbe3408fe2290528ee4b1d37befc45eb"
+      },
+      {
+        "file": "AMR_DNA-Escherichia.tsv",
+        "size": 8332,
+        "md5": "c501d768051ce0f1aac02f3201015ad2",
+        "sha256": "495c2c35bb396d7538d7562774f5029c69ee1940269435fbc91b8d7fe25f9fae"
+      },
+      {
+        "file": "AMR_DNA-Klebsiella_oxytoca.fa",
+        "size": 166,
+        "md5": "e9757e23de834fe0c3f034c76f76213a",
+        "sha256": "78d81787e0ee2497d604e274b4f28b411e1e400d77274a055562e8227016d28b"
+      },
+      {
+        "file": "AMR_DNA-Klebsiella_oxytoca.tsv",
+        "size": 848,
+        "md5": "f3ec2a5cc0b85261796d307b8d0db9c2",
+        "sha256": "b826f7209f75f6d02b2f46255b1d16ffd69cb1234155717e707241d24873b6fd"
+      },
+      {
+        "file": "AMR_DNA-Klebsiella_pneumoniae.fa",
+        "size": 365,
+        "md5": "5076ac07711ced6314687cd96634701d",
+        "sha256": "77ca0529b89781827cfb1077695b5dce0bb5da17b5e035c4ae33a014eb4bf340"
+      },
+      {
+        "file": "AMR_DNA-Klebsiella_pneumoniae.tsv",
+        "size": 355,
+        "md5": "597cfca9f35edcaab1c011a782ed81a2",
+        "sha256": "58050e41d93dc5879c946f33156153c0c5d6e49af9ae81091d01b6b824ab83a2"
+      },
+      {
+        "file": "AMR_DNA-Neisseria_gonorrhoeae.fa",
+        "size": 6138,
+        "md5": "6832d8ecea304806830f254a4b2bacf1",
+        "sha256": "dae318bd32754b9f591b44cc2e0f57c2b79cfbecce97862faf15220f950ccd1d"
+      },
+      {
+        "file": "AMR_DNA-Neisseria_gonorrhoeae.tsv",
+        "size": 2339,
+        "md5": "df645e78f2863ff224a9bd7290b0f2e2",
+        "sha256": "01b9e782881bb74b3c75993912f065c9c314e513aa9627f7729f7bf663012b3d"
+      },
+      {
+        "file": "AMR_DNA-Salmonella.fa",
+        "size": 1612,
+        "md5": "c1961eb24a4c1224b052ca624d688423",
+        "sha256": "3bd08a2660c4de9128f1919297f9ebc4ebe156b3a98001ac86ad7e82c0c8ae44"
+      },
+      {
+        "file": "AMR_DNA-Salmonella.tsv",
+        "size": 462,
+        "md5": "0fe717142e01d4f5c9261619527a220b",
+        "sha256": "1be3f4d162297cdcd393014294e016ecb5e673bfe653b0ca7e40a646da0ea67d"
+      },
+      {
+        "file": "AMR_DNA-Staphylococcus_aureus.fa",
+        "size": 3414,
+        "md5": "8fea013f0fd4d5e7f6dbaa87f1549ad8",
+        "sha256": "31edbcd4dddfd83e7d713fa9da314054c957954fa1b6485ee537a096ffcbc3b6"
+      },
+      {
+        "file": "AMR_DNA-Staphylococcus_aureus.tsv",
+        "size": 1976,
+        "md5": "b035060022b89bea7fb98a6ac3239faf",
+        "sha256": "a4ba2b39aec5ba63fb531a8807fba866840f40f618c40ed5906e10efa38c445a"
+      },
+      {
+        "file": "AMR_DNA-Streptococcus_pneumoniae.fa",
+        "size": 2990,
+        "md5": "66fe38f3f0ca0a0fb35392f38cf57d40",
+        "sha256": "c83c78e212f21fb7867a35a26010cb34f40c0a062a51a411354f76450403f610"
+      },
+      {
+        "file": "AMR_DNA-Streptococcus_pneumoniae.tsv",
+        "size": 914,
+        "md5": "42ec41450e7d6e418d62703be6ba2ecd",
+        "sha256": "0be2f4f2dbb661a1bdc95a62133af2445fd270ab790c92a5196378eb69277cdf"
+      },
+      {
+        "file": "changes.txt",
+        "size": 22763,
+        "md5": "e61eb983fcd0051902e82f94c530500a",
+        "sha256": "aaad01e83e3760d8d2d5e2847c77c31b725fd9625f4ad57ab2cd19f4fd8cc4fb"
+      }
+    ]
   }
 ]

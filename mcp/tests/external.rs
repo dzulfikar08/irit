@@ -120,6 +120,80 @@ for f in "$dir"/*."$ext"; do b=$(basename "$f" ".$ext"); printf '%s\td__Bacteria
 ln -sf classify/gtdbtk.bac120.summary.tsv "$out/gtdbtk.bac120.summary.tsv"
 "#;
 
+const SHOVILL: &str = r#"
+[ "${1:-}" = --version ] && { echo "shovill 1.4.2"; exit 0; }
+out= ; r1= ; force=0
+for a in "$@"; do
+  case "$a" in
+    --R1=*) r1=${a#--R1=} ;;
+    --R2=*) ;;
+    --outdir=*) out=${a#--outdir=} ;;
+    --force) force=1 ;;
+    --assembler=*|--gsize=*|--depth=*|--minlen=*|--mincov=*|--namefmt=*|--cpus=*|--ram=*|--kmers=*) ;;
+    --keepfiles|--plasmid|--trim|--noreadcorr|--nostitch|--nocorr) ;;
+    *) die "unknown option $a" ;;
+  esac
+done
+[ -d "$out" ] && [ $force = 0 ] && die "Folder '$out' already exists. Try using --force"
+mkdir -p "$out"
+echo "[shovill] started $(date +%s%N)" > "$out/shovill.log"
+printf '>contig00001 len=12 cov=40.0\nACGTACGTGGCC\n>contig00002 len=8 cov=38.0\nGGGGCCAT\n' > "$out/contigs.fa"
+"#;
+
+const MLST: &str = r#"
+[ "${1:-}" = --version ] && { echo "mlst 2.35.0"; exit 0; }
+out= ; json= ; label= ; full=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --outfile=*) out=${1#--outfile=} ;;
+    --json=*) json=${1#--json=} ;;
+    --novel=*) ;;
+    --label=*) label=${1#--label=} ;;
+    --full) full=1 ;;
+    --scheme=*|--minid=*|--mincov=*|--minscore=*|--threads=*) ;;
+    --) shift; break ;;
+    *) die "unknown option $1" ;;
+  esac
+  shift
+done
+[ $full = 1 ] && printf 'FILE\tSCHEME\tST\tSTATUS\tSCORE\tALLELES\n' > "$out" || : > "$out"
+for f in "$@"; do
+  [ -f "$f" ] || die "Unable to read from '$f'"
+  printf '%s\tsaureus\t22\tarcC(7)\taroE(6)\tglpF(1)\tgmk(5)\tpta(8)\ttpi(8)\tyqiL(6)\n' "${label:-$f}" >> "$out"
+done
+[ -n "$json" ] && printf '[{"id": "%s", "scheme": "saureus", "sequence_type": "22"}]\n' "${label:-$1}" > "$json"
+exit 0
+"#;
+
+const AMRFINDER: &str = r#"
+[ "${1:-}" = --version ] && { echo "4.2.7"; exit 0; }
+out= ; db= ; name= ; plus=0
+for a in "$@"; do
+  case "$a" in
+    --output=*) out=${a#--output=} ;;
+    --database=*) db=${a#--database=} ;;
+    --name=*) name=${a#--name=} ;;
+    --plus) plus=1 ;;
+    --nucleotide=*|--protein=*|--gff=*|--annotation_format=*|--organism=*|--ident_min=*|--coverage_min=*) ;;
+    --translation_table=*|--threads=*|--mutation_all=*|--protein_output=*|--nucleotide_output=*) ;;
+    --report_common|--report_all_equal|--print_node) ;;
+    *) die "unknown option $a" ;;
+  esac
+done
+[ -f "$db/AMRProt.fa.phr" ] || die "The BLAST database for AMRProt.fa ($db/AMRProt.fa.phr) was not found."
+h='Protein id\tContig id\tStart\tStop\tStrand\tElement symbol\tElement name\tScope\tType\tSubtype\tClass\tSubclass\tMethod\tTarget length\tReference sequence length\t%% Coverage of reference\t%% Identity to reference\tAlignment length\tClosest reference accession\tClosest reference name\tHMM accession\tHMM description\n'
+r1='NA\tcontig00001\t1\t2007\t+\tmecA\tPBP2a family beta-lactam-resistant peptidoglycan transpeptidase MecA\tcore\tAMR\tAMR\tBETA-LACTAM\tMETHICILLIN\tEXACTX\t668\t668\t100.00\t100.00\t668\tWP_000721309.1\tMecA\tNA\tNA\n'
+r2='NA\tcontig00002\t5\t850\t-\tblaZ\tpenicillin-hydrolyzing class A beta-lactamase BlaZ\tcore\tAMR\tAMR\tBETA-LACTAM\tBETA-LACTAM\tALLELEX\t281\t281\t100.00\t100.00\t281\tWP_000733283.1\tBlaZ\tNA\tNA\n'
+r3='NA\tcontig00001\t90\t900\t+\tsea\tenterotoxin type A\tplus\tVIRULENCE\tVIRULENCE\tNA\tNA\tEXACTX\t257\t257\t100.00\t100.00\t257\tWP_000750426.1\tSEA\tNA\tNA\n'
+[ $plus = 1 ] || r3=
+if [ -n "$name" ]; then
+  printf "Name\t$h$name\t$r1$name\t$r2" > "$out"
+  if [ -n "$r3" ]; then printf "$name\t$r3" >> "$out"; fi
+else
+  printf "$h$r1$r2$r3" > "$out"
+fi
+"#;
+
 fn script(dir: &Path, name: &str, body: &str) {
     let p = dir.join(name);
     std::fs::write(&p, format!("{PRELUDE}{body}")).unwrap();
@@ -145,6 +219,35 @@ fn fake_bakta_db(dir: &Path) {
     }
 }
 
+/// An indexed AMRFinderPlus 2026-10-29.1 database as empty stand-ins: what amrfinder_update 4.2.7
+/// downloads and the index files irit-mcp checks for.
+fn fake_amrfinder_db(dir: &Path) {
+    for f in [
+        "AMR.LIB", "AMRProt.fa", "AMRProt-mutation.tsv", "AMRProt-suppress.tsv", "AMRProt-susceptible.fa", "AMRProt-susceptible.tsv",
+        "AMR_CDS.fa", "fam.tsv", "AMRProt.fa.phr", "AMR.LIB.h3m", "AMR_CDS.fa.nin", "AMR_DNA-Staphylococcus_aureus.fa",
+        "AMR_DNA-Staphylococcus_aureus.fa.ndb",
+    ] {
+        write(dir, f, "");
+    }
+    write(dir, "version.txt", "2026-10-29.1\n");
+    write(dir, "database_format_version.txt", "4.2.0\n");
+    write(dir, "taxgroup.tsv", "#taxgroup\tgpipe_taxgroup\tnumber_of_nucl_ref_genes\nStaphylococcus_aureus\tStaphylococcus_aureus\t2\n");
+}
+
+/// The irit binaries (isotable): `$IRIT_BIN_DIR`, else the workspace's target/release or target/debug.
+fn irit_bin_dir() -> PathBuf {
+    let exe = format!("isotable{}", std::env::consts::EXE_SUFFIX);
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target");
+    let candidates: Vec<PathBuf> = match std::env::var_os("IRIT_BIN_DIR") {
+        Some(d) => vec![d.into()],
+        None => vec![target.join("release"), target.join("debug")],
+    };
+    let dir = candidates.iter().find(|d| d.join(&exe).is_file()).unwrap_or_else(|| {
+        panic!("isotable not found in {candidates:?}: run `cargo build --release -p isotable` in the workspace root or set IRIT_BIN_DIR")
+    });
+    std::fs::canonicalize(dir).unwrap()
+}
+
 struct Setup {
     _tmp: tempfile::TempDir,
     work: PathBuf,
@@ -156,9 +259,18 @@ fn setup() -> Setup {
     let work = std::fs::canonicalize(tmp.path()).unwrap();
     let tools = work.join("fake-bin");
     std::fs::create_dir(&tools).unwrap();
-    for (n, b) in [("fastp", FASTP), ("bakta", BAKTA), ("checkm2", CHECKM2), ("gtdbtk", GTDBTK)] {
+    for (n, b) in [
+        ("fastp", FASTP),
+        ("bakta", BAKTA),
+        ("checkm2", CHECKM2),
+        ("gtdbtk", GTDBTK),
+        ("shovill", SHOVILL),
+        ("mlst", MLST),
+        ("amrfinder", AMRFINDER),
+    ] {
         script(&tools, n, b);
     }
+    fake_amrfinder_db(&work.join("db/amrfinderplus/2026-10-29.1"));
     for (n, seq) in [("reads/s1_R1.fastq", "@r1\nACGT\n+\nIIII\n"), ("reads/s1_R2.fastq", "@r1\nTTGA\n+\nIIII\n")] {
         write(&work, n, seq);
     }
@@ -349,5 +461,113 @@ fn missing_tool_gives_an_install_hint() {
     // an unknown --tool-path name is refused at startup
     let out = Command::new(env!("CARGO_BIN_EXE_irit-mcp")).args(["--tool-path", "prokka=/x"]).current_dir(work).output().unwrap();
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not one of fastp, bakta, checkm2, gtdbtk"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not one of fastp, shovill, bakta, checkm2, gtdbtk, mlst, amrfinder"));
+}
+
+/// Reads to assembly (Shovill), typing (mlst) and resistance genes (AMRFinderPlus), then isotable
+/// over the results: the sample names line up although Shovill always writes `contigs.fa`.
+#[test]
+fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
+    let s = setup();
+    let work = &s.work;
+    let amr_db = work.join("db/amrfinderplus/2026-10-29.1");
+    let bin = irit_bin_dir();
+    let mut c = Client::spawn(
+        work,
+        &["--bin-dir", bin.to_str().unwrap()],
+        &[("PATH", &s.path), ("AMRFINDER_DB", amr_db.to_str().unwrap())],
+    );
+    let tools = c.request("tools/list", json!({}));
+    let list = tools["result"]["tools"].as_array().unwrap();
+    for want in ["shovill", "mlst", "amrfinder"] {
+        let t = list.iter().find(|t| t["name"] == want).unwrap_or_else(|| panic!("{want} missing"));
+        assert_eq!(t["inputSchema"]["additionalProperties"], false, "{want}");
+    }
+    std::fs::create_dir_all(work.join("asm")).unwrap();
+    std::fs::create_dir_all(work.join("typing")).unwrap();
+
+    // 1: Shovill
+    let r = c.call(
+        "shovill",
+        json!({"r1": "reads/s1_R1.fastq", "r2": "reads/s1_R2.fastq", "outdir": "asm/s1", "assembler": "skesa", "nocorr": true, "ram": 8}),
+    );
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    assert_eq!(v["assembly"], json!({"contigs": 2, "total_length": 20, "n50": 12, "longest": 12, "gc_percent": 70.0}), "{v}");
+    assert_eq!(v["version"], "shovill 1.4.2");
+    assert_eq!(v["warnings"], json!([]));
+    // a second call into the same folder needs overwrite
+    let r = c.call("shovill", json!({"r1": "reads/s1_R1.fastq", "r2": "reads/s1_R2.fastq", "outdir": "asm/s1"}));
+    assert_eq!(r["structuredContent"]["field"], "outdir", "{r}");
+
+    // 2: mlst; the label comes from the output name, not from contigs.fa
+    let r = c.call("mlst", json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.mlst.tsv", "json": "typing/s1.mlst.json"}));
+    assert_ne!(r["isError"], true, "{r}");
+    let res = &r["structuredContent"]["results"][0];
+    assert_eq!((res["sample"].as_str(), res["scheme"].as_str(), res["st"].as_str()), (Some("s1"), Some("saureus"), Some("22")), "{r}");
+    assert!(r["structuredContent"]["command"].as_str().unwrap().contains("--label=s1"));
+    let r = c.call("mlst", json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.tsv"}));
+    assert_eq!(r["structuredContent"]["field"], "outfile", "{r}");
+
+    // 3: AMRFinderPlus with the database from $AMRFINDER_DB
+    let r = c.call(
+        "amrfinder",
+        json!({"nucleotide": "asm/s1/contigs.fa", "organism": "Staphylococcus_aureus", "plus": true, "output": "typing/s1.amrfinder.tsv"}),
+    );
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    assert_eq!(v["database_version"], "2026-10-29.1", "{v}");
+    assert_eq!(v["summary"]["amr_genes"], "blaZ,mecA");
+    assert_eq!(v["summary"]["counts_by_type"], json!({"AMR": 2, "VIRULENCE": 1}));
+    assert_eq!(v["summary"]["hits"][0]["element_symbol"], "mecA");
+    assert_eq!(v["summary"]["hits"][0]["identity_to_reference"], "100.00");
+    assert!(v["command"].as_str().unwrap().contains(&format!("--database={}", amr_db.display())));
+    // an organism the database doesn't have is refused before amrfinder runs
+    let r = c.call("amrfinder", json!({"nucleotide": "asm/s1/contigs.fa", "organism": "Escherichia", "output": "typing/x.amrfinder.tsv"}));
+    assert_eq!(r["structuredContent"]["field"], "organism", "{r}");
+
+    // 4: isotable joins mlst and AMRFinderPlus to sample s1
+    let r = c.call("isotable", json!({"dirs": ["typing"], "require": ["mlst", "amr"], "output": "typing/isotable.tsv"}));
+    assert_ne!(r["isError"], true, "{r}");
+    let samples = r["structuredContent"]["samples"].as_array().unwrap();
+    assert_eq!(samples.len(), 1, "{r}");
+    let s1 = &samples[0];
+    assert_eq!(s1["sample"], "s1");
+    assert_eq!(s1["values"]["mlst_st"], "22", "{s1}");
+    assert_eq!(s1["values"]["amr_genes"], "blaZ,mecA");
+    assert_eq!(s1["status"], "pass", "{s1}");
+    c.close();
+
+    // run record and replay
+    let run_dir = work.join("irit-runs/test-run");
+    let log: Value = serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
+    let calls = log["calls"].as_array().unwrap();
+    let ok: Vec<&Value> = calls.iter().filter(|c| c["status"] == "ok").collect();
+    assert_eq!(ok.iter().map(|c| c["mcp_tool"].as_str().unwrap()).collect::<Vec<_>>(), ["shovill", "mlst", "amrfinder", "isotable"]);
+    let amr = ok[2];
+    assert_eq!(amr["version"], "4.2.7");
+    assert!(amr["inputs"].as_array().unwrap().iter().any(|i| i["path"].as_str().unwrap().ends_with("2026-10-29.1/version.txt")));
+    let shovill_log = outputs(ok[0]).into_iter().find(|(p, _)| p.ends_with("shovill.log")).unwrap();
+    assert!(ok[0]["outputs"].as_array().unwrap().iter().any(|o| o["path"] == shovill_log.0.to_str().unwrap() && o["volatile"] == true));
+    let script = std::fs::read_to_string(run_dir.join("replay.sh")).unwrap();
+    assert!(script.contains("want_ext_version amrfinder 4.2.7"), "{script}");
+    assert!(script.contains("want_ext_version shovill 'shovill 1.4.2'"), "{script}");
+
+    let all: Vec<(PathBuf, String)> = ok.iter().flat_map(|c| outputs(c)).collect();
+    for d in ["asm", "typing"] {
+        std::fs::remove_dir_all(work.join(d)).unwrap();
+        std::fs::create_dir(work.join(d)).unwrap();
+    }
+    let path = format!("{}:{}", bin.display(), s.path);
+    let out = Command::new("sh").arg(run_dir.join("replay.sh")).env("PATH", &path).current_dir(work).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "replay failed: {err}");
+    assert!(err.contains("outputs match"), "{err}");
+    for (p, h) in &all {
+        if p.ends_with("shovill.log") {
+            assert!(p.is_file());
+            continue;
+        }
+        assert_eq!(&sha256(p), h, "{} differs after replay", p.display());
+    }
 }

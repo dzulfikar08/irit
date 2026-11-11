@@ -57,9 +57,32 @@ pub struct Entry {
     pub base_url: Option<String>,
     /// Several archives that unpack into one database folder, in order. Each is downloaded and
     /// checked on its own (resumable per part); the folder takes its final name only after all of
-    /// them succeed.
+    /// them succeed. With `format: file`, each part is one plain file kept under its own name in
+    /// the database folder (a database published as loose files, like AMRFinderPlus's).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<Part>,
+    /// A step run on the downloaded files before the folder is sealed (see [`Prepare`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepare: Option<Prepare>,
+}
+
+/// Work done on the fetched files before the folder takes its final name, so the folder's file
+/// list and SHA-256 sums cover the result. Only these known steps: a catalog can't name a command.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+pub enum Prepare {
+    /// `amrfinder_index <folder>`, as `amrfinder_update` runs it after downloading (AMRFinderPlus
+    /// 4.2.7 amrfinder_update.cpp): `hmmpress` on AMR.LIB, `makeblastdb` on AMRProt.fa, AMR_CDS.fa
+    /// and the AMR_DNA-*.fa files. Needs AMRFinderPlus (with BLAST+ and HMMER) on PATH at fetch time.
+    #[serde(rename = "amrfinder_index")]
+    AmrfinderIndex,
+}
+
+impl Prepare {
+    pub fn program(self) -> &'static str {
+        match self {
+            Prepare::AmrfinderIndex => "amrfinder_index",
+        }
+    }
 }
 
 /// One archive of a multi-part entry.
@@ -93,6 +116,8 @@ impl Entry {
     /// Bytes the database takes once in the store.
     pub fn on_disk(&self) -> u64 {
         match self.format {
+            // Several plain files, plus whatever `prepare` adds: measured, as `extracted`.
+            Format::File if self.is_multi_part() => self.extracted.max(self.size),
             Format::File => self.size,
             _ if !self.keep.is_empty() => self.kept_size.unwrap_or(self.extracted),
             _ => self.extracted,
@@ -142,9 +167,6 @@ fn is_hex(s: &str, len: usize) -> bool {
 
 /// Resolve each part's URL, check its checksums, and fill in the entry's size and combined MD5.
 fn check_parts(e: &mut Entry) -> Result<()> {
-    if e.format == Format::File {
-        bail!("catalog entry {}: `parts` needs an archive format, not `file`", e.id);
-    }
     if !e.urls.is_empty() {
         bail!("catalog entry {}: give either `urls` or `parts`, not both", e.id);
     }
@@ -422,6 +444,22 @@ mod tests {
             "https://github.com/dzulfikar08/irit-data/releases/download/gtdbtk-r232-ani-screen-v1/gtdbtk-r232-ani-screen-"
         ) && s.sha256.is_some()));
         assert!(e.env.is_none());
+    }
+
+    #[test]
+    fn amrfinderplus_entry_is_loose_files_indexed_after_download() {
+        let c = load(None).unwrap();
+        let e = find(&c, "amrfinderplus-db-4.2-2026-10-29.1").unwrap();
+        assert_eq!((e.format, e.parts.len(), e.size), (Format::File, 38, 126_332_542));
+        assert_eq!(e.prepare, Some(Prepare::AmrfinderIndex));
+        assert!(e.on_disk() > e.size, "the indexes are counted");
+        let names: Vec<String> = e.sources().into_iter().map(|s| s.name).collect();
+        for want in ["AMR.LIB", "AMRProt.fa", "version.txt", "database_format_version.txt", "taxgroup.tsv", "AMR_DNA-Staphylococcus_aureus.fa"] {
+            assert!(names.iter().any(|n| n == want), "{want}");
+        }
+        assert!(e.sources().iter().all(|s| s.sha256.is_some()
+            && s.urls[0].starts_with("https://ftp.ncbi.nlm.nih.gov/pathogen/Antimicrobial_resistance/AMRFinderPlus/database/4.2/2026-10-29.1/")));
+        assert_eq!(e.env.as_deref(), Some("AMRFINDER_DB"));
     }
 
     #[test]

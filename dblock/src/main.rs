@@ -515,6 +515,7 @@ mod remove_tests {
             linked_files: 0,
             linked_bytes: 0,
             parts: Vec::new(),
+            prepared: None,
         }
     }
 

@@ -194,6 +194,108 @@ pub fn gtdbtk_summary(path: &Path) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
+/// Contig count, total length, N50, longest contig and GC % of an assembly FASTA (Shovill's
+/// contigs.fa), computed here: Shovill prints its own stats only to its log.
+pub fn assembly_stats(path: &Path) -> Result<Value, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut lens: Vec<u64> = Vec::new();
+    let (mut gc, mut acgt) = (0u64, 0u64);
+    for line in text.lines() {
+        if line.starts_with('>') {
+            lens.push(0);
+            continue;
+        }
+        let Some(last) = lens.last_mut() else { return Err(format!("{}: not FASTA", path.display())) };
+        let line = line.trim_end();
+        *last += line.len() as u64;
+        for b in line.bytes() {
+            match b.to_ascii_uppercase() {
+                b'G' | b'C' => {
+                    gc += 1;
+                    acgt += 1;
+                }
+                b'A' | b'T' => acgt += 1,
+                _ => {}
+            }
+        }
+    }
+    let total: u64 = lens.iter().sum();
+    let mut sorted = lens.clone();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    let mut acc = 0;
+    let n50 = sorted.iter().find(|&&l| {
+        acc += l;
+        acc * 2 >= total
+    });
+    Ok(json!({
+        "contigs": lens.len(),
+        "total_length": total,
+        "n50": n50.copied().unwrap_or(0),
+        "longest": sorted.first().copied().unwrap_or(0),
+        "gc_percent": if acgt > 0 { (gc as f64 * 10000.0 / acgt as f64).round() / 100.0 } else { 0.0 },
+    }))
+}
+
+/// mlst's table: one object per row. With a header (`--full`), keyed by its lower-cased column
+/// names; without, mlst 2.35.0's layout FILE, SCHEME, ST, then one `gene(allele)` per column.
+/// `sample` is what isotable will join the row to.
+pub fn mlst_summary(path: &Path) -> Result<Vec<Value>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // isotable reads the same file; a table it can't read is an error here too.
+    isotable::parse::mlst(path).map_err(|e| format!("{}: {e:#}", path.display()))?;
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty()).peekable();
+    let header: Option<Vec<String>> =
+        lines.next_if(|l| l.starts_with("FILE\t")).map(|h| h.split('\t').map(|c| c.to_ascii_lowercase()).collect());
+    let rows: Vec<Value> = lines
+        .map(|l| l.split('\t').collect::<Vec<&str>>())
+        .filter(|c| c.len() >= 3)
+        .map(|c| {
+            let mut o = match &header {
+                Some(h) => Value::Object(h.iter().cloned().zip(c.iter().map(|x| json!(x))).collect()),
+                None => json!({"file": c[0], "scheme": c[1], "st": c[2], "alleles": c[3..].join(" ")}),
+            };
+            // isotable's join name: the FILE column's file name without extensions.
+            let file = Path::new(c[0]).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            o["sample"] = json!(isotable::parse::base_name(&file));
+            o
+        })
+        .collect();
+    Ok(rows)
+}
+
+/// AMRFinderPlus's report: its rows (the columns that say what was found and how well), counts per
+/// element type, and the AMR gene list isotable reads (isotable's parser; 4.x column names).
+pub fn amrfinder_summary(path: &Path) -> Result<Value, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let recs = isotable::parse::amrfinder(path, &name).map_err(|e| format!("{}: {e:#}", path.display()))?;
+    let isotable = isotable_records(recs, "sample").into_iter().next().unwrap_or(Value::Null);
+    let (header, rows) = parse_table(&text);
+    if !header.iter().any(|h| h == "Element symbol" || h == "Gene symbol") {
+        return Err(format!("{}: no `Element symbol` column; not an AMRFinderPlus 4.x report", path.display()));
+    }
+    let keep = [
+        "Name", "Contig id", "Protein id", "Element symbol", "Element name", "Type", "Subtype", "Class", "Subclass", "Method",
+        "% Coverage of reference", "% Identity to reference",
+    ];
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    let hits: Vec<Value> = rows
+        .iter()
+        .filter(|r| r.len() == header.len())
+        .map(|r| {
+            let mut o = Map::new();
+            for (h, cell) in header.iter().zip(r) {
+                if keep.contains(&h.as_str()) && cell != "NA" {
+                    o.insert(h.to_lowercase().replace("% ", "").replace(' ', "_"), json!(cell));
+                }
+            }
+            *counts.entry(o.get("type").and_then(Value::as_str).unwrap_or("?").to_string()).or_default() += 1;
+            Value::Object(o)
+        })
+        .collect();
+    Ok(json!({"sample": isotable["sample"], "amr_genes": isotable["amr_genes"], "counts_by_type": counts, "hits": hits}))
+}
+
 /// Bakta's `<prefix>.txt`: `Key: value` lines under `Sequence(s):`, `Annotation:` and `Bakta:`
 /// (written in bakta/main.py at v1.12.2). Counts become numbers.
 pub fn bakta_summary(text: &str) -> Value {
