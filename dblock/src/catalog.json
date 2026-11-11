@@ -302,6 +302,43 @@
     "notes": "Unofficial mirror of GTDB-Tk R232's placement folders (markers, masks, metadata, mrca_red, pplacer, radii, split, taxonomy), split into 12 zstd archives so they can be fetched without the 60.8 GB package. Unmodified; no skani ANI database and no msa folder. Works with gPlace as the placer in under ~8.5 GiB of RAM (docs/research/gtdb-placement-test.md). Without the ANI screen, classification stops at genus (species stays s__). GTDB-Tk 2.8 classify has no option to skip the ANI screen, so it needs the small skip_ani_screen launcher described on that page. split/ has no REF_HASHES value; its hash is the mirror's FOLDER_HASHES.tsv value, recomputed with the same sha1_dir. Lite: leaves out the full bacterial tree archive (104 MB download, 1.48 GB unpacked), so `classify --full_tree` won't work; the default split-tree run (backbone + class-level trees) and archaea do. pplacer/ then holds only gtdb_r232_ar53.refpkg, so its REF_HASHES value (which covers both trees) can't match and pplacer is not in verify_dirs; the archaeal tree is still covered by its part's MD5 and SHA-256."
   },
   {
+    "id": "gtdbtk-r232-ani-screen",
+    "name": "Screen index for GTDB-Tk R232's ANI species screen, for gtdbprep ani (unofficial, derived from GTDB data)",
+    "version": "R232",
+    "tool": "gtdbprep",
+    "format": "tar.zst",
+    "base_url": "https://github.com/dzulfikar08/irit-data/releases/download/gtdbtk-r232-ani-screen-v1",
+    "parts": [
+      {
+        "file": "gtdbtk-r232-ani-screen-core.tar.zst",
+        "size": 5705190,
+        "md5": "628540efb7d371c3ca2a235226facf9e",
+        "sha256": "c4cb7a6125c489abee6b5e42859bd6e5dc2aa9eb383ed558d041a48a72864f87"
+      },
+      {
+        "file": "gtdbtk-r232-ani-screen-markers.tar.zst",
+        "size": 1748864709,
+        "md5": "32d5d2d83dc122a88310ca0bb24df1ef",
+        "sha256": "739ada66869089d3c0502eac8ab3ecb0d29eb48c6a18ed7a7ca000f4e0799923"
+      },
+      {
+        "file": "gtdbtk-r232-ani-screen-gzindex.tar.zst",
+        "size": 347291901,
+        "md5": "4db963ddded76f9a214f26d164ae904e",
+        "sha256": "dcfe9bf25da8629f770043ed28fd31fed6c3418e9ca2b9fe6d0d525c58685c1d"
+      }
+    ],
+    "size": 2101861800,
+    "extracted": 2329014415,
+    "md5_source": "https://github.com/dzulfikar08/irit-data/releases/tag/gtdbtk-r232-ani-screen-v1 (the release's MD5SUMS and SHA256SUMS; derived files, so GTDB publishes none. gtdbprep ani checks every sketch it fetches against a SHA-256 in the index)",
+    "env": null,
+    "env_points_to": "dir",
+    "compat": null,
+    "licence": "CC BY-SA 4.0. Derived from the Genome Taxonomy Database (GTDB, https://gtdb.ecogenomic.org; Parks et al.) skani database (skani: Shaw & Yu, Nature Methods 2023) in https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz; made by an unofficial mirror, not by or endorsed by GTDB.",
+    "non_commercial": false,
+    "notes": "For gtdbprep ani --index <path>/ani-screen-r232: every R232 species representative's marker count, 32-bit fingerprints of its marker k-mers, where its sketch is in skani's sketches.db (with a SHA-256 prefix), and a seek index into GTDB's own archive (a checkpoint every 4 MiB). It holds no sketches: gtdbprep ani range-reads the few it needs from GTDB's server (a stopgap that downloads about 5.7 times the sketch bytes; keep a --cache). Also needs GTDB-Tk's taxonomy and radii (gtdbtk-r232-placement-lite) and GTDB-Tk 2.8.0 with skani 0.3.1. See docs/research/ani-laptop.md."
+  },
+  {
     "id": "checkm2-db-v3",
     "name": "CheckM2 DIAMOND database (UniRef100/KO), version 3",
     "version": "3",

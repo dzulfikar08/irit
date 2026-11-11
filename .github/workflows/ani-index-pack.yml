@@ -1,0 +1,76 @@
+name: ani-index-pack
+
+# Builds the R232 screen index for `gtdbprep ani` (fingerprints, rows, and the gzip seek index of
+# GTDB's archive at 4 MiB) and packs it with exp/ani/pack.sh. The archives are kept as a
+# short-lived workflow artifact for a maintainer to check and publish by hand; this workflow
+# publishes nothing itself.
+on:
+  push:
+    branches: [ani-laptop]
+    paths: [".github/workflows/ani-index-pack.yml"]
+
+permissions:
+  contents: read
+
+env:
+  URL: https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz
+  MD5: 25a59e0352b1fd150c589f56559767d4
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build gtdbprep
+        run: |
+          sudo apt-get install -y -q pigz zstd
+          cargo build --release -p gtdbprep
+          echo "G=$GITHUB_WORKSPACE/target/release/gtdbprep" >> "$GITHUB_ENV"
+          sudo mkdir -p /home/runner/gtdb && sudo chown "$USER" /home/runner/gtdb
+          echo "DATA=/home/runner/gtdb" >> "$GITHUB_ENV"
+
+      - name: Stream the archive; keep skani/database; build the seek index
+        run: |
+          set -euo pipefail
+          mkfifo /tmp/gzfifo
+          "$G" ani-index gz-scan --input /tmp/gzfifo --out "$DATA/scan" --spacing 1048576 --url "$URL" > /dev/null &
+          scan=$!
+          curl -fsSL --retry 3 "$URL" | tee /tmp/gzfifo | pigz -dc | tar -x -C "$DATA" --wildcards '*/skani/database/*'
+          wait $scan
+          grep -q "\"md5\": \"$MD5\"" "$DATA/scan/gz.json"
+          echo "archive MD5 matches GTDB's MD5SUM.txt"
+
+      - name: Build and pack the index
+        run: |
+          set -euo pipefail
+          "$G" ani-index build --db "$DATA/release232/skani/database" --out "$DATA/ani-screen-r232" --release r232
+          "$G" ani-index gz-attach --index "$DATA/ani-screen-r232" --scan "$DATA/scan" --every 4
+          rm -rf "$DATA/release232"
+          exp/ani/pack.sh "$DATA/ani-screen-r232" pack
+          # The archives unpack to exactly the files built.
+          mkdir unp && for f in pack/*.tar.zst; do zstd -dc "$f" | tar -x -C unp; done
+          for f in meta.json refs.bin markers.idx gz.idx; do cmp "unp/ani-screen-r232/$f" "$DATA/ani-screen-r232/$f"; done
+          cp "$DATA/scan/gz.json" pack/
+          cat pack/SHA256SUMS pack/dblock-entry.json; ls -la pack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ani-screen-r232-pack
+          path: pack/
+          retention-days: 2
+          compression-level: 0

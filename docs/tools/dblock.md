@@ -234,6 +234,7 @@ Every URL, size and checksum in the built-in catalog was checked against the pub
 | `gtdbtk-r232-client` | 26 MB | 80 MB | Client data for [gtdbprep](gtdbprep.md): `markers/`, `masks/`, `metadata/`, `taxonomy/` from the mockup archive. **Can't classify.** MD5 observed, not published; see below. |
 | `gtdbtk-r232-placement` | 280 MB (12 parts) | 7.4 GB | **Unofficial mirror** of GTDB-Tk's placement folders; no ANI database or MSAs, so classification stops at genus. See below. |
 | `gtdbtk-r232-placement-lite` | 175 MB (11 parts) | 5.9 GB | Same without the full bacterial tree (no `--full_tree`). |
+| `gtdbtk-r232-ani-screen` | 2.1 GB (3 parts) | 2.3 GB | Screen index for `gtdbprep ani`, GTDB-Tk's ANI species screen without the 85 GB skani database. **Derived** from GTDB data by an unofficial mirror. See below. |
 | `gtdbtk-r232-mockup` | 26 MB | ~120 MB | Test database. Currently refused: the served file doesn't match GTDB's checksum ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)). For gtdbprep use `gtdbtk-r232-client` (below). |
 | `checkm2-db-v3` | 1.7 GB | ~3.5 GB | CheckM2 ≥ 1.1.0 only. |
 | `silva-144-qiime2-full` | 274 MB | same | QIIME 2 ≥ 2026.4. |
@@ -322,6 +323,37 @@ placement step under an 8.5 GiB cap. Compat: GTDB-Tk ≥ 2.7.0.
 
 Not in the catalog yet: the AMRFinderPlus database (a folder of files without checksums; use
 `amrfinder_update`).
+
+### `gtdbtk-r232-ani-screen`: the screen index for `gtdbprep ani`
+
+[`gtdbprep ani`](gtdbprep.md#the-ani-species-screen-without-the-85-gb-database-ani) runs
+GTDB-Tk's ANI species screen without the 85 GB skani database
+([write-up](../research/ani-laptop.md)). It needs this index: for each of R232's 199,923 species
+representatives, its marker count, fingerprints of its marker k-mers, where its sketch is in
+skani's `sketches.db`, and a SHA-256 prefix of that sketch; plus a seek index into GTDB's own
+archive, so `gtdbprep ani` can range-read single sketches from GTDB's server. It holds no
+sketches and no sequence.
+
+It comes from [`dzulfikar08/irit-data`, release `gtdbtk-r232-ani-screen-v1`](https://github.com/dzulfikar08/irit-data/releases/tag/gtdbtk-r232-ani-screen-v1):
+three `.tar.zst` archives that unpack into one `ani-screen-r232/` folder. Unlike the placement
+mirror, these files are **derived** from GTDB's data (computed from `release232/skani/database/`
+in [`gtdbtk_r232_data.tar.gz`](https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz)),
+so they are CC BY-SA 4.0 like the source. Credit GTDB (Parks et al.) and skani (Shaw & Yu) for
+results. They are not made or endorsed by GTDB.
+
+```sh
+dblock add gtdbtk-r232-ani-screen gtdbtk-r232-placement-lite
+dblock fetch
+dblock env   # <store>/gtdbtk-r232-ani-screen/ani-screen-r232 is gtdbprep ani's --index
+```
+
+Trust: the parts' MD5 and SHA-256 come from the release, since GTDB publishes none for derived
+files. The index can be rebuilt from GTDB's archive with `gtdbprep ani-index build`, `gz-scan` and
+`gz-attach --every 4`; two independent builds on GitHub runners gave the same `meta.json` and the
+same file sizes. At run time, `gtdbprep ani` checks every sketch
+it fetches from GTDB against the SHA-256 prefix in the index. The index records the MD5s GTDB
+gives for `sketches.db`, `markers.bin` and `index.db` in the database's `metadata.tsv`, and the
+archive's MD5.
 
 ## Tested
 
