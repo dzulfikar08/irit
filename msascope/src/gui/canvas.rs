@@ -58,6 +58,8 @@ impl MsaScope {
         let layout = self.layout.clone();
         let sel = self.sel.clone();
         let cursor = self.cursor;
+        // Motif hits, and the current one (index into the hits).
+        let motif = self.motif.as_ref().map(|m| (m.hits.clone(), m.idx.and_then(|i| m.nav.get(i)).copied()));
         let tree_ix = self.tree.clone();
         let tree = self.tree.clone().filter(|_| self.show_tree());
         let tree_hits = self.tree_hits.clone();
@@ -239,6 +241,58 @@ impl MsaScope {
                         for r in vis_r.clone().filter(|&r| m.clade_of(r).is_some()) {
                             let b = Bounds::new(point(area.origin.x, cell_y(r)), size(area.size.width, ch_px));
                             window.paint_quad(quad(b, Corners::default(), Hsla::transparent_black(), Edges::all(px(1.)), t.border_strong, BorderStyle::Dashed));
+                        }
+                    }
+                    // Motif hits: a wash over the cells from each match's first to last residue (the
+                    // shown columns only), the current match outlined.
+                    if let Some((hits, current)) = &motif
+                        && !hits.hits.is_empty()
+                        && !vis_r.is_empty()
+                        && !vis_c.is_empty()
+                    {
+                        let wash = Hsla { a: if t.dark { 0.45 } else { 0.38 }, ..t.warning };
+                        let span = |h: &msascope::motif::Hit| -> Option<(usize, usize)> {
+                            let a = map.map_or(h.start as usize, |m| m.view_of(h.start as usize).unwrap_or_else(|e| e));
+                            let b = map.map_or(h.end as usize + 1, |m| m.view_of(h.end as usize).map_or_else(|e| e, |v| v + 1));
+                            let (a, b) = (a.max(vis_c.start), b.min(vis_c.end));
+                            (a < b).then_some((a, b))
+                        };
+                        let mut budget = MOTIF_RECTS_MAX;
+                        let draw = |r: usize, i: usize, window: &mut Window| {
+                            let Some((a, b)) = span(&hits.hits[i]) else { return };
+                            let bx = Bounds::new(point(cell_x(a), cell_y(r)), size((cell_x(b) - cell_x(a)).max(px(1.)), ch_px.max(px(1.))));
+                            window.paint_quad(fill(bx, wash));
+                            if Some(i as u32) == *current {
+                                window.paint_quad(quad(bx, Corners::default(), Hsla::transparent_black(), Edges::all(px(2.)), t.accent, BorderStyle::Solid));
+                            }
+                        };
+                        if hits.hits.len() < vis_r.len() {
+                            for (i, h) in hits.hits.iter().enumerate() {
+                                let vr = match rview {
+                                    None => Some(h.row as usize),
+                                    Some(m) => m.shown(h.row as usize).filter(|&v| m.clade_of(v).is_none()),
+                                };
+                                if let Some(vr) = vr.filter(|v| vis_r.contains(v)) {
+                                    draw(vr, i, window);
+                                    budget -= 1;
+                                    if budget == 0 {
+                                        break;
+                                    }
+                                }
+                            }
+                        } else {
+                            'rows: for r in vis_r.clone() {
+                                if rview.is_some_and(|m| m.clade_of(r).is_some()) {
+                                    continue;
+                                }
+                                for i in hits.in_row(first_row(r) as u32) {
+                                    draw(r, i, window);
+                                    budget -= 1;
+                                    if budget == 0 {
+                                        break 'rows;
+                                    }
+                                }
+                            }
                         }
                     }
                     if let Some((r, c)) = cursor.filter(|&(r, c)| vis_r.contains(&r) && vis_c.contains(&c)) {
