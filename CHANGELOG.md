@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### msascope
+- **Loading progress and Cancel**: the loading window shows a progress bar of the bytes read
+  (compressed bytes for gzip), the sequences read so far, both passes of Clustal and Stockholm,
+  and the steps after reading; the status bar repeats it. Cancel or Escape stops the load and
+  frees what it read; the file that was open stays open. Opening another file cancels a load.
+  Clustal and Stockholm files are now opened twice instead of three times.
+- **PNG and SVG export** (Export menu): the view, or the selection (rows × shown columns), with
+  names and ruler optional. SVG has the residue letters, names and ruler as text and is limited
+  to 200,000 cells (larger regions get a message to export a PNG); PNG at 1×, 2× or 4×, cells
+  drawn like the screen's tiles and text with resvg, at most 16,384 px a side and 100 megapixels.
+- **Sorting and filtering rows**: Sort menu by name, identity to the consensus or to a reference
+  row (set from the cursor), gap share or length, reversible; filter bar (Ctrl+L) by name or
+  accession (substring or `/regex/`), minimum identity and maximum gap share, and "Show only this
+  clade" from the tree; "N of M rows shown" and Clear. Filters keep tree order; a sort turns the
+  tree panel off until tree order is chosen again. Copy and export take the rows shown.
+- **Go to `name:position`** (Ctrl+G): a residue in the sequence's own numbering (from its
+  `/start-end`), by name, accession or unique prefix, with messages for ambiguous or missing
+  names and positions outside the sequence; a name alone selects its row.
+- **Motif search** (Find box in Residues mode, Ctrl+Shift+F): plain letters (IUPAC codes for
+  nucleotides), PROSITE patterns (`C-x(2,4)-C`) or `/regex/`, over the ungapped sequences so
+  matches span gaps; run in the background, matches highlighted over the shown columns, Enter
+  or F3 for the next one, a count in the status bar.
+- **Tree menu** (right-click a node): collapse or expand, collapse to a depth, expand all, select
+  the clade's rows, show only the clade, ladderize, reroot on the branch above the node.
+- **Recent files**: the last 10 in the settings file; the empty window lists five.
+- `--stats --motif PATTERN` and `--stats --sort KEY` time a motif search and a sort and filter.
+- Ctrl+G, Ctrl+F and Ctrl+L also work while a text box has the focus.
+
 ## 0.3.0 (2026-11-11)
 
 ### msascope
