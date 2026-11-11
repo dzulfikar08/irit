@@ -475,7 +475,7 @@ impl Builder {
     fn finish(self) -> Result<Alignment> {
         let Some(matrix) = self.matrix else { bail!("no sequences found") };
         let inserts = self.matches.map_or_else(Vec::new, |m| inserts_from(&m, matrix.cols));
-        Ok(Alignment { names: self.names, matrix, alpha: self.alpha, inserts, accessions: Vec::new(), newick: None })
+        Ok(Alignment { names: self.names, matrix, alpha: self.alpha, inserts, accessions: Vec::new(), newick: None, gc: Vec::new(), gr: Vec::new(), warnings: Vec::new() })
     }
 }
 
@@ -555,8 +555,10 @@ enum Line<'a> {
     Seq(&'a [u8], &'a [u8]),
     /// Blank line or Clustal consensus line: the end of a block.
     Break,
-    /// Stockholm `#=GC RF` markup: one block's part of the reference annotation.
-    Rf(&'a [u8]),
+    /// Stockholm `#=GC <tag> <line>`: one block's part of a column annotation (RF among them).
+    Gc(&'a [u8], &'a [u8]),
+    /// Stockholm `#=GR <name> <tag> <line>`: one block's part of a residue annotation.
+    Gr(&'a [u8], &'a [u8], &'a [u8]),
     /// Stockholm `#=GS <name> AC <accession>`.
     Accession(&'a [u8], &'a [u8]),
     /// Stockholm `#=GF NH`: part of a Newick tree.
@@ -587,8 +589,14 @@ fn lines(mut r: impl BufRead, format: Format, mut f: impl FnMut(usize, Line) -> 
             Format::Stockholm if line.starts_with(b"//") => return Ok(()),
             Format::Stockholm if line.starts_with(b"#=GC") => {
                 let mut parts = line.split(|b| b.is_ascii_whitespace()).filter(|p| !p.is_empty());
-                if let (Some(_), Some(b"RF"), Some(rf)) = (parts.next(), parts.next(), parts.next()) {
-                    f(ln, Line::Rf(rf))?;
+                if let (Some(_), Some(tag), Some(seg)) = (parts.next(), parts.next(), parts.next()) {
+                    f(ln, Line::Gc(tag, seg))?;
+                }
+            }
+            Format::Stockholm if line.starts_with(b"#=GR") => {
+                let mut parts = line.split(|b| b.is_ascii_whitespace()).filter(|p| !p.is_empty());
+                if let (Some(_), Some(name), Some(tag), Some(seg)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
+                    f(ln, Line::Gr(name, tag, seg))?;
                 }
             }
             Format::Stockholm if line.starts_with(b"#=GS") => {
@@ -632,10 +640,17 @@ fn interleaved<'a>(first: Reader<'a>, open: &dyn Fn() -> Result<Reader<'a>>, for
     let mut rf: Vec<u8> = Vec::new();
     let mut acc: HashMap<Vec<u8>, Box<str>> = HashMap::new();
     let mut nh: Vec<u8> = Vec::new();
+    let mut notes = crate::annot::Collector::default();
     lines(first, format, |ln, l| {
         match l {
             Line::Tree(t) => nh.extend_from_slice(t),
-            Line::Rf(seg) => rf.extend(seg.iter().filter(|b| !b.is_ascii_whitespace())),
+            Line::Gc(tag, seg) => {
+                if tag == b"RF" {
+                    rf.extend(seg.iter().filter(|b| !b.is_ascii_whitespace()));
+                }
+                notes.gc(tag, seg);
+            }
+            Line::Gr(name, tag, seg) => notes.gr(name, tag, seg),
             Line::Accession(name, a) => {
                 acc.insert(name.to_vec(), lossy(a).into_boxed_str());
             }
@@ -701,7 +716,8 @@ fn interleaved<'a>(first: Reader<'a>, open: &dyn Fn() -> Result<Reader<'a>>, for
     let inserts = if rf.len() == cols { inserts_from_rf(&rf) } else { inserts_from(&marks, cols) };
     let accessions = if acc.is_empty() { Vec::new() } else { names.iter().map(|n| acc.get(n).cloned()).collect() };
     let newick = (!nh.is_empty()).then(|| lossy(&nh));
-    Ok(Alignment { names: names.iter().map(|n| lossy(n)).collect(), matrix: m, alpha, inserts, accessions, newick })
+    let (gc, gr, warnings) = notes.finish(cols, |n| index.get(n).copied());
+    Ok(Alignment { names: names.iter().map(|n| lossy(n)).collect(), matrix: m, alpha, inserts, accessions, newick, gc, gr, warnings })
 }
 #[cfg(test)]
 mod tests {
@@ -962,7 +978,38 @@ mod tests {
         assert_eq!(insert_cols(&a), [0, 3]);
         // an RF line that doesn't cover the alignment is ignored
         let text = b"# STOCKHOLM 1.0\nx ACGt\ny AC.t\n#=GC RF xx\n//\n";
-        assert_eq!(insert_cols(&parse_bytes(text).unwrap()), [3]);
+        let a = parse_bytes(text).unwrap();
+        assert_eq!(insert_cols(&a), [3]);
+        assert!(a.gc.is_empty());
+        assert_eq!(a.warnings, ["#=GC RF has 2 columns, the alignment 4; left out"]);
+    }
+
+    /// `#=GC` and `#=GR` lines: every tag is kept, joined across blocks in file order; lines that
+    /// don't cover the alignment (or name no sequence) are left out with a warning.
+    #[test]
+    fn stockholm_annotation() {
+        let text = b"# STOCKHOLM 1.0\n\
+            x/1-5 ACD\n#=GR x/1-5 SS HHE\n#=GR x/1-5 PP 9*8\ny ACE\n\
+            #=GC SS_cons HHE\n#=GC seq_cons ACd\n#=GC PP_cons 999\n\n\
+            x/1-5 EF\n#=GR x/1-5 SS E.\n#=GR x/1-5 PP 7.\ny E-\n#=GR y PP 12\n\
+            #=GC SS_cons EC\n#=GC seq_cons EF\n#=GC PP_cons 9\n#=GR nobody SS HH\n//\n";
+        let a = parse_bytes(text).unwrap();
+        let tags: Vec<&str> = a.gc.iter().map(|t| &*t.tag).collect();
+        assert_eq!(tags, ["SS_cons", "seq_cons"]);
+        assert_eq!(&*a.gc[0].data, b"HHEEC");
+        assert_eq!(&*a.gc[1].data, b"ACdEF");
+        // y's PP line covers 2 of 5 columns: left out
+        assert_eq!(a.gr.len(), 2);
+        let x: Vec<(&str, &[u8])> = crate::annot::row_annots(&a.gr, 0).iter().map(|g| (&*g.tag, &*g.data)).collect();
+        assert_eq!(x, [("SS", &b"HHEE."[..]), ("PP", &b"9*87."[..])]);
+        assert!(crate::annot::row_annots(&a.gr, 1).is_empty());
+        assert!(a.warnings.iter().any(|w| w == "#=GR y PP has 2 columns, the alignment 5; left out"));
+        assert_eq!(a.warnings.len(), 3, "{:?}", a.warnings);
+        assert!(a.warnings[0].starts_with("#=GC PP_cons has 4 columns"));
+        assert!(a.warnings.iter().any(|w| w.starts_with("#=GR nobody SS: no sequence")));
+        // FASTA has none
+        let f = parse_bytes(b">a\nAC\n").unwrap();
+        assert!(f.gc.is_empty() && f.gr.is_empty() && f.warnings.is_empty());
     }
 
     /// A2M-style FASTA, in one batch and in tiny batches.

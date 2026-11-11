@@ -79,7 +79,7 @@ impl MsaScope {
                         let _ = window.drop_image(old);
                     }
                     let colors = Colors::new(d.aln.alphabet(), mode, theme, false);
-                    let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map, rows: rview, colors: &colors };
+                    let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map, rows: rview, colors: &colors, base: None };
                     let (cw, ch) = (w as f64 / cols as f64, h as f64 / rows as f64);
                     let mut buf = vec![0u8; w * h * 4];
                     buf.par_chunks_mut(w * 4 * STRIP).enumerate().for_each(|(i, strip)| {
