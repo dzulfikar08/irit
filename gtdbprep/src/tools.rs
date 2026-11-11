@@ -20,7 +20,7 @@ pub struct Runner {
 }
 
 impl Runner {
-    fn path_var(&self) -> Option<OsString> {
+    pub fn path_var(&self) -> Option<OsString> {
         let prefix = self.env_prefix.as_ref()?;
         let mut paths = vec![prefix.join("bin")];
         if let Some(p) = std::env::var_os("PATH") {
@@ -156,7 +156,7 @@ impl ToolVersion {
 pub const GTDBTK_SUPPORTED: [&str; 1] = ["2.8.0"];
 
 /// Search a `PATH`-style list for a file called `name`.
-fn which(name: &str, path_var: Option<OsString>) -> Option<PathBuf> {
+pub fn which(name: &str, path_var: Option<OsString>) -> Option<PathBuf> {
     let path_var = path_var.or_else(|| std::env::var_os("PATH"))?;
     std::env::split_paths(&path_var)
         .map(|d| d.join(name))

@@ -1,0 +1,232 @@
+name: ani-laptop
+
+# The ANI species screen on a laptop: does `gtdbprep ani` (local marker screen + range reads of a
+# few reference sketches) give the same ANI-screen output as GTDB-Tk against the full 85 GB skani
+# database? Streams the GTDB-Tk R232 archive once, keeps the skani database, builds the screen
+# index and a seek index for the archive, then compares on real genomes. Sources for the
+# sketches: the local sketches.db, and GTDB's own server with HTTP Range requests.
+# Nothing is published: the indexes stay on the runner; only small reports are uploaded.
+on:
+  push:
+    branches: [ani-laptop]
+    paths: [".github/workflows/ani-laptop.yml", "exp/ani/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  URL: https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz
+  MD5: 25a59e0352b1fd150c589f56559767d4
+  MOCKUP: https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/mockup_db
+
+jobs:
+  ani:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Data disk and swap
+        run: |
+          root_free=$(df --output=avail -B1 / | tail -1)
+          mnt_free=$(df --output=avail -B1 /mnt 2>/dev/null | tail -1 || echo 0)
+          if [[ ${mnt_free:-0} -gt $root_free ]]; then base=/mnt; else base=$HOME; fi
+          sudo mkdir -p "$base/gtdb" && sudo chown "$USER" "$base/gtdb"
+          echo "DATA=$base/gtdb" >> "$GITHUB_ENV"
+          # skani loads every reference's markers (markers.bin, 9.9 GB) for the full search.
+          # Swap on the other disk when there is one (the data disk fills up otherwise).
+          if [[ $base == /mnt ]]; then sw=$HOME/swapfile2; else sw=/mnt/swapfile2; fi
+          [[ -d $(dirname "$sw") ]] || sw=/swapfile2
+          sudo fallocate -l 12G "$sw" && sudo chmod 600 "$sw" && sudo mkswap "$sw" && sudo swapon "$sw"
+          echo "swap at $sw"
+          free -g; df -h / /mnt || true
+          mkdir -p "$GITHUB_WORKSPACE/results"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: gtdb
+          create-args: >-
+            -c conda-forge -c bioconda
+            python=3.12 gtdbtk=2.8.0 skani=0.3.1 pigz unzip zstd
+          cache-environment: false
+
+      - name: Tools
+        run: |
+          set -euo pipefail
+          micromamba create -y -q -n skani040 -c conda-forge -c bioconda skani=0.4.0
+          echo "SKANI031=$MAMBA_ROOT_PREFIX/envs/gtdb/bin/skani" >> "$GITHUB_ENV"
+          echo "SKANI040=$MAMBA_ROOT_PREFIX/envs/skani040/bin/skani" >> "$GITHUB_ENV"
+          echo "GTDB_ENV=$MAMBA_ROOT_PREFIX/envs/gtdb" >> "$GITHUB_ENV"
+          "$MAMBA_ROOT_PREFIX/envs/gtdb/bin/skani" --version
+          "$MAMBA_ROOT_PREFIX/envs/skani040/bin/skani" --version
+          gtdbtk --version | head -2
+          cargo build --release -p gtdbprep
+          echo "G=$GITHUB_WORKSPACE/target/release/gtdbprep" >> "$GITHUB_ENV"
+
+      - name: Genomes
+        run: |
+          set -euo pipefail
+          mkdir -p genomes dl
+          curl -fsSL "$MOCKUP/test_genome_G021783475.fna.gz" | gunzip > genomes/G021783475.fna
+          while read -r acc label; do
+            curl -fsSL --retry 3 -o "dl/$acc.zip" "https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/$acc/download?include_annotation_type=GENOME_FASTA"
+            unzip -p "dl/$acc.zip" "ncbi_dataset/data/$acc/*.fna" > "genomes/$label.fna"
+          done < exp/ani/genomes.tsv
+          # A 400 kb piece of E. coli: a small, partial genome.
+          awk 'NR==1{print ">piece"; next} /^>/ || NR>5001 {exit} {print}' genomes/Ecoli_K12_MG1655.fna > genomes/Ecoli_400kb_piece.fna
+          for f in genomes/*.fna; do echo "$f $(grep -c '>' "$f") contigs $(grep -v '>' "$f" | tr -d '\n' | wc -c) bp"; done | tee results/genomes.txt
+          # 51 genomes (copies) so that skani takes its >50-query code path.
+          mkdir -p genomes51
+          i=0; while [[ $i -lt 51 ]]; do for f in genomes/*.fna; do [[ $i -lt 51 ]] || break; cp "$f" "genomes51/c$(printf %02d $i)_$(basename "$f")"; i=$((i+1)); done; done
+
+      - name: Stream the archive once; keep skani/, radii/, taxonomy/, metadata/; build a seek index
+        run: |
+          set -euo pipefail
+          mkfifo /tmp/gzfifo
+          /usr/bin/time -v -o results/time-gzscan.txt "$G" ani-index gz-scan --input /tmp/gzfifo --out "$DATA/scan" \
+            --spacing 1048576 --url "$URL" > results/gz-scan.json 2> results/gz-scan.log &
+          scan=$!
+          start=$(date +%s)
+          curl -fsSL --retry 3 "$URL" | tee /tmp/gzfifo | pigz -dc | tar -x -C "$DATA" \
+            --wildcards '*/skani/*' '*/radii/*' '*/taxonomy/*' '*/metadata/*'
+          wait $scan
+          echo "stream_s=$(( $(date +%s) - start ))" | tee results/stream.txt
+          grep -q "\"md5\": \"$MD5\"" "$DATA/scan/gz.json" && echo "archive MD5 matches GTDB's"
+          top=$(ls -d "$DATA"/release*/ | head -1); echo "REL=$top" >> "$GITHUB_ENV"
+          ls -la "$top/skani/database"; cat "$top/skani/database/metadata.tsv" | tee results/skani-metadata.tsv
+          ls -la "$DATA/scan"; df -h "$DATA"
+
+      - name: Build the screen index
+        run: |
+          set -euo pipefail
+          /usr/bin/time -v -o results/time-build.txt "$G" ani-index build --db "$REL/skani/database" --out "$DATA/idx" --release r232 | tee results/build.txt
+          for every in 1 4 16; do
+            d="$DATA/idx$every"; mkdir -p "$d"
+            ln "$DATA/idx/markers.idx" "$DATA/idx/refs.bin" "$d/"; cp "$DATA/idx/meta.json" "$d/"
+            "$G" ani-index gz-attach --index "$d" --scan "$DATA/scan" --every $every
+          done
+          rm "$DATA/scan/gz-full.idx"
+          cp "$DATA/idx4/meta.json" results/meta.json
+          ls -la "$DATA"/idx*/ | tee results/index-files.txt
+          for f in "$DATA/idx/markers.idx" "$DATA/idx/refs.bin" "$DATA/idx4/gz.idx" "$DATA/idx16/gz.idx"; do
+            echo "$f $(stat -c %s "$f") zstd-19: $(zstd -19 -T4 -c "$f" | wc -c)"
+          done | tee results/compression.txt
+          df -h "$DATA" | tee -a results/df.txt
+
+      - name: Reference - GTDB-Tk's ANI screen on the full database (skani 0.3.1 and 0.4.0)
+        run: |
+          set -uo pipefail
+          for v in 031 040; do
+            s=SKANI$v
+            /usr/bin/time -v -o results/time-full-$v.txt "$G" ani --genomes genomes --index "$DATA/idx" --work "ref$v" \
+              --skani "${!s}" --allow-skani-version --data "$REL" --env "$GTDB_ENV" --cpus 4 --full-db "$REL/skani/database" \
+              > results/full-$v.txt 2>&1 || echo "full $v failed: $?"
+            tail -5 results/full-$v.txt
+            cp -r "ref$v/logs" "results/logs-ref$v" || true
+          done
+          mkdir -p results/ref031-out && cp -r ref031/out/classify results/ref031-out/ || true
+          df -h "$DATA" | tee -a results/df.txt
+
+      - name: Client - local sketches.db as the source
+        run: |
+          set -euo pipefail
+          /usr/bin/time -v -o results/time-local.txt "$G" ani --genomes genomes --index "$DATA/idx" --source "$REL/skani/database/sketches.db" \
+            --work local --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 | tee results/local.txt
+          du -sh local/* | tee results/du-local.txt
+          exp/ani/compare.sh ref031/out local/out | tee results/compare-local.txt || true
+          rm -rf local/db local/cache local/query_sketch
+          df -h "$DATA" | tee -a results/df.txt
+
+      - name: Upload results so far
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ani-laptop-results-part1
+          path: results/
+
+      - name: Client - GTDB's server with Range requests (seek index every 4 MiB)
+        run: |
+          set -euo pipefail
+          for every in 4; do
+            /usr/bin/time -v -o results/time-gtdb-$every.txt "$G" ani --genomes genomes --index "$DATA/idx$every" --source gtdb \
+              --work "gtdb$every" --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 | tee results/gtdb-$every.txt
+            exp/ani/compare.sh ref031/out "gtdb$every/out" | tee results/compare-gtdb-$every.txt || true
+            if [[ $every == 4 ]]; then
+              # Second run with a warm cache: nothing to fetch.
+              "$G" ani --genomes genomes --index "$DATA/idx4" --source gtdb --work gtdb4 \
+                --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 | tee results/gtdb-4-warm.txt
+            fi
+            du -sh "gtdb$every"/* | tee -a results/du-gtdb.txt
+            rm -rf "gtdb$every/db" "gtdb$every/cache" "gtdb$every/query_sketch"
+            df -h "$DATA" | tee -a results/df.txt
+          done
+
+      - name: Compare
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          st=0
+          for t in local gtdb4; do
+            echo "== $t vs GTDB-Tk + skani 0.3.1 (full database)" | tee -a results/compare.txt
+            exp/ani/compare.sh ref031/out "$t/out" > /tmp/cmp.txt; rc=$?
+            cat /tmp/cmp.txt | tee -a results/compare.txt; echo "compare.sh exit $rc"
+            [[ $rc == 0 ]] || st=1
+          done
+          echo "== GTDB-Tk + skani 0.4.0 vs skani 0.3.1, both full database" | tee -a results/compare.txt
+          exp/ani/compare.sh ref031/out ref040/out | tee -a results/compare.txt || true
+          for f in ref031/out/classify/ani_screen/*.tsv; do echo "--- $f"; cat "$f"; done > results/ani_summary_ref.txt
+          zcat ref031/out/classify/ani_screen/gtdbtk.ani_screen_unassigned_hits.tsv.gz > results/unassigned_ref.txt || true
+          echo "status $st"
+          exit $st
+
+      - name: Upload results so far (2)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ani-laptop-results-part2
+          path: |
+            results/
+            */logs/
+
+      - name: Over 50 genomes (skani's inverted-index path)
+        continue-on-error: true
+        timeout-minutes: 90
+        run: |
+          set -uo pipefail
+          /usr/bin/time -v -o results/time-c51.txt "$G" ani --genomes genomes51 --index "$DATA/idx" --source "$REL/skani/database/sketches.db" \
+            --work c51 --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 > results/c51.txt 2>&1
+          rm -rf c51/db c51/cache
+          # GTDB-Tk on the full database with >50 genomes: skani builds an inverted index of all
+          # 644M marker k-mers. Run it in its own memory-capped cgroup so it can't take the runner down.
+          sudo -E systemd-run --scope --quiet --uid="$(id -u)" --gid="$(id -g)" -p MemoryMax=12G -p MemorySwapMax=6G -- \
+            /usr/bin/time -v -o results/time-full51.txt "$G" ani --genomes genomes51 --index "$DATA/idx" --work ref51 \
+            --skani "$SKANI031" --data "$REL" --env "$GTDB_ENV" --cpus 4 --full-db "$REL/skani/database" > results/full51.txt 2>&1 \
+            && echo "full51 ok" || echo "full51 failed: $?"
+          exp/ani/compare.sh ref51/out c51/out | tee results/compare51.txt
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ani-laptop-results
+          path: |
+            results/
+            */logs/
+            ${{ env.DATA }}/scan/gz.json

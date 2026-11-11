@@ -48,8 +48,15 @@ What's done, what's next, and what's further out. Items move up as evidence come
       `dblock` entries `gtdbtk-r232-placement` and `-lite`. Waiting on GTDB for official per-folder
       downloads ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)). Possible: store
       the ten identical `fasttree.log` files once (7.4 GB unpacked to 2.7 GB).
-- [ ] **The ANI species check on a laptop**: its database is 85 GB; fetch only the reference sketches
-      a genome needs (range reads), per the [design](research/split-gtdb.md).
+- [ ] **The ANI species check on a laptop**: `gtdbprep ani` screens locally and range-reads only
+      the reference sketches a genome needs, then runs GTDB-Tk's own ANI screen on them; identical
+      output to GTDB-Tk on the full database ([write-up](research/ani-laptop.md)). The screen index
+      is on irit-data (`dblock` entry `gtdbtk-r232-ani-screen`). Sketches come from GTDB's archive
+      through a seek index for now (a stopgap: 2–6× the download); waiting on GTDB for the skani
+      folder unpacked ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)). Next:
+      parallel range requests; an opt-in "species call only" flag that fetches only references
+      that can reach their radius (far fewer downloads, but fewer "other related references" rows
+      than GTDB-Tk's).
 - [ ] **`msascope` redesign** ([mockups](tools/msascope.md#planned-redesign)): themes, sequence names
       and a readable default zoom are built; next the hover card, colour schemes, hiding insert and gappy columns, a tree
       panel, selection and export. Later: multi-threaded gzip, alignments larger than RAM.

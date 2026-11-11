@@ -5,6 +5,7 @@
 //! placement server) reads unchanged. See `docs/tools/gtdbprep.md` and
 //! `docs/research/split-gtdb.md`.
 
+pub mod ani;
 pub mod cli;
 pub mod hash;
 pub mod manifest;

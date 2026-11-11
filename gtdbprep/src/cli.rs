@@ -28,6 +28,102 @@ enum Command {
     Classify(ClassifyArgs),
     /// Round trip: prep, classify from the bundle, run plain `classify_wf`, compare per genome.
     Verify(VerifyArgs),
+    /// GTDB-Tk's ANI species screen without the 85 GB skani database: screen locally, fetch only
+    /// the reference sketches needed, run GTDB-Tk's screen on them.
+    Ani(AniArgs),
+    /// Make the screen index `ani` needs, from a full skani database (maintainers).
+    #[command(subcommand)]
+    AniIndex(AniIndexCmd),
+}
+
+#[derive(Args)]
+struct AniArgs {
+    /// Folder of genome FASTA files (plain or gzipped), as GTDB-Tk's --genome_dir.
+    #[arg(long)]
+    genomes: PathBuf,
+    /// File name extension, as GTDB-Tk's -x.
+    #[arg(short = 'x', long, default_value = "fna")]
+    extension: String,
+    /// Screen index folder (meta.json, refs.bin, markers.idx).
+    #[arg(long)]
+    index: PathBuf,
+    /// Where full sketches come from: `gtdb` (GTDB's own archive, through the index's seek
+    /// index), or a path or URL of an unpacked sketches.db, or a URL with {part} and --part-size.
+    #[arg(long, default_value = "gtdb")]
+    source: String,
+    /// Part size in bytes, for a source with {part}.
+    #[arg(long)]
+    part_size: Option<u64>,
+    /// Another URL or local path for GTDB's archive (for the `gtdb` source).
+    #[arg(long)]
+    gtdb_url: Option<String>,
+    /// Work folder (query sketches, the small database, GTDB-Tk's output, logs).
+    #[arg(long)]
+    work: PathBuf,
+    /// Keep fetched sketches here, to reuse in later runs (default: <work>/cache).
+    #[arg(long)]
+    cache: Option<PathBuf>,
+    /// skani binary; must be the version the database was made with (0.3.1 for R232).
+    #[arg(long, default_value = "skani")]
+    skani: PathBuf,
+    /// Go on with another skani version.
+    #[arg(long)]
+    allow_skani_version: bool,
+    /// Testing: skip the local screen and run GTDB-Tk's screen on this full skani database.
+    #[arg(long)]
+    full_db: Option<PathBuf>,
+    /// GTDB-Tk reference data with taxonomy/, radii/ and metadata/ (the placement mirror has
+    /// them; no skani/ needed).
+    #[arg(long, env = "GTDBTK_DATA_PATH")]
+    data: PathBuf,
+    /// Conda/micromamba environment with GTDB-Tk 2.8.
+    #[arg(long, env = "GTDBPREP_ENV")]
+    env: Option<PathBuf>,
+    #[arg(long, default_value_t = 4)]
+    cpus: usize,
+}
+
+#[derive(Subcommand)]
+enum AniIndexCmd {
+    /// Build meta.json, refs.bin and markers.idx from a skani database folder.
+    Build {
+        /// The skani database folder (markers.bin, index.db, sketches.db).
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// GTDB release label, e.g. r232.
+        #[arg(long)]
+        release: Option<String>,
+    },
+    /// Read a GTDB-Tk .tar.gz once and write a seek index for its sketches.db.
+    GzScan {
+        /// The archive, or - for standard input.
+        #[arg(long)]
+        input: PathBuf,
+        /// Output folder (gz-full.idx, gz.json).
+        #[arg(long)]
+        out: PathBuf,
+        /// Uncompressed bytes between checkpoints.
+        #[arg(long, default_value_t = 1 << 20)]
+        spacing: u64,
+        /// Tar member to index.
+        #[arg(long, default_value = "skani/database/sketches.db")]
+        member: String,
+        /// The archive's URL, recorded for clients.
+        #[arg(long)]
+        url: String,
+    },
+    /// Add a gz-scan result to an index, keeping every N-th checkpoint.
+    GzAttach {
+        #[arg(long)]
+        index: PathBuf,
+        /// The gz-scan output folder.
+        #[arg(long)]
+        scan: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        every: usize,
+    },
 }
 
 #[derive(Args, Clone)]
@@ -131,6 +227,75 @@ fn full_tree(flag: Option<bool>, data: &Path) -> bool {
 
 fn run(cli: Cli) -> Result<bool> {
     match cli.command {
+        Command::Ani(a) => {
+            let opts = crate::ani::AniOptions {
+                genomes: a.genomes,
+                extension: a.extension,
+                index: a.index,
+                source: a.source,
+                part_size: a.part_size,
+                gtdb_url: a.gtdb_url,
+                work: a.work,
+                cache: a.cache,
+                skani: a.skani,
+                allow_skani_version: a.allow_skani_version,
+                full_db: a.full_db,
+            };
+            let t = Tools {
+                env_prefix: a.env,
+                data: a.data,
+                cpus: a.cpus.max(1),
+            };
+            let r = crate::ani::run(&opts, &t)?;
+            print!("{}", r.to_tsv());
+            println!(
+                "{} reference(s) screened in, {} already cached; fetched {} bytes in {} request(s)",
+                r.candidates, r.cached, r.fetched_bytes, r.requests
+            );
+            println!(
+                "times: screen {:.1} s, fetch {:.1} s, GTDB-Tk {:.1} s",
+                r.seconds_screen, r.seconds_fetch, r.seconds_gtdbtk
+            );
+            println!(
+                "GTDB-Tk's ANI screen output: {}",
+                r.out_dir.join("classify/ani_screen").display()
+            );
+            Ok(true)
+        }
+        Command::AniIndex(AniIndexCmd::Build { db, out, release }) => {
+            let s = crate::ani::screen::build(&db, &out, release.as_deref())?;
+            println!(
+                "{} references, {} marker k-mers (largest set {}); markers.bin {} bytes -> \
+                 markers.idx {} bytes + refs.bin {} bytes; largest sketch {} bytes",
+                s.refs,
+                s.markers_total,
+                s.markers_max,
+                s.markers_bin_bytes,
+                s.markers_idx_bytes,
+                s.refs_bin_bytes,
+                s.sketch_bytes_max
+            );
+            Ok(true)
+        }
+        Command::AniIndex(AniIndexCmd::GzScan {
+            input,
+            out,
+            spacing,
+            member,
+            url,
+        }) => {
+            let info = crate::ani::gz_scan(&input, &out, spacing, &member, &url)?;
+            println!("{}", serde_json::to_string_pretty(&info)?);
+            Ok(true)
+        }
+        Command::AniIndex(AniIndexCmd::GzAttach { index, scan, every }) => {
+            let n = crate::ani::gz_attach(&index, &scan, every)?;
+            println!(
+                "{n} checkpoints written to {}",
+                index.join("gz.idx").display()
+            );
+            Ok(true)
+        }
         Command::Prep(a) => {
             let r = pipeline::prep(&prep_options(&a), &tools(&a.tools))?;
             println!(
