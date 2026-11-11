@@ -254,27 +254,73 @@ cargo test --release -- --ignored
 names) on a laptop. It does not need the 85 GB skani database. How it works and what was
 measured: [The ANI species check on a laptop](../research/ani-laptop.md).
 
+**End to end, for GTDB R232:**
+
 ```sh
+# 1. Reference data, once: the screen index (2.1 GB download) and GTDB-Tk's taxonomy and
+#    radii (the placement mirror's lite entry, 175 MB).
+dblock add gtdbtk-r232-ani-screen gtdbtk-r232-placement-lite
+dblock fetch
+dblock env      # prints both folders
+
+# 2. GTDB-Tk 2.8.0 with skani pinned to 0.3.1 (the version the R232 database was made with)
+micromamba create -n gtdbtk -c conda-forge -c bioconda python=3.12 gtdbtk=2.8.0 skani=0.3.1
+
+# 3. The screen
 gtdbprep ani --genomes mags/ -x fna --work ani-work \
-    --index ani-screen-r232/ --source gtdb \
-    --data release232/ --env ~/micromamba/envs/gtdbtk --skani /path/to/skani-0.3.1
+    --index <store>/gtdbtk-r232-ani-screen/ani-screen-r232 \
+    --data <store>/gtdbtk-r232-placement-lite/release232 \
+    --env ~/micromamba/envs/gtdbtk --skani ~/micromamba/envs/gtdbtk/bin/skani \
+    --cache ~/.cache/irit/ani
 ```
+
+The results are GTDB-Tk's own files, in `ani-work/out/classify/ani_screen/`:
+`gtdbtk.bac120.ani_summary.tsv`, `gtdbtk.ar53.ani_summary.tsv` and
+`gtdbtk.ani_screen_unassigned_hits.tsv.gz`.
+
+**What it downloads per genome.** Every reference that passes skani's marker screen has to be
+fetched, because GTDB-Tk's files list all the close references, not only the species call. That
+was 2 to 1,941 references per genome in the tests (B. subtilis 23, E. coli 420, P. aeruginosa
+1,090, a 400 kb piece of E. coli 1,941), about 0.51 MB each. With the default source (GTDB's
+archive, see below) each reference costs about 2.9 MB of download on average, so roughly:
+
+| Genome | References | From GTDB's archive (default) | From an unpacked `sketches.db` |
+|---|---:|---:|---:|
+| B. subtilis 168 | 23 | about 70 MB | 12 MB |
+| E. coli K-12 | 420 | about 1.2 GB | 0.2 GB |
+| P. aeruginosa PAO1 | 1,090 | about 3.2 GB | 0.56 GB |
+| 400 kb fragment | 1,941 | about 5.7 GB | 1.0 GB |
+
+These are estimates from the measured average (9.3 GB for 3,166 references). Genomes from the
+same genus share most references, so use one `--cache` for all your runs: a second run of the
+same genomes fetched nothing and took 18 s.
+
+**The default source is a stopgap.** GTDB publishes the skani database only inside its 60.8 GB
+`.tar.gz`. `gtdbprep ani` reads sketches out of that file on GTDB's server with HTTP range
+requests, through the seek index that comes with the screen index (a checkpoint every 4 MiB).
+Each sketch costs the compressed bytes from the checkpoint before it, so about 5.7 times the
+sketch itself, and the requests load GTDB's server. Please keep a cache, and don't run large
+batches this way. If GTDB publishes `skani/database/` unpacked, this goes away
+([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)). If you have the full package
+on a shared disk, point `--source` at its `sketches.db` instead.
+
+How it works:
 
 1. skani 0.3.1 sketches the genomes, with the database's parameters.
 2. The genomes are screened against the *screen index*: every reference's marker count and
    32-bit fingerprints of its marker k-mers. This keeps every reference `skani search` would
    compare in full (and perhaps a few more).
-3. Only those references' full sketches are fetched, by HTTP range requests, into a cache
+3. Only those references' full sketches are fetched, by HTTP range requests, into the cache
    (`--cache`, default `<work>/cache`). Each is checked against a hash in the index.
 4. They are written as a small skani database, and GTDB-Tk's own `ANIScreener` runs against it.
    So the species rule (closest reference with AF >= 0.5, within its radius) and the output files
-   are GTDB-Tk's: `<work>/out/classify/ani_screen/gtdbtk.{bac120,ar53}.ani_summary.tsv` and
-   `gtdbtk.ani_screen_unassigned_hits.tsv.gz`.
+   are GTDB-Tk's.
 
 Options:
 
 - `--source gtdb` (default) reads the sketches from GTDB's own `gtdbtk_r232_data.tar.gz`, through
-  the seek index in the screen index folder (`gz.idx`). `--gtdb-url` points at another copy.
+  the seek index in the screen index folder (`gz.idx`). `--gtdb-url` points at another copy of
+  the same archive (a URL or a local path).
 - `--source <path or URL of sketches.db>` reads an unpacked `sketches.db`, local or hosted.
 - `--source '<url>/sketches.db.{part}' --part-size N` reads one split into numbered parts.
 - `--data` needs `taxonomy/`, `radii/` and `metadata/` (the `gtdbtk-r232-placement-lite` mirror
@@ -284,7 +330,8 @@ Options:
 - `--full-db <skani/database>` is for testing: it runs the same GTDB-Tk call on a full database.
 
 It prints, per genome, the number of marker k-mers and of references screened in, and the bytes
-fetched.
+fetched. Peak memory was 1.9 GB for 9 genomes (3,166 references); GTDB-Tk's own screen on the full
+database took 14.7 GB.
 
 **Making the screen index** (maintainers; needs the full database once):
 
