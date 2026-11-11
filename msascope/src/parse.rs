@@ -695,16 +695,21 @@ fn interleaved<'a>(first: Reader<'a>, open: &dyn Fn() -> Result<Reader<'a>>, for
         bail!(not_aligned(&lossy(&names[i]), lens[i], cols));
     }
     let alpha = census.alphabet_as(ty);
+    let (gc, mut gr_fill, warnings) = notes.finish(cols, |n| index.get(n).copied(), crate::annot::GR_BUDGET);
     let mut m = Matrix::empty(cols, alpha.bits);
     let mut rows = m.grow(names.len());
     let mut off = vec![0usize; names.len()];
     lines(open()?, format, |_, l| {
-        if let Line::Seq(name, seq) = l {
-            let i = *index.get(name).context("input changed while reading")?;
-            off[i] += encode_at(alpha, seq, rows[i], off[i]).map_err(|b| match ty {
-                Some(t) => forced_char(b, &lossy(name), t),
-                None => bad_char(b, &lossy(name)),
-            })?;
+        match l {
+            Line::Seq(name, seq) => {
+                let i = *index.get(name).context("input changed while reading")?;
+                off[i] += encode_at(alpha, seq, rows[i], off[i]).map_err(|b| match ty {
+                    Some(t) => forced_char(b, &lossy(name), t),
+                    None => bad_char(b, &lossy(name)),
+                })?;
+            }
+            Line::Gr(name, tag, seg) => gr_fill.add(name, tag, seg),
+            _ => {}
         }
         Ok(())
     })?;
@@ -716,7 +721,7 @@ fn interleaved<'a>(first: Reader<'a>, open: &dyn Fn() -> Result<Reader<'a>>, for
     let inserts = if rf.len() == cols { inserts_from_rf(&rf) } else { inserts_from(&marks, cols) };
     let accessions = if acc.is_empty() { Vec::new() } else { names.iter().map(|n| acc.get(n).cloned()).collect() };
     let newick = (!nh.is_empty()).then(|| lossy(&nh));
-    let (gc, gr, warnings) = notes.finish(cols, |n| index.get(n).copied());
+    let gr = gr_fill.finish(cols);
     Ok(Alignment { names: names.iter().map(|n| lossy(n)).collect(), matrix: m, alpha, inserts, accessions, newick, gc, gr, warnings })
 }
 #[cfg(test)]
