@@ -379,7 +379,6 @@ which taxa the genomes belong to.
 - **Linux and macOS only** (random IDs come from `/dev/urandom`; GTDB-Tk doesn't run on Windows).
 - **Tool sources.** Bioconda installs skani 0.4.0 with GTDB-Tk 2.8.0; `--sketch` refuses anything
   but 0.3.1, which has to be built from its tag.
-- **Reference download.** GTDB's mockup archive currently fails its published MD5
-  ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)), so `dblock` refuses
-  `gtdbtk-r232-mockup`; the `gtdbtk-r232-client` entry uses the observed MD5 and checks the
-  extracted folders against `REF_HASHES` instead.
+- **Reference download.** The `gtdbtk-r232-client` entry checks GTDB's mockup archive against its
+  published MD5 (corrected on 2026-11-11, [GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726))
+  and the extracted folders against `REF_HASHES`.

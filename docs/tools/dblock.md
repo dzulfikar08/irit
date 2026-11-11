@@ -235,7 +235,7 @@ Every URL, size and checksum in the built-in catalog was checked against the pub
 | `gtdbtk-r232-placement` | 280 MB (12 parts) | 7.4 GB | **Unofficial mirror** of GTDB-Tk's placement folders; no ANI database or MSAs, so classification stops at genus. See below. |
 | `gtdbtk-r232-placement-lite` | 175 MB (11 parts) | 5.9 GB | Same without the full bacterial tree (no `--full_tree`). |
 | `gtdbtk-r232-ani-screen` | 2.1 GB (3 parts) | 2.3 GB | Screen index for `gtdbprep ani`, GTDB-Tk's ANI species screen without the 85 GB skani database. **Derived** from GTDB data by an unofficial mirror. See below. |
-| `gtdbtk-r232-mockup` | 26 MB | ~120 MB | Test database. Currently refused: the served file doesn't match GTDB's checksum ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)). For gtdbprep use `gtdbtk-r232-client` (below). |
+| `gtdbtk-r232-mockup` | 26 MB | ~120 MB | Test database. For gtdbprep use `gtdbtk-r232-client` (below). |
 | `checkm2-db-v3` | 1.7 GB | ~3.5 GB | CheckM2 ≥ 1.1.0 only. |
 | `silva-144-qiime2-full` | 274 MB | same | QIIME 2 ≥ 2026.4. |
 | `silva-144-qiime2-v4` | 79 MB | same | 515F/806R amplicons only. |
@@ -264,17 +264,15 @@ refuse genome IDs equal to GTDB accessions. The entry exports no `GTDBTK_DATA_PA
 shadow a full `gtdbtk-r232` in the same project: `dblock env` prints its path as a comment, and
 you pass it to `gtdbprep prep --data`. `classify` and `classify_wf` need `gtdbtk-r232`.
 
-GTDB's published MD5 for this archive (`2c710f35...`) does not match the file it serves
-([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)), which is why `gtdbtk-r232-mockup`
-refuses it. This entry uses the MD5 we observed instead (`59512f60fa48010647977460bb855666`), and
-its `md5_source` says so. That is acceptable here, and not for the mockup, because the MD5 is not
-the check that matters: GTDB-Tk publishes the `REF_HASHES` values in its own source, independently
-of the served file; they cover all but 1.7 kB of the kept bytes; and GTDB-Tk applies the same check
-itself. The observed MD5 pins the exact file (so the lock records which one) and covers the
-`taxonomy/` stub. If GTDB replaces the file, the MD5 stops matching and the fetch is refused until
-the catalog is updated. To fetch a corrected file sooner, copy the built-in entry into a JSON file
-(a one-element list), change `md5` and `md5_source`, and pass it with `--catalog`; an entry with
-the same id there replaces the built-in one.
+The archive is checked twice: against GTDB's published MD5 (`59512f60fa48010647977460bb855666`),
+and, for the kept folders, against GTDB-Tk's `REF_HASHES`, which GTDB-Tk publishes in its own
+source independently of the served file and applies itself. Until 2026-11-11 GTDB's `MD5SUM.txt`
+listed a stale MD5 for this archive ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)),
+so `gtdbtk-r232-mockup` refused it and this entry pinned the MD5 of the served file instead; GTDB
+corrected `MD5SUM.txt` to that same value. If GTDB replaces the file, the MD5 stops matching and
+the fetch is refused until the catalog is updated. To fetch a replaced file sooner, copy the
+built-in entry into a JSON file (a one-element list), change `md5` and `md5_source`, and pass it
+with `--catalog`; an entry with the same id there replaces the built-in one.
 
 ### `gtdbtk-r232-placement` and `-lite`: GTDB placement data from a mirror
 

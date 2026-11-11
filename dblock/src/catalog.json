@@ -38,8 +38,8 @@
     "format": "tar.gz",
     "size": 26324952,
     "extracted": 120000000,
-    "md5": "2c710f35d7e6296615bcf9026ee1c951",
-    "md5_source": "https://data.gtdb.ecogenomic.org/releases/release232/232.0/MD5SUM.txt",
+    "md5": "59512f60fa48010647977460bb855666",
+    "md5_source": "https://data.gtdb.ecogenomic.org/releases/release232/232.0/MD5SUM.txt (corrected on 2026-11-11, https://github.com/Ecogenomics/GTDBTk/issues/726)",
     "env": "GTDBTK_DATA_PATH",
     "env_points_to": "dir",
     "compat": {
@@ -52,7 +52,7 @@
     },
     "licence": "CC BY-SA 4.0",
     "non_commercial": false,
-    "notes": "For checking that a pipeline runs; classifications against it are fake. As of 2026-11-10 the file served (md5 59512f60fa48010647977460bb855666, same size) does not match GTDB's MD5SUM.txt (https://github.com/Ecogenomics/GTDBTk/issues/726), so dblock refuses it until GTDB fixes one or the other: for the whole mock package the published MD5 is the only check. For gtdbprep, use gtdbtk-r232-client instead: it fetches the same archive pinned to the observed MD5 and keeps only markers/, masks/, metadata/ and taxonomy/, and checks the first three against GTDB-Tk's own REF_HASHES (see docs/tools/dblock.md)."
+    "notes": "For checking that a pipeline runs; classifications against it are fake. Until 2026-11-11 GTDB's MD5SUM.txt listed a stale MD5 for this file (https://github.com/Ecogenomics/GTDBTk/issues/726) and dblock refused it; GTDB has corrected it. For gtdbprep, use gtdbtk-r232-client instead: it fetches the same archive pinned to the observed MD5 and keeps only markers/, masks/, metadata/ and taxonomy/, and checks the first three against GTDB-Tk's own REF_HASHES (see docs/tools/dblock.md)."
   },
   {
     "id": "gtdbtk-r232-client",
@@ -66,7 +66,7 @@
     "size": 26324952,
     "extracted": 92464687,
     "md5": "59512f60fa48010647977460bb855666",
-    "md5_source": "observed, not published: MD5 of the file GTDB served on 2026-11-10. GTDB's MD5SUM.txt lists 2c710f35d7e6296615bcf9026ee1c951, which no copy matches (https://github.com/Ecogenomics/GTDBTk/issues/726). The published integrity check is verify_dirs: GTDB-Tk 2.8.0's REF_HASHES for R232 (gtdbtk/config/common.py)",
+    "md5_source": "https://data.gtdb.ecogenomic.org/releases/release232/232.0/MD5SUM.txt (corrected on 2026-11-11, https://github.com/Ecogenomics/GTDBTk/issues/726; first pinned on 2026-11-10 from the file served). The other published integrity check is verify_dirs: GTDB-Tk 2.8.0's REF_HASHES for R232 (gtdbtk/config/common.py)",
     "env": null,
     "env_points_to": "dir",
     "compat": {

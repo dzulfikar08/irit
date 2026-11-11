@@ -184,17 +184,14 @@ jobs:
           grep -q "resuming: " resume.log
           if $B --catalog test-catalog.json fetch test-card-wrong-md5; then echo "wrong checksum was accepted"; exit 1; fi
           test ! -e "$DBLOCK_STORE/test-card-wrong-md5"
-      - name: GTDB R232 mock database (GTDBTk#726)
+      - name: GTDB R232 mock database against GTDB's published MD5 (fixed in GTDBTk#726)
         env:
           DBLOCK_STORE: ${{ runner.temp }}/store3
         run: |
           B=$PWD/target/release/dblock; mkdir proj3 && cd proj3
           $B add gtdbtk-r232-mockup
-          if $B fetch; then
-            echo "::notice::GTDB's mock database now matches its published checksum: GTDBTk#726 looks fixed; update the catalog note."
-          else
-            echo "::notice::Still mismatched (GTDBTk#726); dblock correctly refuses it."
-          fi
+          $B fetch
+          $B verify
 
   qc-speed:
     # Time and memory of FastQC 0.12.1, FastQC-Rust and leanqc on the same files, same runner.

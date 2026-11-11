@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### dblock
+- `gtdbtk-r232-mockup` is fetched again: GTDB corrected the stale MD5 in its `MD5SUM.txt`
+  ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)), and the entry now uses it.
+  `gtdbtk-r232-client` keeps the same file and now cites the published MD5.
+
 ### gtdbprep
 - **`gtdbprep ani` no longer reads GTDB's server unless asked.** `--source` has no default:
   pass an unpacked `sketches.db` (path or URL), or `--source gtdb` to range-read GTDB's archive,
