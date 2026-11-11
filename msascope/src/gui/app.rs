@@ -910,7 +910,8 @@ impl MsaScope {
 
     fn step_bench(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(b) = &mut self.bench else { return };
-        if self.data.is_none() || self.vp.width <= 0.0 || self.pending.is_some() {
+        // Wait for the file, the window size, and a tree and layout still being built.
+        if self.data.is_none() || self.vp.width <= 0.0 || self.pending.is_some() || self.tree_loading || self.layout_pending {
             window.request_animation_frame();
             return;
         }
