@@ -163,7 +163,7 @@ impl Group {
 
     /// (light letter fill, light strong, dark letter fill, dark strong). `Other` is derived from
     /// the theme instead (see [`Colors::new`]).
-    fn colors(self) -> [u32; 4] {
+    pub(crate) fn colors(self) -> [u32; 4] {
         match self {
             Group::Hydrophobic => [0xA9C0F3, 0x7FA6E8, 0x3A5590, 0x6F93E0],
             Group::Positive => [0xF3A6A0, 0xE8706A, 0x83373E, 0xE06C75],

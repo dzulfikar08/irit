@@ -49,6 +49,12 @@ fn main() -> anyhow::Result<()> {
         let Some(p) = path else { anyhow::bail!("--stats needs a file\n{USAGE}") };
         let l = Loaded::open_as(&p, ty)?;
         println!("{}", l.summary());
+        if let Some(a) = l.annotation_summary() {
+            println!("{a}");
+        }
+        for w in &l.aln.warnings {
+            println!("warning: {w}");
+        }
         let ix = match &tree {
             Some(t) => Some(tree_stats(&l, t)?),
             None => None,

@@ -389,6 +389,10 @@ pub struct Scene<'a> {
     pub map: Option<&'a ColumnMap>,
     pub rows: Option<&'a RowView>,
     pub colors: &'a Colors,
+    /// What Differences and the density view compare each column with, per alignment column: a
+    /// reference row's codes; `None` for the consensus. The pyramid must be built against the
+    /// same codes.
+    pub base: Option<&'a [u8]>,
 }
 
 impl Scene<'_> {
@@ -410,7 +414,13 @@ impl Scene<'_> {
     #[inline]
     pub fn column(&self, c: usize) -> Column<'_> {
         let s = self.stats;
-        Column { consensus: s.consensus[c], identity: s.identity[c], shares: &s.shares[c], clustal: s.clustal[c] }
+        Column { consensus: self.base_code(c), identity: s.identity[c], shares: &s.shares[c], clustal: s.clustal[c] }
+    }
+
+    /// The code column `c` is compared with: the reference's, else the consensus.
+    #[inline]
+    pub fn base_code(&self, c: usize) -> u8 {
+        self.base.map_or(self.stats.consensus[c], |b| b[c])
     }
 
     /// Fill of cell (row, view column), or `None` when the scheme leaves it unfilled.
@@ -509,7 +519,7 @@ impl Scene<'_> {
         // Alignment columns and consensus of the sampled cells (cells mode only).
         let missing = missing_code(self.aln.kind());
         let acols: Vec<Vec<(usize, u8)>> = if level.is_none() {
-            xs.iter().map(|u| u.iter().map(|&v| { let c = aln_col(self.map, v as usize); (c, self.stats.consensus[c]) }).collect()).collect()
+            xs.iter().map(|u| u.iter().map(|&v| { let c = aln_col(self.map, v as usize); (c, self.base_code(c)) }).collect()).collect()
         } else {
             Vec::new()
         };
@@ -761,7 +771,7 @@ mod tests {
         let (aln, stats, pyramid) = scene_parts(&fasta(&rows));
         let colors = |scheme, theme| Colors::new(aln.alphabet(), ColorMode::new(scheme), theme, false);
         let nt = colors(Scheme::Nucleotide, Theme::LIGHT);
-        let mut scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &nt };
+        let mut scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &nt, base: None };
         let mut out = vec![0u8; TILE * TILE * 4];
         // 2 px per cell: row 3 is pixel rows 6-7.
         scene.render_tile(2.0, 2.0, 0, 0, &mut out);
@@ -794,7 +804,7 @@ mod tests {
         let (aln, stats, pyramid) = scene_parts(b">a\nA--A\n>b\nA--A\n");
         for theme in [Theme::LIGHT, Theme::DARK] {
             let c = Colors::new(aln.alphabet(), ColorMode::new(Scheme::Nucleotide), theme, true);
-            let scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &c };
+            let scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &c, base: None };
             let mut out = vec![0u8; 16 * 4 * 4];
             scene.render(4.0, 4.0, 0, 0, 16, 4, &mut out);
             assert_eq!(px(&out, 16, 6, 1), theme.bg);
@@ -820,7 +830,7 @@ mod tests {
             .collect();
         let (aln, stats, pyramid) = scene_parts(&fasta(&rows));
         let c = Colors::new(aln.alphabet(), ColorMode::new(Scheme::Nucleotide), Theme::LIGHT, false);
-        let scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &c };
+        let scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &c, base: None };
         // 400 cells in 40 px: 10 cells per pixel.
         let mut out = vec![0u8; 40 * 40 * 4];
         scene.render(0.1, 0.1, 0, 0, 40, 40, &mut out);
@@ -861,8 +871,8 @@ mod tests {
         let bpyr = Pyramid::build(&b, &bstats.consensus);
         for scheme in [Scheme::Nucleotide, Scheme::PercentIdentity, Scheme::Differences] {
             let c = Colors::new(aln.alphabet(), ColorMode::new(scheme), Theme::DARK, false);
-            let s1 = Scene { aln: &aln, stats: &stats, pyramid: &mapped, map: Some(&map), rows: None, colors: &c };
-            let s2 = Scene { aln: &b, stats: &bstats, pyramid: &bpyr, map: None, rows: None, colors: &c };
+            let s1 = Scene { aln: &aln, stats: &stats, pyramid: &mapped, map: Some(&map), rows: None, colors: &c, base: None };
+            let s2 = Scene { aln: &b, stats: &bstats, pyramid: &bpyr, map: None, rows: None, colors: &c, base: None };
             for (cw, ch) in [(3.0, 2.0), (0.3, 0.2), (1.5, 0.1), (0.05, 0.05)] {
                 let (mut o1, mut o2) = (vec![0u8; 64 * 64 * 4], vec![0u8; 64 * 64 * 4]);
                 s1.render(cw, ch, 0, 0, 64, 64, &mut o1);
@@ -899,8 +909,8 @@ mod tests {
             assert_eq!((x.rows, x.cols, &x.majority, &x.diff), (y.rows, y.cols, &y.majority, &y.diff));
         }
         let c = Colors::new(aln.alphabet(), ColorMode::new(Scheme::Nucleotide), Theme::LIGHT, false);
-        let s1 = Scene { aln: &aln, stats: &stats, pyramid: &mapped, map: None, rows: Some(&rv), colors: &c };
-        let s2 = Scene { aln: &b, stats: &stats, pyramid: &bpyr, map: None, rows: None, colors: &c };
+        let s1 = Scene { aln: &aln, stats: &stats, pyramid: &mapped, map: None, rows: Some(&rv), colors: &c, base: None };
+        let s2 = Scene { aln: &b, stats: &stats, pyramid: &bpyr, map: None, rows: None, colors: &c, base: None };
         for (cw, ch) in [(3.0, 2.0), (0.3, 0.2), (0.05, 0.05)] {
             let (mut o1, mut o2) = (vec![0u8; 64 * 64 * 4], vec![0u8; 64 * 64 * 4]);
             s1.render(cw, ch, 0, 0, 64, 64, &mut o1);

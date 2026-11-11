@@ -498,6 +498,12 @@ impl MsaScope {
                         v.settings.save();
                         v.path = Some(path);
                         eprintln!("msascope: {}", l.summary());
+                        if let Some(a) = l.annotation_summary() {
+                            eprintln!("msascope: {a}");
+                        }
+                        for w in &l.aln.warnings {
+                            eprintln!("msascope: warning: {w}");
+                        }
                         if let Some(rss) = peak_rss_mb() {
                             eprintln!("msascope: peak RSS after load {rss} MiB");
                         }

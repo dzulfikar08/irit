@@ -98,7 +98,7 @@ impl MsaScope {
                 let generation = layout.as_deref().map_or(0, |l| l.generation);
                 let (rows, cols) = (view::view_rows(rview, d.aln.rows()), view::view_cols(map, d.aln.cols()));
                 let colors = Colors::new(d.aln.alphabet(), mode, tile_theme, letters);
-                let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map, rows: rview, colors: &colors };
+                let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map, rows: rview, colors: &colors, base: None };
                 // The alignment row of a view row (a collapsed clade's first member).
                 let first_row = |r: usize| rview.map_or(r, |m| m.rows_of(r)[0] as usize);
                 let mono_font = Font { family: mono, ..window.text_style().font() };

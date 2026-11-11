@@ -1,13 +1,16 @@
 //! Core of msascope, free of any GUI code: parsing, compact storage, summaries and view geometry.
 
 pub mod alphabet;
+pub mod annot;
 pub mod export;
 pub mod goto;
+pub mod header;
 pub mod jobs;
 pub mod matrix;
 pub mod motif;
 pub mod parse;
 pub mod pyramid;
+pub mod reference;
 pub mod rows;
 pub mod scheme;
 pub mod select;
@@ -34,6 +37,12 @@ pub struct Alignment {
     pub accessions: Vec<Option<Box<str>>>,
     /// A Newick tree from Stockholm `#=GF NH` lines, joined; `None` when the file has none.
     pub newick: Option<String>,
+    /// Stockholm `#=GC` lines (column annotation), in file order; each covers every column.
+    pub gc: Vec<annot::Track>,
+    /// Stockholm `#=GR` lines (per-residue annotation), sorted by row.
+    pub gr: Vec<annot::RowAnnot>,
+    /// What was left out while reading (annotation lines of the wrong length).
+    pub warnings: Vec<String>,
 }
 
 /// The `start-end` range after the last `/` of a Pfam/HMMER-style name (`GLB2_TYLHE/32-143`).
@@ -154,6 +163,25 @@ impl Loaded {
     /// Memory held for the alignment: residues plus pyramid, in bytes.
     pub fn bytes(&self) -> usize {
         self.aln.matrix.bytes() + self.pyramid.bytes()
+    }
+
+    /// The annotation read (`#=GC` tags, `#=GR` lines), for the terminal; `None` when there is none.
+    pub fn annotation_summary(&self) -> Option<String> {
+        let a = &self.aln;
+        if a.gc.is_empty() && a.gr.is_empty() {
+            return None;
+        }
+        let tags: Vec<&str> = a.gc.iter().map(|t| &*t.tag).collect();
+        let mut gr_tags: Vec<&str> = a.gr.iter().map(|t| &*t.tag).collect();
+        gr_tags.sort_unstable();
+        gr_tags.dedup();
+        Some(format!(
+            "annotation: #=GC {}; #=GR {} lines ({}); {} KiB",
+            if tags.is_empty() { "none".into() } else { tags.join(", ") },
+            a.gr.len(),
+            if gr_tags.is_empty() { "none".into() } else { gr_tags.join(", ") },
+            annot::bytes(&a.gc, &a.gr).div_ceil(1024)
+        ))
     }
 
     /// One-line summary for the terminal.
