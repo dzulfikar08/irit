@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-11)
 
 ### msascope
 - **msaview is now msascope**; the name MSAView belongs to an existing viewer, GMOD's. The binary,
