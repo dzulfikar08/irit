@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### gtdbprep
+- **`gtdbprep ani` no longer reads GTDB's server unless asked.** `--source` has no default:
+  pass an unpacked `sketches.db` (path or URL), or `--source gtdb` to range-read GTDB's archive,
+  as GTDB's maintainers asked ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)).
+  A run whose sketches are all cached needs no `--source`.
+- Fetched sketches go to one cache per user (`$XDG_CACHE_HOME/irit/gtdbprep-ani`, or
+  `~/.cache/irit/gtdbprep-ani`) instead of `<work>/cache`, so a sketch is fetched once per machine,
+  not once per work folder. `--cache` still overrides it. Runs sharing a cache no longer write
+  through the same temporary file.
+
 ## 0.3.1 (2026-11-11)
 
 ### msascope

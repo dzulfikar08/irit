@@ -336,7 +336,7 @@
     "compat": null,
     "licence": "CC BY-SA 4.0. Derived from the Genome Taxonomy Database (GTDB, https://gtdb.ecogenomic.org; Parks et al.) skani database (skani: Shaw & Yu, Nature Methods 2023) in https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz; made by an unofficial mirror, not by or endorsed by GTDB.",
     "non_commercial": false,
-    "notes": "For gtdbprep ani --index <path>/ani-screen-r232: every R232 species representative's marker count, 32-bit fingerprints of its marker k-mers, where its sketch is in skani's sketches.db (with a SHA-256 prefix), and a seek index into GTDB's own archive (a checkpoint every 4 MiB). It holds no sketches: gtdbprep ani range-reads the few it needs from GTDB's server (a stopgap that downloads about 5.7 times the sketch bytes; keep a --cache). Also needs GTDB-Tk's taxonomy and radii (gtdbtk-r232-placement-lite) and GTDB-Tk 2.8.0 with skani 0.3.1. See docs/research/ani-laptop.md."
+    "notes": "For gtdbprep ani --index <path>/ani-screen-r232: every R232 species representative's marker count, 32-bit fingerprints of its marker k-mers, where its sketch is in skani's sketches.db (with a SHA-256 prefix), and a seek index into GTDB's own archive (a checkpoint every 4 MiB). It holds no sketches: gtdbprep ani reads the few it needs from an unpacked sketches.db (--source), or, opt-in, range-reads them from GTDB's archive (--source gtdb; about 5.7 times the sketch bytes) into a per-user cache. Also needs GTDB-Tk's taxonomy and radii (gtdbtk-r232-placement-lite) and GTDB-Tk 2.8.0 with skani 0.3.1. See docs/research/ani-laptop.md."
   },
   {
     "id": "checkm2-db-v3",

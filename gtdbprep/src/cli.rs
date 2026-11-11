@@ -47,10 +47,11 @@ struct AniArgs {
     /// Screen index folder (meta.json, refs.bin, markers.idx).
     #[arg(long)]
     index: PathBuf,
-    /// Where full sketches come from: `gtdb` (GTDB's own archive, through the index's seek
-    /// index), or a path or URL of an unpacked sketches.db, or a URL with {part} and --part-size.
-    #[arg(long, default_value = "gtdb")]
-    source: String,
+    /// Where sketches the cache doesn't have come from: a path or URL of an unpacked sketches.db,
+    /// a URL with {part} and --part-size, or `gtdb` to range-read GTDB's own archive (opt-in: it
+    /// loads GTDB's server). Not needed when every sketch is already cached.
+    #[arg(long)]
+    source: Option<String>,
     /// Part size in bytes, for a source with {part}.
     #[arg(long)]
     part_size: Option<u64>,
@@ -60,7 +61,8 @@ struct AniArgs {
     /// Work folder (query sketches, the small database, GTDB-Tk's output, logs).
     #[arg(long)]
     work: PathBuf,
-    /// Keep fetched sketches here, to reuse in later runs (default: <work>/cache).
+    /// Keep fetched sketches here, to reuse in later runs (default: $XDG_CACHE_HOME/irit/gtdbprep-ani,
+    /// or ~/.cache/irit/gtdbprep-ani).
     #[arg(long)]
     cache: Option<PathBuf>,
     /// skani binary; must be the version the database was made with (0.3.1 for R232).

@@ -39,14 +39,15 @@ pub struct AniOptions {
     pub extension: String,
     /// Screen index folder (`meta.json`, `refs.bin`, `markers.idx`, maybe `gz.idx`).
     pub index: PathBuf,
-    /// Where full sketches come from: `gtdb` (GTDB's archive, via the index's seek index), a
-    /// path or URL of `sketches.db`, or a URL with `{part}`.
-    pub source: String,
+    /// Where sketches missing from the cache come from: a path or URL of `sketches.db`, a URL
+    /// with `{part}`, or `gtdb` (GTDB's archive via the seek index; opt-in). `None` works only
+    /// when every sketch needed is cached.
+    pub source: Option<String>,
     pub part_size: Option<u64>,
     /// Override the archive URL of the `gtdb` source (a mirror or a local copy).
     pub gtdb_url: Option<String>,
     pub work: PathBuf,
-    /// Fetched sketches are kept here (default `<work>/cache`).
+    /// Fetched sketches are kept here (default: [`default_cache`]).
     pub cache: Option<PathBuf>,
     pub skani: PathBuf,
     pub allow_skani_version: bool,
@@ -178,9 +179,34 @@ pub fn skani_version(skani: &Path) -> Result<String> {
         .with_context(|| format!("{} --version printed no version", skani.display()))
 }
 
+/// The per-user sketch cache, shared by all work folders, so a sketch is fetched once per
+/// machine: `$XDG_CACHE_HOME/irit/gtdbprep-ani`, else `~/.cache/irit/gtdbprep-ani`, else
+/// `<work>/cache`.
+pub fn default_cache(work: &Path) -> PathBuf {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|v| !v.is_empty())
+                .map(|h| PathBuf::from(h).join(".cache"))
+        });
+    match base {
+        Some(b) => b.join("irit").join("gtdbprep-ani"),
+        None => work.join("cache"),
+    }
+}
+
 /// Pick the source of full sketches.
-pub fn open_source(opts: &AniOptions, ix: &ScreenIndex) -> Result<Source> {
-    if opts.source == "gtdb" {
+pub fn open_source(opts: &AniOptions, ix: &ScreenIndex, missing: usize) -> Result<Source> {
+    let Some(source) = opts.source.as_deref() else {
+        bail!(
+            "{missing} reference sketch(es) are not in the cache; pass --source with an unpacked \
+             sketches.db (path or URL), or --source gtdb to range-read GTDB's own archive (this \
+             loads GTDB's server, so it is opt-in; fetched sketches are cached and never fetched twice)"
+        )
+    };
+    if source == "gtdb" {
         let g = ix.meta.gzip_source.as_ref().context(
             "this index has no seek index for GTDB's archive; pass --source <sketches.db path or URL>",
         )?;
@@ -188,13 +214,13 @@ pub fn open_source(opts: &AniOptions, ix: &ScreenIndex) -> Result<Source> {
         let url = opts.gtdb_url.clone().unwrap_or_else(|| g.url.clone());
         return Ok(Source::gzip(&url, gi, g.member_offset, g.compressed_size));
     }
-    if opts.source.contains("{part}") {
+    if source.contains("{part}") {
         let size = opts
             .part_size
             .context("a source with {part} needs --part-size")?;
-        return Source::parts(&opts.source, size);
+        return Source::parts(source, size);
     }
-    Ok(Source::plain(&opts.source))
+    Ok(Source::plain(source))
 }
 
 fn read_genome_list(path: &Path) -> Result<BTreeMap<String, PathBuf>> {
@@ -322,7 +348,7 @@ pub fn run(opts: &AniOptions, tools_: &crate::pipeline::Tools) -> Result<AniRepo
 
         // Fetch what the cache doesn't have, check it against the index, write the database.
         let t1 = Instant::now();
-        let cache = opts.cache.clone().unwrap_or_else(|| work.join("cache"));
+        let cache = opts.cache.clone().unwrap_or_else(|| default_cache(&work));
         let tag = ix
             .meta
             .skani_metadata
@@ -347,7 +373,7 @@ pub fn run(opts: &AniOptions, tools_: &crate::pipeline::Tools) -> Result<AniRepo
             }
         }
         if !missing.is_empty() {
-            let src = open_source(opts, &ix)?;
+            let src = open_source(opts, &ix, missing.len())?;
             eprintln!(
                 "gtdbprep: fetching {} reference sketch(es) from {}",
                 missing.len(),
@@ -369,7 +395,8 @@ pub fn run(opts: &AniOptions, tools_: &crate::pipeline::Tools) -> Result<AniRepo
                         Sha256::digest(&rec)[..16] == ix.refs[i as usize].sha,
                         "reference {i}: the fetched sketch does not match the index"
                     );
-                    let tmp = path_of(i).with_extension("part");
+                    // Unique per process: several runs may share one cache.
+                    let tmp = path_of(i).with_extension(format!("part{}", std::process::id()));
                     fs::write(&tmp, &rec)?;
                     fs::rename(&tmp, path_of(i))?;
                 }

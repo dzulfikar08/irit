@@ -47,13 +47,15 @@ What's done, what's next, and what's further out. Items move up as evidence come
       (280 MB download) on GitHub Releases (`dzulfikar08/irit-data`) and the `dblock` entries
       `gtdbtk-r232-placement` and `-lite` (0.2.1); `dblock` stores identical files once as hard
       links (0.3.0), so the ten `fasttree.log` copies take 2.7 GB instead of 7.4 GB. Waiting on GTDB
-      for official per-folder downloads ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)).
+      GTDB has no plans for per-folder downloads and is fine with the mirror as long as it stays
+      credited and links back ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)).
 - [ ] **The ANI species check on a laptop**: `gtdbprep ani` screens locally and range-reads only
       the reference sketches a genome needs, then runs GTDB-Tk's own ANI screen on them; identical
       output to GTDB-Tk on the full database ([write-up](research/ani-laptop.md)). The screen index
-      is on irit-data (`dblock` entry `gtdbtk-r232-ani-screen`). Sketches come from GTDB's archive
-      through a seek index for now (a stopgap: 2–6× the download); waiting on GTDB for the skani
-      folder unpacked ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)). Next:
+      is on irit-data (`dblock` entry `gtdbtk-r232-ani-screen`). Sketches come from an unpacked
+      `sketches.db`, or, opt-in, from GTDB's archive through a seek index (2–6× the download), with
+      a per-user cache; GTDB won't publish the skani folder unpacked and asked for exactly these
+      two safeguards ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)). Next:
       parallel range requests; an opt-in "species call only" flag that fetches only references
       that can reach their radius (far fewer downloads, but fewer "other related references" rows
       than GTDB-Tk's).

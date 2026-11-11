@@ -271,8 +271,11 @@ gtdbprep ani --genomes mags/ -x fna --work ani-work \
     --index <store>/gtdbtk-r232-ani-screen/ani-screen-r232 \
     --data <store>/gtdbtk-r232-placement-lite/release232 \
     --env ~/micromamba/envs/gtdbtk --skani ~/micromamba/envs/gtdbtk/bin/skani \
-    --cache ~/.cache/irit/ani
+    --source /shared/gtdbtk/release232/skani/database/sketches.db
 ```
+
+`--source` says where sketches come from; there is no default. Without a copy of the skani
+database, `--source gtdb` reads them from GTDB's server (see below).
 
 The results are GTDB-Tk's own files, in `ani-work/out/classify/ani_screen/`:
 `gtdbtk.bac120.ani_summary.tsv`, `gtdbtk.ar53.ani_summary.tsv` and
@@ -282,9 +285,9 @@ The results are GTDB-Tk's own files, in `ani-work/out/classify/ani_screen/`:
 fetched, because GTDB-Tk's files list all the close references, not only the species call. That
 was 2 to 1,941 references per genome in the tests (B. subtilis 23, E. coli 420, P. aeruginosa
 1,090, a 400 kb piece of E. coli 1,941), about 0.51 MB each. With the default source (GTDB's
-archive, see below) each reference costs about 2.9 MB of download on average, so roughly:
+archive, `--source gtdb`, see below) each reference costs about 2.9 MB of download on average, so roughly:
 
-| Genome | References | From GTDB's archive (default) | From an unpacked `sketches.db` |
+| Genome | References | From GTDB's archive (`--source gtdb`) | From an unpacked `sketches.db` |
 |---|---:|---:|---:|
 | B. subtilis 168 | 23 | about 70 MB | 12 MB |
 | E. coli K-12 | 420 | about 1.2 GB | 0.2 GB |
@@ -292,17 +295,18 @@ archive, see below) each reference costs about 2.9 MB of download on average, so
 | 400 kb fragment | 1,941 | about 5.7 GB | 1.0 GB |
 
 These are estimates from the measured average (9.3 GB for 3,166 references). Genomes from the
-same genus share most references, so use one `--cache` for all your runs: a second run of the
-same genomes fetched nothing and took 18 s.
+same genus share most references, and all runs share one cache (below): a second run of the
+same genomes fetched nothing and took 18 s, and needs no `--source`.
 
-**The default source is a stopgap.** GTDB publishes the skani database only inside its 60.8 GB
+**`--source gtdb` is opt-in, at GTDB's request.** GTDB publishes the skani database only inside its 60.8 GB
 `.tar.gz`. `gtdbprep ani` reads sketches out of that file on GTDB's server with HTTP range
 requests, through the seek index that comes with the screen index (a checkpoint every 4 MiB).
 Each sketch costs the compressed bytes from the checkpoint before it, so about 5.7 times the
-sketch itself, and the requests load GTDB's server. Please keep a cache, and don't run large
-batches this way. If GTDB publishes `skani/database/` unpacked, this goes away
-([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)). If you have the full package
-on a shared disk, point `--source` at its `sketches.db` instead.
+sketch itself, and the requests load GTDB's server. GTDB's maintainers asked that this be opt-in
+and that fetched sketches be cached, never fetched twice
+([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)); they don't plan to publish
+`skani/database/` unpacked. So don't run large batches this way: if you have the full package on
+a shared disk, point `--source` at its `sketches.db`.
 
 How it works:
 
@@ -311,14 +315,16 @@ How it works:
    32-bit fingerprints of its marker k-mers. This keeps every reference `skani search` would
    compare in full (and perhaps a few more).
 3. Only those references' full sketches are fetched, by HTTP range requests, into the cache
-   (`--cache`, default `<work>/cache`). Each is checked against a hash in the index.
+   (`--cache`, default `$XDG_CACHE_HOME/irit/gtdbprep-ani` or `~/.cache/irit/gtdbprep-ani`, shared
+   by all work folders). Each is checked against a hash in the index, in the cache too.
 4. They are written as a small skani database, and GTDB-Tk's own `ANIScreener` runs against it.
    So the species rule (closest reference with AF >= 0.5, within its radius) and the output files
    are GTDB-Tk's.
 
 Options:
 
-- `--source gtdb` (default) reads the sketches from GTDB's own `gtdbtk_r232_data.tar.gz`, through
+- `--source` has no default. It is needed only when some sketch is not in the cache.
+- `--source gtdb` (opt-in) reads the sketches from GTDB's own `gtdbtk_r232_data.tar.gz`, through
   the seek index in the screen index folder (`gz.idx`). `--gtdb-url` points at another copy of
   the same archive (a URL or a local path).
 - `--source <path or URL of sketches.db>` reads an unpacked `sketches.db`, local or hosted.
