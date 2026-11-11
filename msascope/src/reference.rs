@@ -68,16 +68,21 @@ impl Reference {
     }
 }
 
-/// Ruler labels counting the reference's residues: `(view column, number)` for each column in
-/// `range` (view columns) where the reference has a residue whose number is a multiple of
-/// `step`, plus the first residue in the range when `first` is set.
-pub fn ruler_labels(r: &Reference, map: Option<&ColumnMap>, range: std::ops::Range<usize>, step: usize, first: bool) -> Vec<(usize, usize)> {
+/// Ruler marks counting the reference's residues, for view columns `range`: `(view column,
+/// number, major)` where the reference has a residue whose number is a multiple of `step`
+/// (major: labelled) or of `minor` (a minor tick; 0 for none), and, with `first`, its first
+/// residue in the range as a major mark.
+pub fn ruler_marks(r: &Reference, map: Option<&ColumnMap>, range: std::ops::Range<usize>, step: usize, minor: usize, first: bool) -> Vec<(usize, usize, bool)> {
     let mut out = Vec::new();
+    let mut first = first;
     for v in range {
         let Some(p) = r.position(aln_col(map, v)) else { continue };
-        if p.is_multiple_of(step) || (first && out.is_empty()) {
-            out.push((v, p));
+        if p.is_multiple_of(step) || first {
+            out.push((v, p, true));
+        } else if minor > 0 && p.is_multiple_of(minor) {
+            out.push((v, p, false));
         }
+        first = false;
     }
     out
 }
@@ -131,12 +136,15 @@ mod tests {
         let s = ColumnStats::compute(&a);
         let r = Reference::new(&a, 0);
         // every 2nd residue: 12 (col 2), 14 (col 6), 16 (col 9)
-        assert_eq!(ruler_labels(&r, None, 0..a.cols(), 2, false), [(2, 12), (6, 14), (9, 16)]);
+        let majors = |m: Vec<(usize, usize, bool)>| m.into_iter().filter(|x| x.2).map(|x| (x.0, x.1)).collect::<Vec<_>>();
+        assert_eq!(majors(ruler_marks(&r, None, 0..a.cols(), 2, 0, false)), [(2, 12), (6, 14), (9, 16)]);
         // with the first residue in view
-        assert_eq!(ruler_labels(&r, None, 3..a.cols(), 2, true), [(5, 13), (6, 14), (9, 16)]);
+        assert_eq!(majors(ruler_marks(&r, None, 3..a.cols(), 2, 0, true)), [(5, 13), (6, 14), (9, 16)]);
+        // labels every 4th, minor ticks every 2nd
+        assert_eq!(ruler_marks(&r, None, 0..a.cols(), 4, 2, false), [(2, 12, true), (6, 14, false), (9, 16, true)]);
         // inserts (columns 3 and 4) hidden: the same residues, at view columns shifted by 2
         let m = ColumnMap::hiding(&a, &s, true, None).unwrap();
         assert_eq!(m.visible, [0, 1, 2, 5, 6, 7, 8, 9]);
-        assert_eq!(ruler_labels(&r, Some(&m), 0..m.len(), 2, false), [(2, 12), (4, 14), (7, 16)]);
+        assert_eq!(majors(ruler_marks(&r, Some(&m), 0..m.len(), 2, 0, false)), [(2, 12), (4, 14), (7, 16)]);
     }
 }

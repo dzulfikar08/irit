@@ -11,12 +11,13 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::*;
 use msascope::goto::{self, Goto};
 use msascope::motif::{self, Motif};
+use msascope::reference::Reference;
 use msascope::rows::{NameQuery, Sort, SortKey};
 use msascope::select::{RangeSet, Selection};
 use msascope::tree::TreeIndex;
 use msascope::view;
 
-use super::app::{FindMode, MotifState, MsaScope};
+use super::app::{FindMode, MotifState, MsaScope, RefOpts};
 
 /// Motif hits kept for highlighting and Next/Previous (all are counted).
 const MOTIF_LIMIT: usize = 1_000_000;
@@ -79,15 +80,58 @@ impl MsaScope {
     }
 
     pub(super) fn set_reference(&mut self, r: Option<usize>, cx: &mut Context<Self>) {
+        let was = self.reference;
         self.reference = r;
+        self.ref_row = match (r, &self.data) {
+            (Some(r), Some(d)) => Some(Arc::new(Reference::new(&d.aln, r))),
+            _ => None,
+        };
         if r.is_none() && self.sort.is_some_and(|s| s.key == SortKey::Reference) {
             self.sort = None;
         }
-        if let (Some(r), Some(d)) = (r, &self.data) {
-            self.status = format!("Reference: {}", d.aln.names[r]).into();
-        }
-        if self.sort.is_some_and(|s| s.key == SortKey::Reference) || self.filter.min_identity.is_some() {
+        self.status = match (r, &self.data) {
+            (Some(r), Some(d)) => format!("Reference: {}", d.aln.names[r]).into(),
+            (None, _) if was.is_some() => "Reference cleared".into(),
+            _ => SharedString::default(),
+        };
+        // Rows sorted or filtered by identity to it, and the pyramid compared with it.
+        if self.sort.is_some_and(|s| s.key == SortKey::Reference) || self.filter.min_identity.is_some() || (self.ref_opts.compare && was != r) {
             self.rebuild_layout(cx);
+        }
+        cx.notify();
+    }
+
+    /// `m`: the cursor's row (or the one selected row) becomes the reference; on the reference
+    /// itself, the reference is cleared.
+    pub(super) fn toggle_reference(&mut self, cx: &mut Context<Self>) {
+        match self.reference_candidate() {
+            Some(r) if Some(r) == self.reference => self.set_reference(None, cx),
+            Some(r) => self.set_reference(Some(r), cx),
+            None if self.reference.is_some() => self.set_reference(None, cx),
+            None => {
+                self.status = "Put the cursor on a row (or select one name) to make it the reference".into();
+                cx.notify();
+            }
+        }
+    }
+
+    /// Change what the reference does; comparing with it rebuilds the pyramid.
+    pub(super) fn set_ref_opts(&mut self, f: impl FnOnce(&mut RefOpts), cx: &mut Context<Self>) {
+        let before = self.ref_opts;
+        f(&mut self.ref_opts);
+        if before.compare != self.ref_opts.compare && self.reference.is_some() {
+            self.rebuild_layout(cx);
+        }
+        cx.notify();
+    }
+
+    /// Show or hide an annotation track (a `#=GC` tag, or `GR <tag>`).
+    pub(super) fn toggle_track(&mut self, key: &str, cx: &mut Context<Self>) {
+        match self.hidden_tracks.iter().position(|h| &**h == key) {
+            Some(i) => {
+                self.hidden_tracks.remove(i);
+            }
+            None => self.hidden_tracks.push(key.into()),
         }
         cx.notify();
     }

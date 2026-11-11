@@ -41,7 +41,7 @@ impl MsaScope {
             if pos.x >= area.origin.x - px(self.left_w()) {
                 return Region::Tree;
             }
-        } else if pos.y >= area.origin.y - px(HEADER_H) && pos.x >= area.origin.x {
+        } else if pos.y >= area.origin.y - px(self.header_h()) && pos.x >= area.origin.x {
             return self.vp.hit(x, 0.0, rows.max(1), cols).map_or(Region::Outside, |(_, c)| Region::Header(c));
         }
         Region::Outside
@@ -194,6 +194,7 @@ impl MsaScope {
             "h" if !ctrl => self.request_fit(Fit::Height),
             "r" if !ctrl => self.request_fit(Fit::Readable),
             "d" if !ctrl => self.toggle_differences(),
+            "m" if !ctrl => self.toggle_reference(cx),
             "c" if !ctrl => self.mode.by_conservation = !self.mode.by_conservation,
             "s" if !ctrl => self.cycle_scheme(),
             "i" if !ctrl => self.set_hide_inserts(!self.hide_inserts, cx),
@@ -262,6 +263,13 @@ impl MsaScope {
         };
         self.hover_track = match r {
             Region::Header(c) => Some(c),
+            _ => None,
+        };
+        self.hover_band = match r {
+            Region::Header(_) => {
+                let top = self.area.get().origin.y - px(self.header_h());
+                self.header_row_at(f32::from(pos.y - top))
+            }
             _ => None,
         };
         self.pointer = Some(pos);

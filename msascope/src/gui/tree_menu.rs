@@ -7,7 +7,6 @@ use gpui_kit::*;
 
 use super::actions::clade_name;
 use super::app::MsaScope;
-use super::metrics::*;
 
 impl MsaScope {
     /// A transparent layer over the tree panel that opens the menu for the node under the pointer.
@@ -15,7 +14,7 @@ impl MsaScope {
         let entity = cx.entity().downgrade();
         let hits = self.tree_hits.clone();
         let pointer = self.last_pointer.clone();
-        div().id("tree-menu").absolute().left_0().top(px(HEADER_H)).bottom_0().w(tree_w).context_menu(move |menu: PopupMenu, window, cx| {
+        div().id("tree-menu").absolute().left_0().top(px(self.header_h())).bottom_0().w(tree_w).context_menu(move |menu: PopupMenu, window, cx| {
             let pos = pointer.get();
             let node = hits
                 .borrow()

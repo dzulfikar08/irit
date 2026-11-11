@@ -7,6 +7,7 @@ use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use msascope::alphabet::{GAP, Kind};
+use msascope::annot::{TrackKind, pp_words, ss_words};
 use msascope::scheme::Colors;
 use msascope::view::{self, aln_col};
 
@@ -45,6 +46,17 @@ fn aa3(sym: u8) -> Option<&'static str> {
         b'O' => "Pyl",
         _ => return None,
     })
+}
+
+/// An annotation character and what it means: "H · α-helix", "8 · 75–85%", or the character.
+pub fn track_value(kind: TrackKind, ch: u8) -> String {
+    let c = ch as char;
+    match kind {
+        TrackKind::Structure => format!("{c} · {}", ss_words(ch)),
+        TrackKind::Probability => format!("{c} · {}", pp_words(ch)),
+        TrackKind::Text if msascope::header::is_blank(ch) => format!("{c} · none"),
+        TrackKind::Text => c.to_string(),
+    }
 }
 
 /// "72 of 698", with "· 60 of 115 shown" when columns are hidden, and "· insert" for an insert
@@ -119,7 +131,8 @@ impl MsaScope {
         }
         let c = aln_col(map, v);
         let colors = Colors::new(d.aln.alphabet(), self.mode, t.tile_theme(), true);
-        let column = msascope::scheme::Column { consensus: d.stats.consensus[c], identity: d.stats.identity[c], shares: &d.stats.shares[c], clustal: d.stats.clustal[c] };
+        let base = self.layout.as_deref().and_then(|l| l.base.as_deref());
+        let column = msascope::scheme::Column { consensus: base.map_or(d.stats.consensus[c], |b| b.codes[c]), identity: d.stats.identity[c], shares: &d.stats.shares[c], clustal: d.stats.clustal[c] };
         let mono = cx.theme().mono_font_family.clone();
         // A residue letter on its fill, as in the alignment.
         let chip = |code: u8| {
@@ -135,7 +148,7 @@ impl MsaScope {
                 .text_color(if fill.is_some() { t.res_ink } else { t.fg_muted })
                 .child(if code == GAP { "·".to_string() } else { (d.aln.symbol(code) as char).to_string() })
         };
-        let row = |label: &'static str, value: AnyElement| h_flex().gap(SPACE_7).justify_between().child(div().text_color(t.fg_muted).child(label)).child(value);
+        let row = |label: SharedString, value: AnyElement| h_flex().gap(SPACE_7).justify_between().child(div().text_color(t.fg_muted).child(label)).child(value);
         let value = || h_flex().gap(SPACE_2).text_color(t.fg).font_weight(FontWeight::MEDIUM);
         let dim = |s: String| div().text_color(t.fg_dim).font_weight(FontWeight::NORMAL).child(s);
 
@@ -176,7 +189,7 @@ impl MsaScope {
                 let code = msascope::view::row_src(Some(m), vr).get(&d.aln, c);
                 let name3 = (d.aln.kind() == Kind::Protein).then(|| aa3(d.aln.symbol(code))).flatten();
                 let res = value().child(chip(code)).when_some(name3.filter(|_| code != GAP), |h, n| h.child(n)).child(dim("clade consensus".into()));
-                card = card.child(row("Residue", res.into_any_element()));
+                card = card.child(row("Residue".into(), res.into_any_element()));
             }
             Some(vr) => {
                 let r = self.aln_row(vr);
@@ -202,14 +215,33 @@ impl MsaScope {
                 } else {
                     res = res.child(p);
                 }
-                card = card.child(row("Residue", res.child(dim(of)).into_any_element()));
+                card = card.child(row("Residue".into(), res.child(dim(of)).into_any_element()));
+                // The row's own annotation (#=GR) at this column.
+                for g in msascope::annot::row_annots(&d.aln.gr, r) {
+                    card = card.child(row(g.tag.to_string().into(), value().child(track_value(TrackKind::of(&g.tag), g.data[c])).into_any_element()));
+                }
             }
             None => {
                 card = card.child(div().font_weight(FontWeight::SEMIBOLD).child(format!("Column {}", view::group_digits(c + 1))));
+                // An annotation track: its character here, in words.
+                if let Some(band) = self.hover_band
+                    && let (Some(kind), Some(data)) = (self.band_kind(band), self.band_data(band))
+                {
+                    card = card.child(row(self.band_label(band), value().child(track_value(kind, data[c])).into_any_element()));
+                }
             }
         }
+        // The reference's residue in this column, and its number.
+        if let Some(rf) = self.ref_row.as_deref()
+            && r.is_none_or(|vr| self.aln_row(vr) != rf.row)
+        {
+            let code = rf.codes[c];
+            let pos = rf.position(c).map_or_else(|| "gap".to_string(), |p| format!("residue {}", view::group_digits(p)));
+            let name = d.aln.names[rf.row].split('/').next().unwrap_or("").to_string();
+            card = card.child(row("Reference".into(), value().child(chip(code)).child(pos).child(dim(name)).into_any_element()));
+        }
         let col_text = column_text(v, c, total, map.map(|_| shown), d.aln.is_insert(c));
-        card = card.child(row("Column", value().child(col_text).into_any_element()));
+        card = card.child(row("Column".into(), value().child(col_text).into_any_element()));
         // Over the ruler: the hidden columns on either side of this one.
         if r.is_none()
             && let Some(m) = map
@@ -217,12 +249,12 @@ impl MsaScope {
             for (at, n) in m.hidden_runs(total, v..v + 1) {
                 let (a, label) = if at == v { (if v == 0 { 0 } else { aln_col(map, v - 1) + 1 }, "Hidden before") } else { (c + 1, "Hidden after") };
                 let text = if n == 1 { format!("column {}", view::group_digits(a + 1)) } else { format!("{} columns, {}–{}", view::group_digits(n), view::group_digits(a + 1), view::group_digits(a + n)) };
-                card = card.child(row(label, value().child(text).into_any_element()));
+                card = card.child(row(label.into(), value().child(text).into_any_element()));
             }
         }
         let cons = d.stats.consensus[c];
         card = card.child(row(
-            "Consensus",
+            "Consensus".into(),
             value()
                 .child(chip(cons))
                 .child(format!("identity {:.0}% · gaps {:.0}%", d.stats.identity[c] * 100.0, d.stats.gaps[c] * 100.0))

@@ -158,12 +158,13 @@ impl MsaScope {
                 let colors = Colors::new(d.aln.alphabet(), mode, tile_theme, letters);
                 let map = layout.as_deref().and_then(|l| l.map.as_ref());
                 let rview = layout.as_deref().and_then(|l| l.rows.as_ref());
+                let base = layout.as_deref().and_then(|l| l.base.as_deref()).map(|b| &b.codes[..]);
                 let fig_rows: Vec<FigRow> = rows
                     .iter()
                     .zip(labels)
                     .map(|(&r, label)| FigRow { src: match r { RowRef::View(v) => row_src(rview, v), RowRef::Seq(a) => RowSrc::Seq(a as usize) }, label })
                     .collect();
-                let fig = Figure { aln: &d.aln, stats: &d.stats, colors: &colors, rows: fig_rows, cols: cols.clone(), cw, ch, names_w, ruler: opts.ruler, ui_font: format!("{ui}, sans-serif"), mono_font: format!("{mono}, monospace"), fg, muted };
+                let fig = Figure { aln: &d.aln, stats: &d.stats, colors: &colors, rows: fig_rows, cols: cols.clone(), cw, ch, names_w, ruler: opts.ruler, ui_font: format!("{ui}, sans-serif"), mono_font: format!("{mono}, monospace"), fg, muted, base };
                 let bytes = match kind {
                     Kind::Svg => {
                         let mut out = Vec::new();
@@ -183,7 +184,7 @@ impl MsaScope {
                         let mut buf = vec![0u8; cw_px * ch_px * 4];
                         match rows.first() {
                             Some(RowRef::View(v0)) => {
-                                let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid: layout.as_deref().map_or(&d.pyramid, |l| &l.pyramid), map, rows: rview, colors: &colors, base: None };
+                                let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid: layout.as_deref().map_or(&d.pyramid, |l| &l.pyramid), map, rows: rview, colors: &colors, base };
                                 scene.render(cwp, chp, (first_view_col as f64 * cwp).round() as i64, (*v0 as f64 * chp).round() as i64, cw_px, ch_px, &mut buf);
                             }
                             _ => {
@@ -195,10 +196,10 @@ impl MsaScope {
                                 let pyramid = if cwp >= 1.0 && chp >= 1.0 {
                                     &d.pyramid
                                 } else {
-                                    own = Pyramid::build_mapped(&d.aln, &d.stats.consensus, Some(&sub_map.visible), Some(&sub_rows));
+                                    own = Pyramid::build_mapped(&d.aln, base.unwrap_or(&d.stats.consensus), Some(&sub_map.visible), Some(&sub_rows));
                                     &own
                                 };
-                                let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map: Some(&sub_map), rows: Some(&sub_rows), colors: &colors, base: None };
+                                let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map: Some(&sub_map), rows: Some(&sub_rows), colors: &colors, base };
                                 scene.render(cwp, chp, 0, 0, cw_px, ch_px, &mut buf);
                             }
                         }
