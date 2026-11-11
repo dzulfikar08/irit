@@ -28,6 +28,31 @@
   Residues are still stored as upper case, at 1 bit per column extra. Gappy means at least 25, 50
   (default), 75, 90 or 100% gaps. The ruler keeps the original column numbers and marks hidden
   runs; go-to takes original numbers. Inserts are hidden by default when a file has them.
+- **Selection**: click names for rows (Ctrl adds or removes, Shift extends, drag extends), click
+  or drag on the track header for columns, Shift+click or Shift+drag in the alignment for a
+  block; plain drag still pans. Ctrl+A selects all, Escape clears. Selected rows show in the name
+  panel, columns in the ruler, blocks with an accent wash and outline; the status bar gives the
+  size.
+- **Copy and FASTA export**: Ctrl+C copies the selection as FASTA, Ctrl+Shift+C as residues only;
+  the Export menu writes the selection or all rows to a FASTA file. Hidden columns are left out
+  unless "Include hidden columns" is on; "Leave out gaps" writes ungapped sequences. Rows come in
+  the order shown. Above 64 MiB the copy goes to a file.
+- **Cell cursor**: arrows move it (Shift extends a block, Ctrl jumps over runs of residues),
+  Page Up/Down and Home/End move it by a page or to the row's ends; Alt+arrows pan as the arrows
+  did before. The cursor shows in the ruler and the name panel, and the hover card follows it.
+- **Drag-and-drop**: drop an alignment, a tree, or both on the window. Open… also takes trees.
+- **Newick tree panel**: from `--tree`, Open or a drop, Stockholm `#=GF NH`, or a sibling
+  `.nwk`/`.newick`/`.tree`/`.treefile` with the alignment's stem. Rows follow the tree (Sort:
+  tree / file, `t`); clicking a node collapses its clade into one row showing the clade
+  consensus; the status bar counts collapsed clades and reports unmatched leaves and sequences.
+  The parser handles quoted labels, branch lengths, comments and NHX, and internal labels, without
+  recursion. A synthetic 230,000-leaf tree reads and parses in 0.1–0.5 s and matches in
+  0.3–0.8 s on the test laptop, in the background.
+- The ruler's marks for hidden columns are now thin ticks, merged when closer than 6 px; the hover
+  card over the ruler lists the hidden columns next to the column.
+- `msagen --tree TREE.nwk` writes a tree matching the generated alignment.
+- Toolbar icons that were not in the bundled icon set (the columns button) now use bundled ones,
+  so they no longer show blank.
 
 ### dblock
 - **Identical files inside a database are hard-linked** after unpacking, so they take disk space
