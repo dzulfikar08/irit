@@ -414,6 +414,17 @@ mod tests {
     }
 
     #[test]
+    fn ani_screen_entry_is_multi_part() {
+        let c = load(None).unwrap();
+        let e = find(&c, "gtdbtk-r232-ani-screen").unwrap();
+        assert_eq!((e.parts.len(), e.size, e.on_disk()), (3, 2_101_861_800, 2_329_014_415));
+        assert!(e.sources().iter().all(|s| s.urls[0].starts_with(
+            "https://github.com/dzulfikar08/irit-data/releases/download/gtdbtk-r232-ani-screen-v1/gtdbtk-r232-ani-screen-"
+        ) && s.sha256.is_some()));
+        assert!(e.env.is_none());
+    }
+
+    #[test]
     fn single_url_entries_need_a_size_and_no_base_url() {
         let ok = entry_json("one", &"0".repeat(32));
         assert!(user_catalog(&ok).is_ok());

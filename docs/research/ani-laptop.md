@@ -32,10 +32,13 @@ skani 0.3.1 (tag `v0.3.1`), GTDB-Tk 2.8.0 (commit `155d989`) and the R232 packag
   3.3 GB downloaded for the 1.6 GB of sketches; every 4 MiB, 0.35 GB (zstd) and 9.3 GB; every 16
   MiB, 0.09 GB and 26.3 GB (**measured**).
 - **Re-hosting the unpacked `sketches.db` (75.3 GB) would cut the download to the sketches
-  themselves.** That, or the index itself, needs a hosting decision. Nothing has been published.
+  themselves.** It was decided not to re-host it.
 - **Memory.** GTDB-Tk's own screen on the full database peaked at 14.7 GB of RAM (skani 0.3.1) and
-  15.5 GB (skani 0.4.0). The client peaked at 5.0 GB, all of it skani loading the fetched sketches;
-  a fix to write them in skani's marker-only form is being measured (see section 4).
+  15.4 GB (skani 0.4.0). The client peaked at 1.9 GB for the same 9 genomes (**measured**).
+- **Published.** The screen index is on irit-data,
+  [`gtdbtk-r232-ani-screen-v1`](https://github.com/dzulfikar08/irit-data/releases/tag/gtdbtk-r232-ani-screen-v1)
+  (2.1 GB, CC BY-SA 4.0), as the `dblock` entry `gtdbtk-r232-ani-screen`. Sketches come from GTDB's
+  archive by default: a stopgap until GTDB publishes the skani folder unpacked.
 - **skani 0.4.0 gave the same files as 0.3.1** on these genomes, against the same 0.3.1 database.
 
 ## 1. How `skani search` uses its database
@@ -118,7 +121,7 @@ Measured on R232 (GitHub runner, 4 vCPU):
 | `markers.idx` | 1,748,824,109 bytes (21.7 bits per marker; zstd does not shrink it) |
 | `refs.bin` | 8,196,843 bytes (5,703,776 with zstd -19) |
 | build time, peak RAM | 3 min 40 s, 73 MB |
-| screening 9 genomes | 4.6–6.3 s |
+| screening 9 genomes | 4.6–9.5 s |
 
 The fingerprints are close to the information they hold: 644 million markers at 32 bits each,
 sorted per reference, need about 21 bits each. Fewer fingerprint bits would make small genomes
@@ -213,9 +216,16 @@ Notes:
   content path is untested on real data.
 - skani's other code path (more than 50 genomes: an inverted index with a strict `>`) was tested
   on the mockup only (51 genomes, identical rows). The runner step for it did not run.
-- The run used the first version of the small database (full sketches in `markers.bin`). The
-  marker-only version gives byte-identical `markers.bin` entries on the mockup. [Run
-  42917956216](https://github.com/dzulfikar08/irit/actions/runs/42917956216) repeats the check with it.
+- That run used the first version of the small database (full sketches in `markers.bin`). [Run
+  42936739604](https://github.com/dzulfikar08/irit/actions/runs/42936739604) repeated the check
+  with the marker-only version: identical files again from the local `sketches.db` and from GTDB's
+  server (4 MiB seek index: 9.28 GB in 2,601 requests, 11.9 min), peak RAM 1.86 GB instead of
+  5.0 GB.
+- **More than 50 genomes on the full database did not fit the runner.** With 51 genomes, skani
+  builds an inverted index of all 644 million marker k-mers. GTDB-Tk's own screen was killed
+  inside a 12 GB + 6 GB swap memory cap, so there was nothing to compare with. The client ran the
+  same 51 genomes in 33 s with 2.0 GB. That path is checked on the mockup only (identical rows).
+  An earlier attempt without a cap took the runner down.
 - [An earlier run](https://github.com/dzulfikar08/irit/actions/runs/42839315591) filled the
   runner's disk (85 GB database, swap, and several copies of the fetched sketches) and lost its logs.
 
@@ -225,9 +235,9 @@ Notes:
 |---|---:|---:|
 | One-time download | 60.8 GB archive (85.2 GB unpacked skani database) | 1.76 GB screen index + seek index (0.35 GB at 4 MiB) + 0.06 GB taxonomy and radii (in the placement mirror) |
 | Disk | 85.2 GB | about 2.1 GB, plus the sketch cache (about 0.5 MB per reference used) |
-| RAM | 14.7 GB (measured) | 5.0 GB in the first version, dominated by skani loading the fetched sketches (marker-only fix: see section 4) |
+| RAM | 14.7 GB for 9 genomes; more than 18 GB for 51 (measured) | 1.9 GB for 9 genomes, 2.0 GB for 51 (measured) |
 | Per genome | nothing | 2–1,941 sketches here; about 0.5 MB each from an unpacked copy, 2–6× that through GTDB's archive |
-| Time for the 9 genomes | 2 min 16 s | 29 s with a local source; 13 min from GTDB's server (one request at a time); 18 s warm |
+| Time for the 9 genomes | 1 min 46 s – 2 min 33 s | 20–24 s with a local source; 12–13 min from GTDB's server (one request at a time); 15–18 s warm |
 
 The per-genome cost depends on the lineage. Well-sampled genera (Pseudomonas, the Escherichia
 group) and small or partial genomes pull in hundreds to thousands of references. A cache shared
@@ -238,26 +248,28 @@ that can reach their radius (ANI >= 95% and AF >= 0.5). A much stricter screen w
 fewer references, but the "other related references" column and the unassigned-hits file would
 then list fewer rows than GTDB-Tk's. Not built: GTDB-Tk-identical output was the goal.
 
-## 6. What needs a decision
+## 6. What was decided
 
-1. **Hosting the screen index** (about 2.1 GB as `tar.zst`: 1.75 GB fingerprints, 6 MB rows, 0.35
-   GB seek index at 4 MiB). It is derived from GTDB data, so CC BY-SA 4.0 with credit. It fits
-   the irit-data pattern (each part under 2 GiB). `exp/ani/pack.sh` makes the archives, checksums
-   and a draft `dblock` entry. No release was made.
-2. **Where sketches come from:**
-   - GTDB's archive through the seek index: no hosting, but 2–6× the download and load on GTDB's
-     server. Ask GTDB first.
-   - Re-host `sketches.db` (75.3 GB) as about 38 parts of 2 GB (GitHub Release) or on R2 (about
-     $1.13/month). Each fetch is then exactly one sketch.
-   - Ask GTDB to publish `skani/database/` unpacked (next to
-     [GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)). Their server already does
-     range requests, so this is the cleanest: no seek index, no mirror.
+1. **The screen index is published** on irit-data, release
+   [`gtdbtk-r232-ani-screen-v1`](https://github.com/dzulfikar08/irit-data/releases/tag/gtdbtk-r232-ani-screen-v1):
+   `gtdbtk-r232-ani-screen-core.tar.zst` (5.7 MB), `-markers.tar.zst` (1.75 GB) and
+   `-gzindex.tar.zst` (0.35 GB, the 4 MiB seek index), with `SHA256SUMS` and `MD5SUMS`. `dblock`
+   fetches it as `gtdbtk-r232-ani-screen`. It was built on a runner
+   ([run 42936739602](https://github.com/dzulfikar08/irit/actions/runs/42936739602)) with
+   `exp/ani/pack.sh`.
+2. **Sketches come from GTDB's archive by default**, through the seek index. This is a stopgap: it
+   downloads about 5.7 times the sketch bytes and loads GTDB's server, so the docs ask users to
+   keep a cache. A local or split `sketches.db` still works with `--source`. `sketches.db` is not
+   re-hosted. GTDB has been asked to publish `skani/database/` unpacked
+   ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)).
+3. **A "species call only" flag** (fetch only references that can reach their radius) is on the
+   roadmap as an opt-in for later.
 
-## 6. Licences and credit
+## 7. Licences and credit
 
 - **GTDB data** (the skani database, radii, taxonomy) is CC BY-SA 4.0 (Parks et al., the Genome
   Taxonomy Database, <https://gtdb.ecogenomic.org>). The screen index and the seek index are
-  derived from it, so they are CC BY-SA 4.0 too and must credit GTDB if they are published. The
+  derived from it, so they are CC BY-SA 4.0 too; the irit-data release says so and credits GTDB. The
   sketches the client fetches are GTDB's, unmodified.
 - **skani** (Shaw and Yu, *Nature Methods* 2023, MIT licence) computes every ANI and AF. The
   client runs the skani 0.3.1 binary; it reimplements only skani's file layout and the screen

@@ -62,6 +62,8 @@
   `verify`, `verify --deep` and GTDB-Tk folder hashes give the same results. The marker and lock
   entry record `linked_files` and `linked_bytes`. If the file system refuses hard links the copies
   are kept, with a note. `fetch --no-dedupe` keeps copies.
+- `gtdbtk-r232-ani-screen` (2.1 GB download, 2.3 GB unpacked): the screen index for `gtdbprep ani`,
+  from a new unofficial irit-data release derived from GTDB R232 (CC BY-SA 4.0).
 
 ### irit-mcp
 - **Third-party tools for the microbial isolate path**: `fastp`, `bakta`, `checkm2` and
@@ -93,11 +95,14 @@
   are screened locally against a compact index of every R232 reference's marker k-mers. Only the
   references skani would compare in full are fetched, by HTTP range requests, and GTDB-Tk's own
   `ANIScreener` then runs on just those. Sketches can come from GTDB's own `.tar.gz` (through a
-  gzip seek index), an unpacked `sketches.db` (local or hosted), or one split into parts. See
+  gzip seek index, the default), an unpacked `sketches.db` (local or hosted), or one split into
+  parts. On test genomes the output was byte-identical to GTDB-Tk against the full database. See
   [the research page](docs/research/ani-laptop.md).
 - `gtdbprep ani-index build | gz-scan | gz-attach` make the screen index and the seek index from
   a full skani database and GTDB's archive (maintainers).
-- The screen index is not hosted yet, so `ani` needs one built from the full database once.
+- **Reading sketches from GTDB's archive is a stopgap** (about 5.7 times the sketch bytes, and load
+  on GTDB's server): keep a `--cache`. Peak memory 1.9 GB for 9 genomes; GTDB-Tk on the full
+  database takes 14.7 GB.
 
 ## 0.2.1 (2026-11-10)
 
