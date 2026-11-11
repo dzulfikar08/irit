@@ -15,7 +15,8 @@ const USAGE: &str = "irit-mcp: MCP server (stdio) for the irit tools
 Usage: irit-mcp [--bin-dir DIR] [--tool-path NAME=PATH]... [--runs-dir DIR] [--run-id ID] [--root DIR] [--allow-outside-root]
 
   --bin-dir DIR          Folder with the irit binaries (env IRIT_BIN_DIR). Default: PATH.
-  --tool-path NAME=PATH  Where a third-party tool is: fastp, bakta, checkm2 or gtdbtk. Default: PATH.
+  --tool-path NAME=PATH  Where a third-party tool is: fastp, shovill, bakta, checkm2, gtdbtk, mlst or
+                         amrfinder. Default: PATH.
   --runs-dir DIR         Where run records go (env IRIT_RUNS_DIR). Default: ./irit-runs
   --run-id ID            Name of this session's run folder. Default: <UTC time>-<pid>
   --root DIR             Tools may only write inside this folder. Default: the working directory.

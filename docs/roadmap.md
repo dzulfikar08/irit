@@ -37,6 +37,13 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [x] `irit-mcp` wraps fastp 1.4.0, Bakta 1.12.2, CheckM2 1.1.0 and GTDB-Tk 2.8.0 `classify_wf`, with
       only the flags of those versions, input and database checks, and the same run records and
       `replay.sh` (0.3.0). Tested with stand-ins for the programs.
+- [x] More `irit-mcp` wrappers (unreleased): Shovill 1.4.2, mlst 2.35.0 and AMRFinderPlus 4.2.7, so
+      the isolate path from reads to resistance genes has no step outside the record. Checked with
+      the real programs on real *S. aureus* reads (ST22, *mecA*) in the real-tools workflow.
+- [x] `dblock` additions (unreleased): the AMRFinderPlus database as a pinned entry
+      (`amrfinderplus-db-4.2-2026-10-29.1`: NCBI's 38 files with checksums we computed, indexed by
+      `amrfinder_index` before the folder is sealed), also usable as Bakta's
+      `amrfinderplus-db/latest` instead of running `amrfinder_update`.
 
 ## Next
 
@@ -66,12 +73,10 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [ ] **`msascope` redesign** ([mockups](tools/msascope.md#planned-redesign)): themes, sequence names
       and a readable default zoom are built; next the hover card, colour schemes, hiding insert and gappy columns, a tree
       panel, selection and export. Later: multi-threaded gzip, alignments larger than RAM.
-- [ ] **`dblock` additions**: AMRFinderPlus via `amrfinder_update`, GTDB-Tk split download, parallel
-      downloads.
+- [ ] **`dblock` additions**: GTDB-Tk split download, parallel downloads.
 - [ ] **`leanqc` additions**: long-read views (N50, quality by length).
-- [ ] **More `irit-mcp` wrappers**: an assembler (e.g. SPAdes or Shovill), mlst and AMRFinderPlus, so
-      the isolate path has no step outside the record. Check the four wrappers against the real
-      tools and databases on a large machine.
+- [ ] **Check the `irit-mcp` wrappers on a large machine**: GTDB-Tk with the full R232 data, Bakta
+      with the full database, SPAdes through Shovill (the real-tools workflow uses SKESA).
 
 ## Later
 

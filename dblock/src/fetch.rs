@@ -222,7 +222,9 @@ pub fn plan(store: &Path, e: &Entry, opts: &Opts) -> Result<Plan> {
     let resumable: u64 =
         e.sources().iter().map(|src| fs::metadata(partial_path(store, e, src)).map(|m| m.len().min(src.size)).unwrap_or(0)).sum();
     let stored = e.on_disk();
-    let full = if e.format == Format::File { e.size } else { e.size + stored };
+    // Plain files are moved into the folder, not unpacked: they need their own size, plus what
+    // `prepare` adds (counted in `on_disk`).
+    let full = if e.format == Format::File { stored } else { e.size + stored };
     let can_stream = e.format != Format::File;
 
     if opts.force_stream && can_stream {
@@ -360,6 +362,11 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
             bail!("folder hash mismatch for {}: {}. Nothing was kept.", e.id, bad.join("; "));
         }
     }
+    // After the checksums: only files that matched the catalog are prepared.
+    let prepared = match e.prepare {
+        Some(p) => Some(prepare(Path::new(p.program()), tmp).with_context(|| format!("preparing {}; nothing was kept", e.id))?),
+        None => None,
+    };
 
     let target = target_dir(store, e);
     if target.symlink_metadata().is_ok() {
@@ -408,6 +415,7 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
         linked_files: deduped.linked,
         linked_bytes: deduped.saved,
         parts,
+        prepared,
     };
     // The marker goes in before the rename, so a folder under the final name is always complete.
     project::write_marker(tmp, &locked)?;
@@ -423,6 +431,29 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
         return Err(err).with_context(|| format!("moving into {}", target.display()));
     }
     Ok(locked)
+}
+
+/// Run a catalog's `prepare` program on the fetched folder: `<program> <dir>`. Returns
+/// `<program> <its --version>`, recorded in the lock so it's known what built the extra files.
+pub fn prepare(program: &Path, dir: &Path) -> Result<String> {
+    let name = program.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let version = std::process::Command::new(program).arg("--version").stdin(std::process::Stdio::null()).output();
+    let version = match version {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").to_string(),
+        Ok(o) => bail!("`{name} --version` failed ({}); is it installed?", o.status),
+        Err(err) => bail!(
+            "{name} is needed to prepare this database and could not be run ({err}). Install AMRFinderPlus in the \
+             environment dblock runs from (e.g. `conda install -c conda-forge -c bioconda ncbi-amrfinderplus`), then fetch again"
+        ),
+    };
+    eprintln!("  running {name} {} (version {version})", dir.display());
+    let out = std::process::Command::new(program).arg(dir).stdin(std::process::Stdio::null()).output()?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let tail: Vec<&str> = err.lines().rev().take(10).collect();
+        bail!("{name} failed ({}): {}", out.status, tail.into_iter().rev().collect::<Vec<_>>().join("\n"));
+    }
+    Ok(format!("{name} {version}").trim().to_string())
 }
 
 fn get(url: &str, from: u64) -> Result<(ureq::http::Response<ureq::Body>, bool)> {
@@ -2119,5 +2150,91 @@ mod tests {
         let p = plan(&dir.path().join("store"), &e, &opts()).unwrap();
         assert_eq!(p.need, e.size + 1_000);
         assert_eq!(e.on_disk(), 1_000);
+    }
+
+    /// Loose files (AMRFinderPlus's layout): each part is kept as is, under its name.
+    fn loose_entry(dir: &Path, base: &str, files: &[(String, Vec<u8>)], prepare: Option<&str>) -> Entry {
+        let parts: Vec<_> = files
+            .iter()
+            .map(|(name, body)| serde_json::json!({"file": name, "size": body.len(), "md5": hex(&Md5::digest(body)), "sha256": hex(&Sha256::digest(body))}))
+            .collect();
+        let mut json = serde_json::json!({
+            "id": "loose", "name": "t", "version": "1", "tool": "t", "format": "file", "base_url": base,
+            "parts": parts, "extracted": 50, "md5_source": "test", "env": "MYDB", "compat": null, "licence": "x"
+        });
+        if let Some(p) = prepare {
+            json["prepare"] = p.into();
+        }
+        let cat = dir.join("cat.json");
+        fs::write(&cat, serde_json::json!([json]).to_string()).unwrap();
+        let entries = crate::catalog::load(Some(&cat)).unwrap();
+        crate::catalog::find(&entries, "loose").unwrap().clone()
+    }
+
+    #[test]
+    fn loose_files_are_kept_as_they_are() {
+        let files: Vec<(String, Vec<u8>)> =
+            vec![("AMRProt.fa".into(), b">p1\nMKV\n".to_vec()), ("version.txt".into(), b"2026-10-29.1\n".to_vec())];
+        // --stream can't apply to plain files; it falls back to downloading them.
+        for stream in [false, true] {
+            let (base, log) = serve_files(files.clone());
+            let dir = tempfile::tempdir().unwrap();
+            let e = loose_entry(dir.path(), &base, &files, None);
+            assert_eq!((e.size, e.on_disk()), (21, 50));
+            let store = dir.path().join("store");
+            let (l, _) = obtain(&store, &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true })
+                .unwrap_or_else(|err| panic!("stream={stream}: {err:#}"));
+            let db = target_dir(&store, &e);
+            assert_eq!(listing(&db), ["AMRProt.fa", "version.txt"]);
+            assert_eq!(fs::read(db.join("version.txt")).unwrap(), b"2026-10-29.1\n");
+            assert_eq!(Path::new(&l.data_path), db, "the folder itself, not one file in it");
+            assert_eq!((l.parts.len(), l.prepared.as_deref()), (2, None));
+            assert_eq!(log.lock().unwrap().len(), 2);
+        }
+        // A corrupt file keeps nothing.
+        let mut bad = files.clone();
+        bad[1].1[0] = b'3';
+        let (base, _) = serve_files(bad);
+        let dir = tempfile::tempdir().unwrap();
+        let e = loose_entry(dir.path(), &base, &files, None);
+        let err = format!("{:#}", obtain(&dir.path().join("store"), &e, &opts()).unwrap_err());
+        assert!(err.contains("checksum mismatch") && err.contains("version.txt"), "{err}");
+        assert!(!target_dir(&dir.path().join("store"), &e).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_runs_on_the_folder_and_reports_its_version() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let prog = dir.path().join("amrfinder_index");
+        fs::write(&prog, "#!/bin/sh\n[ \"$1\" = --version ] && { echo 4.2.7; exit 0; }\n[ -f \"$1/AMRProt.fa\" ] || { echo no db >&2; exit 1; }\necho idx > \"$1/AMRProt.fa.phr\"\n").unwrap();
+        fs::set_permissions(&prog, fs::Permissions::from_mode(0o755)).unwrap();
+        let db = dir.path().join("db");
+        fs::create_dir(&db).unwrap();
+        let err = format!("{:#}", prepare(&prog, &db).unwrap_err());
+        assert!(err.contains("amrfinder_index failed") && err.contains("no db"), "{err}");
+        fs::write(db.join("AMRProt.fa"), ">p\nM\n").unwrap();
+        assert_eq!(prepare(&prog, &db).unwrap(), "amrfinder_index 4.2.7");
+        assert!(db.join("AMRProt.fa.phr").is_file());
+        let err = format!("{:#}", prepare(&dir.path().join("missing"), &db).unwrap_err());
+        assert!(err.contains("could not be run") && err.contains("ncbi-amrfinderplus"), "{err}");
+    }
+
+    /// Without amrfinder_index on PATH, a database that needs it is not kept half-prepared.
+    #[test]
+    fn failed_prepare_keeps_nothing() {
+        if std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("amrfinder_index").is_file())) {
+            return; // AMRFinderPlus is installed here; the error can't be provoked.
+        }
+        let files: Vec<(String, Vec<u8>)> = vec![("AMRProt.fa".into(), b">p1\nMKV\n".to_vec())];
+        let (base, _) = serve_files(files.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let e = loose_entry(dir.path(), &base, &files, Some("amrfinder_index"));
+        let store = dir.path().join("store");
+        let err = format!("{:#}", obtain(&store, &e, &opts()).unwrap_err());
+        assert!(err.contains("preparing loose; nothing was kept") && err.contains("amrfinder_index"), "{err}");
+        assert!(!target_dir(&store, &e).exists());
+        assert!(!store.join(".tmp").exists(), "temporary folder left behind");
     }
 }

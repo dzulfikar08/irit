@@ -1,16 +1,22 @@
-"""Drives irit-mcp over stdio against the real fastp, Bakta, CheckM2 and GTDB-Tk.
+"""Drives irit-mcp over stdio against the real fastp, Shovill, Bakta, CheckM2, GTDB-Tk, mlst and
+AMRFinderPlus.
 
 Used by .github/workflows/mcp-real-tools.yml. Standard library only. The run:
 
-1. dblock_add / dblock_fetch the Bakta light and CheckM2 databases, dblock_env for their paths.
-2. fastp, bakta, checkm2 and gtdbtk_classify_wf once each, then isotable over the results.
-3. Moves those outputs aside and runs the four tools again with the same paths: any output whose
+1. dblock_add / dblock_fetch the Bakta light, CheckM2 and AMRFinderPlus databases (dblock indexes the
+   last with amrfinder_index), dblock_env for their paths. Bakta gets the AMRFinderPlus database as
+   `amrfinderplus-db/latest` of a folder of links to its own database, so neither dblock folder changes.
+2. Two samples. mg: Mycoplasma genitalium G37 (simulated reads, the published assembly) through
+   fastp, bakta, checkm2, gtdbtk_classify_wf and amrfinder on Bakta's proteins. sa: real Illumina reads
+   of Staphylococcus aureus (ERR044595, as nf-core/bacass tests with) through fastp, shovill, mlst and
+   amrfinder. Then isotable over all results, with mlst and AMR required.
+3. Moves those outputs aside and runs the tools again with the same paths: any output whose
    SHA-256 differs between the two identical runs is listed (the "volatile" outputs replay.sh
    can't hash-check). For JSON files, the fields that differ are listed too.
-4. Deletes the first run's outputs and runs replay.sh.
+4. Deletes the first run's outputs and runs replay.sh; then dblock_verify: the databases are unchanged.
 
 Writes a Markdown report to $GITHUB_STEP_SUMMARY (or stdout) and exits non-zero if a tool call
-failed or the replay failed.
+failed, a result is not what the sample should give, or the replay failed.
 """
 
 import argparse
@@ -109,7 +115,6 @@ def main():
     ap.add_argument("--mcp", required=True)
     ap.add_argument("--work", required=True)
     ap.add_argument("--path", required=True, help="PATH for irit-mcp and replay.sh (tool wrappers first)")
-    ap.add_argument("--amrfinder-update", help="amrfinder_update to run on the fetched Bakta database (its AMRFinderPlus data must match the installed amrfinder)")
     a = ap.parse_args()
     work = Path(a.work).resolve()
     env = dict(os.environ, PATH=a.path)
@@ -136,39 +141,94 @@ def main():
             failures.append(label or tool)
         return sc
 
-    call("dblock_add", {"ids": ["bakta-db-v6-light", "checkm2-db-v3"], "store": "dbs"})
+    amr_id = "amrfinderplus-db-4.2-2026-10-29.1"
+    call("dblock_add", {"ids": ["bakta-db-v6-light", "checkm2-db-v3", amr_id, "gtdbtk-r232-mockup"], "store": "dbs"})
     call("dblock_fetch", {"confirm": True, "stream": True})
     dbs = call("dblock_env", {}).get("env", {})
-    if a.amrfinder_update and dbs.get("BAKTA_DB"):
-        # BAKTA_DB may be relative to the work folder (the dblock store is "dbs")
-        amr = work / dbs["BAKTA_DB"] / "amrfinderplus-db"
-        r = subprocess.run([a.amrfinder_update, "--force_update", "--database", str(amr)], cwd=work, env=env, capture_output=True, text=True)
-        log(f"amrfinder_update --force_update --database {amr}: exit {r.returncode}")
-        log("```")
-        log((r.stdout + r.stderr)[-3000:])
-        log("```")
+    # Bakta 1.12.2 runs `amrfinder --database <db>/amrfinderplus-db/latest` (bakta/expert/amrfinder.py).
+    # Instead of amrfinder_update writing into the dblock Bakta folder, Bakta gets a folder of links to
+    # its database whose amrfinderplus-db/latest is the dblock AMRFinderPlus database.
+    bakta_db = dbs.get("BAKTA_DB", "")
+    if bakta_db and dbs.get("AMRFINDER_DB"):
+        src, linked = work / bakta_db, work / "bakta-db-amr"
+        shutil.rmtree(linked, ignore_errors=True)
+        linked.mkdir()
+        for entry in src.iterdir():
+            if entry.name != "amrfinderplus-db":
+                (linked / entry.name).symlink_to(entry.resolve())
+        (linked / "amrfinderplus-db").mkdir()
+        (linked / "amrfinderplus-db" / "latest").symlink_to((work / dbs["AMRFINDER_DB"]).resolve())
+        log(f"Bakta database with dblock's AMRFinderPlus data: `{linked.name}` (links to `{bakta_db}`, latest -> `{dbs['AMRFINDER_DB']}`)")
         log("")
+        bakta_db = linked.name
+
+    def expect(label, ok, detail):
+        log(f"- check {label}: {'ok' if ok else 'WRONG'} ({detail})")
+        log("")
+        if not ok:
+            failures.append(f"check {label}")
 
     def run_all(suffix=""):
-        os.makedirs(work / "trim", exist_ok=True)
-        call(
-            "fastp",
+        for d in ["trim", "shovill", "typing"]:
+            os.makedirs(work / d, exist_ok=True)
+        for s, reads in [("mg", "reads/mg"), ("sa", "reads/ERR044595_1M")]:
+            call(
+                "fastp",
+                {
+                    "in1": f"{reads}_1.fastq.gz" if s == "sa" else f"{reads}_R1.fastq.gz",
+                    "in2": f"{reads}_2.fastq.gz" if s == "sa" else f"{reads}_R2.fastq.gz",
+                    "out1": f"trim/{s}_R1.fastq.gz",
+                    "out2": f"trim/{s}_R2.fastq.gz",
+                    "json": f"trim/{s}.fastp.json",
+                    "detect_adapter_for_pe": True,
+                    "thread": 4,
+                },
+                f"fastp {s}{suffix}",
+            )
+        # S. aureus: real reads (53x), assembled with SKESA at 30x without the optional read
+        # correction, stitching and Pilon steps, to keep three Shovill runs within the job's time.
+        asm = call(
+            "shovill",
             {
-                "in1": "reads/mg_R1.fastq.gz",
-                "in2": "reads/mg_R2.fastq.gz",
-                "out1": "trim/mg_R1.fastq.gz",
-                "out2": "trim/mg_R2.fastq.gz",
-                "json": "trim/mg.fastp.json",
-                "detect_adapter_for_pe": True,
-                "thread": 4,
+                "r1": "trim/sa_R1.fastq.gz",
+                "r2": "trim/sa_R2.fastq.gz",
+                "outdir": "shovill/sa",
+                "assembler": "skesa",
+                "gsize": "2.8M",
+                "depth": 30,
+                "noreadcorr": True,
+                "nostitch": True,
+                "nocorr": True,
+                "cpus": 4,
+                "ram": 8,
             },
-            f"fastp{suffix}",
+            f"shovill sa{suffix}",
         )
+        size = asm.get("assembly", {}).get("total_length", 0)
+        expect(f"shovill sa{suffix}", 2_600_000 < size < 3_100_000, f"{size} bp; S. aureus is about 2.8 Mb")
+        st = call("mlst", {"contigs": ["shovill/sa/contigs.fa"], "outfile": "typing/sa.mlst.tsv", "json": "typing/sa.mlst.json"}, f"mlst sa{suffix}")
+        row = (st.get("results") or [{}])[0]
+        # ERR044595 is an EMRSA-15 isolate: ST22.
+        expect(f"mlst sa{suffix}", (row.get("sample"), row.get("scheme"), row.get("st")) == ("sa", "saureus", "22"), json.dumps(row)[:300])
+        amr = call(
+            "amrfinder",
+            {
+                "nucleotide": "shovill/sa/contigs.fa",
+                "database": dbs.get("AMRFINDER_DB", ""),
+                "organism": "Staphylococcus_aureus",
+                "plus": True,
+                "output": "typing/sa.amrfinder.tsv",
+                "threads": 4,
+            },
+            f"amrfinder sa{suffix}",
+        )
+        genes = (amr.get("summary") or {}).get("amr_genes", "")
+        expect(f"amrfinder sa{suffix}", {"mecA", "blaZ"} <= set(genes.split(",")), genes)
         call(
             "bakta",
             {
                 "genome": "asm/mg.fna",
-                "db": dbs.get("BAKTA_DB", ""),
+                "db": bakta_db,
                 "outdir": "bakta",
                 "translation_table": 4,
                 "genus": "Mycoplasmoides",
@@ -176,6 +236,21 @@ def main():
                 "threads": 4,
             },
             f"bakta{suffix}",
+        )
+        # AMRFinderPlus on Bakta's proteins, with Bakta's GFF3 and contigs (its own contig names).
+        call(
+            "amrfinder",
+            {
+                "protein": "bakta/mg.faa",
+                "gff": "bakta/mg.gff3",
+                "nucleotide": "bakta/mg.fna",
+                "annotation_format": "bakta",
+                "translation_table": 4,
+                "database": dbs.get("AMRFINDER_DB", ""),
+                "output": "typing/mg.amrfinder.tsv",
+                "threads": 4,
+            },
+            f"amrfinder mg{suffix}",
         )
         call(
             "checkm2",
@@ -188,7 +263,7 @@ def main():
                 "genome_dir": "gtdb_genomes",
                 "extension": "fna.gz",
                 "out_dir": "gtdbtk",
-                "data_path": "gtdb_mock/release232_mockup",
+                "data_path": dbs.get("GTDBTK_DATA_PATH", ""),
                 "place_species": True,
                 # GTDB's mock database has an empty split/, so it needs the full tree (its HOWTO's -f)
                 "full_tree": True,
@@ -198,13 +273,35 @@ def main():
             f"gtdbtk_classify_wf{suffix}",
         )
 
-    dirs = ["trim", "bakta", "checkm2", "gtdbtk"]
+    dirs = ["trim", "shovill", "typing", "bakta", "checkm2", "gtdbtk"]
     run_all()
-    call("isotable", {"dirs": [d for d in ["trim", "checkm2", "gtdbtk"] if (work / d).is_dir()]})
+    table = call(
+        "isotable",
+        {"dirs": [d for d in ["trim", "checkm2", "gtdbtk", "typing"] if (work / d).is_dir()], "require": ["reads", "q30", "mlst", "amr"]},
+    )
+    rows = {s.get("sample"): s for s in table.get("samples", [])}
+    sa = rows.get("sa", {}).get("values", {})
+    expect(
+        "isotable sa",
+        sa.get("mlst_st") == "22" and "mecA" in sa.get("amr_genes", "").split(",") and sa.get("reads_trimmed", "") != "",
+        json.dumps(rows.get("sa"))[:600],
+    )
+    # AMRFinderPlus on Bakta's proteins joined to mg (`none` when it found nothing).
+    expect("isotable mg", rows.get("mg", {}).get("values", {}).get("amr_genes", "") != "", json.dumps(rows.get("mg"))[:600])
+    # Bakta's own AMRFinderPlus step ran on dblock's database (Bakta 1.12.2 stops if amrfinder fails).
+    run_dir = work / "irit-runs" / "real-tools"
+    log_json = json.loads((run_dir / "run.json").read_text())
+    bakta_call = next((x for x in log_json["calls"] if x["mcp_tool"] == "bakta" and x["status"] == "ok"), None)
+    out = (run_dir / bakta_call["stdout"]).read_text() if bakta_call and bakta_call.get("stdout") else ""
+    line = next((l.strip() for l in out.splitlines() if l.strip().startswith("amrfinder:")), None)
+    expect("bakta's AMRFinderPlus step", line is not None, line or "no `amrfinder:` line in Bakta's output")
     for d in dirs:
         if (work / d).exists():
             os.rename(work / d, work / f"{d}_first")
     run_all("_again")
+    # Nothing above may have changed a fetched database (the old way, amrfinder_update, wrote into Bakta's).
+    verify = call("dblock_verify", {})
+    expect("databases unchanged", "CHANGED" not in verify.get("report", "x"), verify.get("report", "")[:600])
     c.close()
 
     log("## Outputs that differ between two identical runs (same paths)")
@@ -218,10 +315,10 @@ def main():
                 log(f"  - `{k}` fields: {json_diff(work / f'{d}_first' / k, work / d / k)}")
     log("")
 
-    run_dir = work / "irit-runs" / "real-tools"
     for d in dirs:
         shutil.rmtree(work / d, ignore_errors=True)
-    os.makedirs(work / "trim")
+    for d in ["trim", "shovill", "typing"]:
+        os.makedirs(work / d)
     r = subprocess.run(["sh", str(run_dir / "replay.sh")], cwd=work, env=env, capture_output=True, text=True)
     log(f"## replay.sh: exit {r.returncode}")
     log("")

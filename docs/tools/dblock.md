@@ -152,6 +152,26 @@ Parts are unpacked in order and may share folders, but a file may appear in only
 read-only folder entry in one part would stop a later part from writing into it; the GTDB mirror
 archives hold no folder entries.
 
+With `"format": "file"`, each part is one plain file, kept as downloaded under its `file` name in
+the database folder: a database published as loose files with no archive, such as AMRFinderPlus's.
+Plain files can't be streamed, so `--stream` downloads them instead (they need no extra room).
+
+### Preparing the files (`prepare`)
+
+Some databases need a step after the download before their tool can read them. An entry may name
+one of a fixed list of steps in `prepare`; a catalog can't give a command of its own. The only one
+is `amrfinder_index`: dblock runs `amrfinder_index <folder>` (from `PATH`) on the temporary folder
+after every file has passed its checksums and before the folder is sealed, as `amrfinder_update`
+does after downloading. It builds the BLAST and HMMER indexes (`hmmpress` on `AMR.LIB`,
+`makeblastdb` on `AMRProt.fa`, `AMR_CDS.fa` and each `AMR_DNA-*.fa`). The file list and SHA-256
+sums then cover the indexes too, so `verify` and `verify --deep` check them, and the lock entry
+records the program and its version (`prepared = "amrfinder_index 4.2.7"`). If the program is
+missing or fails, nothing is kept.
+
+The indexes record when they were built (`makeblastdb` writes the time into `.pin`/`.nin` and
+`.pjs`/`.njs`), so two fetches of the same entry give the same downloaded files but different
+SHA-256 sums for those index files. The downloaded files are what the catalog pins.
+
 ### Keeping part of an archive (`keep`)
 
 A catalog entry can list `keep`: paths inside the archive (e.g. `release232_mockup/markers`).
@@ -243,9 +263,53 @@ Every URL, size and checksum in the built-in catalog was checked against the pub
 | `kraken2-standard-16gb-20261022` | 12.0 GB | 14.9 GB | |
 | `kraken2-pluspf-8gb-20261022` | 5.9 GB | 7.5 GB | Adds protozoa and fungi. |
 | `kraken2-viral-20261022` | 590 MB | 1.23 GB | Good for tests. |
-| `bakta-db-v6-full` | 31.9 GB | 84 GB | Bakta 1.11–1.x (schema 6). Run `amrfinder_update` after. |
+| `bakta-db-v6-full` | 31.9 GB | 84 GB | Bakta 1.11–1.x (schema 6). Needs AMRFinderPlus data: `amrfinderplus-db-4.2-2026-10-29.1` (see below), or `amrfinder_update` after. |
 | `bakta-db-v6-light` | 1.3 GB | 3.9 GB | Same. |
 | `card-4.0.2` | 4 MB | 50 MB | **Non-commercial licence**; checksum computed by us (CARD publishes none). |
+| `amrfinderplus-db-4.2-2026-10-29.1` | 126 MB (38 files) | 256 MB | AMRFinderPlus ≥ 4.2.0, < 4.3. Indexed by `amrfinder_index` at fetch time, so AMRFinderPlus must be on `PATH`. Checksums computed by us (NCBI publishes none). See below. |
+
+### `amrfinderplus-db-4.2-2026-10-29.1`: the AMRFinderPlus database
+
+NCBI publishes AMRFinderPlus's database as loose files under
+`https://ftp.ncbi.nlm.nih.gov/pathogen/Antimicrobial_resistance/AMRFinderPlus/database/<format>/<release>/`.
+`amrfinder_update` fetches the newest release for the installed AMRFinderPlus's format, so which
+data a run used depends on the day it was installed. This entry pins release `2026-10-29.1` of
+format `4.2` (the newest in `4.2/` on 2026-11-11; its `database_format_version.txt` says `4.2.0`,
+which AMRFinderPlus 4.2.x reads, and it is newer than the `2025-09-22.2` that AMRFinderPlus 4.2.7
+requires). Its parts are exactly the 38 files AMRFinderPlus 4.2.7's `amrfinder_update.cpp`
+downloads: `AMR.LIB`, `AMRProt.fa`, `AMRProt-mutation.tsv`, `AMRProt-suppress.tsv`,
+`AMRProt-susceptible.fa`, `AMRProt-susceptible.tsv`, `AMR_CDS.fa`, `database_format_version.txt`,
+`fam.tsv`, `taxgroup.tsv`, `version.txt`, `AMR_DNA-<taxgroup>.fa` and `.tsv` for the 13 taxgroups
+`taxgroup.tsv` gives DNA reference genes, and `changes.txt` (126,332,542 bytes). The other files in
+the release folder (`ReferenceGeneCatalog.txt`, `amr_targets.fa`, ...) are not read by
+`amrfinder` and are left out.
+
+NCBI publishes no checksums. Each file's MD5 and SHA-256 were computed by us on 2026-11-11 from a
+download of these URLs, then checked by a second, independent download (`dblock fetch` from NCBI),
+which matched all 38. After the checksums pass, dblock runs `amrfinder_index` on the folder (see
+[`prepare`](#preparing-the-files-prepare)): 162 files, 256 MB. The result is a database folder
+`amrfinder --database` reads directly; `dblock env` exports it as `AMRFINDER_DB`, the variable
+`amrfinder` reads. With AMRFinderPlus 4.2.7, `amrfinder` on an assembly gave the same report
+from this folder as from a copy indexed by hand.
+
+**With Bakta.** Bakta 1.12.2 runs AMRFinderPlus itself, as
+`amrfinder --database <bakta-db>/amrfinderplus-db/latest` (`bakta/expert/amrfinder.py`), and needs
+AMRFinderPlus ≥ 4.2.7 (`bakta/utils.py`), which reads this format. So this folder can be Bakta's
+`amrfinderplus-db/latest` instead of running `amrfinder_update` into the Bakta folder. A link
+inside the dblock Bakta folder would change it (`dblock verify` would report it, as it does after
+`amrfinder_update`), so make a folder of links to the Bakta database instead and point Bakta at
+that:
+
+```sh
+eval "$(dblock env)"                      # BAKTA_DB and AMRFINDER_DB
+mkdir bakta-db && for f in "$BAKTA_DB"/*; do
+  [ "$(basename "$f")" = amrfinderplus-db ] || ln -s "$f" bakta-db/
+done
+mkdir bakta-db/amrfinderplus-db && ln -s "$AMRFINDER_DB" bakta-db/amrfinderplus-db/latest
+bakta --db bakta-db genome.fna             # or irit-mcp's bakta with db: "bakta-db"
+```
+
+Both dblock folders stay as fetched. The real-tools workflow does this and runs Bakta 1.12.2 on it.
 
 ### `gtdbtk-r232-client` and its MD5
 
@@ -319,9 +383,6 @@ genus (species stays `s__`), and GTDB-Tk 2.8's `classify` has no option to skip 
 research page shows the small launcher it used, and how gPlace stood in for pplacer with every
 placement step under an 8.5 GiB cap. Compat: GTDB-Tk ≥ 2.7.0.
 
-Not in the catalog yet: the AMRFinderPlus database (a folder of files without checksums; use
-`amrfinder_update`).
-
 ### `gtdbtk-r232-ani-screen`: the screen index for `gtdbprep ani`
 
 [`gtdbprep ani`](gtdbprep.md#the-ani-species-screen-without-the-85-gb-database-ani) runs
@@ -370,6 +431,7 @@ Against the real servers on 2026-11-10:
 | One byte of a `masks/` file changed, then `verify --deep` | Reported as a folder hash mismatch for `masks/` |
 | `gtdbtk-r232-placement-lite` from the GitHub mirror (download mode) | 11 parts, 175 MB in 2 min 5 s; every part's MD5 and SHA-256 ok; 251 files, 5,887,238,603 bytes; all 7 folder hashes match; `verify --deep` ok; every file's SHA-256 matches the mirror's `MANIFEST.tsv` |
 | Both placement entries fetched with and without `--no-dedupe` on a GitHub Ubuntu runner (ext4), [run 42829677529](https://github.com/dzulfikar08/irit/actions/runs/42829677529) | `du` of the database folder: full 7,369,129,984 → 2,706,448,384 bytes, lite 5,887,987,712 → 1,743,392,768 bytes. Linked: the ten copies of `gtdb_r232_bac120_fasttree.log` (517,985,300 bytes each) and of the refpkgs' `phylo_model*.json` (78,656 bytes each; one copy of each is in the bac120 full-tree part, so lite links 8 + 8). `verify` and `verify --deep` ok, every folder hash matches |
+| `amrfinderplus-db-4.2-2026-10-29.1` from NCBI with `--stream` (2026-11-11), AMRFinderPlus 4.2.7 on `PATH` | Fell back to downloading (plain files); 38 files in 2 min 32 s, every MD5 and SHA-256 ok; `amrfinder_index 4.2.7` built the indexes; 162 files, 256,357,434 bytes, 30 identical index files hard-linked; `amrfinder --database_version` reads it as 2026-10-29.1 |
 | `pplacer/` of the full entry (bac120 part unpacked next to the ar53 refpkg) | `4e8ffa11...`, GTDB-Tk 2.8.0's `REF_HASHES` value (hashed with a Python re-typing of `sha1_dir`, not by a dblock fetch of the full entry) |
 
 The test suite also runs fetches against a local HTTP server: two fetches of one database at
@@ -388,7 +450,10 @@ keeps copies; a link the file system refuses keeps the copy and leaves nothing b
 and multi-part entries: three parts into one folder in both modes, a corrupt part (same size, one
 byte changed; nothing kept, with MD5 alone and with MD5 + SHA-256), resuming after it (a complete
 part re-read from disk, a partial one resumed with a `Range` request), a folder hash mismatch
-across parts, and the catalog's checks on parts.
+across parts, and the catalog's checks on parts. Loose-file entries: each file kept under its name
+in both modes, a corrupt file keeping nothing; `prepare` with a stand-in `amrfinder_index` (its
+version recorded, a failure reported with its stderr) and without the program on `PATH` (nothing
+kept, no temporary folder left).
 `sha1_dir` is cross-checked against GTDB-Tk's Python function when `GTDBTK_PYTHON` (or
 `/tmp/mm/gtdbtk/bin/python`) has GTDB-Tk installed; otherwise that test is skipped.
 

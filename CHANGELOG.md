@@ -6,6 +6,15 @@
 - `gtdbtk-r232-mockup` is fetched again: GTDB corrected the stale MD5 in its `MD5SUM.txt`
   ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)), and the entry now uses it.
   `gtdbtk-r232-client` keeps the same file and now cites the published MD5.
+- **`amrfinderplus-db-4.2-2026-10-29.1`**: AMRFinderPlus's database, release 2026-10-29.1 (format
+  4.2), from NCBI's FTP: the 38 files `amrfinder_update` 4.2.7 downloads, with MD5 and SHA-256 we
+  computed (NCBI publishes none). 126 MB download, 256 MB once indexed.
+- Multi-part entries can be plain files (`"format": "file"`): each part is kept under its name.
+- `prepare`: a fixed step run on the downloaded files before the folder is sealed. The only one is
+  `amrfinder_index` (needs AMRFinderPlus on `PATH`); the lock records the program and its version
+  (`prepared`).
+- The Bakta entries' notes now say how to give Bakta this database as `amrfinderplus-db/latest`
+  through a folder of links, instead of running `amrfinder_update` into the dblock folder.
 
 ### gtdbprep
 - **`gtdbprep ani` no longer reads GTDB's server unless asked.** `--source` has no default:
@@ -16,6 +25,30 @@
   `~/.cache/irit/gtdbprep-ani`) instead of `<work>/cache`, so a sketch is fetched once per machine,
   not once per work folder. `--cache` still overrides it. Runs sharing a cache no longer write
   through the same temporary file.
+
+### irit-mcp
+- **`shovill`** (Shovill 1.4.2, the current Bioconda release): paired-end Illumina assembly with
+  SPAdes, SKESA, MEGAHIT or Velvet. Only Shovill 1.4.2's flags (`--opts`, which goes into a shell
+  command, and `--tmpdir` are left out); reads checked as FASTQ, `ram` at least 8 GB as Shovill
+  requires, `gsize`, `namefmt` and `kmers` checked the way Shovill parses them, an `outdir` whose
+  path a shell would split refused. Returns contig count, total length, N50, longest contig and GC.
+- **`mlst`** (mlst 2.35.0): sequence type from the PubMLST schemes bundled with mlst. `outfile` must
+  be named so isotable finds it (`<sample>.mlst.tsv`), and with one assembly its sample part becomes
+  mlst's `--label`, so Shovill's `contigs.fa` joins to the right sample.
+- **`amrfinder`** (AMRFinderPlus 4.2.7): resistance genes and point mutations from an assembly,
+  proteins, or both with a GFF (Bakta's with `annotation_format: bakta`). The database is checked
+  like amrfinder does (files, indexes, format not newer than 4.2.7, data at least 2025-09-22.2,
+  `organism` one the database knows) and its `version.txt` is hashed into the record; `--update` is
+  not offered. `output` must be named `<sample>.amrfinder.tsv` (or contain `amrfinder`) for isotable.
+- `AMRFINDER_DB` is the default database, as for `amrfinder` itself; `--tool-path` takes the three
+  new names.
+- The real-tools workflow also runs fastp → Shovill → mlst → AMRFinderPlus on real
+  *Staphylococcus aureus* reads (ERR044595, nf-core/bacass's test data) and AMRFinderPlus on
+  Bakta's proteins, then isotable over all of it, twice, then `replay.sh`.
+
+### isotable
+- `parse::mlst` and `parse::amrfinder` are public, for irit-mcp's summaries. No change in what
+  isotable reads.
 
 ## 0.3.1 (2026-11-11)
 

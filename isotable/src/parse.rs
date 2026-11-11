@@ -417,7 +417,7 @@ fn kraken(path: &Path, name: &str) -> Result<Option<Record>> {
 }
 
 /// mlst: FILE, SCHEME, ST, alleles... (tab-separated, header optional).
-fn mlst(path: &Path) -> Result<Vec<Record>> {
+pub fn mlst(path: &Path) -> Result<Vec<Record>> {
     let text = std::fs::read_to_string(path)?;
     Ok(text
         .lines()
@@ -434,7 +434,7 @@ fn mlst(path: &Path) -> Result<Vec<Record>> {
 }
 
 /// AMRFinderPlus: one file per sample; lists AMR genes (column names changed in 4.x).
-fn amrfinder(path: &Path, name: &str) -> Result<Vec<Record>> {
+pub fn amrfinder(path: &Path, name: &str) -> Result<Vec<Record>> {
     let rows = tsv(path)?;
     let mut genes: Vec<String> = rows
         .iter()
