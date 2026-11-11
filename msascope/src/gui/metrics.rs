@@ -75,6 +75,10 @@ pub const CONS_H: f32 = 17.0;
 pub const IDENT_H: f32 = 28.0;
 pub const GAPS_H: f32 = 10.0;
 pub const HEADER_H: f32 = RULER_H + CONS_H + IDENT_H + GAPS_H;
+/// Height of each annotation track (`#=GC`, `#=GR`) under the built-in tracks.
+pub const TRACK_H: f32 = 14.0;
+/// Height of the pinned reference row.
+pub const PIN_H: f32 = 16.0;
 /// Names are drawn once rows are at least this tall.
 pub const NAME_ROW_MIN: f64 = 8.0;
 /// Letters are drawn once cells are at least this wide and tall.

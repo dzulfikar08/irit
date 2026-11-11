@@ -8,11 +8,14 @@ use std::time::Instant;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
 use msascope::alphabet::GAP;
+use msascope::annot::TrackKind;
+use msascope::header::{AnnotColors, Band, BandSpec, HeaderKey, Strip};
 use msascope::scheme::Colors;
 use msascope::view::{self, Scene, TILE, Viewport, aln_col, row_src};
 use rayon::prelude::*;
 
 use super::app::MsaScope;
+use super::bands::HeaderRow;
 use super::fonts::tabular;
 use super::metrics::*;
 use super::tokens::tokens;
@@ -29,8 +32,11 @@ struct CellGlyph {
     descent: Pixels,
 }
 
-fn rgb_h(c: u32) -> Hsla {
-    rgb(c).into()
+/// An opaque colour as 0xRRGGBB.
+fn hex(c: Hsla) -> u32 {
+    let c = Rgba::from(c);
+    let ch = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    ch(c.r) << 16 | ch(c.g) << 8 | ch(c.b)
 }
 
 /// Runs of `true` in `flags`, as half-open index ranges.
@@ -75,11 +81,17 @@ impl MsaScope {
         let scale = window.scale_factor() as f64;
         let letters = vp.cw >= LETTER_W && vp.ch >= LETTER_H;
         let tile_theme = t.tile_theme();
+        let bands = self.header_bands();
+        let header_h = bands.last().map_or(HEADER_H, |b| b.y + b.h);
+        let band_labels: Vec<SharedString> = bands.iter().map(|b| self.band_label(b.row)).collect();
+        let header_tiles = self.header_tiles.clone();
+        let ref_row = self.ref_row.clone();
+        let ref_ruler = self.ref_opts.ruler;
         canvas(
             move |bounds, window, _| {
                 let area = Bounds::new(
-                    point(bounds.origin.x + px(left_w), bounds.origin.y + px(HEADER_H)),
-                    size((bounds.size.width - px(left_w)).max(px(0.)), (bounds.size.height - px(HEADER_H)).max(px(0.))),
+                    point(bounds.origin.x + px(left_w), bounds.origin.y + px(header_h)),
+                    size((bounds.size.width - px(left_w)).max(px(0.)), (bounds.size.height - px(header_h)).max(px(0.))),
                 );
                 // The view reads the area size in `render`, which ran before this layout: render again
                 // on change. (`refresh` does nothing while the window draws; this schedules a frame.)
@@ -98,7 +110,8 @@ impl MsaScope {
                 let generation = layout.as_deref().map_or(0, |l| l.generation);
                 let (rows, cols) = (view::view_rows(rview, d.aln.rows()), view::view_cols(map, d.aln.cols()));
                 let colors = Colors::new(d.aln.alphabet(), mode, tile_theme, letters);
-                let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map, rows: rview, colors: &colors, base: None };
+                let base = layout.as_deref().and_then(|l| l.base.as_deref());
+                let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map, rows: rview, colors: &colors, base: base.map(|b| &b.codes[..]) };
                 // The alignment row of a view row (a collapsed clade's first member).
                 let first_row = |r: usize| rview.map_or(r, |m| m.rows_of(r)[0] as usize);
                 let mono_font = Font { family: mono, ..window.text_style().font() };
@@ -168,22 +181,26 @@ impl MsaScope {
                 let font_px = px((vp.ch.min(vp.cw * 1.4) * 0.75).clamp(7.0, 16.0) as f32);
                 // Each residue letter is shaped once per frame; cells then paint its glyph directly,
                 // which skips the per-line work of `ShapedLine::paint` (thousands of cells a frame).
-                let mut glyphs: HashMap<u8, Option<CellGlyph>> = HashMap::new();
-                let mut glyph = |ch: u8, window: &mut Window| -> Option<CellGlyph> {
-                    *glyphs.entry(ch).or_insert_with(|| {
+                // Letters in the annotation tracks and the pinned row, which have their own heights.
+                let small_px = px((vp.cw * 1.3).clamp(7.0, 10.5) as f32);
+                let pin_px = px((f64::from(PIN_H).min(vp.cw * 1.4) * 0.75).clamp(7.0, 12.0) as f32);
+                let mut glyphs: HashMap<(u8, u32), Option<CellGlyph>> = HashMap::new();
+                let mut glyph_at = |ch: u8, size: Pixels, window: &mut Window| -> Option<CellGlyph> {
+                    *glyphs.entry((ch, f32::from(size).to_bits())).or_insert_with(|| {
                         let s: SharedString = (ch as char).to_string().into();
-                        let line = window.text_system().shape_line(s, font_px, &[run(&mono_font, 1, t.res_ink)], None);
+                        let line = window.text_system().shape_line(s, size, &[run(&mono_font, 1, t.res_ink)], None);
                         let run = line.runs.first()?;
                         let g = run.glyphs.first()?;
                         Some(CellGlyph { font: run.font_id, id: g.id, dx: (cw_px - line.width) / 2.0 + g.position.x, ascent: line.ascent, descent: line.descent })
                     })
                 };
                 // Letters on a fill take the residue ink; on the background (no fill), muted text.
-                let paint_letter = |g: CellGlyph, x: Pixels, y: Pixels, line_h: Pixels, filled: bool, window: &mut Window| {
+                let paint_letter_at = |g: CellGlyph, size: Pixels, x: Pixels, y: Pixels, line_h: Pixels, filled: bool, window: &mut Window| {
                     let baseline = (line_h - g.ascent - g.descent) / 2.0 + g.ascent;
                     let ink = if filled { t.res_ink } else { t.fg_muted };
-                    let _ = window.paint_glyph(point(x + g.dx, y + baseline), g.font, g.id, font_px, ink);
+                    let _ = window.paint_glyph(point(x + g.dx, y + baseline), g.font, g.id, size, ink);
                 };
+                let paint_letter = |g: CellGlyph, x: Pixels, y: Pixels, line_h: Pixels, filled: bool, window: &mut Window| paint_letter_at(g, font_px, x, y, line_h, filled, window);
                 // A gap at letter zoom: a small centred dot instead of a dash.
                 let dot = px((vp.cw.min(vp.ch) * 0.16).clamp(1.5, 3.0) as f32);
 
@@ -200,7 +217,7 @@ impl MsaScope {
                                     window.paint_quad(fill(Bounds::new(o, size(dot, dot)), t.gap_ink).corner_radii(dot / 2.0));
                                     continue;
                                 }
-                                if let Some(g) = glyph(d.aln.symbol(code), window) {
+                                if let Some(g) = glyph_at(d.aln.symbol(code), font_px, window) {
                                     paint_letter(g, cell_x(*v), cell_y(r), ch_px, colors.fill(code, col).is_some(), window);
                                 }
                             }
@@ -352,6 +369,17 @@ impl MsaScope {
                                 let _ = cl.paint(point(names.origin.x + px(name_w) - SPACE_4 - cl.width, ty), line_h, TextAlign::Left, None, window, cx);
                                 continue;
                             }
+                            // The reference row: a "ref" tag at the right.
+                            let mut avail = avail;
+                            if ref_row.as_ref().is_some_and(|x| x.row == first_row(r)) {
+                                let tag = window.text_system().shape_line("ref".into(), FONT_CAPTION, &[run(&ui_font, 3, t.accent)], None);
+                                let tw = tag.width + SPACE_3;
+                                let tx = names.origin.x + px(name_w) - SPACE_4 - tw;
+                                let chip = Bounds::new(point(tx, y + (ch_px - line_h) / 2.0), size(tw, line_h));
+                                window.paint_quad(fill(chip, t.accent_soft).corner_radii(px(3.)));
+                                let _ = tag.paint(point(tx + SPACE_3 / 2.0, ty), line_h, TextAlign::Left, None, window, cx);
+                                avail -= tw + SPACE_2;
+                            }
                             // "ID/start-end": the range after the last '/' in the dim colour.
                             let name = &d.aln.names[first_row(r)];
                             let split = name.rfind('/').filter(|&i| i > 0 && name[i + 1..].contains('-')).unwrap_or(name.len());
@@ -406,8 +434,9 @@ impl MsaScope {
                 }
                 window.paint_quad(fill(Bounds::new(point(names.origin.x + px(name_w - 1.), bounds.origin.y), size(px(1.), bounds.size.height)), t.border));
 
-                // 4. Track header: ruler, consensus, identity and gaps.
-                let header = Bounds::new(point(area.origin.x, bounds.origin.y), size(area.size.width, px(HEADER_H)));
+                // 4. Track header: the ruler, then the bands (consensus, identity, gaps, annotation
+                // tracks, the pinned reference) drawn from cached tiles, with letters over them.
+                let header = Bounds::new(point(area.origin.x, bounds.origin.y), size(area.size.width, px(header_h)));
                 window.paint_quad(fill(header, t.grid_header));
                 let caption = |s: &str, color: Hsla, window: &mut Window| window.text_system().shape_line(s.to_owned().into(), FONT_CAPTION, &[run(&ui_font, s.len(), color)], None);
                 window.with_content_mask(Some(ContentMask { bounds: header }), |window| {
@@ -425,9 +454,10 @@ impl MsaScope {
                         let b = Bounds::new(point(cell_x(c), header.origin.y + px(RULER_H - 3.)), size(cw_px.max(px(2.)), px(2.)));
                         window.paint_quad(fill(b, t.accent));
                     }
-                    // Ruler, in the alignment's own column numbers: a label on every column whose
-                    // number is a multiple of the step (labels at least TICK_LABEL_GAP apart once
-                    // hidden columns make the numbers uneven), minor ticks halfway.
+                    // Ruler, in the alignment's own column numbers (or the reference's residue
+                    // numbers): a label on every column whose number is a multiple of the step
+                    // (labels at least TICK_LABEL_GAP apart once hidden columns or gaps make the
+                    // numbers uneven), minor ticks halfway.
                     let step = view::tick_step(vp.cw, TICK_LABEL_GAP);
                     let ruler_base = header.origin.y + px(RULER_H) - px(1.);
                     let tick = |v: usize, h: Pixels, window: &mut Window| {
@@ -449,82 +479,170 @@ impl MsaScope {
                         let _ = line.paint(point(x, label_y), FONT_CAPTION * 1.3, TextAlign::Left, None, window, cx);
                         true
                     };
-                    if vis_c.start == 0 && cols > 0 {
-                        label(0, aln_col(map, 0) + 1, false, window);
-                    }
-                    if map.is_none() {
-                        let mut c = (vis_c.start.div_ceil(step) * step).max(step) - 1;
-                        if minors {
-                            let mut m = (vis_c.start.div_ceil(minor) * minor).max(minor) - 1;
-                            while m < vis_c.end {
-                                if !(m + 1).is_multiple_of(step) {
-                                    tick(m, px(3.), window);
+                    match ref_row.as_deref().filter(|_| ref_ruler) {
+                        Some(r) => {
+                            let marks = msascope::reference::ruler_marks(r, map, vis_c.clone(), step, if minors { minor } else { 0 }, vis_c.start == 0);
+                            for (v, n, major) in marks {
+                                if major {
+                                    if label(v, n, true, window) {
+                                        tick(v, px(6.), window);
+                                    }
+                                } else {
+                                    tick(v, px(3.), window);
                                 }
-                                m += minor;
                             }
                         }
-                        while c < vis_c.end {
-                            tick(c, px(6.), window);
-                            label(c, c + 1, true, window);
-                            c += step;
-                        }
-                    } else {
-                        for v in vis_c.clone() {
-                            let n = aln_col(map, v) + 1;
-                            if n.is_multiple_of(step) {
-                                if label(v, n, true, window) {
-                                    tick(v, px(6.), window);
+                        None => {
+                            if vis_c.start == 0 && cols > 0 {
+                                label(0, aln_col(map, 0) + 1, false, window);
+                            }
+                            if map.is_none() {
+                                let mut c = (vis_c.start.div_ceil(step) * step).max(step) - 1;
+                                if minors {
+                                    let mut m = (vis_c.start.div_ceil(minor) * minor).max(minor) - 1;
+                                    while m < vis_c.end {
+                                        if !(m + 1).is_multiple_of(step) {
+                                            tick(m, px(3.), window);
+                                        }
+                                        m += minor;
+                                    }
                                 }
-                            } else if minors && n.is_multiple_of(minor) {
-                                tick(v, px(3.), window);
+                                while c < vis_c.end {
+                                    tick(c, px(6.), window);
+                                    label(c, c + 1, true, window);
+                                    c += step;
+                                }
+                            } else {
+                                for v in vis_c.clone() {
+                                    let n = aln_col(map, v) + 1;
+                                    if n.is_multiple_of(step) {
+                                        if label(v, n, true, window) {
+                                            tick(v, px(6.), window);
+                                        }
+                                    } else if minors && n.is_multiple_of(minor) {
+                                        tick(v, px(3.), window);
+                                    }
+                                }
                             }
                         }
                     }
                     window.paint_quad(fill(Bounds::new(point(header.origin.x, ruler_base), size(header.size.width, px(1.))), t.border));
 
-                    // Tracks, one entry per device pixel column, merged into runs of equal colour/height.
-                    let npx = dev_vp.width.ceil() as usize;
-                    let track = view::column_track(&d.stats, map, dev_vp.col0, cwd, npx);
-                    let cons_y = header.origin.y + px(RULER_H);
-                    let ident_y = cons_y + px(CONS_H);
-                    let gaps_y = ident_y + px(IDENT_H);
-                    let ident_h = |id: f32| (id * (IDENT_H - 6.0)).round();
-                    let gaps_h = |g: f32| (g * (GAPS_H - 2.0)).round();
-                    // The consensus residue in the scheme's colour for its column; none where the
-                    // scheme leaves it unfilled.
-                    let fill_of = |code: u8, col: usize| colors.fill(code, &scene.column(col));
-                    let mut i = 0;
-                    while i < npx {
-                        let Some(p) = track[i] else { break };
-                        let (fc, hi, hq, gq) = (fill_of(p.code, p.col), p.identity >= 0.9, ident_h(p.identity), gaps_h(p.gaps));
-                        let mut j = i + 1;
-                        while j < npx
-                            && track[j].is_some_and(|q| fill_of(q.code, q.col) == fc && (q.identity >= 0.9) == hi && ident_h(q.identity) == hq && gaps_h(q.gaps) == gq)
-                        {
-                            j += 1;
+                    // The bands below the ruler, as image tiles 256 device pixels wide, drawn once
+                    // per scale, scheme, theme, layout and set of bands.
+                    let strip_y = header.origin.y + px(RULER_H);
+                    let strip_bands: Vec<BandSpec> = bands
+                        .iter()
+                        .filter_map(|b| {
+                            let band = match b.row {
+                                HeaderRow::Ruler => return None,
+                                HeaderRow::Consensus => Band::Consensus,
+                                HeaderRow::Identity => Band::Identity { hi: hex(t.track_hi), lo: hex(t.track_lo) },
+                                HeaderRow::Gaps => Band::Gaps { ink: hex(t.fg_dim) },
+                                HeaderRow::Gc(i) => Band::Annot { data: &d.aln.gc[i].data, kind: d.aln.gc[i].kind() },
+                                HeaderRow::Gr(i) => Band::Annot { data: &d.aln.gr[i].data, kind: TrackKind::of(&d.aln.gr[i].tag) },
+                                HeaderRow::Pinned => Band::Row { codes: &ref_row.as_deref()?.codes },
+                            };
+                            Some(BandSpec { y: b.y - RULER_H, h: b.h, band })
+                        })
+                        .collect();
+                    let strip = Strip { scene: &scene, bands: strip_bands, identity_ref: base, bg: hex(t.grid_header), annot: AnnotColors::new(&tile_theme), scale };
+                    let strip_h = strip.height_dev();
+                    if strip_h > 0 {
+                        let mut cache = header_tiles.borrow_mut();
+                        let key = HeaderKey {
+                            cw: cwd.to_bits(),
+                            scale: (scale * 100.0) as u32,
+                            mode,
+                            theme: tile_theme,
+                            inks: [hex(t.track_hi), hex(t.track_lo), hex(t.fg_dim), hex(t.grid_header)],
+                            generation,
+                            reference: ref_row.as_ref().map(|r| r.row as u32),
+                            bands: bands.iter().map(|b| (b.row.code(), (b.y * 4.0) as u32, (b.h * 4.0) as u32)).collect(),
+                        };
+                        for img in cache.begin(key) {
+                            let _ = window.drop_image(img);
                         }
-                        let (x0, x1) = (to_x(i as f64), to_x(j as f64));
-                        if let Some(fc) = fc {
-                            window.paint_quad(fill(Bounds::new(point(x0, cons_y + px(1.)), size(x1 - x0, px(CONS_H - 2.))), rgb_h(fc)));
+                        let wanted: Vec<i64> = msascope::header::tiles_x(off_x, dev_vp.width).collect();
+                        let missing = cache.missing(&wanted);
+                        let rendered: Vec<_> = missing
+                            .par_iter()
+                            .map(|&tx| {
+                                let mut buf = vec![0u8; TILE * strip_h * 4];
+                                strip.render(cwd, tx * TILE as i64, TILE, &mut buf);
+                                let img = image::RgbaImage::from_raw(TILE as u32, strip_h as u32, buf).unwrap();
+                                (tx, Arc::new(RenderImage::new(vec![image::Frame::new(img)])))
+                            })
+                            .collect();
+                        for (tx, img) in rendered {
+                            cache.insert(tx, img);
                         }
-                        let bar = if hi { t.track_hi } else { t.track_lo };
-                        window.paint_quad(fill(Bounds::new(point(x0, ident_y + px(IDENT_H - 2.0 - hq)), size(x1 - x0, px(hq))), bar));
-                        if gq > 0.0 {
-                            window.paint_quad(fill(Bounds::new(point(x0, gaps_y + px(1.)), size(x1 - x0, px(gq))), t.fg_dim));
+                        let tile_size = size(px((TILE as f64 / scale) as f32), px((strip_h as f64 / scale) as f32));
+                        for tx in &wanted {
+                            let img = cache.get(tx).unwrap().clone();
+                            let b = Bounds::new(point(to_x(*tx as f64 * TILE as f64 - off_x), strip_y), tile_size);
+                            let _ = window.paint_image(b, b, Corners::default(), img, 0, false);
                         }
-                        i = j;
+                        for img in cache.evict((wanted.len() * 4).max(16)) {
+                            let _ = window.drop_image(img);
+                        }
                     }
-                    if letters {
-                        for v in vis_c.clone() {
-                            let c = aln_col(map, v);
-                            let code = d.stats.consensus[c];
-                            if code == GAP {
-                                continue;
+                    // Letters over the bands: the consensus at letter zoom, the characters of text
+                    // tracks once columns are wide enough, and the pinned row's residues.
+                    for b in &bands {
+                        let y = header.origin.y + px(b.y);
+                        match b.row {
+                            HeaderRow::Consensus if letters => {
+                                for v in vis_c.clone() {
+                                    let c = aln_col(map, v);
+                                    let code = d.stats.consensus[c];
+                                    if code == GAP {
+                                        continue;
+                                    }
+                                    if let Some(g) = glyph_at(d.aln.symbol(code), font_px, window) {
+                                        paint_letter(g, cell_x(v), y, px(b.h), colors.fill(code, &scene.column(c)).is_some(), window);
+                                    }
+                                }
                             }
-                            if let Some(g) = glyph(d.aln.symbol(code), window) {
-                                paint_letter(g, cell_x(v), cons_y, px(CONS_H), fill_of(code, c).is_some(), window);
+                            HeaderRow::Gc(_) | HeaderRow::Gr(_) if vp.cw >= LETTER_W => {
+                                let (data, kind) = match b.row {
+                                    HeaderRow::Gc(i) => (&d.aln.gc[i].data, d.aln.gc[i].kind()),
+                                    HeaderRow::Gr(i) => (&d.aln.gr[i].data, TrackKind::of(&d.aln.gr[i].tag)),
+                                    _ => unreachable!(),
+                                };
+                                if kind != TrackKind::Text {
+                                    continue;
+                                }
+                                for v in vis_c.clone() {
+                                    let ch = data[aln_col(map, v)];
+                                    if msascope::header::is_blank(ch) {
+                                        continue;
+                                    }
+                                    if let Some(g) = glyph_at(ch, small_px, window) {
+                                        paint_letter_at(g, small_px, cell_x(v), y, px(b.h), false, window);
+                                    }
+                                }
                             }
+                            HeaderRow::Pinned if letters => {
+                                let Some(r) = ref_row.as_deref() else { continue };
+                                for v in vis_c.clone() {
+                                    let c = aln_col(map, v);
+                                    let code = r.codes[c];
+                                    if code == GAP {
+                                        continue;
+                                    }
+                                    if let Some(g) = glyph_at(d.aln.symbol(code), pin_px, window) {
+                                        paint_letter_at(g, pin_px, cell_x(v), y, px(b.h), colors.fill(code, &scene.column(c)).is_some(), window);
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
+                    }
+                    // The pinned row: an accent line along its top, and its cursor column.
+                    if let Some(b) = bands.iter().find(|b| b.row == HeaderRow::Pinned) {
+                        let y = header.origin.y + px(b.y);
+                        window.paint_quad(fill(Bounds::new(point(header.origin.x, y), size(header.size.width, px(1.))), t.accent));
                     }
                     // Hidden columns: a thin tick at the ruler's foot where each hidden run was and
                     // a faint line down through the tracks. Runs closer than HIDDEN_MARK_MERGE px
@@ -544,26 +662,44 @@ impl MsaScope {
                         for (x, n) in marks {
                             let w = if n > 1 { px(2.) } else { px(1.) };
                             window.paint_quad(fill(Bounds::new(point(px(x), ruler_base - px(5.)), size(w, px(5.))), tick));
-                            window.paint_quad(fill(Bounds::new(point(px(x), ruler_base + px(1.)), size(px(1.), px(HEADER_H - RULER_H))), line));
+                            window.paint_quad(fill(Bounds::new(point(px(x), ruler_base + px(1.)), size(px(1.), px(header_h - RULER_H))), line));
                         }
                     }
                 });
-                // Corner: track labels, right-aligned against the alignment; over the tree panel,
-                // its title.
-                let corner = Bounds::new(bounds.origin, size(px(left_w), px(HEADER_H)));
+                // Corner: band labels, right-aligned against the alignment; the pinned row's name
+                // left of it with an accent mark; over the tree panel, its title.
+                let corner = Bounds::new(bounds.origin, size(px(left_w), px(header_h)));
                 window.paint_quad(fill(corner, t.grid_header));
-                for (label, y, h) in [("Column", 0.0, RULER_H), ("Consensus", RULER_H, CONS_H), ("Identity %", RULER_H + CONS_H, IDENT_H), ("Gaps", RULER_H + CONS_H + IDENT_H, GAPS_H)] {
-                    let line = caption(label, t.fg_muted, window);
-                    let lh = FONT_CAPTION * 1.25;
-                    let ty = bounds.origin.y + px(y) + (px(h) - lh) / 2.0;
-                    let _ = line.paint(point(corner.origin.x + px(left_w) - SPACE_4 - line.width, ty), lh, TextAlign::Left, None, window, cx);
-                }
+                window.with_content_mask(Some(ContentMask { bounds: corner }), |window| {
+                    for (b, label) in bands.iter().zip(&band_labels) {
+                        let lh = FONT_CAPTION * 1.25;
+                        let ty = bounds.origin.y + px(b.y) + (px(b.h) - lh) / 2.0;
+                        let right = corner.origin.x + px(left_w) - SPACE_4;
+                        if b.row == HeaderRow::Pinned {
+                            let x0 = corner.origin.x + px(tree_w);
+                            let row = Bounds::new(point(x0, bounds.origin.y + px(b.y)), size(px(name_w), px(b.h)));
+                            window.paint_quad(fill(row, t.accent_soft));
+                            window.paint_quad(fill(Bounds::new(row.origin, size(px(2.), px(b.h))), t.accent));
+                            let tag = caption("ref", t.accent, window);
+                            let _ = tag.paint(point(right - tag.width, ty), lh, TextAlign::Left, None, window, cx);
+                            let avail = right - tag.width - SPACE_4 - (x0 + SPACE_4);
+                            let runs = [run(&ui_font, label.len(), t.fg)];
+                            let mut wrapper = window.text_system().line_wrapper(ui_font.clone(), FONT_CAPTION);
+                            let (text, runs) = wrapper.truncate_line(label.clone(), avail, "…", &runs, TruncateFrom::End);
+                            let line = window.text_system().shape_line(text, FONT_CAPTION, &runs, None);
+                            let _ = line.paint(point(x0 + SPACE_4, ty), lh, TextAlign::Left, None, window, cx);
+                            continue;
+                        }
+                        let line = caption(label, t.fg_muted, window);
+                        let _ = line.paint(point(right - line.width, ty), lh, TextAlign::Left, None, window, cx);
+                    }
+                });
                 if tree.is_some() {
                     let line = caption("Tree", t.fg_muted, window);
                     let _ = line.paint(point(bounds.origin.x + SPACE_4, bounds.origin.y + px(HEADER_H) - FONT_CAPTION * 1.25 - SPACE_2), FONT_CAPTION * 1.25, TextAlign::Left, None, window, cx);
-                    window.paint_quad(fill(Bounds::new(point(bounds.origin.x + px(tree_w - 1.), bounds.origin.y), size(px(1.), px(HEADER_H))), t.border));
+                    window.paint_quad(fill(Bounds::new(point(bounds.origin.x + px(tree_w - 1.), bounds.origin.y), size(px(1.), px(header_h))), t.border));
                 }
-                window.paint_quad(fill(Bounds::new(point(names.origin.x + px(name_w - 1.), bounds.origin.y), size(px(1.), px(HEADER_H))), t.border));
+                window.paint_quad(fill(Bounds::new(point(names.origin.x + px(name_w - 1.), bounds.origin.y), size(px(1.), px(header_h))), t.border));
                 window.paint_quad(fill(Bounds::new(point(bounds.origin.x, area.origin.y - px(1.)), size(bounds.size.width, px(1.))), t.border));
                 if let Some(p) = paint_ms {
                     p.borrow_mut().push(t0.elapsed().as_secs_f64() * 1000.0);

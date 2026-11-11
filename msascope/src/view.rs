@@ -796,6 +796,40 @@ mod tests {
         assert_ne!(px(&out, TILE, 0, 0), px(&out, TILE, 0, 1));
     }
 
+    /// Differences against a reference row: the cells equal to the reference are faded, the
+    /// others (the consensus included) in full colour; at less than a pixel per cell, the pyramid
+    /// built against the reference makes the blocks without the reference's residue strong.
+    #[test]
+    fn differences_against_a_reference() {
+        let rows: Vec<String> = (0..40).map(|r| if r == 3 { "T".repeat(64) } else { "A".repeat(64) }).collect();
+        let (aln, stats, pyramid) = scene_parts(&fasta(&rows));
+        let diff = Colors::new(aln.alphabet(), ColorMode::new(Scheme::Differences), Theme::LIGHT, false);
+        let r = crate::reference::Reference::new(&aln, 3);
+        let mut scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &diff, base: None };
+        let mut out = vec![0u8; TILE * TILE * 4];
+        scene.render_tile(2.0, 2.0, 0, 0, &mut out);
+        let (a_cons, t_cons) = (px(&out, TILE, 0, 0), px(&out, TILE, 0, 7));
+        let against_ref = crate::pyramid::Pyramid::build(&aln, &r.codes);
+        scene.base = Some(&r.codes);
+        scene.pyramid = &against_ref;
+        scene.render_tile(2.0, 2.0, 0, 0, &mut out);
+        // the A rows now differ (full colour, as the T row did), the T row matches (faded)
+        assert_ne!(px(&out, TILE, 0, 0), a_cons);
+        assert_ne!(px(&out, TILE, 0, 7), t_cons);
+        let (a, t) = (aln.alphabet().encode(b'A').unwrap(), aln.alphabet().encode(b'T').unwrap());
+        let col = scene.column(0);
+        assert_eq!(col.consensus, t);
+        assert_eq!(px(&out, TILE, 0, 0), diff.cell(a, &col));
+        assert_eq!(diff.cell(a, &col), diff.cell(a, &crate::scheme::Column { consensus: GAP, ..col }));
+        // density: with the reference, 39 of 40 rows differ, so a block is far from the faded base
+        scene.render_tile(0.125, 0.125, 0, 0, &mut out);
+        let with_ref = px(&out, TILE, 0, 1);
+        scene.base = None;
+        scene.pyramid = &pyramid;
+        scene.render_tile(0.125, 0.125, 0, 0, &mut out);
+        assert_ne!(px(&out, TILE, 0, 1), with_ref);
+    }
+
     /// Gaps are the theme's background at every zoom of one pixel per cell or more, in both
     /// themes (no separate gap colour), and the gap-majority density is the background with 3% of
     /// the foreground.

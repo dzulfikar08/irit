@@ -49,6 +49,9 @@ pub struct Figure<'a> {
     /// Text colours (0xRRGGBB): names, ruler numbers and letters on no fill.
     pub fg: u32,
     pub muted: u32,
+    /// What Differences compares with, per alignment column (a reference row's codes); `None`
+    /// for the consensus.
+    pub base: Option<&'a [u8]>,
 }
 
 /// The size an export would have: (width, height) in px at scale 1.
@@ -121,7 +124,7 @@ fn n(x: f64) -> String {
 impl Figure<'_> {
     fn column(&self, c: usize) -> Column<'_> {
         let s = self.stats;
-        Column { consensus: s.consensus[c], identity: s.identity[c], shares: &s.shares[c], clustal: s.clustal[c] }
+        Column { consensus: self.base.map_or(s.consensus[c], |b| b[c]), identity: s.identity[c], shares: &s.shares[c], clustal: s.clustal[c] }
     }
 
     pub fn size(&self) -> (f64, f64) {
@@ -267,6 +270,7 @@ mod tests {
             mono_font: "JetBrains Mono, monospace".into(),
             fg: 0x4c4f69,
             muted: 0x6c6f85,
+            base: None,
         }
     }
 

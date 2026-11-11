@@ -344,6 +344,77 @@ impl MsaScope {
             (false, false) => "All columns".to_string(),
         };
         let any_hidden = (hide_inserts && inserts > 0) || hide_gappy;
+        // Annotation tracks and the reference row.
+        let gc_tags: Vec<String> = self.data.as_ref().map_or(Vec::new(), |d| d.aln.gc.iter().map(|t| t.tag.to_string()).collect());
+        let gr_tags: Vec<String> = match (&self.data, &self.ref_row) {
+            (Some(d), Some(r)) => msascope::annot::row_annots(&d.aln.gr, r.row).iter().map(|g| g.tag.to_string()).collect(),
+            _ => Vec::new(),
+        };
+        let gr_rows = self.data.as_ref().map_or(0, |d| d.aln.gr.len());
+        let hidden_tracks = self.hidden_tracks.clone();
+        let ref_opts = self.ref_opts;
+        let ref_name = self.data.as_ref().zip(self.reference).map(|(d, r)| d.aln.names[r].clone());
+        let ref_candidate = self.reference_candidate().filter(|&r| Some(r) != self.reference).and_then(|r| self.data.as_ref().map(|d| (r, d.aln.names[r].clone())));
+        let shown_tracks = gc_tags.iter().filter(|t| !hidden_tracks.iter().any(|h| **h == *t.as_str())).count();
+        let track_items = move |mut menu: gpui_kit::component::menu::PopupMenu, entity: WeakEntity<MsaScope>| {
+            menu = menu.item(PopupMenuItem::label("Annotation tracks (#=GC)"));
+            if gc_tags.is_empty() {
+                menu = menu.item(PopupMenuItem::new("None in this file").disabled(true));
+            }
+            for tag in &gc_tags {
+                let (e, key) = (entity.clone(), tag.clone());
+                let on = !hidden_tracks.iter().any(|h| **h == *tag.as_str());
+                menu = menu.item(PopupMenuItem::new(tag.clone()).checked(on).on_click(move |_, _, cx| {
+                    let _ = e.update(cx, |v, cx| v.toggle_track(&key, cx));
+                }));
+            }
+            if gr_rows > 0 {
+                menu = menu.separator().item(PopupMenuItem::label("The reference's lines (#=GR)"));
+                if gr_tags.is_empty() {
+                    let text = if ref_name.is_some() { "None for the reference" } else { "Set a reference to show its lines" };
+                    menu = menu.item(PopupMenuItem::new(text).disabled(true));
+                }
+                for tag in &gr_tags {
+                    let (e, key) = (entity.clone(), super::bands::gr_key(tag));
+                    let on = !hidden_tracks.iter().any(|h| **h == *key.as_str());
+                    menu = menu.item(PopupMenuItem::new(tag.clone()).checked(on).on_click(move |_, _, cx| {
+                        let _ = e.update(cx, |v, cx| v.toggle_track(&key, cx));
+                    }));
+                }
+            }
+            menu = menu.separator().item(PopupMenuItem::label("Reference row"));
+            if let Some((r, n)) = &ref_candidate {
+                let (e, r) = (entity.clone(), *r);
+                menu = menu.item(PopupMenuItem::new(format!("Set reference: {}   M", truncate(n, 28))).on_click(move |_, _, cx| {
+                    let _ = e.update(cx, |v, cx| v.set_reference(Some(r), cx));
+                }));
+            } else if ref_name.is_none() {
+                menu = menu.item(PopupMenuItem::new("Set reference: put the cursor on a row   M").disabled(true));
+            }
+            if let Some(n) = &ref_name {
+                let e = entity.clone();
+                menu = menu.item(PopupMenuItem::new(format!("Clear the reference ({})", truncate(n, 24))).on_click(move |_, _, cx| {
+                    let _ = e.update(cx, |v, cx| v.set_reference(None, cx));
+                }));
+            }
+            let has_ref = ref_name.is_some();
+            let opt = |label: &str, on: bool, f: fn(&mut super::app::RefOpts)| {
+                let e = entity.clone();
+                PopupMenuItem::new(label.to_string()).checked(on).disabled(!has_ref).on_click(move |_, _, cx| {
+                    let _ = e.update(cx, |v, cx| v.set_ref_opts(f, cx));
+                })
+            };
+            menu.item(opt("Pin it under the tracks", ref_opts.pin, |o| o.pin = !o.pin))
+                .item(opt("Ruler counts its residues", ref_opts.ruler, |o| o.ruler = !o.ruler))
+                .item(opt("Compare with it (Differences, identity)", ref_opts.compare, |o| o.compare = !o.compare))
+        };
+        let tracks_label = match (shown_tracks, &self.ref_row) {
+            (0, None) => "Tracks".to_string(),
+            (n, None) => format!("Tracks ({n})"),
+            (0, Some(_)) => "Reference".to_string(),
+            (n, Some(_)) => format!("Tracks ({n}) · reference"),
+        };
+        let tracks_on = shown_tracks > 0 || self.ref_row.is_some();
 
         let mut row = h_flex()
             .size_full()
@@ -382,7 +453,8 @@ impl MsaScope {
             row = row.child(separator(cx)).child(Button::new("more").ghost().xsmall().icon(IconName::Ellipsis).tooltip("Fit, colour and columns").dropdown_menu(move |menu, _, _| {
                 let menu = fit_items(menu, fit, e.clone()).separator();
                 let menu = scheme_items(menu, e.clone()).separator();
-                column_items(menu, e.clone())
+                let menu = column_items(menu, e.clone()).separator();
+                track_items(menu, e.clone())
             }));
         } else {
             let (e1, e2, e3) = (entity.clone(), entity.clone(), entity.clone());
@@ -409,7 +481,19 @@ impl MsaScope {
                         .dropdown_caret(true)
                         .tooltip("Hide insert and gappy columns · I, G")
                         .dropdown_menu(move |menu, _, _| column_items(menu, e3.clone())),
-                );
+                )
+                .child({
+                    let e4 = entity.clone();
+                    Button::new("tracks")
+                        .ghost()
+                        .xsmall()
+                        .selected(tracks_on)
+                        .icon(IconName::GalleryVerticalEnd)
+                        .label(tracks_label)
+                        .dropdown_caret(true)
+                        .tooltip("Annotation tracks and the reference row · M sets the reference")
+                        .dropdown_menu(move |menu, _, _| track_items(menu, e4.clone()))
+                });
         }
         row = row.child(div().flex_1());
         if has_data {

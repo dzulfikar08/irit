@@ -19,6 +19,7 @@ use msascope::jobs::{Done, Jobs};
 use msascope::motif::Hits;
 use msascope::rows::{Filter, RowStats, Sort};
 use msascope::pyramid::Pyramid;
+use msascope::reference::Reference;
 use msascope::scheme::{self, ColorMode, Scheme};
 use msascope::select::{ExportOptions, RangeSet, Selection};
 use msascope::tree::{self, TreeIndex, TreeRows};
@@ -118,7 +119,30 @@ pub struct Layout {
     pub generation: u64,
     /// Sequences shown when a filter hides some, else `None`.
     pub shown: Option<usize>,
+    /// The reference row Differences, the identity bars and the pyramid compare with; `None`:
+    /// the consensus.
+    pub base: Option<Arc<Reference>>,
 }
+
+/// What the reference row does besides sorting and filtering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RefOpts {
+    /// Pinned under the tracks.
+    pub pin: bool,
+    /// The ruler counts its residues.
+    pub ruler: bool,
+    /// Differences, the identity bars and the density view compare with it.
+    pub compare: bool,
+}
+
+impl Default for RefOpts {
+    fn default() -> Self {
+        RefOpts { pin: true, ruler: false, compare: true }
+    }
+}
+
+/// Header tiles: the track bands rasterised, by tile index along x.
+pub type HeaderTiles = msascope::header::TileStore<msascope::header::HeaderKey, i64, Arc<RenderImage>>;
 
 /// What the Find box searches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,6 +237,8 @@ struct ChromeKey {
     find_mode: FindMode,
     reference: Option<usize>,
     reference_candidate: Option<usize>,
+    ref_opts: RefOpts,
+    hidden_tracks: Vec<Box<str>>,
 }
 
 pub struct MsaScope {
@@ -267,6 +293,14 @@ pub struct MsaScope {
     pub(super) scroll_top: bool,
     /// The reference row (alignment row) for identity sorting and filtering.
     pub(super) reference: Option<usize>,
+    /// The reference row's codes and residue numbers.
+    pub(super) ref_row: Option<Arc<Reference>>,
+    pub(super) ref_opts: RefOpts,
+    /// Annotation tracks switched off: `#=GC` tags, and `GR <tag>` for the reference's lines.
+    pub(super) hidden_tracks: Vec<Box<str>>,
+    pub(super) header_tiles: Rc<RefCell<HeaderTiles>>,
+    /// The header band under the pointer.
+    pub(super) hover_band: Option<super::bands::HeaderRow>,
     row_stats: Option<(StatsKey, Arc<RowStats>)>,
     pub(super) find_mode: FindMode,
     pub(super) motif: Option<MotifState>,
@@ -407,6 +441,11 @@ impl MsaScope {
             clear_inputs: false,
             scroll_top: false,
             reference: None,
+            ref_row: None,
+            ref_opts: RefOpts::default(),
+            hidden_tracks: Vec::new(),
+            header_tiles: Rc::default(),
+            hover_band: None,
             row_stats: None,
             find_mode: FindMode::Names,
             motif: None,
@@ -504,6 +543,11 @@ impl MsaScope {
                         for w in &l.aln.warnings {
                             eprintln!("msascope: warning: {w}");
                         }
+                        let warn = match l.aln.warnings.as_slice() {
+                            [] => None,
+                            [w] => Some(w.clone()),
+                            [w, rest @ ..] => Some(format!("{w} (and {} more, see the terminal)", rest.len())),
+                        };
                         if let Some(rss) = peak_rss_mb() {
                             eprintln!("msascope: peak RSS after load {rss} MiB");
                         }
@@ -525,6 +569,10 @@ impl MsaScope {
                         v.reset_selection();
                         v.reset_rows(cx);
                         v.hover = None;
+                        v.hidden_tracks.clear();
+                        if let Some(w) = warn {
+                            v.status = w.into();
+                        }
                         // The tree: one given with the file, else the file's own (#=GF NH), else
                         // a sibling file with the same stem.
                         let source = v.next_tree.take().map(TreeSource::File).or(embedded.map(TreeSource::Embedded)).or_else(|| {
@@ -585,6 +633,7 @@ impl MsaScope {
         self.filter = Filter::default();
         self.filter_bar = false;
         self.reference = None;
+        self.ref_row = None;
         self.row_stats = None;
         self.cancel_motif();
         self.motif = None;
@@ -821,6 +870,11 @@ impl MsaScope {
         if self.show_tree() { self.settings.tree_width } else { 0.0 }
     }
 
+    /// The reference the views compare with: set, and "compare" on.
+    pub(super) fn compare_base(&self) -> Option<Arc<Reference>> {
+        self.ref_row.clone().filter(|_| self.ref_opts.compare)
+    }
+
     pub(super) fn left_w(&self) -> f32 {
         self.tree_w() + self.settings.name_width
     }
@@ -842,7 +896,8 @@ impl MsaScope {
         let gappy = self.hide_gappy.then(|| self.settings.gappy_pct as f32 / 100.0);
         let tree = self.tree.clone().filter(|_| self.tree_order);
         let (sort, filter, reference) = (self.sort, self.filter.clone(), self.reference);
-        if !inserts && gappy.is_none() && tree.is_none() && sort.is_none() && !filter.is_active() && self.layout.is_none() {
+        let base = self.compare_base();
+        if !inserts && gappy.is_none() && tree.is_none() && sort.is_none() && !filter.is_active() && base.is_none() && self.layout.is_none() {
             self.layout_pending = false;
             return;
         }
@@ -869,9 +924,10 @@ impl MsaScope {
             };
             let shown = keep.as_ref().map(|k| k.iter().filter(|&&x| x).count());
             let t_order = t0.elapsed() - t_rows;
-            let layout = (map.is_some() || rows.is_some()).then(|| {
-                let pyramid = Pyramid::build_mapped(&d.aln, &d.stats.consensus, map.as_ref().map(|m| &m.visible[..]), rows.as_ref());
-                Arc::new(Layout { map, rows, tree: tree_rows, pyramid, generation, shown })
+            let layout = (map.is_some() || rows.is_some() || base.is_some()).then(|| {
+                let against = base.as_deref().map_or(&d.stats.consensus[..], |b| &b.codes[..]);
+                let pyramid = Pyramid::build_mapped(&d.aln, against, map.as_ref().map(|m| &m.visible[..]), rows.as_ref());
+                Arc::new(Layout { map, rows, tree: tree_rows, pyramid, generation, shown, base })
             });
             (layout, stats, (t_rows, t_order, t0.elapsed()))
         });
@@ -1178,6 +1234,8 @@ impl MsaScope {
             find_mode: self.find_mode,
             reference: self.reference,
             reference_candidate: self.reference_candidate(),
+            ref_opts: self.ref_opts,
+            hidden_tracks: self.hidden_tracks.clone(),
         }
     }
 
@@ -1277,6 +1335,8 @@ impl Render for MsaScope {
                 .child(self.alignment_canvas(window, cx))
                 // The tree's context menu, over the tree panel.
                 .when(self.show_tree(), |d| d.child(self.tree_menu_overlay(tree_w, cx)))
+                // The name panel's context menu (the reference row).
+                .child(self.name_menu_overlay(tree_w, name_w, cx))
                 // The splitters, over the right edges of the tree and name panels.
                 .children(tree_split)
                 .child(name_split);

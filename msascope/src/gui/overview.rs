@@ -47,7 +47,17 @@ impl MsaScope {
         };
 
         let theme = t.tile_theme();
-        let legend = scheme::legend(self.mode.scheme, d.aln.kind(), &theme);
+        let mut legend = scheme::legend(self.mode.scheme, d.aln.kind(), &theme);
+        // Differences against the reference row.
+        if self.layout.as_deref().is_some_and(|l| l.base.is_some()) {
+            for (_, label) in &mut legend {
+                *label = match *label {
+                    "Differs from consensus" => "Differs from reference",
+                    "Matches consensus" => "Matches reference",
+                    l => l,
+                };
+            }
+        }
         let cache = self.overview.clone();
         let area = self.overview_area.clone();
         let layout = self.layout.clone();
@@ -79,7 +89,7 @@ impl MsaScope {
                         let _ = window.drop_image(old);
                     }
                     let colors = Colors::new(d.aln.alphabet(), mode, theme, false);
-                    let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map, rows: rview, colors: &colors, base: None };
+                    let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map, rows: rview, colors: &colors, base: layout.as_deref().and_then(|l| l.base.as_deref()).map(|b| &b.codes[..]) };
                     let (cw, ch) = (w as f64 / cols as f64, h as f64 / rows as f64);
                     let mut buf = vec![0u8; w * h * 4];
                     buf.par_chunks_mut(w * 4 * STRIP).enumerate().for_each(|(i, strip)| {

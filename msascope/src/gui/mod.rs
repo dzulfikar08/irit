@@ -4,6 +4,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod bands;
 pub mod cached;
 pub mod canvas;
 pub mod chrome;
@@ -14,6 +15,7 @@ pub mod hover;
 pub mod input;
 pub mod keys;
 pub mod metrics;
+pub mod name_menu;
 pub mod overview;
 pub mod palette;
 pub mod theme;
