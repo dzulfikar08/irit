@@ -26,6 +26,8 @@ msascope alignment.fasta --stats  # load, print sizes and timings, exit (no wind
 msascope silk.fasta --type protein # residue type given instead of guessed: dna, rna or protein
 msascope PF00042.sto --tree PF00042.nwk  # rows in the order of a Newick tree
 msascope big.fa --stats --tree big.nwk   # also time reading, matching and ordering the tree
+msascope big.fa --stats --motif 'C-x(2,4)-C'   # also time a motif search over every row
+msascope big.fa --stats --sort identity        # also time row figures, a sort and a filter
 ```
 
 `--type` also applies to files opened later with Open…. Open… (and dropping files on the
@@ -46,13 +48,17 @@ and a tree dropped together are opened as a pair.
 | Ctrl+C / Ctrl+Shift+C | Copy the selection as FASTA / as residues only, one row per line |
 | Ctrl+E | Export the selection as FASTA |
 | Click a node in the tree | Collapse its clade into one row, or expand it again |
-| `t` | Tree order or file order (with a tree) |
+| Right-click a node in the tree | The tree menu: collapse or expand, collapse to a depth, expand all, select the clade's rows, show only the clade, ladderize, reroot |
+| `t` | Tree order or file order (with a tree; ends a sort) |
+| Ctrl+L | The filter bar: filter rows by name or accession (`/regex/` too), minimum identity, maximum gaps |
 | Ctrl+wheel | Zoom at the pointer (Ctrl+Shift: columns only, Ctrl+Alt: rows only) |
 | `+` / `-` | Zoom in / out by √2 |
 | `0` / `w` / `h` | Fit all / fit width / fit height |
 | `r` | Back to the readable zoom a file opens at |
-| Ctrl+G | Go to a column (`15000`) or row and column (`250:15000`, the row in the order shown); with both, the cursor goes there |
-| Ctrl+F | Find sequences by name (substring, case-insensitive); Enter / Shift+Enter for next/previous |
+| Ctrl+G | Go to a column (`15000`), a row and column (`250:15000`, the row in the order shown), a residue of a sequence (`GLB2_TYLHE:60`, see [Go to](#go-to)) or a sequence (`GLB2_TYLHE`); with a row, the cursor goes there |
+| Ctrl+F | Find: sequences by name (substring, case-insensitive), or residues when the box is in Residues mode (the button left of it); Enter / Shift+Enter for next/previous |
+| Ctrl+Shift+F | Find residues: a motif across gaps (see [Motif search](#motif-search)); F3 / Shift+F3 next/previous match |
+| Escape while a file loads | Cancel the load; the file open before stays |
 | `s` / `d` / `c` | Next colour scheme / differences from the consensus on and off / "by conservation" on and off |
 | `i` / `g` | Hide or show insert columns / gappy columns (at the threshold chosen in the toolbar, 50% by default) |
 | Hover | A card next to the pointer: sequence, residue and its position in the sequence, column, consensus (over the track header: the column) |
@@ -80,7 +86,20 @@ and the theme. On the right, the overview panel shows the whole alignment (the s
 the visible area as a box, the visible range and the legend of the colour scheme; the toolbar
 button at the right end hides it. Settings (theme, name panel width, overview, gappy threshold)
 are saved in `msascope/settings.toml` in the
-platform's config folder (`~/.config` on Linux).
+platform's config folder (`~/.config` on Linux), with the last 10 files opened; the window without
+a file lists the five most recent that still exist, with their size and age, and a click opens one.
+
+### Loading
+
+A file loads in the background. The window shows its name, a progress bar of the bytes read over
+the file's size (compressed bytes for a `.gz` file), the sequences read so far and the time
+taken; then "column summaries…" and "overview…" for the two steps after reading. Clustal and
+Stockholm files are read twice (names first, then residues), and the bar shows both passes. The
+status bar repeats the progress. **Cancel** (or Escape) stops the load: the reader checks for it
+on every read (at most 256 KiB) and after each FASTA batch (64 MB), and between the steps after reading;
+what was read is freed when the load returns, and the file that was open before stays open. Opening
+another file while one loads cancels the first. A file that fails to load shows its error in the
+window as before.
 
 ### Colour schemes
 
@@ -136,7 +155,97 @@ instead. The toolbar's Export menu writes the selection or every row to a FASTA 
 background), and has two options for copying and exporting: **Include hidden columns** (off by
 default: what is shown is what is written; on, a column range selected across hidden columns
 includes them) and **Leave out gaps** (the ungapped sequences). Lower case is not kept (see
-Formats). Image export (PNG, SVG) is not built yet.
+Formats). Export and copy take the rows a filter leaves shown, in the order shown.
+
+### Figures (PNG, SVG)
+
+The Export menu also writes figures: **View as PNG / SVG** (the cells in view at the current
+zoom, the rows and columns as shown) and **Selection as PNG / SVG** (the selected rows in the
+order shown × the selected shown columns, at the letter size, 11 × 16 px per cell, or the current
+zoom if larger). **Names in figures** and **Ruler in figures** add the name column (at the name
+panel's width) and the column numbers; **PNG at 1× / 2× / 4×** sets the PNG's pixels per screen
+pixel (2× by default).
+
+- **SVG**: one rectangle per run of a colour in a row, the residue letters as text (each letter
+  a `<tspan>` at its column, so a row selects and copies as its residues), names and ruler as
+  text. Letters are written when cells are at least 7 × 10 px, as on screen. Limited to 200,000
+  cells: larger regions are refused with a message to export a PNG instead or select less (Pfam
+  PF00042 full, 32,112 rows × 117 shown columns, is 3.8 million cells).
+- **PNG**: the cells are drawn by the same code as the screen's tiles (density colours below one
+  pixel per cell), then the names, ruler and letters are drawn over them from the SVG's text with
+  resvg and the system fonts. Limited to 16,384 px a side and 100 megapixels; a selection too
+  large at letter size is drawn at the current zoom (at least 1 px per cell).
+
+The tree is not drawn in figures, and gaps are left blank (no dots).
+
+### Sorting and filtering rows
+
+The toolbar's **Sort** menu orders rows by the tree (with a tree), the file, or:
+
+| Sort | Order |
+|---|---|
+| Name | A to Z, case-insensitive, numbers in names as numbers (`seq2` before `seq10`) |
+| Identity to consensus | Most identical first: the share of the row's residues equal to the column's consensus residue, over the shown columns where both have a residue |
+| Identity to reference | The same against the reference row |
+| Gap share | Fewest gaps first, over the shown columns |
+| Length | Longest ungapped sequence first |
+
+**Reverse order** turns any of them around. **Set reference** takes the cursor's row (or the one
+selected row); the reference is used by "Identity to reference" and, while set, by the minimum
+identity filter. While rows are sorted by something other than the tree, the tree panel is hidden
+and clades are not collapsed; choosing Tree order (or `t`) brings them back.
+
+The **filter bar** (Ctrl+L, or Sort ▸ Filter rows…) shows only the rows that pass every condition
+given: the name or accession contains the text (case-insensitive), or matches a regular
+expression written `/…/` (Rust `regex` syntax); identity at least the minimum (percent);
+gap share at most the maximum (percent). The tree menu's **Show only this clade** adds the clade
+as a condition, shown in the bar with a × to remove it. The bar and the status bar give "N of M
+rows shown"; **Clear** (or the bar's ×) removes every filter. Filters keep tree order: subtrees
+with no row left are not drawn, and a collapsed clade stands for its remaining rows. Identity and
+gap share are computed over the shown columns, so hiding columns changes them. Selections are kept
+in the alignment's own rows: rows a filter hides stay selected but are left out of copy and
+export, which take what is shown. Name search (Ctrl+F) and motif matches skip hidden rows.
+
+### Go to
+
+Ctrl+G takes:
+
+- `15000`: column 15,000 of the alignment (its own numbering; a hidden column goes to the next
+  shown one);
+- `250:15000`: row 250 in the order shown, column 15,000;
+- `GLB2_TYLHE/32-143:60` or `P02240:60`: residue 60 of that sequence, in the sequence's own
+  numbering: counted from the start of its `/start-end` range when the name has one (so residue
+  60 of `GLB2_TYLHE/32-143` is its 29th residue), else from 1;
+- `GLB2_TYLHE`: that sequence (selects its row).
+
+A name is found by the first rule that matches: the exact name; the exact accession (`#=GS AC`,
+with or without its version); the name before `/`; a case-insensitive prefix of a name or an
+accession. When a rule matches several sequences and a position is given, the sequences whose
+range holds the position are kept (a protein with two domains in Pfam). Still several, or none:
+the status bar says so ("'GLB' matches 9 sequences: …", "No sequence named …"), as it does for a
+position outside the range ("GLB2_TYLHE/32-143 has residues 32–143; 200 is outside") or a sequence
+a filter hides.
+
+### Motif search
+
+Switch the Find box to **Residues** (the button left of it, or Ctrl+Shift+F) and type a motif. It
+is searched in every sequence with the gaps taken out, so a match can span gaps in the
+alignment. Three ways to write one:
+
+| Motif | Means |
+|---|---|
+| `HGK`, `ACGRN` | Plain letters, case-insensitive. For nucleotides the IUPAC codes match their bases (`R` = A or G, `N` any) and T matches U; for proteins `X` matches any residue |
+| `C-x(2,4)-C-x(3)-[LIVMFYWC]` | PROSITE: elements joined by `-`; `x` any residue, `[ST]` one of, `{P}` any but, `(3)` or `(2,4)` repeats, `<` / `>` anchor to the sequence's start / end |
+| `/C.{2,4}C/` | A regular expression on the ungapped residues in upper case |
+
+A pattern with `-`, brackets or parentheses is read as PROSITE. Matches don't overlap. The search
+runs in the background on every core (a newer search cancels it); then each match is washed in the
+warning colour from its first to its last residue, over the shown columns only (a match inside
+hidden columns is not drawn), and the current one is outlined. Enter / Shift+Enter (or F3 /
+Shift+F3) go to the next / previous match in the rows shown, in view order; the status bar gives
+"match 3 of 20 shown · 20 matches in 18 sequences · GLB2_TYLHE/32-143 at 101 · 0.00 s". Up to
+1,000,000 matches are kept for drawing and moving between them (all are counted), and at most
+20,000 are drawn per frame.
 
 ### Tree
 
@@ -166,6 +275,22 @@ first sequence, and the number of sequences; the tree draws it as a triangle. Cl
 expand. The status bar counts the collapsed clades. The toolbar's Sort menu (or `t`) switches
 between tree order and file order (collapsing only applies in tree order), loads another tree or
 removes it; the button next to it hides the tree panel.
+
+Right-click a node (its vertical line, or a collapsed clade's triangle) for the tree menu, headed
+by the clade's name (or first sequence) and size:
+
+- **Collapse / Expand** the clade.
+- **Collapse to depth** 1–6: the clades that many branches below the node are collapsed, and
+  everything between them expanded.
+- **Expand all below**, **Expand the whole tree**.
+- **Select its N rows**.
+- **Show only this clade**: a row filter (see [Sorting and filtering rows](#sorting-and-filtering-rows)).
+- **Ladderize this clade**: every node below it orders its children by size, smallest first
+  (ties keep their order); collapsed clades stay collapsed.
+- **Reroot here**: the tree is rerooted on the branch above the node, split in half; an old root
+  left with one child is removed and its two branches joined. Collapsed clades and a clade filter
+  are reset (the nodes are renumbered). Labels stay on their nodes, so support values on internal
+  nodes are not moved to the branches they describe.
 
 Reordering and collapsing rebuild, in the background, the row order, the clade consensus rows
 and a pyramid for the rows shown; the view keeps the previous one until the new one is ready and
@@ -422,6 +547,78 @@ went into subtrees down to 3 px drew thousands of 1 px lines at the fit zoom (5.
 there); drawing subtrees under 6 px as wedges and skipping lines already covered in their pixel
 row brought that to 1.6 ms.
 
+**After loading progress, sorting and filtering, go to, motif search, figures and the tree menu
+(2026-11-11).** Checked against the 0.3.0 release (commit `85dbcb3`), both built the same way
+(release, thin LTO, 16 codegen units) and run alternately, window 1280 × 760, no tree. The
+machine was busy with other jobs throughout (load average 14 to 55 on 12 threads). The first
+round of measurements found two memory problems, fixed before the round in the table: reading
+through the progress counter grew the 64 MB FASTA batch buffer by doubling (viewer peak RSS
+349 MiB against 283 MiB on the 200 MB file), and a motif with 47.7 million matches at
+100,000 × 30,000 collected them all before the 1,000,000 cap (peak 2,315 MiB).
+
+| | before (`85dbcb3`) | after |
+|---|---|---|
+| Load, `--stats`, `msagen 20000 10000` (200 MB), median of 10, calmer round | 0.485 s | 0.475 s |
+| Load, the same, last round (file read from disk again, busier) | 2.31 s | 2.04 s |
+| Load, gzip (`msagen 60000 8000`, 189 MB `.gz`), median of 4 | 3.21 s | 2.87 s |
+| Load, PF00042 full (Stockholm, gzip), median of 8 | 0.37 s | 0.36 s |
+| Peak RSS, `--stats` | 167–168 MiB | 169 MiB |
+| Paint median, whole alignment (fit), median of 6 | 4.9 ms | 4.95 ms |
+| Paint median, 1 px per cell | 4.2 ms | 4.15 ms |
+| Paint median, 4 px per cell | 2.05 ms | 1.75 ms |
+| Paint median, letters | 8.9 ms | 8.6 ms |
+| Frame interval median, all four zooms | 16.6–38.4 ms | 16.6–22.4 ms |
+| Peak RSS, `--bench` | 281–284 MiB | 291–296 MiB |
+
+The gzip and Stockholm rows were measured with the first build of the change; the reading code
+changed after that only in the buffer reservation and the 256 KiB read size. The new loading
+path reports progress on every read and checks for Cancel there; no slowdown shows. The 10 MiB
+higher `--bench` peak is not explained: the load path with progress (which `--stats` skips) is
+the likely place, and the previous step's measurements saw a 13 MiB difference of the same kind
+come and go with code layout.
+
+Cancelling the load of `msagen 100000 30000` (3.0 GB) about 4 s in (the loading window had shown
+1.4 GB read at 6.6 s in another run): resident memory went from 1,423 MiB to 142 MiB within
+0.3 s of the click, and Escape did the same (139 MiB a second later).
+
+Sorting and filtering, `msagen 230000 300 t230k.fa --tree t230k-tree.nwk` with
+`--stats --tree … --sort KEY` (4 runs, busy machine):
+
+| Step | Time |
+|---|---|
+| Row figures (identity, gap share, length) over the 300 shown columns | 0.085–0.28 s |
+| Sort 230,000 rows by name / identity / gap share / length | 0.005 / 0.023 / 0.086 / 0.029 s |
+| Filter (name regex, identity ≥ 50%) | 0.010–0.046 s |
+| Tree order with the filter (115,008 of 230,000 rows) | 0.022–0.051 s |
+
+In the viewer the pyramid for the new row order is then rebuilt as for collapsing a clade.
+
+Motif search on `msagen 100000 30000` (3·10^9 cells), `--stats --motif`, after loading; the
+machine's load average was 29 to 41, and the same search varied by a factor of two between runs:
+
+| Motif | Matches | Time |
+|---|---|---|
+| `GATTACA` | 96,696 in 96,258 sequences | 8.7–18.5 s (4.3 s in the first round, load 29) |
+| `/ACG.{5,9}TT/` | 9,409,331 | 7.3–8.7 s |
+| `G-x(2,4)-C-[AT]-x(3)-G` | 47,719,359 | 10.8 s; peak RSS 1,696 MiB (loading alone: 1,573) |
+| `ACGTRYN` (IUPAC) | 3,060,148 | 9.1 s |
+
+On PF00042 full (32,112 × 698) a search takes under 0.01 s.
+
+Figures, PF00042 (PNG at 2×, timings include drawing the text; the first PNG also loads the
+system fonts):
+
+| Export | Size | Time |
+|---|---|---|
+| Seed, view (40 rows × 71 columns), SVG | 85 KB | 0.003 s |
+| Seed, view, PNG | 1,999 × 1,324 px, 2.0 MB | 0.76 s |
+| Full, sorted and filtered view (21 × 117), SVG | 110 KB | 0.004 s |
+| Full, sorted and filtered view, PNG | 2,296 × 716 px, 1.2 MB | 0.71 s |
+| Full, whole alignment at Fit all (density), PNG | 2,296 × 1,198 px, 0.7 MB | 0.62 s |
+| Full, view at letter size (36 × 117), PNG | 2,296 × 1,196 px, 2.2 MB | 1.98 s |
+| Full, selection of 30 rows × 117 columns at letter size, PNG | 3,040 × 1,004 px, 2.2 MB | 1.22 s |
+| Full, all 32,112 rows × 117 columns, SVG | refused: 3,757,104 cells | |
+
 ## Test data
 
 `msagen ROWS COLS OUT [--protein] [--seed N] [--tree TREE.nwk]` writes a synthetic alignment (OUT ending in `.gz` is
@@ -462,7 +659,7 @@ API changes often.
 
 ## Planned redesign
 
-Phases 0–6 are built (see "Built so far" below). The pictures here are **mockups**, a
+Phases 0–8 are built (see "Built so far" below), except the parts of phase 8 listed at the end. The pictures here are **mockups**, a
 static drawing of the planned main window at its
 default size (1280 × 800). It shows 40 of the 73 sequences of Pfam's globin seed alignment
 ([PF00042](https://www.ebi.ac.uk/interpro/entry/pfam/PF00042/)), ordered by a tree computed from
@@ -488,6 +685,10 @@ Built so far:
 - Hiding insert and gappy columns, with the ruler keeping the original numbers.
 - Selecting rows, columns and blocks; copy and FASTA export; drag-and-drop; the cell cursor.
 - The Newick tree panel: rows in tree order, collapsible clades shown as their consensus.
+- Loading progress with Cancel (phase 7; the overview from phase 7 came earlier).
+- PNG and SVG export of the view or the selection; sorting and filtering rows; go to
+  `name:position`; motif search; the tree's right-click menu (with ladderize and reroot); recent
+  files (phase 8).
 
 The current app with Pfam's PF00042 full alignment (32,112 × 698; 581 insert columns hidden,
 117 shown), dark theme at the zoom it opens at, with the hover card:
@@ -510,13 +711,21 @@ ruler (121 columns of the alignment, 22 of them shown):
 
 ![msascope, dark theme: PF00042 full with a column selection](../images/msascope/phase5-6-full-dark-columns.png)
 
-Still to come, in order of priority:
+Pictures of phases 7 and 8 (PF00042; the loading window with a synthetic 100,000 × 30,000 file,
+because PF00042 full loads in under half a second): the rows filtered to names containing
+"human" with at least 40% identity to the consensus, then sorted by identity (21 of 32,112 rows),
+and a motif search (`F-x(2)-H-P`, 6,506 matches):
 
-- Loading progress and cancel (phase 7).
-- Image export (PNG of the view, SVG of a region); sort and filter rows; go to `name:position`;
-  motif search; a reference row; Stockholm `#=GC` tracks; recent files (phase 8).
-- The tree panel's right-click menu from the spec (collapse to a depth, select a clade's rows,
-  show only a clade, ladderize) is not built; clicking a node collapses or expands it.
+![msascope, dark theme: PF00042 full filtered to 21 of 32,112 rows and sorted by identity](../images/msascope/phase7-8-full-dark-sorted-filtered.png)
+
+![msascope, light theme: PF00042 full with motif matches highlighted](../images/msascope/phase7-8-full-light-motif.png)
+
+Still to come from phase 8:
+
+- The reference row is used for sorting and for the identity filter only: the ruler does not
+  count its residues, and Differences still compares with the consensus.
+- Stockholm `#=GC` tracks (SS_cons, RF, seq_cons) are not shown.
+- Figures have no tree.
 
 Each step has to keep the load and paint times in [Measured](#measured) within 5% and 1 ms.
 
@@ -529,14 +738,18 @@ Each step has to keep the load and paint times in [Measured](#measured) within 5
 - The whole alignment must fit in RAM: about half a byte per nucleotide cell, so 10^6 × 30 kb needs
   about 15 GB. A memory-mapped packed cache file would lift that.
 - Gzip input loads about 3× slower than plain FASTA because decompression is single-threaded.
-- Loading blocks the view (a "Loading…" status, no progress bar) and cannot be cancelled.
+- While a file loads, the window shows its progress instead of the file that was open (which
+  comes back if the load is cancelled); one file is open at a time.
 - Upper pyramid levels approximate the majority (area-weighted majority of majorities).
 - Clustal and Stockholm load on one thread and read the file twice; fine for typical sizes, slower
   than FASTA for very large files.
-- No editing, image export, sorting by similarity, or computing a tree (bring a Newick file).
-- Drag-and-drop and the Export save dialog were not exercised by an automated test; selection,
-  copy (read back from the clipboard), the cursor keys and collapsing clades were (driven with a
-  virtual mouse and keyboard while taking screenshots).
+- No editing, and no computing a tree (bring a Newick file). Sorting by similarity uses identity
+  to the consensus or to one reference row, not clustering.
+- Motif search ignores lower-case (insert) state: residues are searched in upper case.
+- Drag-and-drop was not exercised by an automated test. Selection, copy (read back from the
+  clipboard), the cursor keys, collapsing clades, the tree menu, sorting, filtering, motif
+  search, cancelling a load and the Export save dialog (PNG and SVG written) were, driven with a
+  virtual mouse and keyboard while taking screenshots.
 - Collapsing a clade or switching the order rebuilds the row order, clade consensus and pyramid
   for every row in the background (0.08–0.16 s at 230,000 × 300 on the test laptop; longer for
   wide alignments, not measured); the old layout stays on screen meanwhile.
