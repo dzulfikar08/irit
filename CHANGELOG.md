@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 (2026-11-11)
 
 ### msascope
 - **Loading progress and Cancel**: the loading window shows a progress bar of the bytes read
