@@ -213,8 +213,9 @@ impl Hits {
 }
 
 /// Rows searched together; matches are kept in row order, and once the limit is reached the
-/// rest are only counted, so memory stays at the limit.
-const STEP: usize = 2048;
+/// rest are only counted, so memory stays near the limit (plus one step's matches). Each step
+/// waits for its slowest thread, so steps are large.
+const STEP: usize = 16_384;
 
 /// Search every row (in parallel). Stops with `None` when `cancel` is set. The first `limit`
 /// matches (by row) are kept; all are counted.
@@ -328,12 +329,12 @@ mod tests {
 
     #[test]
     fn limit_keeps_the_first_rows_across_steps() {
-        let text: String = (0..5000).map(|i| format!(">s{i}\nTACGTACGT\n")).collect();
+        let text: String = (0..40_000).map(|i| format!(">s{i}\nTACGTACGT\n")).collect();
         let a = parse_bytes(text.as_bytes()).unwrap();
         let m = Motif::compile("ACG", Kind::Nucleotide).unwrap();
-        let h = search(&a, &m, 3000, &AtomicBool::new(false)).unwrap();
-        assert_eq!((h.total, h.rows, h.hits.len()), (10_000, 5000, 3000));
+        let h = search(&a, &m, 30_000, &AtomicBool::new(false)).unwrap();
+        assert_eq!((h.total, h.rows, h.hits.len()), (80_000, 40_000, 30_000));
         assert!(h.hits.windows(2).all(|w| (w[0].row, w[0].start) < (w[1].row, w[1].start)));
-        assert_eq!(h.hits.last().unwrap().row, 1499);
+        assert_eq!(h.hits.last().unwrap().row, 14_999);
     }
 }
