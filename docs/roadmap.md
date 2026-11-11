@@ -36,18 +36,18 @@ What's done, what's next, and what's further out. Items move up as evidence come
       (`gtdbtk-r232-client` for `gtdbprep`).
 - [x] `irit-mcp` wraps fastp 1.4.0, Bakta 1.12.2, CheckM2 1.1.0 and GTDB-Tk 2.8.0 `classify_wf`, with
       only the flags of those versions, input and database checks, and the same run records and
-      `replay.sh` (next release). Tested with stand-ins for the programs.
+      `replay.sh` (0.3.0). Tested with stand-ins for the programs.
 
 ## Next
 
 - [ ] **GTDB-Tk on a desktop: measure before building.** Peak memory and time for GTDB-Tk with and
       without `--scratch_dir`, and with gPlace and `--max_memory`, on a rented large-memory machine.
       See [GTDB-Tk and memory](research/gtdbtk-memory.md).
-- [ ] **GTDB placement data without the 60.8 GB download**: done on main (next release): an unofficial,
-      credited mirror (280 MB download) on GitHub Releases (`dzulfikar08/irit-data`) and the
-      `dblock` entries `gtdbtk-r232-placement` and `-lite`. Waiting on GTDB for official per-folder
-      downloads ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)). Possible: store
-      the ten identical `fasttree.log` files once (7.4 GB unpacked to 2.7 GB).
+- [ ] **GTDB placement data without the 60.8 GB download**: an unofficial, credited mirror
+      (280 MB download) on GitHub Releases (`dzulfikar08/irit-data`) and the `dblock` entries
+      `gtdbtk-r232-placement` and `-lite` (0.2.1); `dblock` stores identical files once as hard
+      links (0.3.0), so the ten `fasttree.log` copies take 2.7 GB instead of 7.4 GB. Waiting on GTDB
+      for official per-folder downloads ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)).
 - [ ] **The ANI species check on a laptop**: `gtdbprep ani` screens locally and range-reads only
       the reference sketches a genome needs, then runs GTDB-Tk's own ANI screen on them; identical
       output to GTDB-Tk on the full database ([write-up](research/ani-laptop.md)). The screen index
