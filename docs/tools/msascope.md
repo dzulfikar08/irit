@@ -59,9 +59,11 @@ and a tree dropped together are opened as a pair.
 | Ctrl+F | Find: sequences by name (substring, case-insensitive), or residues when the box is in Residues mode (the button left of it); Enter / Shift+Enter for next/previous |
 | Ctrl+Shift+F | Find residues: a motif across gaps (see [Motif search](#motif-search)); F3 / Shift+F3 next/previous match |
 | Escape while a file loads | Cancel the load; the file open before stays |
-| `s` / `d` / `c` | Next colour scheme / differences from the consensus on and off / "by conservation" on and off |
+| `s` / `d` / `c` | Next colour scheme / differences from the consensus (or the reference row) on and off / "by conservation" on and off |
+| `m` | Make the cursor's row (or the one selected row) the reference row; on the reference, clear it |
+| Right-click a name | The name menu: set or clear the reference row, pin it, count the ruler by it, compare with it |
 | `i` / `g` | Hide or show insert columns / gappy columns (at the threshold chosen in the toolbar, 50% by default) |
-| Hover | A card next to the pointer: sequence, residue and its position in the sequence, column, consensus (over the track header: the column) |
+| Hover | A card next to the pointer: sequence, residue and its position in the sequence, the row's `#=GR` values, the reference's residue, column, consensus (over the track header: the column, and an annotation track's value) |
 | Click or drag in the overview | Pan there |
 | Drag the name panel's right edge | Resize it (120–480 px, remembered); the tree panel's edge too (60–480 px) |
 | Drop files on the window | Open an alignment, a tree, or both |
@@ -77,7 +79,9 @@ least 8 pixels tall.
 The window shows, from the top: a title bar with the open file and the theme menu (System,
 Light, Dark; System follows the OS), a toolbar, and the track header: column ruler, consensus
 (most common residue per column), identity (bar height = share of sequences carrying the
-consensus residue, strong colour at 90% or more) and gaps (share of gaps per column). The sequence
+consensus residue, strong colour at 90% or more), gaps (share of gaps per column), then the
+file's annotation tracks and the pinned reference row when there are any (see
+[Annotation tracks](#annotation-tracks) and [Reference row](#reference-row)). The sequence
 names stay in a panel on the left while the alignment scrolls, as `ID` and a dimmer `/start-end`
 for Pfam-style names; when rows are too thin to label, the panel shows the visible rows in words
 ("rows 1,201–1,260 of 32,112") and a marker of where the view sits. The status bar shows the file
@@ -139,6 +143,54 @@ overview give the number hidden. Go-to (Ctrl+G) takes the alignment's column num
 column goes to the next shown one. The hover card gives both numbers ("72 of 698 · 60 of 115
 shown"). Hiding rebuilds the pyramid for the shown columns in the background; the view keeps the
 old one until the new one is ready.
+
+### Annotation tracks
+
+Stockholm `#=GC <tag>` lines (column annotation) are shown as tracks under the gaps track, one
+per tag, in the order of the file, 14 px tall. Every tag is kept, not only the usual ones; a
+track follows hidden columns like the alignment (each pixel shows the column it stands for).
+
+| Tag | Drawn as |
+|---|---|
+| `SS_cons`, `SS` (secondary structure) | α, 3₁₀ and π helices (H, G, I) as a red band, strands and bridges (E, B) as a gold band ending in an arrowhead, RNA base pairs (`<>`, `()`, `[]`, `{}`, and Rfam's pseudoknot letters) as a blue band (closing brackets lighter), other characters as a thin coil line, `.` as nothing |
+| `PP_cons`, `PP` (posterior probability) | A bar: `0` is 0–5%, `1`–`9` the middle of their 10% steps, `*` 95–100%; strong colour at 90% or more |
+| anything else (`seq_cons`, `RF`, `AS`, …) | Its characters as text once columns are at least 7 px wide; below that a shade where the line has a character other than `.`, `-`, `_`, `~` |
+
+The toolbar's **Tracks** menu switches each track on or off (for the open file). `#=GR
+<sequence> <tag>` lines (per residue) are kept too: the hover card over a cell lists the row's
+values there (`SS: H · α-helix`, `PP: 9 · 85–95%`), and the reference row's lines are shown as
+tracks labelled "(ref.)", also switched in the Tracks menu. Over a track the hover card gives its
+character in words. A `#=GC` or `#=GR` line whose length differs from the alignment's, or a
+`#=GR` line for a name that isn't in the alignment, is left out; the status bar says so after
+loading (the first one, with the number of others) and the terminal lists them all.
+
+Pfam's seed alignments from InterPro carry `#=GC seq_cons` and some `#=GR` lines (`AS`, `pAS`)
+but no `SS_cons` (checked on nine families, PF00042 among them); Rfam's seeds carry `SS_cons`
+and `RF`.
+
+### Reference row
+
+One sequence can be the reference row: **Set reference** in the Tracks or Sort menu or the name
+menu (right-click a name) takes the cursor's row or the one selected row, or the name clicked;
+`m` does the same and, on the reference itself, clears it. Its name gets a "ref" tag. What it does
+(each in the Tracks menu and the name menu):
+
+- **Pin it under the tracks** (on by default): the reference's cells as a 16 px row under the
+  tracks, with its letters at letter zoom, so it stays in view while the rows scroll.
+- **Ruler counts its residues** (off by default): the ruler numbers the reference's residues,
+  from the start of its `/start-end` range (else from 1), and leaves out the columns where it has
+  a gap; the label reads "Reference residue". The hover card shows the reference's residue and its
+  number in every case.
+- **Compare with it** (on by default): Differences fades the residues equal to the reference's
+  instead of the consensus residue (where the reference has a gap, every residue counts as a
+  difference), the identity track shows the share of rows carrying the reference's residue (from
+  the per-column shares, to 1/255), and the density view below one pixel per cell and the overview
+  measure differences from the reference. That needs the pyramid built against the reference,
+  which runs in the background like hiding columns (the view keeps the old one until it is ready).
+
+Sorting by identity to the reference and the minimum identity filter use it as before. The
+reference is an alignment row, so it stays the same row through sorting, filtering, tree order
+and collapsing; a collapsed clade can't be the reference. Opening another file clears it.
 
 ### Selection, copy and export
 
@@ -302,8 +354,10 @@ faint wedge instead of its branches.
 Over a cell: the sequence ID with its accession (from Stockholm `#=GS <name> AC`) and range; the
 residue, its three-letter name and its position in the ungapped sequence, counted from the
 name's `/start-end` when it has one (Pfam, HMMER) and from 1 otherwise; for a gap, the residues
-it falls between; the column; and the column's consensus, identity and gap share. Over the track
-header the card shows the column only (and nearby hidden columns). Over a collapsed clade it
+it falls between; the row's `#=GR` values at that column; the reference row's residue there and
+its number, when a reference is set; the column; and the column's consensus, identity and gap
+share. Over the track header the card shows the column (and nearby hidden columns), the value of
+the annotation track under the pointer, and the reference's residue. Over a collapsed clade it
 shows the clade's consensus residue. After a key moves the cursor, the card shows the cursor's
 cell next to it; moving the pointer brings it back. It hides while dragging and after a scroll
 until the pointer moves.
@@ -314,7 +368,7 @@ until the pointer moves.
 |---|---|---|
 | Aligned FASTA | first line starts with `>` | Wrapped or unwrapped, `\r\n` line ends, gzip (`.gz`, detected by content) |
 | Clustal | `CLUSTAL`, `MUSCLE` or `PROBCONS` header | Consensus lines and trailing residue counts are ignored |
-| Stockholm | `# STOCKHOLM` header | First alignment in the file; `#=GC RF`, `#=GS <name> AC` and `#=GF NH` (a tree) are read, other markup is skipped; blocks must be separated by a blank line |
+| Stockholm | `# STOCKHOLM` header | First alignment in the file; `#=GC` and `#=GR` lines of any tag (tracks, see [Annotation tracks](#annotation-tracks)), `#=GS <name> AC` and `#=GF NH` (a tree) are read, other markup is skipped; blocks must be separated by a blank line |
 
 A UTF-8 byte order mark and blank lines before the header are ignored.
 
@@ -392,8 +446,12 @@ pixel = one cell or one pyramid block, picking the coarsest pyramid level that i
 one block per pixel, or below one pixel per cell the density of the cells each pixel covers) and then composited by GPUI's GPU sprite atlas; tiles are cached per scale, colour mode and
 theme, and evicted (and freed from the GPU atlas) when far off screen. No UI element
 is created per cell. When letters are visible, each distinct letter is shaped once per frame and
-painted per visible cell. Tracks are drawn as runs of equal-colour quads, one entry per pixel
-column.
+painted per visible cell. The track header below the ruler (consensus, identity, gaps, the
+annotation tracks and the pinned row) is drawn the same way, as tiles 256 device pixels wide and
+the header's height, cached per scale, colour mode, theme, layout (hidden columns, row order,
+what Differences compares with), reference row and set of tracks; only the ruler's text and the
+letters are painted every frame. Before that, the tracks were drawn as runs of equal-colour quads
+every frame, which took about 95% of the paint time at the fit zoom.
 
 ## Measured
 
@@ -619,6 +677,53 @@ system fonts):
 | Full, selection of 30 rows × 117 columns at letter size, PNG | 3,040 × 1,004 px, 2.2 MB | 1.22 s |
 | Full, all 32,112 rows × 117 columns, SVG | refused: 3,757,104 cells | |
 
+**After annotation tracks, the reference row and the cached track header (2026-11-11).**
+Checked against 0.3.1 (commit `6846acc`), both built the same way (release, thin LTO, 16 codegen
+units) and run alternately, window 1280 × 760, no tree, test files in `~/.cache` on the SSD
+(warm page cache). Load average 9 to 22 on 12 threads during these runs.
+
+| | before (`6846acc`) | after |
+|---|---|---|
+| Load, `--stats`, `msagen 20000 10000` (200 MB FASTA), median of 8 | 0.420 s | 0.400 s |
+| Load, after/before ratio of alternating pairs, median of 8 (12 in an earlier round: 0.982) | | 0.979 |
+| Load, Stockholm 20,000 × 2,000 with `#=GC SS_cons` and `PP_cons` (42 MB), median of 8 | 0.460 s | 0.465 s (ratio 0.990) |
+| Load, the same with a `#=GR PP` line for every sequence (84 MB) | 0.470 s | 0.595 s (ratio 1.227) |
+| Peak RSS, `--stats`: FASTA / Stockholm / Stockholm with `#=GR` | 169 / 32 / 32 MiB | 169 / 32 / 73 MiB |
+| Paint median, whole alignment (fit), median of 6 / of 4 (two rounds) | 4.60 / 2.65 ms | 0.20 / 0.20 ms |
+| Paint median, 1 px per cell | 3.95 / 3.90 ms | 0.30 / 0.40 ms |
+| Paint median, 4 px per cell | 1.40 / 1.30 ms | 0.60 / 0.65 ms |
+| Paint median, letters | 8.25 / 5.75 ms | 7.55 / 6.05 ms |
+| Paint p95, fit / 1 px (first round) | 7.7 / 8.2 ms | 0.3 / 3.0 ms |
+| Peak RSS, `--bench` | 294–296 MiB | 294–296 MiB |
+
+The track header was the bulk of the paint time at the zoomed-out levels: it was drawn as runs
+of quads, one or more per device pixel column, every frame. As tiles it is drawn once per scale,
+scheme, theme and layout, and a frame paints 6 or 7 images for it. The letter zoom changes
+little because the letters, painted per cell, are most of its time. A header tile is 256 device
+pixels × the bands' height (69 px at 1.25 scaling with no annotation tracks), 71 KB; at most
+four times the tiles in view (at least 16) are kept, about 2 MiB at this window size, plus their
+copies in GPUI's GPU atlas. The bench's peak RSS did not change. In the second round the frame
+interval median was 37–40 ms at three of the four zooms for both builds alike (16.6–17.8 ms in the
+first round), so that came from the compositor, not from this change.
+
+Files without `#=GR` lines load as before. The `#=GR` lines are read and kept (one byte per
+column per line, 38 MiB for the 20,000 lines of the test file, read at about the rate of the
+residues), so a file with one for every sequence loads more slowly and holds that much more;
+at most 64 MiB of them are kept, and the rest are left out with a warning. A first version
+looked up each `#=GR` line in a list of all the earlier ones and took 17 s on that file; a hash
+map and buffers allocated at the alignment's width in the second pass brought it to 0.6 s.
+
+**The `--bench` peak RSS of 0.3.1.** The previous step found `--bench` peak RSS 10 MiB higher
+than 0.3.0's (291–296 MiB against 281–284 MiB) with no explanation. Measured again, alternately,
+with the same 0.3.0 binary as then and a sampler reading `/proc/PID/status` every 5 ms: 0.3.0
+peaked at 294–297 MiB and 0.3.1 at 295–297 MiB over 5 runs each, with the same split (anonymous
+memory 188–190 MiB, file-backed pages 107–108 MiB). In both, the `--bench` peak equals the peak
+reached at the end of loading ("peak RSS after load"), 0.3–2.4 s after start, while the packed matrix
+(95 MiB here) and the 64 MB FASTA batch buffer are both held; panning never goes above it.
+So the difference was between the two measuring sessions (the same 0.3.0 binary measured 13 MiB
+more this time), not between the builds, and there was nothing to fix. heaptrack and valgrind
+are not installed on this machine, so the heap was not profiled by allocation site.
+
 ## Test data
 
 `msagen ROWS COLS OUT [--protein] [--seed N] [--tree TREE.nwk]` writes a synthetic alignment (OUT ending in `.gz` is
@@ -689,6 +794,8 @@ Built so far:
 - PNG and SVG export of the view or the selection; sorting and filtering rows; go to
   `name:position`; motif search; the tree's right-click menu (with ladderize and reroot); recent
   files (phase 8).
+- Stockholm `#=GC` and `#=GR` annotation tracks, and a reference row for the ruler, Differences
+  and the identity track, pinned under the tracks (phase 8).
 
 The current app with Pfam's PF00042 full alignment (32,112 × 698; 581 insert columns hidden,
 117 shown), dark theme at the zoom it opens at, with the hover card:
@@ -722,10 +829,7 @@ and a motif search (`F-x(2)-H-P`, 6,506 matches):
 
 Still to come from phase 8:
 
-- The reference row is used for sorting and for the identity filter only: the ruler does not
-  count its residues, and Differences still compares with the consensus.
-- Stockholm `#=GC` tracks (SS_cons, RF, seq_cons) are not shown.
-- Figures have no tree.
+- Figures have no tree, and no annotation tracks or pinned reference row.
 
 Each step has to keep the load and paint times in [Measured](#measured) within 5% and 1 ms.
 

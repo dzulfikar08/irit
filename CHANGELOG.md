@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### msascope
+- **Annotation tracks**: Stockholm `#=GC` lines of every tag are shown under the track header,
+  aligned to the columns and following hidden columns: `SS_cons` as helix and strand bands, RNA
+  base pairs and coil, `PP_cons` as bars, other tags (`seq_cons`, `RF`, …) as text. The Tracks
+  menu switches each one; the hover card over a track gives its character in words. `#=GR`
+  lines are read too: the hover card over a cell lists the row's values, and the reference row's
+  lines can be shown as tracks. Lines of the wrong length (or for a sequence that isn't in the
+  file) are left out with a warning in the status bar and the terminal; at most 64 MiB of `#=GR`
+  lines are kept.
+- **Reference row**: set from the Tracks or Sort menu, by right-clicking a name, or with `m` (the
+  cursor's row); marked "ref" in the name panel. It can be pinned under the tracks, the ruler can
+  count its residues (from its `/start-end`), and Differences, the identity track, the density
+  view, the overview and figures compare with it instead of the consensus. It stays with its
+  sequence through sorting, filtering and tree order.
+- **Cheaper track header**: the consensus, identity and gaps tracks (and the new ones) are drawn
+  as cached image tiles instead of quads every frame; on a 20,000 × 10,000 alignment the paint
+  median at the fit zoom went from 2.7–4.6 ms to 0.2 ms, at 1 px per cell from 3.9 ms to
+  0.3–0.4 ms.
+- `--stats` prints the annotation read and any lines left out.
+- The `--bench` peak RSS difference reported for 0.3.1 was measured again: 0.3.0 and 0.3.1 peak
+  within 2 MiB of each other, at the end of loading.
+
 ### dblock
 - `gtdbtk-r232-mockup` is fetched again: GTDB corrected the stale MD5 in its `MD5SUM.txt`
   ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726)), and the entry now uses it.
