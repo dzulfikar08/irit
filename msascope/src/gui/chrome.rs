@@ -151,7 +151,7 @@ impl MsaScope {
         let export_opts = self.export;
         let export = {
             let e = entity.clone();
-            Button::new("export").ghost().xsmall().icon(Lucide::Download).label("Export").dropdown_caret(true).tooltip("Export or copy as FASTA").dropdown_menu(move |menu, _, _| {
+            Button::new("export").ghost().xsmall().icon(Lucide::ArrowDown).label("Export").dropdown_caret(true).tooltip("Export or copy as FASTA").dropdown_menu(move |menu, _, _| {
                 let item = |label: &str, enabled: bool, f: fn(&mut MsaScope, &mut Window, &mut Context<MsaScope>)| {
                     let e = e.clone();
                     PopupMenuItem::new(label.to_string()).disabled(!enabled).on_click(move |_, window, cx| {
@@ -327,7 +327,7 @@ impl MsaScope {
                         .ghost()
                         .xsmall()
                         .selected(any_hidden)
-                        .icon(Lucide::FoldHorizontal)
+                        .icon(Lucide::EyeOff)
                         .label(columns_label)
                         .dropdown_caret(true)
                         .tooltip("Hide insert and gappy columns · I, G")
@@ -344,7 +344,7 @@ impl MsaScope {
                     Button::new("sort")
                         .ghost()
                         .xsmall()
-                        .icon(Lucide::ArrowUpDown)
+                        .icon(Lucide::SortAscending)
                         .label(if tree_order { "Sort: tree" } else { "Sort: file" })
                         .dropdown_caret(true)
                         .tooltip("Row order · T")
@@ -365,7 +365,7 @@ impl MsaScope {
                             }))
                         }),
                 )
-                .child(icon_button("tree-panel", Lucide::ListTree, panel && tree_order, cx).tip("Tree panel", None).on_click(move |_, _, cx| {
+                .child(icon_button("tree-panel", Lucide::PanelLeft, panel && tree_order, cx).tip("Tree panel", None).on_click(move |_, _, cx| {
                     let _ = e2.update(cx, |v, cx| {
                         v.settings.tree_panel = !v.settings.tree_panel;
                         v.settings.save();

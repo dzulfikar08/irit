@@ -2,7 +2,7 @@
 //!
 //! Only what is in view is visited: a walk from the root that skips subtrees outside the visible
 //! rows, and draws a subtree covering less than [`MIN_SPAN`] pixels as one wedge instead of
-//! going into it. Branch lines are 1 px in `fg_muted`; a collapsed clade is a triangle in
+//! going into it. Below 2 px per row, a branch line already covered in its pixel row is skipped. Branch lines are 1 px in `fg_muted`; a collapsed clade is a triangle in
 //! `accent_soft` with an `accent` outline.
 
 use gpui_kit::*;
@@ -14,7 +14,7 @@ use super::metrics::*;
 use super::tokens::Tokens;
 
 /// Subtrees shorter than this (px) are drawn as a wedge.
-const MIN_SPAN: f32 = 3.0;
+const MIN_SPAN: f32 = 6.0;
 
 pub(super) struct TreeGeom<'a> {
     pub ix: &'a TreeIndex,
@@ -52,14 +52,26 @@ pub(super) fn paint_tree(g: &TreeGeom, t: &Tokens, hits: &mut Vec<TreeHit>, wind
     let tree = &g.ix.tree;
     let (top, bottom) = (g.row0, g.row0 + f64::from(g.bounds.size.height) / g.ch);
     let line = t.fg_muted;
-    let hline = |x0: Pixels, x1: Pixels, y: Pixels, window: &mut Window| {
-        if x1 > x0 {
-            window.paint_quad(fill(Bounds::new(point(x0, y.floor()), size(x1 - x0, px(1.))), line));
-        }
-    };
-    // Pixel rows that already have a leaf branch (many leaves share a pixel below 1 px per row).
+    // Per pixel row, the span of branch lines drawn in it, when rows are dense enough to share
+    // pixels; a line inside it is skipped.
     let h = f32::from(g.bounds.size.height).ceil().max(0.0) as usize + 1;
-    let mut leaf_px = vec![false; h];
+    let dense = g.ch < 2.0;
+    let mut cover = vec![(f32::INFINITY, f32::NEG_INFINITY); if dense { h } else { 0 }];
+    let mut hline = |x0: Pixels, x1: Pixels, y: Pixels, window: &mut Window| {
+        if x1 <= x0 {
+            return;
+        }
+        if dense {
+            let row = (f32::from(y - g.bounds.origin.y).max(0.0) as usize).min(h - 1);
+            let c = &mut cover[row];
+            let (a, b) = (f32::from(x0), f32::from(x1));
+            if a >= c.0 && b <= c.1 {
+                return;
+            }
+            *c = (c.0.min(a), c.1.max(b));
+        }
+        window.paint_quad(fill(Bounds::new(point(x0, y.floor()), size(x1 - x0, px(1.))), line));
+    };
     let mut stack = vec![0u32];
     while let Some(n) = stack.pop() {
         let y = g.tr.y[n as usize];
@@ -100,10 +112,7 @@ pub(super) fn paint_tree(g: &TreeGeom, t: &Tokens, hits: &mut Vec<TreeHit>, wind
             continue;
         }
         if tree.is_leaf(n) {
-            let row = (f32::from(yn - g.bounds.origin.y).max(0.0) as usize).min(h - 1);
-            if g.ch >= 1.0 || !std::mem::replace(&mut leaf_px[row], true) {
-                hline(xp, xn, yn, window);
-            }
+            hline(xp, xn, yn, window);
             continue;
         }
         let span = (b - a) as f64 * g.ch;
