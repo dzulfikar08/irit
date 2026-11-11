@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 (2026-11-12)
 
 ### msascope
 - **Annotation tracks**: Stockholm `#=GC` lines of every tag are shown under the track header,
