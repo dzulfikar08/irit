@@ -130,8 +130,9 @@ pub fn sniff(path: &Path) -> Result<(Format, bool)> {
 }
 
 /// What a load has done so far, shared with the thread showing it, and the flag that cancels it.
-/// The reader counts bytes on every read (64 KiB at a time) and checks the flag there, so a
-/// cancelled load stops within one read or, for FASTA, after encoding the batch in hand.
+/// The reader counts bytes on every read (at most [`READ_MAX`] at a time) and checks the flag
+/// there, so a cancelled load stops within one read or, for FASTA, after encoding the batch in
+/// hand.
 #[derive(Debug, Default)]
 pub struct Progress {
     /// Bytes read from the file in this pass (compressed bytes for gzip).
@@ -239,8 +240,11 @@ pub fn is_cancelled(e: &anyhow::Error) -> bool {
     e.chain().any(|c| c.is::<Cancelled>() || c.downcast_ref::<std::io::Error>().and_then(|io| io.get_ref()).is_some_and(|i| i.is::<Cancelled>()))
 }
 
+/// Largest single read while a load reports progress, so cancel is noticed quickly.
+pub const READ_MAX: usize = 256 << 10;
+
 /// A reader that adds what it reads to a [`Progress`] and fails with [`Cancelled`] once the load
-/// is cancelled.
+/// is cancelled. Reads are cut to [`READ_MAX`].
 struct Counting<'p, R> {
     inner: R,
     progress: &'p Progress,
@@ -251,7 +255,8 @@ impl<R: Read> Read for Counting<'_, R> {
         if self.progress.is_cancelled() {
             return Err(std::io::Error::other(Cancelled));
         }
-        let n = self.inner.read(buf)?;
+        let k = buf.len().min(READ_MAX);
+        let n = self.inner.read(&mut buf[..k])?;
         self.progress.bytes.fetch_add(n as u64, Ordering::Relaxed);
         Ok(n)
     }
@@ -503,6 +508,9 @@ fn fasta(mut r: impl Read, mut chunk: usize, forced: Option<&'static Alphabet>, 
     let mut first = true;
     loop {
         let want = chunk.saturating_sub(buf.len()) as u64;
+        // Room for the whole batch first: growing while reading doubles the buffer (to twice the
+        // batch) for readers that can't say how much is left, such as the progress-counting one.
+        buf.reserve_exact(want as usize);
         let eof = (&mut r).take(want).read_to_end(&mut buf)? < want as usize;
         if first {
             let skip = if buf.starts_with(BOM) { BOM.len() } else { 0 };
@@ -1068,9 +1076,9 @@ mod tests {
             };
             let e = read(&open, None, Some(&p)).err().expect("cancelled");
             assert!(is_cancelled(&e), "{e:#}");
-            // Stopped at the first read after the flag: at most one 64 KiB read past it.
+            // Stopped at the first read after the flag: at most one read past it.
             let s = p.snapshot();
-            assert!(s.bytes <= 200_000 + (1 << 16) && s.pass == 1, "{s:?}");
+            assert!(s.bytes <= (200_000 + READ_MAX) as u64 && s.bytes < data.len() as u64 && s.pass == 1, "{s:?}");
         }
         // Cancelled before starting.
         let p = Progress::new(0);

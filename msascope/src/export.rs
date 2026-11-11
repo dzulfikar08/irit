@@ -64,11 +64,11 @@ pub fn check_svg(rows: usize, cols: usize) -> Result<(), String> {
     }
     if cells > SVG_MAX_CELLS {
         return Err(format!(
-            "An SVG of {} rows × {} columns would have {} cells; SVG export is limited to {}. Export a PNG instead, or select fewer rows or columns.",
-            crate::view::group_digits(rows),
-            crate::view::group_digits(cols),
+            "SVG is limited to {} cells (this is {}: {} rows × {} columns): export a PNG, or select less",
+            crate::view::group_digits(SVG_MAX_CELLS),
             crate::view::group_digits(cells),
-            crate::view::group_digits(SVG_MAX_CELLS)
+            crate::view::group_digits(rows),
+            crate::view::group_digits(cols)
         ));
     }
     Ok(())
@@ -81,7 +81,7 @@ pub fn check_png(w: usize, h: usize) -> Result<(), String> {
     }
     if w > PNG_MAX_SIDE || h > PNG_MAX_SIDE || w.saturating_mul(h) > PNG_MAX_PIXELS {
         return Err(format!(
-            "A PNG of {} × {} px is too large (at most {} px a side and {} megapixels). Choose a smaller scale or zoom out.",
+            "PNG too large: {} × {} px (limit {} px a side, {} megapixels): lower the scale, zoom out or select less",
             crate::view::group_digits(w),
             crate::view::group_digits(h),
             crate::view::group_digits(PNG_MAX_SIDE),
@@ -304,7 +304,7 @@ mod tests {
     fn limits() {
         assert!(check_svg(500, 400).is_ok());
         let e = check_svg(32_000, 700).unwrap_err();
-        assert!(e.contains("22,400,000 cells") && e.contains("PNG"), "{e}");
+        assert!(e.contains("200,000 cells (this is 22,400,000") && e.contains("export a PNG"), "{e}");
         assert!(check_svg(0, 5).is_err());
         assert!(check_png(16_384, 6_000).is_ok());
         assert!(check_png(16_385, 10).is_err());

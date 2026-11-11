@@ -724,7 +724,9 @@ impl MsaScope {
                 )
                 .children(self.render_recent(cx))
         };
-        div().flex_1().min_h_0().flex().items_center().justify_center().bg(t.bg).child(card)
+        // Holds the keyboard focus while there is no alignment, so Escape reaches the window's
+        // key handler (and cancels a load).
+        div().flex_1().min_h_0().flex().items_center().justify_center().bg(t.bg).track_focus(&self.focus).child(card)
     }
 }
 
