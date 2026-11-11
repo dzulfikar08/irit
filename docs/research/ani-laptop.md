@@ -37,8 +37,9 @@ skani 0.3.1 (tag `v0.3.1`), GTDB-Tk 2.8.0 (commit `155d989`) and the R232 packag
   15.4 GB (skani 0.4.0). The client peaked at 1.9 GB for the same 9 genomes (**measured**).
 - **Published.** The screen index is on irit-data,
   [`gtdbtk-r232-ani-screen-v1`](https://github.com/dzulfikar08/irit-data/releases/tag/gtdbtk-r232-ani-screen-v1)
-  (2.1 GB, CC BY-SA 4.0), as the `dblock` entry `gtdbtk-r232-ani-screen`. Sketches come from GTDB's
-  archive by default: a stopgap until GTDB publishes the skani folder unpacked.
+  (2.1 GB, CC BY-SA 4.0), as the `dblock` entry `gtdbtk-r232-ani-screen`. Reading sketches from
+  GTDB's archive is opt-in (`--source gtdb`), at GTDB's request, and fetched sketches are cached
+  per user.
 - **skani 0.4.0 gave the same files as 0.3.1** on these genomes, against the same 0.3.1 database.
 
 ## 1. How `skani search` uses its database
@@ -257,11 +258,13 @@ then list fewer rows than GTDB-Tk's. Not built: GTDB-Tk-identical output was the
    fetches it as `gtdbtk-r232-ani-screen`. It was built on a runner
    ([run 42936739602](https://github.com/dzulfikar08/irit/actions/runs/42936739602)) with
    `exp/ani/pack.sh`.
-2. **Sketches come from GTDB's archive by default**, through the seek index. This is a stopgap: it
-   downloads about 5.7 times the sketch bytes and loads GTDB's server, so the docs ask users to
-   keep a cache. A local or split `sketches.db` still works with `--source`. `sketches.db` is not
-   re-hosted. GTDB has been asked to publish `skani/database/` unpacked
-   ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)).
+2. **Reading sketches from GTDB's archive is opt-in.** It downloads about 5.7 times the sketch bytes
+   and loads GTDB's server. GTDB was asked to publish `skani/database/` unpacked; they have no
+   plans to, and asked instead that reading from their server be opt-in and that a cache be on by
+   default ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)). Now
+   `--source` has no default (`--source gtdb` reads GTDB's archive), and fetched sketches go to one
+   cache per user (`~/.cache/irit/gtdbprep-ani`), so no sketch is fetched twice on a machine. A
+   local or split `sketches.db` works with `--source`; `sketches.db` is not re-hosted.
 3. **A "species call only" flag** (fetch only references that can reach their radius) is on the
    roadmap as an opt-in for later.
 
