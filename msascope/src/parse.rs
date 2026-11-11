@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
@@ -128,6 +129,134 @@ pub fn sniff(path: &Path) -> Result<(Format, bool)> {
     Ok((detect_format(&head)?, gz))
 }
 
+/// What a load has done so far, shared with the thread showing it, and the flag that cancels it.
+/// The reader counts bytes on every read (64 KiB at a time) and checks the flag there, so a
+/// cancelled load stops within one read or, for FASTA, after encoding the batch in hand.
+#[derive(Debug, Default)]
+pub struct Progress {
+    /// Bytes read from the file in this pass (compressed bytes for gzip).
+    bytes: AtomicU64,
+    /// The file's size in bytes; 0 when unknown.
+    total: AtomicU64,
+    /// Sequences read so far.
+    rows: AtomicU64,
+    /// Pass over the file: Clustal and Stockholm are read twice (names, then residues).
+    pass: AtomicU8,
+    stage: AtomicU8,
+    cancel: AtomicBool,
+}
+
+/// The step a load is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Read,
+    Columns,
+    Overview,
+}
+
+/// A copy of [`Progress`] at one moment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    pub bytes: u64,
+    pub total: u64,
+    pub rows: u64,
+    pub pass: u8,
+    pub stage: Stage,
+}
+
+impl Snapshot {
+    /// Share of the file read in this pass, 0–1 (0 when the size is unknown).
+    pub fn fraction(&self) -> f64 {
+        if self.total == 0 { 0.0 } else { (self.bytes as f64 / self.total as f64).min(1.0) }
+    }
+}
+
+impl Progress {
+    pub fn new(total: u64) -> Self {
+        let p = Progress::default();
+        p.total.store(total, Ordering::Relaxed);
+        p
+    }
+
+    /// Ask the load to stop; it returns [`Cancelled`] at its next check.
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// `Err(Cancelled)` once [`Progress::cancel`] was called.
+    pub fn check(&self) -> Result<()> {
+        if self.is_cancelled() { Err(Cancelled.into()) } else { Ok(()) }
+    }
+
+    pub fn set_stage(&self, s: Stage) {
+        self.stage.store(s as u8, Ordering::Relaxed);
+    }
+
+    pub fn set_rows(&self, n: usize) {
+        self.rows.store(n as u64, Ordering::Relaxed);
+    }
+
+    /// A new pass over the file: bytes count from 0 again.
+    fn start_pass(&self) {
+        self.bytes.store(0, Ordering::Relaxed);
+        self.pass.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn snapshot(&self) -> Snapshot {
+        let stage = match self.stage.load(Ordering::Relaxed) {
+            1 => Stage::Columns,
+            2 => Stage::Overview,
+            _ => Stage::Read,
+        };
+        Snapshot {
+            bytes: self.bytes.load(Ordering::Relaxed),
+            total: self.total.load(Ordering::Relaxed),
+            rows: self.rows.load(Ordering::Relaxed),
+            pass: self.pass.load(Ordering::Relaxed).max(1),
+            stage,
+        }
+    }
+}
+
+/// The error a cancelled load returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+/// Whether `e` (or an error it wraps, I/O errors included) is [`Cancelled`].
+pub fn is_cancelled(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<Cancelled>() || c.downcast_ref::<std::io::Error>().and_then(|io| io.get_ref()).is_some_and(|i| i.is::<Cancelled>()))
+}
+
+/// A reader that adds what it reads to a [`Progress`] and fails with [`Cancelled`] once the load
+/// is cancelled.
+struct Counting<'p, R> {
+    inner: R,
+    progress: &'p Progress,
+}
+
+impl<R: Read> Read for Counting<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.progress.is_cancelled() {
+            return Err(std::io::Error::other(Cancelled));
+        }
+        let n = self.inner.read(buf)?;
+        self.progress.bytes.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+
 /// Load an alignment, decompressing gzip transparently.
 pub fn load(path: &Path) -> Result<Alignment> {
     load_as(path, None)
@@ -135,17 +264,29 @@ pub fn load(path: &Path) -> Result<Alignment> {
 
 /// [`load`] with the residue type given instead of guessed (`--type`).
 pub fn load_as(path: &Path, ty: Option<SeqType>) -> Result<Alignment> {
-    let open = || -> Result<Reader<'static>> {
+    load_with(path, ty, None)
+}
+
+/// [`load_as`] reporting to `progress`, and stopping with [`Cancelled`] when it is cancelled.
+pub fn load_with(path: &Path, ty: Option<SeqType>, progress: Option<&Progress>) -> Result<Alignment> {
+    let open = || -> Result<Reader<'_>> {
         let f = || File::open(path).with_context(|| format!("opening {}", path.display()));
         let mut magic = [0u8; 2];
         let gz = f()?.read(&mut magic)? == 2 && magic == [0x1f, 0x8b];
+        let raw: Box<dyn Read + '_> = match progress {
+            Some(p) => {
+                p.start_pass();
+                Box::new(Counting { inner: f()?, progress: p })
+            }
+            None => Box::new(f()?),
+        };
         Ok(if gz {
-            Box::new(BufReader::with_capacity(1 << 16, flate2::read::MultiGzDecoder::new(f()?)))
+            Box::new(BufReader::with_capacity(1 << 16, flate2::read::MultiGzDecoder::new(raw)))
         } else {
-            Box::new(BufReader::with_capacity(1 << 16, f()?))
+            Box::new(BufReader::with_capacity(1 << 16, raw))
         })
     };
-    read(&open, ty).with_context(|| format!("reading {}", path.display()))
+    read(&open, ty, progress).with_context(|| format!("reading {}", path.display()))
 }
 
 pub fn parse_bytes(data: &[u8]) -> Result<Alignment> {
@@ -153,24 +294,36 @@ pub fn parse_bytes(data: &[u8]) -> Result<Alignment> {
 }
 
 pub fn parse_bytes_as(data: &[u8], ty: Option<SeqType>) -> Result<Alignment> {
-    read(&|| Ok(Box::new(data) as Reader), ty)
+    read(&|| Ok(Box::new(data) as Reader), ty, None)
+}
+
+/// [`parse_bytes`] reporting to `progress` (for tests of progress and cancel).
+pub fn parse_bytes_with(data: &[u8], progress: &Progress) -> Result<Alignment> {
+    read(
+        &|| {
+            progress.start_pass();
+            Ok(Box::new(BufReader::with_capacity(1 << 16, Counting { inner: data, progress })) as Reader)
+        },
+        None,
+        Some(progress),
+    )
 }
 
 /// Parse from `open`, which must return the same content each time: Clustal and Stockholm are read
 /// twice, and FASTA again in the rare case that the residue type changes after rows were packed.
-fn read<'a>(open: &dyn Fn() -> Result<Reader<'a>>, ty: Option<SeqType>) -> Result<Alignment> {
+fn read<'a>(open: &dyn Fn() -> Result<Reader<'a>>, ty: Option<SeqType>, progress: Option<&Progress>) -> Result<Alignment> {
     let mut r = open()?;
     match detect_format(r.fill_buf()?)? {
         Format::Fasta => {
             let mut forced = None;
             loop {
-                let res = fasta(r, CHUNK, forced, ty);
+                let res = fasta(r, CHUNK, forced, ty, progress);
                 let Some(a) = res.as_ref().err().and_then(|e| e.downcast_ref::<Restart>()).map(|r| r.0) else { return res };
                 forced = Some(a);
                 r = open()?;
             }
         }
-        f => interleaved(open, f, ty),
+        f => interleaved(r, open, f, ty, progress),
     }
 }
 
@@ -344,7 +497,7 @@ fn not_aligned(name: &str, n: usize, cols: usize) -> String {
 
 /// FASTA in batches of about `chunk` bytes: read, split at record starts, encode the batch in parallel.
 /// Memory stays at the packed matrix plus one batch, for plain and gzip input alike.
-fn fasta(mut r: impl Read, mut chunk: usize, forced: Option<&'static Alphabet>, ty: Option<SeqType>) -> Result<Alignment> {
+fn fasta(mut r: impl Read, mut chunk: usize, forced: Option<&'static Alphabet>, ty: Option<SeqType>, progress: Option<&Progress>) -> Result<Alignment> {
     let mut b = Builder::new(forced, ty);
     let mut buf: Vec<u8> = Vec::new();
     let mut first = true;
@@ -378,6 +531,10 @@ fn fasta(mut r: impl Read, mut chunk: usize, forced: Option<&'static Alphabet>, 
             })
             .collect();
         b.push(&recs)?;
+        if let Some(p) = progress {
+            p.set_rows(b.names.len());
+            p.check()?;
+        }
         buf.drain(..cut);
         if eof {
             break;
@@ -453,9 +610,9 @@ fn lines(mut r: impl BufRead, format: Format, mut f: impl FnMut(usize, Line) -> 
 }
 
 /// Clustal and Stockholm: blocks of `name sequence` lines, the same names repeated in each block.
-/// Read twice so nothing but the packed matrix is held: the first pass finds the names, lengths and
-/// residue type, the second encodes each line straight into its row.
-fn interleaved<'a>(open: &dyn Fn() -> Result<Reader<'a>>, format: Format, ty: Option<SeqType>) -> Result<Alignment> {
+/// Read twice so nothing but the packed matrix is held: the first pass (from `first`) finds the
+/// names, lengths and residue type, the second (from `open`) encodes each line straight into its row.
+fn interleaved<'a>(first: Reader<'a>, open: &dyn Fn() -> Result<Reader<'a>>, format: Format, ty: Option<SeqType>, progress: Option<&Progress>) -> Result<Alignment> {
     let mut index: HashMap<Vec<u8>, usize> = HashMap::new();
     let mut names: Vec<Vec<u8>> = Vec::new();
     let mut lens: Vec<usize> = Vec::new();
@@ -467,7 +624,7 @@ fn interleaved<'a>(open: &dyn Fn() -> Result<Reader<'a>>, format: Format, ty: Op
     let mut rf: Vec<u8> = Vec::new();
     let mut acc: HashMap<Vec<u8>, Box<str>> = HashMap::new();
     let mut nh: Vec<u8> = Vec::new();
-    lines(open()?, format, |ln, l| {
+    lines(first, format, |ln, l| {
         match l {
             Line::Tree(t) => nh.extend_from_slice(t),
             Line::Rf(seg) => rf.extend(seg.iter().filter(|b| !b.is_ascii_whitespace())),
@@ -487,6 +644,9 @@ fn interleaved<'a>(open: &dyn Fn() -> Result<Reader<'a>>, format: Format, ty: Op
                         names.push(name.to_vec());
                         lens.push(0);
                         seen.push(0);
+                        if let Some(p) = progress {
+                            p.set_rows(names.len());
+                        }
                         names.len() - 1
                     }
                 };
@@ -552,7 +712,7 @@ mod tests {
             for chunk in [1, 3, 8, 13] {
                 let mut forced = None;
                 let a = loop {
-                    match fasta(text, chunk, forced, None) {
+                    match fasta(text, chunk, forced, None, None) {
                         Err(e) if e.downcast_ref::<Restart>().is_some() => forced = Some(e.downcast_ref::<Restart>().unwrap().0),
                         r => break r.unwrap(),
                     }
@@ -651,7 +811,7 @@ mod tests {
         let e = parse_bytes_as(b"CLUSTAL\n\nx ACGE\n", Some(SeqType::Dna)).err().unwrap();
         assert!(format!("{e:#}").contains("--type"), "{e:#}");
         for chunk in [1, 8] {
-            let e = fasta(&b">a\nACGT\n>b\nACGE\n"[..], chunk, None, Some(SeqType::Dna)).err().unwrap();
+            let e = fasta(&b">a\nACGT\n>b\nACGE\n"[..], chunk, None, Some(SeqType::Dna), None).err().unwrap();
             assert!(e.to_string().contains("--type"), "{e}");
         }
     }
@@ -696,10 +856,10 @@ mod tests {
     fn rejects_unaligned_and_garbage() {
         let e = parse_bytes(b">a\nACGT\n>b\nACG\n").err().unwrap().to_string();
         assert!(e.contains("not an alignment"), "{e}");
-        assert!(fasta(&b">a\nACGT\n>b\nACG\n"[..], 4, None, None).is_err());
+        assert!(fasta(&b">a\nACGT\n>b\nACG\n"[..], 4, None, None, None).is_err());
         assert!(parse_bytes(b">a\n\n>b\nAC\n").is_err());
         assert!(parse_bytes(b">a\nAC%T\n").is_err());
-        assert!(fasta(&b">a\nACGT\n>b\nAC%T\n"[..], 4, None, None).is_err());
+        assert!(fasta(&b">a\nACGT\n>b\nAC%T\n"[..], 4, None, None, None).is_err());
         assert!(parse_bytes(b"hello").is_err());
     }
 
@@ -832,5 +992,90 @@ mod tests {
         }
         assert_eq!(a[0], a[1]);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A FASTA of `rows` rows × `cols` columns, and the same as Stockholm.
+    fn big(rows: usize, cols: usize) -> (Vec<u8>, Vec<u8>) {
+        let (mut fa, mut sto) = (Vec::new(), b"# STOCKHOLM 1.0\n".to_vec());
+        for r in 0..rows {
+            let seq: String = (0..cols).map(|c| b"ACGT-"[(r * 7 + c * 3) % 5] as char).collect();
+            fa.extend_from_slice(format!(">s{r}\n{seq}\n").as_bytes());
+            sto.extend_from_slice(format!("s{r} {seq}\n").as_bytes());
+        }
+        sto.extend_from_slice(b"//\n");
+        (fa, sto)
+    }
+
+    /// Reads `inner`, and cancels `p` once more than `after` bytes have gone through.
+    struct CancelAfter<'a> {
+        inner: &'a [u8],
+        p: &'a Progress,
+        after: usize,
+        done: usize,
+    }
+
+    impl Read for CancelAfter<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.done += n;
+            if self.done > self.after {
+                self.p.cancel();
+            }
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn progress_counts_bytes_and_rows() {
+        let (fa, sto) = big(2000, 300);
+        for (data, passes) in [(&fa, 1), (&sto, 2)] {
+            let p = Progress::new(data.len() as u64);
+            let a = parse_bytes_with(data, &p).unwrap();
+            let s = p.snapshot();
+            assert_eq!((a.rows(), s.rows, s.bytes, s.pass), (2000, 2000, data.len() as u64, passes));
+            assert_eq!(s.fraction(), 1.0);
+        }
+    }
+
+    #[test]
+    fn progress_is_monotone() {
+        let (fa, _) = big(20_000, 400);
+        let p = Progress::new(fa.len() as u64);
+        let seen = std::thread::scope(|sc| {
+            let h = sc.spawn(|| parse_bytes_with(&fa, &p).map(|a| a.rows()));
+            let mut seen = Vec::new();
+            while !h.is_finished() {
+                seen.push(p.snapshot());
+                std::thread::yield_now();
+            }
+            assert_eq!(h.join().unwrap().unwrap(), 20_000);
+            seen
+        });
+        for w in seen.windows(2) {
+            assert!(w[1].bytes >= w[0].bytes && w[1].rows >= w[0].rows, "{w:?}");
+        }
+    }
+
+    #[test]
+    fn cancel_stops_within_one_read() {
+        let (fa, sto) = big(4000, 500);
+        for data in [&fa, &sto] {
+            let p = Progress::new(data.len() as u64);
+            let open = || -> Result<Reader> {
+                p.start_pass();
+                let r = CancelAfter { inner: data, p: &p, after: 200_000, done: 0 };
+                Ok(Box::new(BufReader::with_capacity(1 << 16, Counting { inner: r, progress: &p })))
+            };
+            let e = read(&open, None, Some(&p)).err().expect("cancelled");
+            assert!(is_cancelled(&e), "{e:#}");
+            // Stopped at the first read after the flag: at most one 64 KiB read past it.
+            let s = p.snapshot();
+            assert!(s.bytes <= 200_000 + (1 << 16) && s.pass == 1, "{s:?}");
+        }
+        // Cancelled before starting.
+        let p = Progress::new(0);
+        p.cancel();
+        assert!(is_cancelled(&parse_bytes_with(&fa, &p).err().unwrap()));
+        assert!(!is_cancelled(&anyhow::anyhow!("other")));
     }
 }

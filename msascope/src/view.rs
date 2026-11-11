@@ -287,9 +287,19 @@ impl RowView {
         &self.consensus[k]
     }
 
-    /// The view row showing alignment row `r`.
+    /// The view row showing alignment row `r`; for a row a filter hides, see [`RowView::shown`].
     pub fn view_of(&self, r: usize) -> usize {
         self.pos[r] as usize
+    }
+
+    /// The view row showing alignment row `r`, `None` when it is filtered out.
+    pub fn shown(&self, r: usize) -> Option<usize> {
+        self.pos.get(r).copied().filter(|&p| p != u32::MAX).map(|p| p as usize)
+    }
+
+    /// Sequences shown (a collapsed clade counts its members).
+    pub fn shown_rows(&self) -> usize {
+        self.pos.iter().filter(|&&p| p != u32::MAX).count()
     }
 
     /// Alignment rows in view order, clades expanded to their members.
