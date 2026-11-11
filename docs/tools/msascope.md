@@ -24,27 +24,41 @@ msascope alignment.fasta          # or .fa.gz, .aln (Clustal), .sto (Stockholm)
 msascope                          # then Open… (Ctrl+O)
 msascope alignment.fasta --stats  # load, print sizes and timings, exit (no window)
 msascope silk.fasta --type protein # residue type given instead of guessed: dna, rna or protein
+msascope PF00042.sto --tree PF00042.nwk  # rows in the order of a Newick tree
+msascope big.fa --stats --tree big.nwk   # also time reading, matching and ordering the tree
 ```
 
-`--type` also applies to files opened later with Open….
+`--type` also applies to files opened later with Open…. Open… (and dropping files on the
+window) takes alignments and trees: a tree is matched to the open alignment, and an alignment
+and a tree dropped together are opened as a pair.
 
 | Input | Action |
 |---|---|
 | Wheel / trackpad | Scroll (Shift+wheel: horizontal) |
-| Drag | Pan (Shift+drag is kept for selecting a block, not built yet) |
+| Drag | Pan; a click without moving places the cell cursor and clears the selection |
+| Shift+drag, Shift+click | Select a block (from the cursor, or where the drag started) |
+| Click a name | Select its row; Ctrl (⌘ on macOS) adds or removes a row, Shift extends, dragging extends |
+| Click or drag on the track header | Select columns; Ctrl adds or removes, Shift extends |
+| Arrows | Move the cell cursor (the first press puts it on the top-left cell in view); Shift extends a block; Ctrl+Left/Right jump to the next run of residues or the edge, Ctrl+Up/Down to the first or last row |
+| Alt+arrows | Pan by 1/8 of the view |
+| Page Up/Down, Home/End | Cursor by a page, to the row's first or last column; Ctrl+Home/End to the corners |
+| Ctrl+A / Escape | Select everything / clear the selection (a second Escape removes the cursor) |
+| Ctrl+C / Ctrl+Shift+C | Copy the selection as FASTA / as residues only, one row per line |
+| Ctrl+E | Export the selection as FASTA |
+| Click a node in the tree | Collapse its clade into one row, or expand it again |
+| `t` | Tree order or file order (with a tree) |
 | Ctrl+wheel | Zoom at the pointer (Ctrl+Shift: columns only, Ctrl+Alt: rows only) |
 | `+` / `-` | Zoom in / out by √2 |
 | `0` / `w` / `h` | Fit all / fit width / fit height |
 | `r` | Back to the readable zoom a file opens at |
-| Arrows, Page Up/Down, Home/End | Move; Ctrl+Home/End jumps to the corners |
-| Ctrl+G | Go to a column (`15000`) or row and column (`250:15000`) |
+| Ctrl+G | Go to a column (`15000`) or row and column (`250:15000`, the row in the order shown); with both, the cursor goes there |
 | Ctrl+F | Find sequences by name (substring, case-insensitive); Enter / Shift+Enter for next/previous |
 | `s` / `d` / `c` | Next colour scheme / differences from the consensus on and off / "by conservation" on and off |
 | `i` / `g` | Hide or show insert columns / gappy columns (at the threshold chosen in the toolbar, 50% by default) |
-| Click | Select a row (in the alignment or the name panel) |
 | Hover | A card next to the pointer: sequence, residue and its position in the sequence, column, consensus (over the track header: the column) |
 | Click or drag in the overview | Pan there |
-| Drag the name panel's right edge | Resize it (120–480 px, remembered) |
+| Drag the name panel's right edge | Resize it (120–480 px, remembered); the tree panel's edge too (60–480 px) |
+| Drop files on the window | Open an alignment, a tree, or both |
 
 A file opens at a readable zoom, not fitted to the window: the whole alignment at about 11 × 16
 pixels per cell if it fits; otherwise rows at 16 pixels, so names and residues can be read, and
@@ -99,11 +113,64 @@ the differing share).
 Insert columns (`i`) and gappy columns (`g`) can be hidden from the toolbar's columns menu. Insert
 columns are hidden by default when the file has them. Gappy columns are those with at least 25,
 50 (default), 75, 90 or 100% gaps. The ruler keeps the alignment's own column numbers and marks
-each hidden run with a small notch and a faint line through the tracks; the status bar and the
+each hidden run with a thin tick at its foot and a faint line through the tracks; runs closer
+than 6 px share one tick, drawn 2 px wide. Over the ruler, the hover card lists the hidden
+columns on either side of the column under the pointer ("Hidden before: 4 columns, 437–440"); the status bar and the
 overview give the number hidden. Go-to (Ctrl+G) takes the alignment's column numbers; a hidden
 column goes to the next shown one. The hover card gives both numbers ("72 of 698 · 60 of 115
 shown"). Hiding rebuilds the pyramid for the shown columns in the background; the view keeps the
 old one until the new one is ready.
+
+### Selection, copy and export
+
+A selection is a set of rows and a set of columns, kept in the alignment's own numbering so it
+survives hiding columns and reordering rows. Rows only select whole rows, columns only whole
+columns, both a block. Selected rows are highlighted in the name panel, selected columns in the
+ruler, and selected cells get a light accent wash with an accent outline around each block. The
+status bar gives the size ("Selected: 6 rows × 13 columns", with "(16 shown)" when hidden columns
+fall inside it). Selecting a collapsed clade's row selects all its sequences.
+
+Ctrl+C copies the selection as FASTA (`>name` lines, one line of residues per sequence), Ctrl+Shift+C
+as residues only; both in the order the rows are shown. A selection over 64 MiB goes to a file
+instead. The toolbar's Export menu writes the selection or every row to a FASTA file (in the
+background), and has two options for copying and exporting: **Include hidden columns** (off by
+default: what is shown is what is written; on, a column range selected across hidden columns
+includes them) and **Leave out gaps** (the ungapped sequences). Lower case is not kept (see
+Formats). Image export (PNG, SVG) is not built yet.
+
+### Tree
+
+A Newick tree orders the rows and draws on the left of the names. It is taken from, in this
+order: `--tree FILE`; a tree opened or dropped with the alignment; the Stockholm file's own
+`#=GF NH` lines; a file next to the alignment with the same stem and `.nwk`, `.newick`, `.tree`
+or `.treefile` (`PF00042.sto.gz` tries `PF00042.sto.nwk`, then `PF00042.nwk`, …). Open… or a drop
+loads another tree for the open alignment.
+
+The parser reads quoted labels (`'a b'`, `''` for a quote), labels on internal nodes (names or
+support values), branch lengths, `[...]` comments (NHX annotations are ignored), and line breaks
+anywhere; only the first tree of a file is used. It never recurses, so very deep trees (a 200,000
+level caterpillar in the tests) are fine. Leaves are matched to sequences by the first rule that
+finds one: the full name (also with `_` read as a space), the first word of a FASTA header, the
+name before its last `/` (Pfam's `GLB2_TYLHE/32-143` for a leaf `GLB2_TYLHE`), the accession
+(`#=GS … AC`, with or without its `.version`). Rules after the first only use keys that belong to
+one sequence. The status bar reports the result ("73 of 75 tree leaves matched; 2 not in the
+alignment (…); 3 sequences not in the tree, shown at the end"), and the full list of unmatched
+leaves is printed to the terminal. Sequences the tree lacks follow the tree's rows, under a
+"not in tree" line.
+
+Branches are drawn to scale when the tree has lengths (every branch counts as 1 when it has none).
+Click an internal node to collapse its clade: it becomes one row showing the clade's consensus
+(per column, a gap where more than half the sequences have one, otherwise their most common
+residue), labelled with the node's name when it has one (support values are not names) or the
+first sequence, and the number of sequences; the tree draws it as a triangle. Click again to
+expand. The status bar counts the collapsed clades. The toolbar's Sort menu (or `t`) switches
+between tree order and file order (collapsing only applies in tree order), loads another tree or
+removes it; the button next to it hides the tree panel.
+
+Reordering and collapsing rebuild, in the background, the row order, the clade consensus rows
+and a pyramid for the rows shown; the view keeps the previous one until the new one is ready and
+keeps the same row at the top. Below a few pixels per subtree the panel draws a subtree as a
+faint wedge instead of its branches.
 
 ### Hover card
 
@@ -111,8 +178,10 @@ Over a cell: the sequence ID with its accession (from Stockholm `#=GS <name> AC`
 residue, its three-letter name and its position in the ungapped sequence, counted from the
 name's `/start-end` when it has one (Pfam, HMMER) and from 1 otherwise; for a gap, the residues
 it falls between; the column; and the column's consensus, identity and gap share. Over the track
-header the card shows the column only. It hides while dragging and after a scroll until the
-pointer moves.
+header the card shows the column only (and nearby hidden columns). Over a collapsed clade it
+shows the clade's consensus residue. After a key moves the cursor, the card shows the cursor's
+cell next to it; moving the pointer brings it back. It hides while dragging and after a scroll
+until the pointer moves.
 
 ## Formats
 
@@ -120,7 +189,7 @@ pointer moves.
 |---|---|---|
 | Aligned FASTA | first line starts with `>` | Wrapped or unwrapped, `\r\n` line ends, gzip (`.gz`, detected by content) |
 | Clustal | `CLUSTAL`, `MUSCLE` or `PROBCONS` header | Consensus lines and trailing residue counts are ignored |
-| Stockholm | `# STOCKHOLM` header | First alignment in the file; `#=GC RF` and `#=GS <name> AC` are read, other markup is skipped; blocks must be separated by a blank line |
+| Stockholm | `# STOCKHOLM` header | First alignment in the file; `#=GC RF`, `#=GS <name> AC` and `#=GF NH` (a tree) are read, other markup is skipped; blocks must be separated by a blank line |
 
 A UTF-8 byte order mark and blank lines before the header are ignored.
 
@@ -298,16 +367,74 @@ here, 119 MiB at 100,000 × 30,000), and while it is rebuilt the old one is kept
 does not hide columns, so the time of that rebuild at 100,000 × 30,000 has not been measured.
 PF00042 full (Stockholm, gzip, 4.8 MB) loads in 0.4 s.
 
+**After selection, export, the cursor and the tree panel (2026-11-11).** Checked against the
+build before them (commit `4d1f9be`), both built the same way (release, thin LTO, 16 codegen
+units) and run alternately on `msagen 20000 10000` (200 MB in `/tmp`), window 1280 × 760, no tree
+loaded. The machine was busy for the first runs (load average 14 to 47) and calmer for the last
+ones (7 to 13); the table gives the calmer runs.
+
+| | before (`4d1f9be`) | after |
+|---|---|---|
+| Load, `--stats`, median of 15 (fastest) | 0.56 s (0.43 s) | 0.55 s (0.42 s) |
+| Load, after/before ratio of alternating pairs, median of 15 | | 0.98 |
+| Peak RSS, `--stats` | 167–168 MiB | 169 MiB |
+| Paint median, whole alignment (fit), median of 6 | 2.75 ms | 2.5 ms |
+| Paint median, 1 px per cell | 2.95 ms | 2.75 ms |
+| Paint median, 4 px per cell | 1.2 ms | 1.3 ms |
+| Paint median, letters | 4.95 ms | 5.15 ms |
+| Frame interval median, all four zooms | 16.6–16.7 ms | 16.7–17.2 ms |
+| Peak RSS, `--bench` | 283–284 MiB | 296–297 MiB |
+
+In the busier runs (40 load pairs, 8 bench runs of each build) the load ratio was 1.025 and the
+fit paint median 0.9 ms higher after. With the same timing instrumentation added to both builds
+the order flipped: fit 0.5 ms lower after, and `--bench` peak RSS 297 MiB before, 283 MiB after.
+The code on that path is unchanged without a tree or a selection, so those differences (and the
+13 MiB in the table) come from how each build is laid out, not from new work. At the fit zoom
+about 95% of the paint time is the track header (the per-pixel track bars), in both builds.
+
+The tree, on a synthetic 230,000 × 300 alignment with a 230,000-leaf tree
+(`msagen 230000 300 t230k.fa --tree t230k-tree.nwk`; 7.6 MB of Newick, 459,999 nodes):
+
+| | |
+|---|---|
+| Read and parse, `--stats --tree`, 3 runs on the busy machine | 0.12–0.47 s |
+| Match leaves and build the index | 0.34–0.76 s |
+| Row order | 0.03–0.12 s |
+| Pyramid in tree order | 0.37–0.76 s |
+| In the viewer, calmer machine, 3 runs: parse / match / layout | 0.07–0.09 / 0.11–0.15 / 0.08–0.16 s |
+| Collapsing a clade of 165,000 sequences (layout rebuild) | 0.09 s |
+| Memory: tree and its index / row view | 25 MiB / 2 MiB |
+| Peak RSS, `--stats`, with and without the tree | 120 MiB both (the peak is during parsing) |
+| Peak RSS, `--bench`, with / without the tree | 258–264 / 247 MiB |
+
+`--bench` on that file, 3 runs each, with and without the tree panel:
+
+| Zoom | Paint median, with / without tree | Frame interval median, with / without |
+|---|---|---|
+| Whole alignment (fit) | 1.6 / 0.7 ms | 16.7 / 16.7 ms |
+| 1 px per cell | 1.7 / 0.9 ms | 16.7 / 16.7 ms |
+| 4 px per cell | 1.1 / 0.8 ms | 16.7 / 16.7 ms |
+| Letters | 4.4 / 5.7 ms | 16.7 / 17.6 ms |
+
+Reading, matching and laying out the tree run in the background, and the window keeps drawing
+meanwhile; with the tree shown the bench still pans at 60 frames per second. A first version that
+went into subtrees down to 3 px drew thousands of 1 px lines at the fit zoom (5.8 ms per paint
+there); drawing subtrees under 6 px as wedges and skipping lines already covered in their pixel
+row brought that to 1.6 ms.
+
 ## Test data
 
-`msagen ROWS COLS OUT [--protein] [--seed N]` writes a synthetic alignment (OUT ending in `.gz` is
+`msagen ROWS COLS OUT [--protein] [--seed N] [--tree TREE.nwk]` writes a synthetic alignment (OUT ending in `.gz` is
 gzipped; ROWS and COLS must be at least 1, and write errors end it with a non-zero exit): a random reference, 32 clades with shared mutations, and per sequence a few
 substitutions, an occasional deletion, an N run and ragged ends, like a viral surveillance
-alignment. It writes the 3 GB, 100,000 × 30,000 file in under 2 seconds.
+alignment. It writes the 3 GB, 100,000 × 30,000 file in under 2 seconds. `--tree` also writes a
+random binary Newick tree whose leaves are the sequences, each clade's sequences under one
+subtree (labelled `cladeK`), with random branch lengths.
 
 ```sh
 msagen 1000 1000 /tmp/small.fa
 msagen 100000 30000 /tmp/big.fa
+msagen 230000 300 /tmp/t230k.fa --tree /tmp/t230k-tree.nwk
 ```
 
 Generated files are for testing only and are not kept in the repository.
@@ -335,7 +462,7 @@ API changes often.
 
 ## Planned redesign
 
-The first two steps are built (see "Built so far" below). The pictures here are **mockups**, a
+Phases 0–6 are built (see "Built so far" below). The pictures here are **mockups**, a
 static drawing of the planned main window at its
 default size (1280 × 800). It shows 40 of the 73 sequences of Pfam's globin seed alignment
 ([PF00042](https://www.ebi.ac.uk/interpro/entry/pfam/PF00042/)), ordered by a tree computed from
@@ -359,6 +486,8 @@ Built so far:
 - The overview panel (planned for later; it reuses the tile renderer, so it came early).
 - The hover card with the residue's position in the ungapped sequence.
 - Hiding insert and gappy columns, with the ruler keeping the original numbers.
+- Selecting rows, columns and blocks; copy and FASTA export; drag-and-drop; the cell cursor.
+- The Newick tree panel: rows in tree order, collapsible clades shown as their consensus.
 
 The current app with Pfam's PF00042 full alignment (32,112 × 698; 581 insert columns hidden,
 117 shown), dark theme at the zoom it opens at, with the hover card:
@@ -370,10 +499,24 @@ sequences, and conserved columns show as strong stripes:
 
 ![msascope, light theme: PF00042 full, Fit all, density rendering](../images/msascope/phase2-4-full-light-fit.png)
 
+Pfam's PF00042 seed (73 × 141) with an illustrative neighbour-joining tree built from pairwise
+identity for this picture (Pfam's API has no tree for this family), one clade collapsed (8
+sequences shown as their consensus), a block selected, and the cursor with its hover card:
+
+![msascope, light theme: PF00042 seed with a tree panel, a collapsed clade, a block selection and the cursor](../images/msascope/phase5-6-seed-light-tree.png)
+
+PF00042 full, dark theme, inserts hidden, with a range of columns selected by dragging on the
+ruler (121 columns of the alignment, 22 of them shown):
+
+![msascope, dark theme: PF00042 full with a column selection](../images/msascope/phase5-6-full-dark-columns.png)
+
 Still to come, in order of priority:
 
-- A Newick tree panel with collapsible clades, rows in tree order.
-- Row, column and block selection, copy, FASTA export, drag-and-drop to open, keyboard movement.
+- Loading progress and cancel (phase 7).
+- Image export (PNG of the view, SVG of a region); sort and filter rows; go to `name:position`;
+  motif search; a reference row; Stockholm `#=GC` tracks; recent files (phase 8).
+- The tree panel's right-click menu from the spec (collapse to a depth, select a clade's rows,
+  show only a clade, ladderize) is not built; clicking a node collapses or expands it.
 
 Each step has to keep the load and paint times in [Measured](#measured) within 5% and 1 ms.
 
@@ -390,8 +533,13 @@ Each step has to keep the load and paint times in [Measured](#measured) within 5
 - Upper pyramid levels approximate the majority (area-weighted majority of majorities).
 - Clustal and Stockholm load on one thread and read the file twice; fine for typical sizes, slower
   than FASTA for very large files.
-- No editing, selection of columns, export, tree panel, sequence reordering or sorting by
-  similarity. A linked tree panel is planned next ([roadmap](../roadmap.md)).
+- No editing, image export, sorting by similarity, or computing a tree (bring a Newick file).
+- Drag-and-drop and the Export save dialog were not exercised by an automated test; selection,
+  copy (read back from the clipboard), the cursor keys and collapsing clades were (driven with a
+  virtual mouse and keyboard while taking screenshots).
+- Collapsing a clade or switching the order rebuilds the row order, clade consensus and pyramid
+  for every row in the background (0.08–0.16 s at 230,000 × 300 on the test laptop; longer for
+  wide alignments, not measured); the old layout stays on screen meanwhile.
 - Lower-case residues (often used for unaligned or masked regions) are shown as upper case; only
   whole insert columns are kept, not which single residues were lower case.
 - The density view samples at most 32 pyramid blocks or cells per pixel, so it is an estimate
