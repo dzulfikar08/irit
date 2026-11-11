@@ -7,6 +7,27 @@
   `msascope.app` (bundle id `com.dzulfikar.irit.msascope`), `msascope.dmg` and the
   `msascope-<arch>-linux.tar.gz` archives take the new name. The installer replaces an `msaview`
   it installed earlier with `msascope`, and still installs `msaview` from releases up to 0.2.1.
+- **Colour schemes**: Clustal X with its per-column rules (Jalview's table), percent identity,
+  hydrophobicity (Kyte–Doolittle), nucleotide and differences from the consensus, each with a
+  "by conservation" fade, in light and dark. Letters on every fill keep at least 4.5:1 contrast
+  (a test). Chosen from the toolbar's colour menu; `s` cycles, `d` differences, `c` conservation.
+  Residues a scheme leaves unfilled are drawn as muted letters on the background, and gaps are
+  the background with a faint dot, also in the dark theme.
+- **Low zoom shows density, not sampled cells**: below one pixel per cell each pixel takes the
+  majority residue and the share of differing cells of the cells it covers (from the pyramid or
+  the cells, up to 32 samples). "Fit all" on Pfam PF00042 full (32,112 × 698) now shows conserved
+  columns as stripes instead of noise.
+- **Overview panel** on the right: the whole alignment, the visible area as a box (click or drag
+  to pan), the visible range and the scheme's legend. Toggle in the toolbar.
+- **Hover card** next to the pointer: sequence name, accession (`#=GS AC`) and range, residue
+  with its position in the ungapped sequence (from the name's `/start-end`), column in the
+  alignment's numbering and among the shown columns, consensus, identity and gaps. It replaces
+  the hover text in the status bar.
+- **Insert and gappy columns can be hidden** (toolbar, `i` and `g`). Insert columns are now kept
+  at load: the columns where every row has lower case or `.`, or `#=GC RF` when the file has it.
+  Residues are still stored as upper case, at 1 bit per column extra. Gappy means at least 25, 50
+  (default), 75, 90 or 100% gaps. The ruler keeps the original column numbers and marks hidden
+  runs; go-to takes original numbers. Inserts are hidden by default when a file has them.
 
 ### dblock
 - **Identical files inside a database are hard-linked** after unpacking, so they take disk space
