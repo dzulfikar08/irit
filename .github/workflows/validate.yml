@@ -181,7 +181,7 @@ jobs:
           $B --catalog test-catalog.json fetch --stream card-4.0.2
           timeout 5 $B --catalog test-catalog.json fetch kraken2-viral-20261022 || true
           $B --catalog test-catalog.json fetch kraken2-viral-20261022 2>&1 | tee resume.log
-          grep -q "resuming at" resume.log
+          grep -q "resuming: " resume.log
           if $B --catalog test-catalog.json fetch test-card-wrong-md5; then echo "wrong checksum was accepted"; exit 1; fi
           test ! -e "$DBLOCK_STORE/test-card-wrong-md5"
       - name: GTDB R232 mock database (GTDBTk#726)
