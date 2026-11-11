@@ -15,6 +15,9 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use msascope::Loaded;
 use msascope::alphabet::SeqType;
+use msascope::jobs::{Done, Jobs};
+use msascope::motif::Hits;
+use msascope::rows::{Filter, RowStats, Sort};
 use msascope::pyramid::Pyramid;
 use msascope::scheme::{self, ColorMode, Scheme};
 use msascope::select::{ExportOptions, RangeSet, Selection};
@@ -113,7 +116,31 @@ pub struct Layout {
     pub pyramid: Pyramid,
     /// Changes with every rebuild; part of the tile key.
     pub generation: u64,
+    /// Sequences shown when a filter hides some, else `None`.
+    pub shown: Option<usize>,
 }
+
+/// What the Find box searches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindMode {
+    Names,
+    Motif,
+}
+
+/// A motif search's result and where the user is in it.
+pub struct MotifState {
+    pub hits: Arc<Hits>,
+    /// Indices into `hits.hits` of the matches in shown rows, in view order; built for
+    /// `nav_gen`'s layout.
+    pub nav: Vec<u32>,
+    pub nav_gen: u64,
+    /// Position in `nav` of the current match.
+    pub idx: Option<usize>,
+    pub secs: f64,
+}
+
+/// The inputs row statistics depend on: inserts hidden, gappy threshold, reference row.
+type StatsKey = (bool, Option<u8>, Option<usize>);
 
 /// Where a tree comes from.
 pub enum TreeSource {
@@ -180,6 +207,12 @@ struct ChromeKey {
     tree_panel: bool,
     has_selection: bool,
     export: ExportOptions,
+    fig: super::figure::FigOptions,
+    sort: Option<Sort>,
+    filter: bool,
+    find_mode: FindMode,
+    reference: Option<usize>,
+    reference_candidate: Option<usize>,
 }
 
 pub struct MsaScope {
@@ -187,8 +220,11 @@ pub struct MsaScope {
     /// Messages for the status bar ("3 matches", "Out of range …").
     pub(super) status: SharedString,
     pub(super) error: Option<SharedString>,
-    /// The file being read, while it loads.
-    pub(super) loading: Option<PathBuf>,
+    /// The load running, if any (one at a time); the open alignment stays until it ends.
+    pub(super) jobs: Jobs,
+    /// The file loading is Clustal or Stockholm, read in two passes (for the progress bar).
+    pub(super) load_two_pass: bool,
+    /// The open alignment's file.
     pub(super) path: Option<PathBuf>,
     /// `--type`: used for the file given on the command line and every file opened later.
     ty: Option<SeqType>,
@@ -215,6 +251,28 @@ pub struct MsaScope {
     pub(super) collapsed: Vec<bool>,
     /// Rows in tree order (otherwise the file's order); only with a tree.
     pub(super) tree_order: bool,
+    /// Rows sorted by something other than the tree or file order (tree order is off meanwhile).
+    pub(super) sort: Option<Sort>,
+    pub(super) filter: Filter,
+    /// The filter bar is open (it also shows while a filter is set).
+    pub(super) filter_bar: bool,
+    pub(super) filter_name: Entity<InputState>,
+    pub(super) filter_ident: Entity<InputState>,
+    pub(super) filter_gaps: Entity<InputState>,
+    /// The clade the clade filter shows, for the filter bar.
+    pub(super) clade_label: Option<SharedString>,
+    /// Empty the filter boxes at the next frame (it needs the window).
+    pub(super) clear_inputs: bool,
+    /// Scroll to the first row when the layout being built arrives (after a sort or filter).
+    pub(super) scroll_top: bool,
+    /// The reference row (alignment row) for identity sorting and filtering.
+    pub(super) reference: Option<usize>,
+    row_stats: Option<(StatsKey, Arc<RowStats>)>,
+    pub(super) find_mode: FindMode,
+    pub(super) motif: Option<MotifState>,
+    pub(super) motif_cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// Where the pointer was last seen anywhere in the window (for the tree's context menu).
+    pub(super) last_pointer: Rc<Cell<Point<Pixels>>>,
     /// A tree file to match once the alignment being opened has loaded (`--tree`, or a tree
     /// dropped or opened before or with it).
     pub(super) next_tree: Option<PathBuf>,
@@ -246,6 +304,8 @@ pub struct MsaScope {
     /// The hover card shows the cursor's cell (after a key moved it) instead of the pointer's.
     pub(super) card_cursor: bool,
     pub(super) export: ExportOptions,
+    /// Names, ruler and PNG scale for figures.
+    pub(super) fig: super::figure::FigOptions,
     pub(super) jump: Entity<InputState>,
     pub(super) search: Entity<InputState>,
     pub(super) focus: FocusHandle,
@@ -260,13 +320,16 @@ pub struct MsaScope {
 
 impl MsaScope {
     pub fn new(path: Option<PathBuf>, tree: Option<PathBuf>, ty: Option<SeqType>, bench: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let jump = cx.new(|cx| InputState::new(window, cx).placeholder("Go to column, or row:column"));
+        let jump = cx.new(|cx| InputState::new(window, cx).placeholder("Column, row:col or name:pos"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find sequence"));
+        let filter_name = cx.new(|cx| InputState::new(window, cx).placeholder("Name or accession, or /regex/"));
+        let filter_ident = cx.new(|cx| InputState::new(window, cx).placeholder("0–100"));
+        let filter_gaps = cx.new(|cx| InputState::new(window, cx).placeholder("0–100"));
         let subs = vec![
             cx.subscribe_in(&jump, window, |this, state, ev: &InputEvent, window, cx| match ev {
                 InputEvent::PressEnter { .. } => {
                     let text = state.read(cx).value().to_string();
-                    this.jump_to(&text, cx);
+                    this.go_to(&text, cx);
                 }
                 InputEvent::Blur => this.refocus(window, cx),
                 _ => {}
@@ -274,9 +337,30 @@ impl MsaScope {
             cx.subscribe_in(&search, window, |this, state, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => {
                     let q = state.read(cx).value().to_string();
-                    this.run_search(&q, cx);
+                    match this.find_mode {
+                        FindMode::Names => this.run_search(&q, cx),
+                        FindMode::Motif => this.run_motif(&q, cx),
+                    }
                 }
-                InputEvent::PressEnter { shift, .. } => this.next_match(if *shift { -1 } else { 1 }, cx),
+                InputEvent::PressEnter { shift, .. } => match this.find_mode {
+                    FindMode::Names => this.next_match(if *shift { -1 } else { 1 }, cx),
+                    FindMode::Motif => this.next_hit(if *shift { -1 } else { 1 }, cx),
+                },
+                InputEvent::Blur => this.refocus(window, cx),
+                _ => {}
+            }),
+            cx.subscribe_in(&filter_name, window, |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Change => this.read_filter(cx),
+                InputEvent::Blur => this.refocus(window, cx),
+                _ => {}
+            }),
+            cx.subscribe_in(&filter_ident, window, |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Change => this.read_filter(cx),
+                InputEvent::Blur => this.refocus(window, cx),
+                _ => {}
+            }),
+            cx.subscribe_in(&filter_gaps, window, |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Change => this.read_filter(cx),
                 InputEvent::Blur => this.refocus(window, cx),
                 _ => {}
             }),
@@ -295,7 +379,8 @@ impl MsaScope {
             data: None,
             status: SharedString::default(),
             error: None,
-            loading: None,
+            jobs: Jobs::default(),
+            load_two_pass: false,
             path: None,
             ty,
             vp: Viewport { col0: 0.0, row0: 0.0, cw: view::LETTERS_CW, ch: view::LETTERS_CH, width: 0.0, height: 0.0 },
@@ -312,6 +397,21 @@ impl MsaScope {
             tree_loading: false,
             collapsed: Vec::new(),
             tree_order: true,
+            sort: None,
+            filter: Filter::default(),
+            filter_bar: false,
+            filter_name,
+            filter_ident,
+            filter_gaps,
+            clade_label: None,
+            clear_inputs: false,
+            scroll_top: false,
+            reference: None,
+            row_stats: None,
+            find_mode: FindMode::Names,
+            motif: None,
+            motif_cancel: Arc::default(),
+            last_pointer: Rc::new(Cell::new(Point::default())),
             next_tree: tree,
             tree_hits: Rc::default(),
             hide_inserts: true,
@@ -332,6 +432,7 @@ impl MsaScope {
             anchor: None,
             card_cursor: false,
             export: ExportOptions::default(),
+            fig: super::figure::FigOptions::default(),
             jump,
             search,
             focus: cx.focus_handle(),
@@ -354,20 +455,48 @@ impl MsaScope {
         v
     }
 
+    /// The file being read, while a load runs.
+    pub(super) fn loading(&self) -> Option<&std::path::Path> {
+        self.jobs.current().map(|j| j.path.as_path())
+    }
+
+    /// Open an alignment in the background, showing its progress (polled every 100 ms) until it
+    /// ends or is cancelled. The alignment open now stays until the new one has loaded.
     pub(super) fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.status = SharedString::default();
         self.error = None;
-        self.loading = Some(path.clone());
-        self.path = Some(path.clone());
+        let total = std::fs::metadata(&path).map_or(0, |m| m.len());
+        self.load_two_pass = msascope::parse::sniff(&path).is_ok_and(|(f, _)| f != msascope::parse::Format::Fasta);
+        let job = self.jobs.start(path.clone(), total);
+        let (id, progress) = (job.id, job.progress.clone());
         cx.notify();
         let ty = self.ty;
-        let task = cx.background_executor().spawn(async move { Loaded::open_as(&path, ty) });
+        let task = cx.background_executor().spawn(async move { Loaded::open_with(&path, ty, Some(&progress)) });
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+                let running = this.update(cx, |v, cx| {
+                    let on = v.jobs.is_current(id);
+                    if on {
+                        cx.notify();
+                    }
+                    on
+                });
+                if !matches!(running, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |v, cx| {
-                v.loading = None;
+                let Done::Current(path, result) = v.jobs.finish(id, result) else { return };
                 match result {
                     Ok(l) => {
+                        v.settings.add_recent(&path);
+                        v.settings.save();
+                        v.path = Some(path);
                         eprintln!("msascope: {}", l.summary());
                         if let Some(rss) = peak_rss_mb() {
                             eprintln!("msascope: peak RSS after load {rss} MiB");
@@ -388,6 +517,7 @@ impl MsaScope {
                         v.vp.row0 = 0.0;
                         v.matches.clear();
                         v.reset_selection();
+                        v.reset_rows(cx);
                         v.hover = None;
                         // The tree: one given with the file, else the file's own (#=GF NH), else
                         // a sibling file with the same stem.
@@ -402,6 +532,8 @@ impl MsaScope {
                     Err(e) => {
                         eprintln!("msascope: {e:#}");
                         v.data = None;
+                        v.close(cx);
+                        v.path = Some(path);
                         v.error = Some(format!("{e:#}").into());
                     }
                 }
@@ -412,8 +544,20 @@ impl MsaScope {
         .detach();
     }
 
+    /// Cancel / Escape while loading: stop the load (its memory is freed when the reader returns),
+    /// keep the alignment that was open.
+    pub(super) fn cancel_load(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = self.jobs.cancel() {
+            let name = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+            eprintln!("msascope: cancelled loading {name}");
+            self.status = format!("Cancelled loading {name}").into();
+            cx.notify();
+        }
+    }
+
     /// Close the file: back to the empty window.
     pub(super) fn close(&mut self, cx: &mut Context<Self>) {
+        self.jobs.cancel();
         self.data = None;
         self.layout = None;
         self.layout_gen += 1;
@@ -424,7 +568,22 @@ impl MsaScope {
         self.status = SharedString::default();
         self.matches.clear();
         self.reset_selection();
+        self.reset_rows(cx);
         self.hover = None;
+        cx.notify();
+    }
+
+    /// Forget sorting, filters, the reference row and motif hits (a new file, or none).
+    fn reset_rows(&mut self, cx: &mut Context<Self>) {
+        self.sort = None;
+        self.filter = Filter::default();
+        self.filter_bar = false;
+        self.reference = None;
+        self.row_stats = None;
+        self.cancel_motif();
+        self.motif = None;
+        self.clade_label = None;
+        self.clear_inputs = true;
         cx.notify();
     }
 
@@ -436,6 +595,7 @@ impl MsaScope {
     }
 
     fn clear_tree(&mut self) {
+        self.filter.clade = None;
         self.tree = None;
         self.tree_name = None;
         self.tree_loading = false;
@@ -449,7 +609,7 @@ impl MsaScope {
         let mut head = [0u8; 256];
         let n = std::fs::File::open(&path).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
         if tree::looks_like_tree(&path, &head[..n]) {
-            if self.data.is_some() && self.loading.is_none() {
+            if self.data.is_some() && self.loading().is_none() {
                 self.load_tree(TreeSource::File(path), cx);
             } else {
                 self.status = format!("{} will be matched to the next alignment opened", path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())).into();
@@ -560,6 +720,7 @@ impl MsaScope {
 
     pub(super) fn set_tree_order(&mut self, on: bool, cx: &mut Context<Self>) {
         self.tree_order = on;
+        self.sort = None;
         self.rebuild_layout(cx);
     }
 
@@ -630,9 +791,18 @@ impl MsaScope {
         self.row_view().map_or(v, |m| m.rows_of(v)[0] as usize)
     }
 
-    /// The view row showing alignment row `r`.
-    pub(super) fn view_row(&self, r: usize) -> usize {
-        self.row_view().map_or(r, |m| m.view_of(r))
+    /// The view row showing alignment row `r`; `None` when a filter hides it.
+    pub(super) fn view_row(&self, r: usize) -> Option<usize> {
+        match self.row_view() {
+            None => Some(r),
+            Some(m) => m.shown(r),
+        }
+    }
+
+    /// Sequences shown and in the file, when a filter hides some.
+    pub(super) fn shown_of(&self) -> Option<(usize, usize)> {
+        let d = self.data.as_ref()?;
+        self.layout.as_deref().and_then(|l| l.shown).map(|n| (n, d.aln.rows()))
     }
 
     /// Whether the tree panel is shown: a tree in tree order, with the panel switched on.
@@ -665,37 +835,56 @@ impl MsaScope {
         let inserts = self.hide_inserts && !d.aln.inserts.is_empty();
         let gappy = self.hide_gappy.then(|| self.settings.gappy_pct as f32 / 100.0);
         let tree = self.tree.clone().filter(|_| self.tree_order);
-        if !inserts && gappy.is_none() && tree.is_none() && self.layout.is_none() {
+        let (sort, filter, reference) = (self.sort, self.filter.clone(), self.reference);
+        if !inserts && gappy.is_none() && tree.is_none() && sort.is_none() && !filter.is_active() && self.layout.is_none() {
             self.layout_pending = false;
             return;
         }
+        let need_stats = sort.is_some_and(|s| s.key.needs_stats()) || filter.needs_stats();
+        let key: StatsKey = (inserts, self.hide_gappy.then_some(self.settings.gappy_pct), reference);
+        let cached = self.row_stats.as_ref().filter(|(k, _)| *k == key).map(|(_, s)| s.clone());
         let collapsed = self.collapsed.clone();
         self.layout_pending = true;
         cx.notify();
         let task = cx.background_executor().spawn(async move {
             let t0 = Instant::now();
             let map = ColumnMap::hiding(&d.aln, &d.stats, inserts, gappy);
-            let (rows, tree_rows) = match &tree {
-                Some(ix) => {
-                    let (rv, tr) = tree::row_view(&d.aln, ix, &collapsed, true);
+            let stats = need_stats.then(|| cached.unwrap_or_else(|| Arc::new(RowStats::compute(&d.aln, &d.stats.consensus, map.as_ref(), reference))));
+            let keep = filter.keep(&d.aln, stats.as_deref());
+            let t_rows = t0.elapsed();
+            let (rows, tree_rows) = match (sort, &tree) {
+                (Some(s), _) => (Some(msascope::rows::flat_view(&d.aln, keep.as_deref(), Some(s), stats.as_deref())), None),
+                (None, Some(ix)) => {
+                    let (rv, tr) = tree::row_view_kept(&d.aln, ix, &collapsed, keep.as_deref());
                     (Some(rv), tr)
                 }
-                None => (None, None),
+                (None, None) if keep.is_some() => (Some(msascope::rows::flat_view(&d.aln, keep.as_deref(), None, None)), None),
+                (None, None) => (None, None),
             };
+            let shown = keep.as_ref().map(|k| k.iter().filter(|&&x| x).count());
+            let t_order = t0.elapsed() - t_rows;
             let layout = (map.is_some() || rows.is_some()).then(|| {
                 let pyramid = Pyramid::build_mapped(&d.aln, &d.stats.consensus, map.as_ref().map(|m| &m.visible[..]), rows.as_ref());
-                Arc::new(Layout { map, rows, tree: tree_rows, pyramid, generation })
+                Arc::new(Layout { map, rows, tree: tree_rows, pyramid, generation, shown })
             });
-            (layout, t0.elapsed())
+            (layout, stats, (t_rows, t_order, t0.elapsed()))
         });
         cx.spawn(async move |this, cx| {
-            let (layout, took) = task.await;
+            let (layout, stats, (t_rows, t_order, took)) = task.await;
             this.update(cx, |v, cx| {
+                if let Some(s) = stats {
+                    v.row_stats = Some((key, s));
+                }
                 if v.layout_gen != generation {
                     return;
                 }
                 if layout.as_ref().is_some_and(|l| l.rows.is_some()) {
-                    eprintln!("msascope: layout (row order, clades, columns, pyramid) {:.3} s", took.as_secs_f64());
+                    eprintln!(
+                        "msascope: layout {:.3} s (row figures and filter {:.3} s, row order {:.3} s, then pyramid)",
+                        took.as_secs_f64(),
+                        t_rows.as_secs_f64(),
+                        t_order.as_secs_f64()
+                    );
                 }
                 let (rows, cols) = v.dims();
                 // What is at the top-left and under the cursor, in alignment coordinates.
@@ -708,11 +897,13 @@ impl MsaScope {
                 if let Some(left) = left {
                     v.vp.col0 = to_view_col(v, left) as f64 + v.vp.col0.fract();
                 }
-                if let Some(top) = top {
-                    v.vp.row0 = v.view_row(top) as f64 + v.vp.row0.fract();
+                if std::mem::take(&mut v.scroll_top) {
+                    v.vp.row0 = 0.0;
+                } else if let Some(top) = top {
+                    v.vp.row0 = v.view_row(top).map_or(0.0, |r| r as f64 + v.vp.row0.fract());
                 }
                 let (rows, cols) = v.dims();
-                v.cursor = cursor.map(|(r, c)| (v.view_row(r).min(rows.saturating_sub(1)), to_view_col(v, c).min(cols.saturating_sub(1))));
+                v.cursor = cursor.and_then(|(r, c)| Some((v.view_row(r)?.min(rows.saturating_sub(1)), to_view_col(v, c).min(cols.saturating_sub(1)))));
                 v.anchor = None;
                 v.vp.clamp(rows, cols);
                 if v.fit.is_some() && v.pending.is_none() {
@@ -836,48 +1027,14 @@ impl MsaScope {
         self.vp.clamp(rows, cols);
     }
 
-    /// Go to a column (alignment numbering, from 1) or `row:column` (row in the order shown). A
-    /// hidden column goes to the next shown one.
-    fn jump_to(&mut self, text: &str, cx: &mut Context<Self>) {
-        let parse = |s: &str| s.trim().replace([',', '_'], "").parse::<usize>().ok().filter(|&n| n >= 1).map(|n| n - 1);
-        let (row, col) = match text.split_once(':') {
-            Some((r, c)) => (parse(r), parse(c)),
-            None => (None, parse(text)),
-        };
-        let rows = self.dims().0;
-        let cols = self.data.as_ref().map_or(0, |d| d.aln.cols());
-        let shown = self.dims().1;
-        let mut note = None;
-        let vcol = col.filter(|&c| c < cols).map(|c| match self.col_map().map(|m| m.view_of(c)) {
-            None | Some(Ok(_)) => self.col_map().map_or(c, |m| m.view_of(c).unwrap()),
-            Some(Err(v)) => {
-                note = Some(format!("Column {} is hidden; showing the next shown column", view::group_digits(c + 1)));
-                v.min(shown.saturating_sub(1))
-            }
-        });
-        if row.is_none_or(|r| r < rows) && col.is_none_or(|c| c < cols) && (row.is_some() || col.is_some()) {
-            let col = vcol;
-            self.status = note.map(SharedString::from).unwrap_or_default();
-            if self.vp.cw < view::LETTERS_CW && col.is_some() {
-                self.fit = None;
-                self.set_scale(view::LETTERS_CW, self.vp.ch.max(view::LETTERS_CH), None);
-            }
-            self.center_on(row, col);
-            if let (Some(r), Some(c)) = (row, col) {
-                self.cursor = Some((r, c));
-            }
-        } else {
-            self.status = format!("Out of range: {} rows × {} columns", view::group_digits(rows), view::group_digits(cols)).into();
-        }
-        cx.notify();
-    }
-
-    fn run_search(&mut self, q: &str, cx: &mut Context<Self>) {
+    pub(super) fn run_search(&mut self, q: &str, cx: &mut Context<Self>) {
         let Some(d) = self.data.clone() else { return };
-        self.matches = view::search_names(&d.aln.names, q);
+        let mut m = view::search_names(&d.aln.names, q);
+        m.retain(|&r| self.view_row(r).is_some());
+        self.matches = m;
         self.match_idx = 0;
         if let Some(&r) = self.matches.first() {
-            self.select_row(self.view_row(r));
+            self.select_row(r);
         }
         self.status = if q.is_empty() { SharedString::default() } else { format!("{} matches", view::group_digits(self.matches.len())).into() };
         cx.notify();
@@ -889,13 +1046,21 @@ impl MsaScope {
         }
         let n = self.matches.len() as isize;
         self.match_idx = ((self.match_idx as isize + step).rem_euclid(n)) as usize;
-        self.select_row(self.view_row(self.matches[self.match_idx]));
+        self.select_row(self.matches[self.match_idx]);
         self.status = format!("match {} of {}", self.match_idx + 1, n).into();
         cx.notify();
     }
 
-    /// Select view row `r` (as a click on its name does) and scroll it into view.
-    pub(super) fn select_row(&mut self, r: usize) {
+    /// Select alignment row `row` (as a click on its name does) and scroll it into view; a row a
+    /// filter hides is selected without scrolling.
+    pub(super) fn select_row(&mut self, row: usize) {
+        let Some(r) = self.view_row(row) else {
+            let mut rows = RangeSet::new();
+            rows.add(row as u32, row as u32 + 1);
+            self.sel = Rc::new(Selection { rows, ..Default::default() });
+            self.status = "That sequence is hidden by the row filter".into();
+            return;
+        };
         self.sel = Rc::new(Selection { rows: self.rows_set(r..=r), ..Default::default() });
         self.anchor = Some((r, self.cursor.map_or(0, |c| c.1)));
         if self.vp.ch < NAME_ROW_MIN {
@@ -982,7 +1147,7 @@ impl MsaScope {
         let file = self.path.as_ref().and_then(|p| p.file_name()).map(|n| SharedString::from(n.to_string_lossy().into_owned()));
         ChromeKey {
             file,
-            loading: self.loading.is_some(),
+            loading: self.loading().is_some(),
             error: self.error.is_some(),
             zoom: view::zoom_label(self.vp.cw, self.vp.ch),
             fit: self.fit,
@@ -1001,6 +1166,12 @@ impl MsaScope {
             tree_panel: self.settings.tree_panel,
             has_selection: !self.sel.is_empty(),
             export: self.export,
+            fig: self.fig,
+            sort: self.sort,
+            filter: self.filter.is_active() || self.filter_bar,
+            find_mode: self.find_mode,
+            reference: self.reference,
+            reference_candidate: self.reference_candidate(),
         }
     }
 
@@ -1027,6 +1198,11 @@ impl Render for MsaScope {
             window.request_animation_frame(); // lay out once to learn the area size
         }
         self.step_bench(window, cx);
+        if std::mem::take(&mut self.clear_inputs) {
+            for s in [&self.filter_name, &self.filter_ident, &self.filter_gaps] {
+                s.update(cx, |s, cx| s.set_value("", window, cx));
+            }
+        }
 
         // Cached chrome: drawn again only when what it shows changed.
         let key = self.chrome_key(window, cx);
@@ -1044,7 +1220,7 @@ impl Render for MsaScope {
         let tools = chrome(&self.toolbar, CONTROL_LG + px(1.));
 
         let t = tokens(cx);
-        let main = if self.data.is_some() {
+        let main = if self.data.is_some() && self.loading().is_none() {
             let tree_w = px(self.tree_w());
             let name_w = px(self.settings.name_width);
             let splitter = |id: &'static str, left: Pixels, active: bool, tree: bool| {
@@ -1093,6 +1269,8 @@ impl Render for MsaScope {
                 .on_scroll(cx.listener(Self::on_scroll))
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                 .child(self.alignment_canvas(window, cx))
+                // The tree's context menu, over the tree panel.
+                .when(self.show_tree(), |d| d.child(self.tree_menu_overlay(tree_w, cx)))
                 // The splitters, over the right edges of the tree and name panels.
                 .children(tree_split)
                 .child(name_split);
@@ -1118,11 +1296,27 @@ impl Render for MsaScope {
             .size_full()
             .bg(t.bg)
             .text_color(t.fg)
+            .on_mouse_move(cx.listener(|v, ev: &MouseMoveEvent, _, _| v.last_pointer.set(ev.position)))
             .on_key_down(cx.listener(|v, ev: &KeyDownEvent, window, cx| {
-                if ev.keystroke.key == "escape" {
-                    v.focus.focus(window, cx);
-                    cx.notify();
+                let k = &ev.keystroke;
+                let ctrl = k.modifiers.control || k.modifiers.platform;
+                match k.key.as_str() {
+                    "escape" => {
+                        if v.loading().is_some() {
+                            v.cancel_load(cx);
+                        }
+                        v.focus.focus(window, cx);
+                    }
+                    // The same shortcuts as on the alignment, while a text box has the focus.
+                    _ if v.data.is_none() => return,
+                    "g" if ctrl => v.jump.update(cx, |s, cx| s.focus(window, cx)),
+                    "f" if ctrl && k.modifiers.shift => v.set_find_mode(FindMode::Motif, window, cx),
+                    "f" if ctrl => v.search.update(cx, |s, cx| s.focus(window, cx)),
+                    "l" if ctrl => v.toggle_filter_bar(window, cx),
+                    "f3" if v.motif.is_some() => v.next_hit(if k.modifiers.shift { -1 } else { 1 }, cx),
+                    _ => return,
                 }
+                cx.notify();
             }))
             // Files dropped anywhere on the window: alignments and trees.
             .drag_over::<ExternalPaths>(move |s, _, _, _| s.border_2().border_color(t.accent))
@@ -1131,6 +1325,7 @@ impl Render for MsaScope {
             }))
             .child(title)
             .child(tools)
+            .when(self.data.is_some() && self.loading().is_none() && (self.filter_bar || self.filter.is_active()), |d| d.child(self.render_filter_bar(cx)))
             .child(main)
             .child(self.render_status_bar(cx))
             .when_some(self.render_hover_card(window, cx), |d, card| d.child(card))

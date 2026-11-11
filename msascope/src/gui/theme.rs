@@ -68,14 +68,19 @@ pub struct Settings {
     pub tree_width: f32,
     /// The tree panel, when a tree is loaded.
     pub tree_panel: bool,
+    /// Alignments opened, most recent first (at most [`RECENT_MAX`]).
+    pub recent: Vec<PathBuf>,
 }
+
+/// Recent files kept in the settings.
+pub const RECENT_MAX: usize = 10;
 
 /// The gappy thresholds the toolbar offers.
 pub const GAPPY_CHOICES: [u8; 5] = [25, 50, 75, 90, 100];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemeChoice::System, name_width: NAME_W_DEFAULT, overview: true, gappy_pct: 50, tree_width: TREE_W_DEFAULT, tree_panel: true }
+        Settings { theme: ThemeChoice::System, name_width: NAME_W_DEFAULT, overview: true, gappy_pct: 50, tree_width: TREE_W_DEFAULT, tree_panel: true, recent: Vec::new() }
     }
 }
 
@@ -86,6 +91,7 @@ impl Settings {
             let Some((k, v)) = line.split_once('=') else { continue };
             let v = v.trim().trim_matches('"');
             match k.trim() {
+                "recent" if !v.is_empty() && s.recent.len() < RECENT_MAX => s.recent.push(PathBuf::from(v)),
                 "theme" => {
                     if let Some(t) = ThemeChoice::ALL.into_iter().find(|t| t.key() == v) {
                         s.theme = t;
@@ -121,8 +127,9 @@ impl Settings {
     }
 
     pub fn to_text(&self) -> String {
+        let recent: String = self.recent.iter().filter_map(|p| p.to_str()).map(|p| format!("recent = \"{p}\"\n")).collect();
         format!(
-            "# msascope settings\ntheme = \"{}\"\nname_width = {}\noverview = {}\ngappy_pct = {}\ntree_width = {}\ntree_panel = {}\n",
+            "# msascope settings\ntheme = \"{}\"\nname_width = {}\noverview = {}\ngappy_pct = {}\ntree_width = {}\ntree_panel = {}\n{recent}",
             self.theme.key(),
             self.name_width.round(),
             self.overview,
@@ -142,6 +149,17 @@ impl Settings {
             env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|h| h.join(".config")))
         };
         Some(base?.join("msascope").join("settings.toml"))
+    }
+
+    /// Put `path` first in the recent files (made absolute; once only; non-UTF-8 paths skipped).
+    pub fn add_recent(&mut self, path: &std::path::Path) {
+        let p = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        if p.to_str().is_none() {
+            return;
+        }
+        self.recent.retain(|r| r != &p);
+        self.recent.insert(0, p);
+        self.recent.truncate(RECENT_MAX);
     }
 
     pub fn load() -> Self {
@@ -165,7 +183,16 @@ mod tests {
 
     #[std::prelude::v1::test]
     fn settings_round_trip_and_bad_values() {
-        let s = Settings { theme: ThemeChoice::Dark, name_width: 250.0, overview: false, gappy_pct: 90, tree_width: 200.0, tree_panel: false };
+        let mut s = Settings { theme: ThemeChoice::Dark, name_width: 250.0, overview: false, gappy_pct: 90, tree_width: 200.0, tree_panel: false, recent: Vec::new() };
+        assert_eq!(Settings::parse(&s.to_text()), s);
+        // Recent files: newest first, once each, at most RECENT_MAX, a path with '=' kept whole.
+        for i in 0..12 {
+            s.add_recent(std::path::Path::new(&format!("/data/a=b/f{i}.fa")));
+        }
+        s.add_recent(std::path::Path::new("/data/a=b/f5.fa"));
+        assert_eq!(s.recent.len(), RECENT_MAX);
+        assert_eq!(s.recent[0], PathBuf::from("/data/a=b/f5.fa"));
+        assert_eq!(s.recent[1], PathBuf::from("/data/a=b/f11.fa"));
         assert_eq!(Settings::parse(&s.to_text()), s);
         let s = Settings::parse("theme = purple\nname_width = 9999\nother = 1\nno equals sign\ngappy_pct = 0\n");
         assert_eq!(s, Settings { theme: ThemeChoice::System, name_width: NAME_W_MAX, ..Settings::default() });

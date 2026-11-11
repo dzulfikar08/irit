@@ -203,7 +203,10 @@ impl MsaScope {
             }
             "t" if !ctrl && self.tree.is_some() => self.set_tree_order(!self.tree_order, cx),
             "o" if ctrl => self.prompt_open(cx),
+            "f" if ctrl && shift => self.set_find_mode(super::app::FindMode::Motif, window, cx),
             "f" if ctrl => self.search.update(cx, |s, cx| s.focus(window, cx)),
+            "l" if ctrl => self.toggle_filter_bar(window, cx),
+            "f3" if self.motif.is_some() => self.next_hit(if shift { -1 } else { 1 }, cx),
             "g" if ctrl => self.jump.update(cx, |s, cx| s.focus(window, cx)),
             _ => return,
         }

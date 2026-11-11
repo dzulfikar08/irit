@@ -84,3 +84,5 @@ pub const LETTER_H: f64 = 10.0;
 pub const HOVER_MIN: f64 = 3.0;
 /// Ruler labels are at least this far apart.
 pub const TICK_LABEL_GAP: f64 = 70.0;
+/// At most this many motif matches are drawn per frame (zoomed far out on a file with many).
+pub const MOTIF_RECTS_MAX: usize = 20_000;
