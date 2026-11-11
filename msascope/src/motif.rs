@@ -212,43 +212,54 @@ impl Hits {
     }
 }
 
-/// Search every row (in parallel). Stops with `None` when `cancel` is set. At most `limit` hits
-/// are kept; all are counted.
+/// Rows searched together; matches are kept in row order, and once the limit is reached the
+/// rest are only counted, so memory stays at the limit.
+const STEP: usize = 2048;
+
+/// Search every row (in parallel). Stops with `None` when `cancel` is set. The first `limit`
+/// matches (by row) are kept; all are counted.
 pub fn search(aln: &Alignment, motif: &Motif, limit: usize, cancel: &AtomicBool) -> Option<Hits> {
     let cols = aln.cols();
-    let per_row: Vec<Option<Vec<Hit>>> = (0..aln.rows())
-        .into_par_iter()
-        .map_init(
-            || (vec![0u8; cols], Vec::with_capacity(cols), Vec::<u32>::with_capacity(cols)),
-            |(buf, res, at), r| {
-                if cancel.load(Ordering::Relaxed) {
-                    return None;
-                }
-                aln.matrix.decode_row(r, 0, buf);
-                res.clear();
-                at.clear();
-                for (c, &code) in buf.iter().enumerate() {
-                    if code != GAP {
-                        res.push(aln.symbol(code));
-                        at.push(c as u32);
+    let mut out = Hits::default();
+    for start in (0..aln.rows()).step_by(STEP) {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let keep = out.hits.len() < limit;
+        let per_row: Vec<(usize, Vec<Hit>)> = (start..(start + STEP).min(aln.rows()))
+            .into_par_iter()
+            .map_init(
+                || (vec![0u8; cols], Vec::with_capacity(cols), Vec::<u32>::with_capacity(cols)),
+                |(buf, res, at), r| {
+                    aln.matrix.decode_row(r, 0, buf);
+                    res.clear();
+                    at.clear();
+                    for (c, &code) in buf.iter().enumerate() {
+                        if code != GAP {
+                            res.push(aln.symbol(code));
+                            at.push(c as u32);
+                        }
                     }
-                }
-                Some(motif.find(res).into_iter().map(|(s, e)| Hit { row: r as u32, start: at[s], end: at[e - 1], residue: s as u32 }).collect())
-            },
-        )
-        .collect();
+                    if !keep {
+                        return (motif.find(res).len(), Vec::new());
+                    }
+                    let v: Vec<Hit> = motif.find(res).into_iter().map(|(s, e)| Hit { row: r as u32, start: at[s], end: at[e - 1], residue: s as u32 }).collect();
+                    (v.len(), v)
+                },
+            )
+            .collect();
+        for (n, v) in per_row {
+            if n == 0 {
+                continue;
+            }
+            out.rows += 1;
+            out.total += n;
+            let room = limit.saturating_sub(out.hits.len());
+            out.hits.extend(v.into_iter().take(room));
+        }
+    }
     if cancel.load(Ordering::Relaxed) {
         return None;
-    }
-    let mut out = Hits::default();
-    for v in per_row.into_iter().flatten() {
-        if v.is_empty() {
-            continue;
-        }
-        out.rows += 1;
-        out.total += v.len();
-        let room = limit.saturating_sub(out.hits.len());
-        out.hits.extend(v.into_iter().take(room));
     }
     Some(out)
 }
@@ -313,5 +324,16 @@ mod tests {
         let h = search(&a, &m, 2, &AtomicBool::new(false)).unwrap();
         assert_eq!((h.hits.len(), h.total), (2, 4));
         assert!(search(&a, &m, 2, &AtomicBool::new(true)).is_none());
+    }
+
+    #[test]
+    fn limit_keeps_the_first_rows_across_steps() {
+        let text: String = (0..5000).map(|i| format!(">s{i}\nTACGTACGT\n")).collect();
+        let a = parse_bytes(text.as_bytes()).unwrap();
+        let m = Motif::compile("ACG", Kind::Nucleotide).unwrap();
+        let h = search(&a, &m, 3000, &AtomicBool::new(false)).unwrap();
+        assert_eq!((h.total, h.rows, h.hits.len()), (10_000, 5000, 3000));
+        assert!(h.hits.windows(2).all(|w| (w[0].row, w[0].start) < (w[1].row, w[1].start)));
+        assert_eq!(h.hits.last().unwrap().row, 1499);
     }
 }
