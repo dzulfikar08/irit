@@ -94,16 +94,27 @@ impl MsaScope {
             return None;
         }
         let d = self.data.as_ref()?;
-        let pos = self.pointer?;
         let t = tokens(cx);
         let map = self.col_map();
         let (total, shown) = (d.aln.cols(), self.dims().1);
-        let (r, v) = match (self.hover, self.hover_track) {
-            (Some((r, v)), _) => (Some(r), v),
-            (None, Some(v)) => (None, v),
+        // At the cursor after a key moved it (next to its cell), else under the pointer.
+        let at_cursor = self.card_cursor.then_some(self.cursor).flatten();
+        let (r, v) = match (at_cursor, self.hover, self.hover_track) {
+            (Some((r, v)), _, _) => (Some(r), v),
+            (None, Some((r, v)), _) => (Some(r), v),
+            (None, None, Some(v)) => (None, v),
             _ => return None,
         };
-        if v >= shown {
+        let pos = match at_cursor {
+            Some((cr, cv)) => {
+                let area = self.area.get();
+                let x = area.origin.x + px(((cv as f64 + 1.0 - self.vp.col0) * self.vp.cw) as f32);
+                let y = area.origin.y + px(((cr as f64 + 1.0 - self.vp.row0) * self.vp.ch) as f32);
+                point(x.min(area.right()), y.min(area.bottom()))
+            }
+            None => self.pointer?,
+        };
+        if v >= shown || r.is_some_and(|r| r >= self.dims().0) {
             return None;
         }
         let c = aln_col(map, v);
@@ -141,8 +152,34 @@ impl MsaScope {
             .text_size(FONT_SMALL)
             .font_features(tabular())
             .text_color(t.fg);
+        let clade = r.and_then(|r| self.row_view().and_then(|m| m.clade_of(r)));
         match r {
-            Some(r) => {
+            Some(vr) if clade.is_some() => {
+                let m = self.row_view().unwrap();
+                let k = clade.unwrap();
+                let members = m.members(k);
+                let label = self
+                    .layout
+                    .as_deref()
+                    .and_then(|l| l.tree.as_ref())
+                    .zip(self.tree.as_deref())
+                    .map(|(tr, ix)| ix.tree.label(tr.collapsed[k]).to_string())
+                    .filter(|l| !l.is_empty() && l.parse::<f64>().is_err())
+                    .unwrap_or_else(|| "Collapsed clade".into());
+                card = card.child(
+                    h_flex()
+                        .gap(SPACE_6)
+                        .justify_between()
+                        .child(div().font_weight(FontWeight::SEMIBOLD).max_w(px(260.)).truncate().child(label))
+                        .child(div().text_size(FONT_CAPTION).text_color(t.fg_dim).child(format!("{} sequences", view::group_digits(members.len())))),
+                );
+                let code = msascope::view::row_src(Some(m), vr).get(&d.aln, c);
+                let name3 = (d.aln.kind() == Kind::Protein).then(|| aa3(d.aln.symbol(code))).flatten();
+                let res = value().child(chip(code)).when_some(name3.filter(|_| code != GAP), |h, n| h.child(n)).child(dim("clade consensus".into()));
+                card = card.child(row("Residue", res.into_any_element()));
+            }
+            Some(vr) => {
+                let r = self.aln_row(vr);
                 let name = &d.aln.names[r];
                 let (id, range) = match name.rsplit_once('/') {
                     Some((id, rg)) if msascope::name_range(name).is_some() => (id.to_string(), Some(format!("/{rg}"))),
@@ -173,6 +210,16 @@ impl MsaScope {
         }
         let col_text = column_text(v, c, total, map.map(|_| shown), d.aln.is_insert(c));
         card = card.child(row("Column", value().child(col_text).into_any_element()));
+        // Over the ruler: the hidden columns on either side of this one.
+        if r.is_none()
+            && let Some(m) = map
+        {
+            for (at, n) in m.hidden_runs(total, v..v + 1) {
+                let (a, label) = if at == v { (if v == 0 { 0 } else { aln_col(map, v - 1) + 1 }, "Hidden before") } else { (c + 1, "Hidden after") };
+                let text = if n == 1 { format!("column {}", view::group_digits(a + 1)) } else { format!("{} columns, {}–{}", view::group_digits(n), view::group_digits(a + 1), view::group_digits(a + n)) };
+                card = card.child(row(label, value().child(text).into_any_element()));
+            }
+        }
         let cons = d.stats.consensus[c];
         card = card.child(row(
             "Consensus",

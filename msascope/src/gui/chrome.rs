@@ -16,6 +16,7 @@ use super::components::{IconButtonExt as _, dot, icon_button, kbd};
 use super::fonts::tabular;
 use super::metrics::*;
 use super::theme::{GAPPY_CHOICES, ThemeChoice};
+use msascope::select::ExportOptions;
 use super::tokens::tokens;
 
 /// A thin vertical rule between toolbar groups.
@@ -145,7 +146,40 @@ impl MsaScope {
         let has_data = self.data.is_some();
         let input_w = if compact { INPUT_WIDTH_COMPACT } else { INPUT_WIDTH };
 
-        let open = Button::new("open").ghost().xsmall().icon(IconName::FolderOpen).label("Open").tooltip("Open… · Ctrl+O").on_click(cx.listener(|v, _, _, cx| v.prompt_open(cx)));
+        let open = Button::new("open").ghost().xsmall().icon(IconName::FolderOpen).label("Open").tooltip("Open an alignment or a tree… · Ctrl+O").on_click(cx.listener(|v, _, _, cx| v.prompt_open(cx)));
+        let has_sel = !self.sel.is_empty();
+        let export_opts = self.export;
+        let export = {
+            let e = entity.clone();
+            Button::new("export").ghost().xsmall().icon(Lucide::Download).label("Export").dropdown_caret(true).tooltip("Export or copy as FASTA").dropdown_menu(move |menu, _, _| {
+                let item = |label: &str, enabled: bool, f: fn(&mut MsaScope, &mut Window, &mut Context<MsaScope>)| {
+                    let e = e.clone();
+                    PopupMenuItem::new(label.to_string()).disabled(!enabled).on_click(move |_, window, cx| {
+                        let _ = e.update(cx, |v, cx| {
+                            f(v, window, cx);
+                            cx.notify();
+                        });
+                    })
+                };
+                let check = |label: &str, on: bool, f: fn(&mut ExportOptions)| {
+                    let e = e.clone();
+                    PopupMenuItem::new(label.to_string()).checked(on).on_click(move |_, _, cx| {
+                        let _ = e.update(cx, |v, cx| {
+                            f(&mut v.export);
+                            cx.notify();
+                        });
+                    })
+                };
+                menu.item(item("Selection as FASTA…   Ctrl+E", has_sel, |v, _, cx| v.prompt_export(true, cx)))
+                    .item(item("All rows as FASTA…", has_data, |v, _, cx| v.prompt_export(false, cx)))
+                    .separator()
+                    .item(item("Copy selection as FASTA   Ctrl+C", has_sel, |v, w, cx| v.copy(true, w, cx)))
+                    .item(item("Copy selection as text   Ctrl+Shift+C", has_sel, |v, w, cx| v.copy(false, w, cx)))
+                    .separator()
+                    .item(check("Include hidden columns", export_opts.include_hidden, |o| o.include_hidden = !o.include_hidden))
+                    .item(check("Leave out gaps", export_opts.strip_gaps, |o| o.strip_gaps = !o.strip_gaps))
+            })
+        };
         let input = |state: &Entity<InputState>, icon: IconName, keys: &'static str| {
             div().w(input_w).child(Input::new(state).xsmall().prefix(gpui_kit::component::Icon::new(icon).xsmall().text_color(t.fg_dim)).when(!compact, |i| i.suffix(kbd(keys, cx))))
         };
@@ -258,6 +292,7 @@ impl MsaScope {
             .border_b_1()
             .border_color(t.border)
             .child(open)
+            .child(export)
             .child(separator(cx))
             .child(input(&self.jump, IconName::ArrowRight, "Ctrl G"))
             .child(div().w(SPACE_2))
@@ -299,9 +334,48 @@ impl MsaScope {
                         .dropdown_menu(move |menu, _, _| column_items(menu, e3.clone())),
                 );
         }
+        row = row.child(div().flex_1());
+        if self.tree.is_some() {
+            let (e1, e2) = (entity.clone(), entity.clone());
+            let tree_order = self.tree_order;
+            let panel = self.settings.tree_panel;
+            row = row
+                .child(
+                    Button::new("sort")
+                        .ghost()
+                        .xsmall()
+                        .icon(Lucide::ArrowUpDown)
+                        .label(if tree_order { "Sort: tree" } else { "Sort: file" })
+                        .dropdown_caret(true)
+                        .tooltip("Row order · T")
+                        .dropdown_menu(move |menu, _, _| {
+                            let (a, b, c, d) = (e1.clone(), e1.clone(), e1.clone(), e1.clone());
+                            menu.item(PopupMenuItem::new("Tree order   T").checked(tree_order).on_click(move |_, _, cx| {
+                                let _ = a.update(cx, |v, cx| v.set_tree_order(true, cx));
+                            }))
+                            .item(PopupMenuItem::new("File order").checked(!tree_order).on_click(move |_, _, cx| {
+                                let _ = b.update(cx, |v, cx| v.set_tree_order(false, cx));
+                            }))
+                            .separator()
+                            .item(PopupMenuItem::new("Open another tree…").on_click(move |_, _, cx| {
+                                let _ = c.update(cx, |v, cx| v.prompt_open(cx));
+                            }))
+                            .item(PopupMenuItem::new("Remove the tree").on_click(move |_, _, cx| {
+                                let _ = d.update(cx, |v, cx| v.remove_tree(cx));
+                            }))
+                        }),
+                )
+                .child(icon_button("tree-panel", Lucide::ListTree, panel && tree_order, cx).tip("Tree panel", None).on_click(move |_, _, cx| {
+                    let _ = e2.update(cx, |v, cx| {
+                        v.settings.tree_panel = !v.settings.tree_panel;
+                        v.settings.save();
+                        cx.notify();
+                    });
+                }));
+        }
         let e = entity.clone();
         let overview_on = self.settings.overview;
-        row = row.child(div().flex_1()).child(icon_button("overview", Lucide::PanelRight, overview_on, cx).tip("Overview panel", None).on_click(move |_, _, cx| {
+        row = row.child(icon_button("overview", Lucide::PanelRight, overview_on, cx).tip("Overview panel", None).on_click(move |_, _, cx| {
             let _ = e.update(cx, |v, cx| {
                 v.settings.overview = !v.settings.overview;
                 v.settings.save();
@@ -317,8 +391,10 @@ impl MsaScope {
             "Couldn't open the file".into()
         } else if let Some(p) = &self.loading {
             format!("Loading {}…", p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())).into()
-        } else if self.cols_pending {
-            "Hiding columns…".into()
+        } else if self.tree_loading {
+            "Reading the tree…".into()
+        } else if self.layout_pending {
+            "Arranging rows and columns…".into()
         } else {
             self.status.clone()
         };
@@ -328,7 +404,26 @@ impl MsaScope {
             c => c.label().to_owned(),
         };
         let d = self.data.clone();
-        let selection = self.selected_row.zip(d.as_ref()).map(|(r, d)| format!("Selected: row {} ({})", view::group_digits(r + 1), d.aln.names[r]));
+        let selection = d.as_ref().filter(|_| !self.sel.is_empty()).map(|d| {
+            let s = &self.sel;
+            if s.cols.is_empty() && s.rows.len() == 1 {
+                let r = s.rows.first().unwrap() as usize;
+                format!("Selected: {}", d.aln.names[r])
+            } else {
+                let mut text = format!("Selected: {}", s.describe(d.aln.rows(), d.aln.cols()));
+                // Columns hidden inside the selection are counted in it; say how many are shown.
+                if let Some(m) = self.col_map()
+                    && !s.cols.is_empty()
+                {
+                    let shown: usize = s.cols.ranges().iter().map(|&(a, b)| m.visible.partition_point(|&c| c < b) - m.visible.partition_point(|&c| c < a)).sum();
+                    if shown < s.cols.len() {
+                        text += &format!(" ({} shown)", view::group_digits(shown));
+                    }
+                }
+                text
+            }
+        });
+        let collapsed = self.collapsed_count();
         h_flex()
             .flex_none()
             .w_full()
@@ -348,6 +443,7 @@ impl MsaScope {
                     .child(div().flex_none().text_color(t.fg).child(format!("{} sequences × {} columns", view::group_digits(d.aln.rows()), view::group_digits(d.aln.cols()))))
             })
             .when(hidden > 0, |row| row.child(div().flex_none().child(format!("{} columns hidden", view::group_digits(hidden)))))
+            .when(collapsed > 0, |row| row.child(div().flex_none().child(format!("{} {} collapsed", view::group_digits(collapsed), if collapsed == 1 { "clade" } else { "clades" }))))
             .child(div().flex_1().min_w_0().truncate().when(self.error.is_some(), |d| d.text_color(t.danger)).child(message))
             .when_some(selection, |row, s| row.child(div().flex_none().max_w(px(260.)).truncate().text_color(t.fg).child(s)))
             .when_some(d, |row, d| row.child(div().flex_none().child(format!("loaded in {:.2} s · {} MiB", d.load_secs(), view::group_digits(d.bytes() >> 20)))))

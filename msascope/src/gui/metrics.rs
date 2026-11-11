@@ -59,6 +59,14 @@ pub const NAME_W_DEFAULT: f32 = 196.0;
 pub const NAME_W_MIN: f32 = 120.0;
 pub const NAME_W_MAX: f32 = 480.0;
 pub const TREE_W_DEFAULT: f32 = 118.0;
+pub const TREE_W_MIN: f32 = 60.0;
+pub const TREE_W_MAX: f32 = 480.0;
+/// Space left of the root and right of the deepest leaf in the tree panel.
+pub const TREE_PAD: f32 = 8.0;
+/// How far (px) from a tree node's vertical line a click still hits it.
+pub const TREE_HIT: f32 = 5.0;
+/// Hidden-column marks on the ruler closer than this (px) are merged into one.
+pub const HIDDEN_MARK_MERGE: f32 = 6.0;
 pub const OVERVIEW_W: f32 = 132.0;
 /// Width of the grab area of the name panel's splitter.
 pub const SPLITTER_W: f32 = 6.0;

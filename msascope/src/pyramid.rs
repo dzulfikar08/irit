@@ -10,6 +10,7 @@ use rayon::prelude::*;
 
 use crate::Alignment;
 use crate::alphabet::{GAP, Kind, NCODES};
+use crate::view::{RowView, row_src, view_rows};
 
 pub const BASE_SHIFT: u32 = 3;
 
@@ -47,18 +48,20 @@ pub fn missing_code(kind: Kind) -> u8 {
 
 impl Pyramid {
     pub fn build(aln: &Alignment, consensus: &[u8]) -> Self {
-        Self::build_mapped(aln, consensus, None)
+        Self::build_mapped(aln, consensus, None, None)
     }
 
     /// The pyramid of the alignment with only the columns in `map` (ascending alignment columns),
-    /// as if the others had been removed; `None` keeps every column.
-    pub fn build_mapped(aln: &Alignment, consensus: &[u8], map: Option<&[u32]>) -> Self {
+    /// as if the others had been removed, and the rows of `rows` in its order (clades as their
+    /// consensus rows); `None` keeps every column / the file's rows.
+    pub fn build_mapped(aln: &Alignment, consensus: &[u8], map: Option<&[u32]>, rows: Option<&RowView>) -> Self {
         let cols = map.map_or(aln.cols(), <[u32]>::len);
-        let mut levels = vec![base_level(aln, consensus, map)];
+        let nrows = view_rows(rows, aln.rows());
+        let mut levels = vec![base_level(aln, consensus, map, rows)];
         while let Some(l) = levels.last()
             && (l.rows > 1 || l.cols > 1)
         {
-            levels.push(halve(l, aln.rows(), cols));
+            levels.push(halve(l, nrows, cols));
         }
         Pyramid { levels }
     }
@@ -74,9 +77,9 @@ impl Pyramid {
     }
 }
 
-fn base_level(aln: &Alignment, consensus: &[u8], map: Option<&[u32]>) -> Level {
+fn base_level(aln: &Alignment, consensus: &[u8], map: Option<&[u32]>, view: Option<&RowView>) -> Level {
     let b = 1usize << BASE_SHIFT;
-    let rows = aln.rows();
+    let rows = view_rows(view, aln.rows());
     let cols = map.map_or(aln.cols(), <[u32]>::len);
     let (brows, bcols) = (rows.div_ceil(b), cols.div_ceil(b));
     let missing = missing_code(aln.kind());
@@ -96,7 +99,7 @@ fn base_level(aln: &Alignment, consensus: &[u8], map: Option<&[u32]>) -> Level {
                 ndiff[v >> BASE_SHIFT] += (code != GAP && code != missing && code != cons) as u8;
             };
             for r in br * b..r1 {
-                aln.matrix.decode_row(r, 0, &mut buf);
+                row_src(view, r).decode(aln, &mut buf);
                 match map {
                     None => buf.iter().enumerate().for_each(|(c, &code)| count(c, code, consensus[c])),
                     Some(m) => m.iter().enumerate().for_each(|(v, &c)| count(v, buf[c as usize], consensus[c as usize])),
@@ -205,7 +208,7 @@ mod tests {
         let a = parse_bytes(&fasta(&rows)).unwrap();
         let s = ColumnStats::compute(&a);
         let map: Vec<u32> = (0..53u32).filter(|c| c % 3 != 1).collect();
-        let p = Pyramid::build_mapped(&a, &s.consensus, Some(&map));
+        let p = Pyramid::build_mapped(&a, &s.consensus, Some(&map), None);
         let kept: Vec<String> = rows.iter().map(|r| map.iter().map(|&c| r.as_bytes()[c as usize] as char).collect()).collect();
         let b = parse_bytes(&fasta(&kept)).unwrap();
         let cons: Vec<u8> = map.iter().map(|&c| s.consensus[c as usize]).collect();

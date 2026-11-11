@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use gpui_kit::*;
 
-use super::metrics::{NAME_W_DEFAULT, NAME_W_MAX, NAME_W_MIN};
+use super::metrics::{NAME_W_DEFAULT, NAME_W_MAX, NAME_W_MIN, TREE_W_DEFAULT, TREE_W_MAX, TREE_W_MIN};
 use super::palette::{DARK, LIGHT, Palette};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -64,6 +64,10 @@ pub struct Settings {
     /// The "gappy" threshold: columns with at least this share of gaps (percent) are hidden
     /// while gappy columns are hidden.
     pub gappy_pct: u8,
+    /// Width of the tree panel, logical px.
+    pub tree_width: f32,
+    /// The tree panel, when a tree is loaded.
+    pub tree_panel: bool,
 }
 
 /// The gappy thresholds the toolbar offers.
@@ -71,7 +75,7 @@ pub const GAPPY_CHOICES: [u8; 5] = [25, 50, 75, 90, 100];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemeChoice::System, name_width: NAME_W_DEFAULT, overview: true, gappy_pct: 50 }
+        Settings { theme: ThemeChoice::System, name_width: NAME_W_DEFAULT, overview: true, gappy_pct: 50, tree_width: TREE_W_DEFAULT, tree_panel: true }
     }
 }
 
@@ -95,6 +99,14 @@ impl Settings {
                     }
                 }
                 "overview" => s.overview = v != "false",
+                "tree_panel" => s.tree_panel = v != "false",
+                "tree_width" => {
+                    if let Ok(w) = v.parse::<f32>()
+                        && w.is_finite()
+                    {
+                        s.tree_width = w.clamp(TREE_W_MIN, TREE_W_MAX);
+                    }
+                }
                 "gappy_pct" => {
                     if let Ok(p) = v.parse::<u8>()
                         && (1..=100).contains(&p)
@@ -110,11 +122,13 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "# msascope settings\ntheme = \"{}\"\nname_width = {}\noverview = {}\ngappy_pct = {}\n",
+            "# msascope settings\ntheme = \"{}\"\nname_width = {}\noverview = {}\ngappy_pct = {}\ntree_width = {}\ntree_panel = {}\n",
             self.theme.key(),
             self.name_width.round(),
             self.overview,
-            self.gappy_pct
+            self.gappy_pct,
+            self.tree_width.round(),
+            self.tree_panel
         )
     }
 
@@ -151,12 +165,13 @@ mod tests {
 
     #[std::prelude::v1::test]
     fn settings_round_trip_and_bad_values() {
-        let s = Settings { theme: ThemeChoice::Dark, name_width: 250.0, overview: false, gappy_pct: 90 };
+        let s = Settings { theme: ThemeChoice::Dark, name_width: 250.0, overview: false, gappy_pct: 90, tree_width: 200.0, tree_panel: false };
         assert_eq!(Settings::parse(&s.to_text()), s);
         let s = Settings::parse("theme = purple\nname_width = 9999\nother = 1\nno equals sign\ngappy_pct = 0\n");
         assert_eq!(s, Settings { theme: ThemeChoice::System, name_width: NAME_W_MAX, ..Settings::default() });
         assert_eq!(Settings::parse("gappy_pct = 101").gappy_pct, 50);
         assert_eq!(Settings::parse("name_width = nan").name_width, NAME_W_DEFAULT);
+        assert_eq!(Settings::parse("tree_width = 5").tree_width, TREE_W_MIN);
     }
 
     #[std::prelude::v1::test]

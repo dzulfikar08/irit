@@ -5,8 +5,10 @@ pub mod matrix;
 pub mod parse;
 pub mod pyramid;
 pub mod scheme;
+pub mod select;
 pub mod stats;
 pub mod synth;
+pub mod tree;
 pub mod view;
 
 use alphabet::{Alphabet, Kind};
@@ -25,6 +27,8 @@ pub struct Alignment {
     pub inserts: Vec<u64>,
     /// Stockholm `#=GS <name> AC <accession>`, per row; empty when the file has none.
     pub accessions: Vec<Option<Box<str>>>,
+    /// A Newick tree from Stockholm `#=GF NH` lines, joined; `None` when the file has none.
+    pub newick: Option<String>,
 }
 
 /// The `start-end` range after the last `/` of a Pfam/HMMER-style name (`GLB2_TYLHE/32-143`).

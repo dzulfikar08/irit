@@ -209,6 +209,156 @@ impl ColumnMap {
     }
 }
 
+/// The rows shown, in order: sequences, and collapsed clades shown as one row with their
+/// consensus. Built when a tree is loaded; no row view means the file's order.
+#[derive(Clone, Debug, Default)]
+pub struct RowView {
+    /// View row → alignment row, or [`RowView::CLADE`] | clade index.
+    pub rows: Vec<u32>,
+    /// Alignment row → the view row showing it (a collapsed clade's row for its members).
+    pos: Vec<u32>,
+    /// View rows from here on are the sequences the tree does not have.
+    pub tree_end: u32,
+    /// Per clade: its members' range in `order`.
+    members: Vec<std::ops::Range<u32>>,
+    order: Vec<u32>,
+    /// Per clade: the consensus code of each alignment column.
+    consensus: Vec<Vec<u8>>,
+}
+
+impl RowView {
+    pub const CLADE: u32 = 1 << 31;
+
+    /// Every row in file order.
+    pub fn identity(rows: usize) -> RowView {
+        let rows: Vec<u32> = (0..rows as u32).collect();
+        RowView { pos: rows.clone(), tree_end: rows.len() as u32, rows, ..Default::default() }
+    }
+
+    /// `view` lists entries; clade `k`'s members are `order[members[k]]`.
+    pub fn new(view: Vec<u32>, nrows: usize, tree_end: u32, members: Vec<std::ops::Range<u32>>, order: Vec<u32>, consensus: Vec<Vec<u8>>) -> RowView {
+        let mut pos = vec![u32::MAX; nrows];
+        for (v, &e) in view.iter().enumerate() {
+            if e & Self::CLADE == 0 {
+                pos[e as usize] = v as u32;
+            } else {
+                let m = &members[(e & !Self::CLADE) as usize];
+                for &r in &order[m.start as usize..m.end as usize] {
+                    pos[r as usize] = v as u32;
+                }
+            }
+        }
+        RowView { rows: view, pos, tree_end, members, order, consensus }
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The alignment row shown at view row `v`, `None` for a collapsed clade.
+    #[inline]
+    pub fn row(&self, v: usize) -> Option<usize> {
+        let e = self.rows[v];
+        (e & Self::CLADE == 0).then_some(e as usize)
+    }
+
+    /// The clade shown at view row `v`, if it is one.
+    #[inline]
+    pub fn clade_of(&self, v: usize) -> Option<usize> {
+        let e = self.rows[v];
+        (e & Self::CLADE != 0).then_some((e & !Self::CLADE) as usize)
+    }
+
+    pub fn clades(&self) -> usize {
+        self.members.len()
+    }
+
+    /// Alignment rows of clade `k`, in tree order.
+    pub fn members(&self, k: usize) -> &[u32] {
+        let m = &self.members[k];
+        &self.order[m.start as usize..m.end as usize]
+    }
+
+    pub fn clade_codes(&self, k: usize) -> &[u8] {
+        &self.consensus[k]
+    }
+
+    /// The view row showing alignment row `r`.
+    pub fn view_of(&self, r: usize) -> usize {
+        self.pos[r] as usize
+    }
+
+    /// Alignment rows in view order, clades expanded to their members.
+    pub fn expanded(&self) -> Vec<u32> {
+        let mut out = Vec::with_capacity(self.pos.len());
+        for v in 0..self.len() {
+            match self.clade_of(v) {
+                Some(k) => out.extend_from_slice(self.members(k)),
+                None => out.push(self.rows[v]),
+            }
+        }
+        out
+    }
+
+    /// Alignment rows behind view row `v`: one, or a clade's members.
+    pub fn rows_of(&self, v: usize) -> &[u32] {
+        match self.clade_of(v) {
+            Some(k) => self.members(k),
+            None => std::slice::from_ref(&self.rows[v]),
+        }
+    }
+
+    pub fn bytes(&self) -> usize {
+        (self.rows.len() + self.pos.len() + self.order.len()) * 4 + self.consensus.iter().map(Vec::len).sum::<usize>()
+    }
+}
+
+/// Where a view row's residues come from.
+#[derive(Clone, Copy, Debug)]
+pub enum RowSrc<'a> {
+    Seq(usize),
+    Clade(&'a [u8]),
+}
+
+impl RowSrc<'_> {
+    #[inline]
+    pub fn get(self, aln: &Alignment, c: usize) -> u8 {
+        match self {
+            RowSrc::Seq(r) => aln.matrix.get(r, c),
+            RowSrc::Clade(codes) => codes[c],
+        }
+    }
+
+    /// Decode every column into `out` (`aln.cols()` bytes).
+    pub fn decode(self, aln: &Alignment, out: &mut [u8]) {
+        match self {
+            RowSrc::Seq(r) => aln.matrix.decode_row(r, 0, out),
+            RowSrc::Clade(codes) => out.copy_from_slice(codes),
+        }
+    }
+}
+
+/// The source of view row `v`.
+#[inline]
+pub fn row_src(rows: Option<&RowView>, v: usize) -> RowSrc<'_> {
+    match rows {
+        None => RowSrc::Seq(v),
+        Some(m) => match m.clade_of(v) {
+            None => RowSrc::Seq(m.rows[v] as usize),
+            Some(k) => RowSrc::Clade(m.clade_codes(k)),
+        },
+    }
+}
+
+/// Number of view rows.
+pub fn view_rows(rows: Option<&RowView>, n: usize) -> usize {
+    rows.map_or(n, RowView::len)
+}
+
 /// Alignment column of view column `v`.
 #[inline]
 pub fn aln_col(map: Option<&ColumnMap>, v: usize) -> usize {
@@ -220,19 +370,30 @@ pub fn view_cols(map: Option<&ColumnMap>, cols: usize) -> usize {
     map.map_or(cols, ColumnMap::len)
 }
 
-/// What the tiles are drawn from. `pyramid` must be built for `map` (the full pyramid when `map`
-/// is `None`, [`Pyramid::build_mapped`] otherwise).
+/// What the tiles are drawn from. `pyramid` must be built for `map` and `rows` (the full
+/// pyramid when both are `None`, [`Pyramid::build_mapped`] otherwise).
 pub struct Scene<'a> {
     pub aln: &'a Alignment,
     pub stats: &'a ColumnStats,
     pub pyramid: &'a Pyramid,
     pub map: Option<&'a ColumnMap>,
+    pub rows: Option<&'a RowView>,
     pub colors: &'a Colors,
 }
 
 impl Scene<'_> {
     pub fn view_cols(&self) -> usize {
         view_cols(self.map, self.aln.cols())
+    }
+
+    pub fn view_rows(&self) -> usize {
+        view_rows(self.rows, self.aln.rows())
+    }
+
+    /// Code at (view row, alignment column).
+    #[inline]
+    pub fn code(&self, v: usize, c: usize) -> u8 {
+        row_src(self.rows, v).get(self.aln, c)
     }
 
     /// The scheme's view of alignment column `c`.
@@ -245,7 +406,7 @@ impl Scene<'_> {
     /// Fill of cell (row, view column), or `None` when the scheme leaves it unfilled.
     pub fn fill(&self, r: usize, v: usize) -> Option<u32> {
         let c = aln_col(self.map, v);
-        self.colors.fill(self.aln.matrix.get(r, c), &self.column(c))
+        self.colors.fill(self.code(r, c), &self.column(c))
     }
 
     /// Colour of one cell (0xRRGGBB); unfilled cells and gaps take the background.
@@ -269,7 +430,7 @@ impl Scene<'_> {
     /// narrower side) or cells, spread over the pixel.
     #[allow(clippy::too_many_arguments)]
     pub fn render(&self, cw: f64, ch: f64, x0: i64, y0: i64, w: usize, h: usize, out: &mut [u8]) {
-        let rows = self.aln.rows();
+        let rows = self.view_rows();
         let cols = self.view_cols();
         out.fill(0);
         let put = |out: &mut [u8], i: usize, j: usize, rgb: u32| {
@@ -289,14 +450,14 @@ impl Scene<'_> {
                 if r < 0.0 || r as usize >= rows {
                     continue;
                 }
-                let r = r as usize;
+                let src = row_src(self.rows, r as usize);
                 let mut last: Option<(usize, u32)> = None;
                 for (i, p) in px_cols.iter().enumerate() {
                     let Some((v, c)) = *p else { continue };
                     let rgb = match last {
                         Some((k, rgb)) if k == v => rgb,
                         _ => {
-                            let rgb = self.colors.cell(self.aln.matrix.get(r, c), columns[i].as_ref().unwrap());
+                            let rgb = self.colors.cell(src.get(self.aln, c), columns[i].as_ref().unwrap());
                             last = Some((v, rgb));
                             rgb
                         }
@@ -362,6 +523,7 @@ impl Scene<'_> {
                 votes.fill(0);
                 let (mut dsum, mut n) = (0u32, 0u32);
                 for &y in yu {
+                    let src = row_src(self.rows, y as usize);
                     match level {
                         Some(l) => {
                             for &x in xu {
@@ -373,7 +535,7 @@ impl Scene<'_> {
                         }
                         None => {
                             for &(c, cons) in &acols[i] {
-                                let code = self.aln.matrix.get(y as usize, c);
+                                let code = src.get(self.aln, c);
                                 votes[code as usize & (NCODES - 1)] += 1;
                                 dsum += if code != GAP && code != missing && code != cons { 255 } else { 0 };
                                 n += 1;
@@ -589,7 +751,7 @@ mod tests {
         let (aln, stats, pyramid) = scene_parts(&fasta(&rows));
         let colors = |scheme, theme| Colors::new(aln.alphabet(), ColorMode::new(scheme), theme, false);
         let nt = colors(Scheme::Nucleotide, Theme::LIGHT);
-        let mut scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, colors: &nt };
+        let mut scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &nt };
         let mut out = vec![0u8; TILE * TILE * 4];
         // 2 px per cell: row 3 is pixel rows 6-7.
         scene.render_tile(2.0, 2.0, 0, 0, &mut out);
@@ -622,7 +784,7 @@ mod tests {
         let (aln, stats, pyramid) = scene_parts(b">a\nA--A\n>b\nA--A\n");
         for theme in [Theme::LIGHT, Theme::DARK] {
             let c = Colors::new(aln.alphabet(), ColorMode::new(Scheme::Nucleotide), theme, true);
-            let scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, colors: &c };
+            let scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &c };
             let mut out = vec![0u8; 16 * 4 * 4];
             scene.render(4.0, 4.0, 0, 0, 16, 4, &mut out);
             assert_eq!(px(&out, 16, 6, 1), theme.bg);
@@ -648,7 +810,7 @@ mod tests {
             .collect();
         let (aln, stats, pyramid) = scene_parts(&fasta(&rows));
         let c = Colors::new(aln.alphabet(), ColorMode::new(Scheme::Nucleotide), Theme::LIGHT, false);
-        let scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, colors: &c };
+        let scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &c };
         // 400 cells in 40 px: 10 cells per pixel.
         let mut out = vec![0u8; 40 * 40 * 4];
         scene.render(0.1, 0.1, 0, 0, 40, 40, &mut out);
@@ -673,7 +835,7 @@ mod tests {
         let rows: Vec<String> = (0..48).map(|r| (0..90).map(|c| b"ACGT--"[(r * 5 + c * 7 + (r * c) % 11) % 6] as char).collect()).collect();
         let (aln, stats, _) = scene_parts(&fasta(&rows));
         let map = ColumnMap::build(aln.cols(), |c| c % 4 == 1 || (30..41).contains(&c)).unwrap();
-        let mapped = Pyramid::build_mapped(&aln, &stats.consensus, Some(&map.visible));
+        let mapped = Pyramid::build_mapped(&aln, &stats.consensus, Some(&map.visible), None);
         let kept: Vec<String> = rows.iter().map(|r| map.visible.iter().map(|&c| r.as_bytes()[c as usize] as char).collect()).collect();
         let (b, _, _) = scene_parts(&fasta(&kept));
         // The removed alignment's column stats differ only in which columns exist: build its
@@ -689,14 +851,51 @@ mod tests {
         let bpyr = Pyramid::build(&b, &bstats.consensus);
         for scheme in [Scheme::Nucleotide, Scheme::PercentIdentity, Scheme::Differences] {
             let c = Colors::new(aln.alphabet(), ColorMode::new(scheme), Theme::DARK, false);
-            let s1 = Scene { aln: &aln, stats: &stats, pyramid: &mapped, map: Some(&map), colors: &c };
-            let s2 = Scene { aln: &b, stats: &bstats, pyramid: &bpyr, map: None, colors: &c };
+            let s1 = Scene { aln: &aln, stats: &stats, pyramid: &mapped, map: Some(&map), rows: None, colors: &c };
+            let s2 = Scene { aln: &b, stats: &bstats, pyramid: &bpyr, map: None, rows: None, colors: &c };
             for (cw, ch) in [(3.0, 2.0), (0.3, 0.2), (1.5, 0.1), (0.05, 0.05)] {
                 let (mut o1, mut o2) = (vec![0u8; 64 * 64 * 4], vec![0u8; 64 * 64 * 4]);
                 s1.render(cw, ch, 0, 0, 64, 64, &mut o1);
                 s2.render(cw, ch, 0, 0, 64, 64, &mut o2);
                 assert!(o1 == o2, "{scheme:?} at {cw} × {ch}");
             }
+        }
+    }
+
+    /// Rendering through a row view (tree order, one collapsed clade) equals rendering an
+    /// alignment written in that order with the clade's consensus as a row, at letter scale and
+    /// in the density view; the pyramid built for the view equals the reordered one's.
+    #[test]
+    fn row_view_equals_reordered() {
+        let rows: Vec<String> = (0..40).map(|r| (0..70).map(|c| b"ACGT-"[(r * 3 + c * 5 + (r * c) % 7) % 5] as char).collect()).collect();
+        let (aln, stats, _) = scene_parts(&fasta(&rows));
+        // view: rows 39..20 reversed, then clade {0..10} collapsed, then 10..20
+        let order: Vec<u32> = (0..10).collect();
+        let cons = crate::tree::clade_consensus(&aln, &order);
+        let mut view: Vec<u32> = (20..40).rev().collect();
+        view.push(RowView::CLADE);
+        view.extend(10..20);
+        let rv = RowView::new(view.clone(), 40, view.len() as u32, std::iter::once(0..10).collect(), order, vec![cons.clone()]);
+        assert_eq!(rv.len(), 31);
+        assert_eq!(rv.view_of(5), 20);
+        let mapped = Pyramid::build_mapped(&aln, &stats.consensus, None, Some(&rv));
+        let text: Vec<String> = view
+            .iter()
+            .map(|&e| if e == RowView::CLADE { cons.iter().map(|&x| aln.symbol(x) as char).collect() } else { rows[e as usize].clone() })
+            .collect();
+        let (b, _, _) = scene_parts(&fasta(&text));
+        let bpyr = Pyramid::build(&b, &stats.consensus);
+        for (x, y) in mapped.levels.iter().zip(&bpyr.levels) {
+            assert_eq!((x.rows, x.cols, &x.majority, &x.diff), (y.rows, y.cols, &y.majority, &y.diff));
+        }
+        let c = Colors::new(aln.alphabet(), ColorMode::new(Scheme::Nucleotide), Theme::LIGHT, false);
+        let s1 = Scene { aln: &aln, stats: &stats, pyramid: &mapped, map: None, rows: Some(&rv), colors: &c };
+        let s2 = Scene { aln: &b, stats: &stats, pyramid: &bpyr, map: None, rows: None, colors: &c };
+        for (cw, ch) in [(3.0, 2.0), (0.3, 0.2), (0.05, 0.05)] {
+            let (mut o1, mut o2) = (vec![0u8; 64 * 64 * 4], vec![0u8; 64 * 64 * 4]);
+            s1.render(cw, ch, 0, 0, 64, 64, &mut o1);
+            s2.render(cw, ch, 0, 0, 64, 64, &mut o2);
+            assert!(o1 == o2, "at {cw} × {ch}");
         }
     }
 
