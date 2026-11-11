@@ -50,7 +50,7 @@ impl MsaScope {
         let legend = scheme::legend(self.mode.scheme, d.aln.kind(), &theme);
         let cache = self.overview.clone();
         let area = self.overview_area.clone();
-        let hidden = self.hidden.clone();
+        let layout = self.layout.clone();
         let (mode, vp) = (self.mode, self.vp);
         let scale = window.scale_factor();
         let image = canvas(
@@ -59,10 +59,11 @@ impl MsaScope {
                 bounds
             },
             move |_, bounds, window, _| {
-                let map = hidden.as_deref().map(|h| &h.map);
-                let pyramid = hidden.as_deref().map_or(&d.pyramid, |h| &h.pyramid);
-                let generation = hidden.as_deref().map_or(0, |h| h.generation);
-                let (rows, cols) = (d.aln.rows(), view::view_cols(map, d.aln.cols()));
+                let map = layout.as_deref().and_then(|l| l.map.as_ref());
+                let rview = layout.as_deref().and_then(|l| l.rows.as_ref());
+                let pyramid = layout.as_deref().map_or(&d.pyramid, |l| &l.pyramid);
+                let generation = layout.as_deref().map_or(0, |l| l.generation);
+                let (rows, cols) = (view::view_rows(rview, d.aln.rows()), view::view_cols(map, d.aln.cols()));
                 if rows == 0 || cols == 0 {
                     return;
                 }
@@ -78,7 +79,7 @@ impl MsaScope {
                         let _ = window.drop_image(old);
                     }
                     let colors = Colors::new(d.aln.alphabet(), mode, theme, false);
-                    let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map, colors: &colors };
+                    let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map, rows: rview, colors: &colors };
                     let (cw, ch) = (w as f64 / cols as f64, h as f64 / rows as f64);
                     let mut buf = vec![0u8; w * h * 4];
                     buf.par_chunks_mut(w * 4 * STRIP).enumerate().for_each(|(i, strip)| {

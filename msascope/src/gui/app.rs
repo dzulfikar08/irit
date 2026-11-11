@@ -1,5 +1,6 @@
-//! The main view: state, input handling and layout. Painting the alignment is in `canvas.rs`, the
-//! title bar, toolbar and status bar in `chrome.rs`.
+//! The main view: state, loading, layout rebuilds and the window's element tree. Painting the
+//! alignment is in `canvas.rs` (the tree in `tree_panel.rs`), mouse, keys, selection, copy and
+//! export in `input.rs`, the title bar, toolbar and status bar in `chrome.rs`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -16,7 +17,9 @@ use msascope::Loaded;
 use msascope::alphabet::SeqType;
 use msascope::pyramid::Pyramid;
 use msascope::scheme::{self, ColorMode, Scheme};
-use msascope::view::{self, ColumnMap, Viewport};
+use msascope::select::{ExportOptions, RangeSet, Selection};
+use msascope::tree::{self, TreeIndex, TreeRows};
+use msascope::view::{self, ColumnMap, RowView, Viewport};
 
 use super::cached::CachedView;
 use super::metrics::*;
@@ -101,12 +104,29 @@ const BENCH_PHASES: [(&str, Option<(i32, i32)>); 4] =
     [("overview (fit)", None), ("1 px per cell", Some((0, 0))), ("4 px per cell", Some((4, 4))), ("letters, 12x16 px", Some((7, 8)))];
 const BENCH_FRAMES: usize = 240;
 
-/// The columns shown while some are hidden: the map and the pyramid built for it.
-pub struct HiddenCols {
-    pub map: ColumnMap,
+/// What is shown when columns are hidden or rows follow a tree: the column map, the row view,
+/// the tree's node positions for that row view, and the pyramid built for them.
+pub struct Layout {
+    pub map: Option<ColumnMap>,
+    pub rows: Option<RowView>,
+    pub tree: Option<TreeRows>,
     pub pyramid: Pyramid,
     /// Changes with every rebuild; part of the tile key.
     pub generation: u64,
+}
+
+/// Where a tree comes from.
+pub enum TreeSource {
+    File(PathBuf),
+    /// Stockholm `#=GF NH` lines.
+    Embedded(String),
+}
+
+/// A clickable part of the tree panel (window coordinates) and its node.
+#[derive(Clone, Copy, Debug)]
+pub struct TreeHit {
+    pub bounds: Bounds<Pixels>,
+    pub node: u32,
 }
 
 /// The overview panel's image, cached until what it shows changes.
@@ -117,14 +137,21 @@ pub struct OverviewCache {
 }
 
 /// What a mouse drag does.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum Drag {
-    /// Pan the alignment; the last pointer position.
-    Pan(Point<Pixels>),
-    /// Shift+drag: will select a block (not built yet); does nothing for now.
-    Block,
+    /// Pan the alignment: the last pointer position, the cell pressed, and whether the pointer
+    /// has moved (a press and release without moving is a click: it places the cursor).
+    Pan { last: Point<Pixels>, cell: Option<(usize, usize)>, moved: bool },
+    /// Shift+drag: select the block from `anchor` (view row, view column) to the pointer.
+    Block { anchor: (usize, usize) },
+    /// Drag over names: select the rows from `anchor` (a view row), added to `base`.
+    Rows { anchor: usize, base: RangeSet },
+    /// Drag over the track header: select the columns from `anchor` (a view column).
+    Cols { anchor: usize, base: RangeSet },
     /// Resize the name panel: pointer x and panel width when the drag started.
     Splitter { x0: Pixels, w0: f32 },
+    /// Resize the tree panel.
+    TreeSplitter { x0: Pixels, w0: f32 },
     /// Pan by dragging in the overview panel.
     Overview,
 }
@@ -148,6 +175,11 @@ struct ChromeKey {
     hide_gappy: bool,
     gappy_pct: u8,
     overview: bool,
+    tree: bool,
+    tree_order: bool,
+    tree_panel: bool,
+    has_selection: bool,
+    export: ExportOptions,
 }
 
 pub struct MsaScope {
@@ -167,13 +199,27 @@ pub struct MsaScope {
     pub(super) fit: Option<Fit>,
     pub(super) mode: ColorMode,
     /// The scheme `d` returns to from Differences.
-    prev_scheme: Scheme,
+    pub(super) prev_scheme: Scheme,
     pub(super) tiles: Rc<RefCell<TileCache>>,
-    /// Hidden columns in effect (`None`: every column shown), and the generation of the last
-    /// rebuild asked for; a rebuild runs in the background and the old map stays until it ends.
-    pub(super) hidden: Option<Arc<HiddenCols>>,
-    cols_gen: u64,
-    pub(super) cols_pending: bool,
+    /// Hidden columns and tree order in effect (`None`: every column, file order), and the
+    /// generation of the last rebuild asked for; a rebuild runs in the background and the old
+    /// layout stays until it ends.
+    pub(super) layout: Option<Arc<Layout>>,
+    layout_gen: u64,
+    pub(super) layout_pending: bool,
+    /// The tree, matched to the alignment's rows.
+    pub(super) tree: Option<Arc<TreeIndex>>,
+    pub(super) tree_name: Option<SharedString>,
+    pub(super) tree_loading: bool,
+    /// Collapsed nodes, one flag per node.
+    pub(super) collapsed: Vec<bool>,
+    /// Rows in tree order (otherwise the file's order); only with a tree.
+    pub(super) tree_order: bool,
+    /// A tree file to match once the alignment being opened has loaded (`--tree`, or a tree
+    /// dropped or opened before or with it).
+    pub(super) next_tree: Option<PathBuf>,
+    /// The tree panel's clickable nodes, written by the canvas each frame.
+    pub(super) tree_hits: Rc<RefCell<Vec<TreeHit>>>,
     pub(super) hide_inserts: bool,
     pub(super) hide_gappy: bool,
     pub(super) overview: Rc<RefCell<OverviewCache>>,
@@ -183,8 +229,6 @@ pub struct MsaScope {
     pub(super) pointer: Option<Point<Pixels>>,
     /// The view column under the pointer in the track header.
     pub(super) hover_track: Option<usize>,
-    /// The hover card is hidden after a scroll until the pointer moves again.
-    card_hidden: bool,
     /// The alignment area (window coordinates), written by the canvas each layout.
     pub(super) area: Rc<Cell<Bounds<Pixels>>>,
     pub(super) hover: Option<(usize, usize)>,
@@ -192,21 +236,30 @@ pub struct MsaScope {
     pub(super) hover_name: Option<usize>,
     pub(super) drag: Option<Drag>,
     pub(super) matches: Vec<usize>,
-    match_idx: usize,
-    pub(super) selected_row: Option<usize>,
+    pub(super) match_idx: usize,
+    /// Selected rows and columns, in alignment coordinates.
+    pub(super) sel: Rc<Selection>,
+    /// The cell cursor (view row, view column), moved by the arrow keys or placed by a click.
+    pub(super) cursor: Option<(usize, usize)>,
+    /// Where Shift+arrows and Shift+click extend a selection from (view row, view column).
+    pub(super) anchor: Option<(usize, usize)>,
+    /// The hover card shows the cursor's cell (after a key moved it) instead of the pointer's.
+    pub(super) card_cursor: bool,
+    pub(super) export: ExportOptions,
     pub(super) jump: Entity<InputState>,
     pub(super) search: Entity<InputState>,
-    focus: FocusHandle,
+    pub(super) focus: FocusHandle,
     pub(super) bench: Option<Bench>,
     pub(super) settings: Settings,
     title_bar: Entity<CachedView<MsaScope>>,
     toolbar: Entity<CachedView<MsaScope>>,
     chrome_key: Option<ChromeKey>,
+    pub(super) card_hidden: bool,
     _subs: Vec<Subscription>,
 }
 
 impl MsaScope {
-    pub fn new(path: Option<PathBuf>, ty: Option<SeqType>, bench: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(path: Option<PathBuf>, tree: Option<PathBuf>, ty: Option<SeqType>, bench: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let jump = cx.new(|cx| InputState::new(window, cx).placeholder("Go to column, or row:column"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find sequence"));
         let subs = vec![
@@ -251,9 +304,16 @@ impl MsaScope {
             mode: ColorMode::new(Scheme::ClustalX),
             prev_scheme: Scheme::ClustalX,
             tiles: Rc::default(),
-            hidden: None,
-            cols_gen: 0,
-            cols_pending: false,
+            layout: None,
+            layout_gen: 0,
+            layout_pending: false,
+            tree: None,
+            tree_name: None,
+            tree_loading: false,
+            collapsed: Vec::new(),
+            tree_order: true,
+            next_tree: tree,
+            tree_hits: Rc::default(),
             hide_inserts: true,
             hide_gappy: false,
             overview: Rc::default(),
@@ -267,7 +327,11 @@ impl MsaScope {
             drag: None,
             matches: Vec::new(),
             match_idx: 0,
-            selected_row: None,
+            sel: Rc::default(),
+            cursor: None,
+            anchor: None,
+            card_cursor: false,
+            export: ExportOptions::default(),
             jump,
             search,
             focus: cx.focus_handle(),
@@ -279,8 +343,13 @@ impl MsaScope {
             _subs: subs,
         };
         v.focus.focus(window, cx);
-        if let Some(p) = path {
-            v.open(p, cx);
+        match path {
+            Some(p) => v.open(p, cx),
+            None => {
+                if let Some(t) = v.next_tree.take() {
+                    v.open_any(t, cx);
+                }
+            }
         }
         v
     }
@@ -310,15 +379,25 @@ impl MsaScope {
                         if !v.prev_scheme.applies(kind) {
                             v.prev_scheme = Scheme::default_for(kind);
                         }
+                        let embedded = l.aln.newick.clone();
                         v.data = Some(Arc::new(l));
-                        v.hidden = None;
-                        v.rebuild_columns(cx);
+                        v.layout = None;
+                        v.clear_tree();
                         v.pending = Some(Fit::Readable);
                         v.vp.col0 = 0.0;
                         v.vp.row0 = 0.0;
                         v.matches.clear();
-                        v.selected_row = None;
+                        v.reset_selection();
                         v.hover = None;
+                        // The tree: one given with the file, else the file's own (#=GF NH), else
+                        // a sibling file with the same stem.
+                        let source = v.next_tree.take().map(TreeSource::File).or(embedded.map(TreeSource::Embedded)).or_else(|| {
+                            v.path.as_deref().and_then(|p| tree::sibling_candidates(p).into_iter().find(|c| c.is_file())).map(TreeSource::File)
+                        });
+                        match source {
+                            Some(s) => v.load_tree(s, cx),
+                            None => v.rebuild_layout(cx),
+                        }
                     }
                     Err(e) => {
                         eprintln!("msascope: {e:#}");
@@ -336,16 +415,157 @@ impl MsaScope {
     /// Close the file: back to the empty window.
     pub(super) fn close(&mut self, cx: &mut Context<Self>) {
         self.data = None;
-        self.hidden = None;
-        self.cols_gen += 1;
-        self.cols_pending = false;
+        self.layout = None;
+        self.layout_gen += 1;
+        self.layout_pending = false;
+        self.clear_tree();
         self.path = None;
         self.error = None;
         self.status = SharedString::default();
         self.matches.clear();
-        self.selected_row = None;
+        self.reset_selection();
         self.hover = None;
         cx.notify();
+    }
+
+    pub(super) fn reset_selection(&mut self) {
+        self.sel = Rc::default();
+        self.cursor = None;
+        self.anchor = None;
+        self.card_cursor = false;
+    }
+
+    fn clear_tree(&mut self) {
+        self.tree = None;
+        self.tree_name = None;
+        self.tree_loading = false;
+        self.collapsed.clear();
+        self.tree_order = true;
+    }
+
+    /// Open a file the user chose or dropped: a tree is matched to the open alignment (or kept
+    /// for the next one), anything else is opened as an alignment.
+    pub(super) fn open_any(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let mut head = [0u8; 256];
+        let n = std::fs::File::open(&path).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+        if tree::looks_like_tree(&path, &head[..n]) {
+            if self.data.is_some() && self.loading.is_none() {
+                self.load_tree(TreeSource::File(path), cx);
+            } else {
+                self.status = format!("{} will be matched to the next alignment opened", path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())).into();
+                self.next_tree = Some(path);
+                cx.notify();
+            }
+        } else {
+            self.open(path, cx);
+        }
+    }
+
+    /// Several dropped files: alignments first, so a tree dropped with one is matched to it.
+    pub(super) fn open_dropped(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        let mut trees = Vec::new();
+        let mut alns = Vec::new();
+        for p in paths {
+            let mut head = [0u8; 256];
+            let n = std::fs::File::open(p).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+            if tree::looks_like_tree(p, &head[..n]) { trees.push(p.clone()) } else { alns.push(p.clone()) }
+        }
+        match (alns.into_iter().next(), trees.into_iter().next()) {
+            (Some(a), t) => {
+                if t.is_some() {
+                    self.next_tree = t;
+                }
+                self.open(a, cx);
+            }
+            (None, Some(t)) => self.open_any(t, cx),
+            (None, None) => {}
+        }
+    }
+
+    /// Read, parse and match a tree in the background, then show rows in its order.
+    pub(super) fn load_tree(&mut self, source: TreeSource, cx: &mut Context<Self>) {
+        let Some(d) = self.data.clone() else { return };
+        let name: SharedString = match &source {
+            TreeSource::File(p) => p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()).into(),
+            TreeSource::Embedded(_) => "tree in the file (#=GF NH)".into(),
+        };
+        self.tree_loading = true;
+        self.status = format!("Reading {name}…").into();
+        cx.notify();
+        let task = cx.background_executor().spawn(async move {
+            let t0 = Instant::now();
+            let text = match source {
+                TreeSource::File(p) => std::fs::read_to_string(&p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?,
+                TreeSource::Embedded(s) => s,
+            };
+            let t = tree::Tree::parse(&text)?;
+            let parse = t0.elapsed();
+            let t1 = Instant::now();
+            let ix = TreeIndex::new(t, &d.aln.names, &d.aln.accessions);
+            anyhow::Ok((ix, parse, t1.elapsed()))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |v, cx| {
+                v.tree_loading = false;
+                match result {
+                    Ok((ix, parse, matching)) => {
+                        let report = ix.matching.report();
+                        eprintln!(
+                            "msascope: tree {name}: {} nodes, {} leaves; parse {:.3} s, match + index {:.3} s, {} MiB; {report}",
+                            ix.tree.len(),
+                            ix.matching.leaves,
+                            parse.as_secs_f64(),
+                            matching.as_secs_f64(),
+                            ix.bytes() >> 20
+                        );
+                        if !ix.matching.unmatched_leaves.is_empty() {
+                            eprintln!("msascope: leaves not in the alignment: {}", ix.matching.unmatched_leaves.join(", "));
+                        }
+                        if ix.matching.matched == 0 {
+                            v.status = format!("No leaf of {name} matches a sequence name; tree not used").into();
+                            v.rebuild_layout(cx);
+                            return;
+                        }
+                        v.status = format!("{name}: {report}").into();
+                        v.collapsed = vec![false; ix.tree.len()];
+                        v.tree = Some(Arc::new(ix));
+                        v.tree_name = Some(name);
+                        v.tree_order = true;
+                    }
+                    Err(e) => {
+                        eprintln!("msascope: tree {name}: {e:#}");
+                        v.status = format!("Couldn't read {name}: {e:#}").into();
+                    }
+                }
+                v.rebuild_layout(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(super) fn remove_tree(&mut self, cx: &mut Context<Self>) {
+        self.clear_tree();
+        self.status = SharedString::default();
+        self.rebuild_layout(cx);
+    }
+
+    /// Collapse or expand a node of the tree.
+    pub(super) fn toggle_clade(&mut self, node: u32, cx: &mut Context<Self>) {
+        let Some(f) = self.collapsed.get_mut(node as usize) else { return };
+        *f = !*f;
+        self.rebuild_layout(cx);
+    }
+
+    pub(super) fn set_tree_order(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.tree_order = on;
+        self.rebuild_layout(cx);
+    }
+
+    /// Collapsed clades shown.
+    pub(super) fn collapsed_count(&self) -> usize {
+        self.row_view().map_or(0, RowView::clades)
     }
 
     /// Write a synthetic 2,000 × 3,000 nucleotide alignment (a viral-surveillance-like test set)
@@ -376,31 +596,57 @@ impl MsaScope {
     }
 
     pub(super) fn prompt_open(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = rx.await
-                && let Some(p) = paths.into_iter().next()
-            {
-                this.update(cx, |v, cx| v.open(p, cx)).ok();
+            if let Ok(Ok(Some(paths))) = rx.await {
+                this.update(cx, |v, cx| v.open_dropped(&paths, cx)).ok();
             }
         })
         .detach();
     }
 
     /// Give keyboard focus back to the alignment when a text box lets go of it (Escape).
-    fn refocus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn refocus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.focused(cx).is_none() {
             self.focus.focus(window, cx);
         }
     }
 
-    /// Rows and shown (view) columns.
+    /// Shown (view) rows and columns.
     pub(super) fn dims(&self) -> (usize, usize) {
-        self.data.as_ref().map_or((0, 0), |d| (d.aln.rows(), view::view_cols(self.col_map(), d.aln.cols())))
+        self.data.as_ref().map_or((0, 0), |d| (view::view_rows(self.row_view(), d.aln.rows()), view::view_cols(self.col_map(), d.aln.cols())))
     }
 
     pub(super) fn col_map(&self) -> Option<&ColumnMap> {
-        self.hidden.as_deref().map(|h| &h.map)
+        self.layout.as_deref().and_then(|l| l.map.as_ref())
+    }
+
+    pub(super) fn row_view(&self) -> Option<&RowView> {
+        self.layout.as_deref().and_then(|l| l.rows.as_ref())
+    }
+
+    /// The alignment row shown at view row `v` (a collapsed clade's first member).
+    pub(super) fn aln_row(&self, v: usize) -> usize {
+        self.row_view().map_or(v, |m| m.rows_of(v)[0] as usize)
+    }
+
+    /// The view row showing alignment row `r`.
+    pub(super) fn view_row(&self, r: usize) -> usize {
+        self.row_view().map_or(r, |m| m.view_of(r))
+    }
+
+    /// Whether the tree panel is shown: a tree in tree order, with the panel switched on.
+    pub(super) fn show_tree(&self) -> bool {
+        self.settings.tree_panel && self.layout.as_deref().is_some_and(|l| l.tree.is_some())
+    }
+
+    /// Width of the tree panel (0 when hidden) and of the tree and name panels together.
+    pub(super) fn tree_w(&self) -> f32 {
+        if self.show_tree() { self.settings.tree_width } else { 0.0 }
+    }
+
+    pub(super) fn left_w(&self) -> f32 {
+        self.tree_w() + self.settings.name_width
     }
 
     /// Columns hidden now.
@@ -408,42 +654,67 @@ impl MsaScope {
         self.data.as_ref().map_or(0, |d| d.aln.cols()) - self.dims().1
     }
 
-    /// Rebuild the hidden-columns map and its pyramid in the background after a toggle; the
-    /// view keeps the old one until the new one is ready, then keeps the column at its left edge.
-    pub(super) fn rebuild_columns(&mut self, cx: &mut Context<Self>) {
+    /// Rebuild the column map, the row view and the pyramid for them in the background after a
+    /// change (hidden columns, tree, collapse, sort); the view keeps the old layout until the new
+    /// one is ready, then keeps the column at its left edge, the row at its top and the cursor on
+    /// the same cell.
+    pub(super) fn rebuild_layout(&mut self, cx: &mut Context<Self>) {
         let Some(d) = self.data.clone() else { return };
-        self.cols_gen += 1;
-        let generation = self.cols_gen;
+        self.layout_gen += 1;
+        let generation = self.layout_gen;
         let inserts = self.hide_inserts && !d.aln.inserts.is_empty();
         let gappy = self.hide_gappy.then(|| self.settings.gappy_pct as f32 / 100.0);
-        if !inserts && gappy.is_none() && self.hidden.is_none() {
-            self.cols_pending = false;
+        let tree = self.tree.clone().filter(|_| self.tree_order);
+        if !inserts && gappy.is_none() && tree.is_none() && self.layout.is_none() {
+            self.layout_pending = false;
             return;
         }
-        self.cols_pending = true;
+        let collapsed = self.collapsed.clone();
+        self.layout_pending = true;
         cx.notify();
         let task = cx.background_executor().spawn(async move {
-            ColumnMap::hiding(&d.aln, &d.stats, inserts, gappy).map(|map| {
-                let pyramid = Pyramid::build_mapped(&d.aln, &d.stats.consensus, Some(&map.visible));
-                Arc::new(HiddenCols { map, pyramid, generation })
-            })
+            let t0 = Instant::now();
+            let map = ColumnMap::hiding(&d.aln, &d.stats, inserts, gappy);
+            let (rows, tree_rows) = match &tree {
+                Some(ix) => {
+                    let (rv, tr) = tree::row_view(&d.aln, ix, &collapsed, true);
+                    (Some(rv), tr)
+                }
+                None => (None, None),
+            };
+            let layout = (map.is_some() || rows.is_some()).then(|| {
+                let pyramid = Pyramid::build_mapped(&d.aln, &d.stats.consensus, map.as_ref().map(|m| &m.visible[..]), rows.as_ref());
+                Arc::new(Layout { map, rows, tree: tree_rows, pyramid, generation })
+            });
+            (layout, t0.elapsed())
         });
         cx.spawn(async move |this, cx| {
-            let hidden = task.await;
+            let (layout, took) = task.await;
             this.update(cx, |v, cx| {
-                if v.cols_gen != generation {
+                if v.layout_gen != generation {
                     return;
                 }
-                let cols = v.dims().1;
-                let left = (cols > 0).then(|| view::aln_col(v.col_map(), (v.vp.col0.max(0.0) as usize).min(cols - 1)));
-                v.hidden = hidden;
-                v.cols_pending = false;
-                if let Some(left) = left {
-                    let nv = v.col_map().map_or(left, |m| m.view_of(left).unwrap_or_else(|e| e));
-                    v.vp.col0 = nv as f64 + v.vp.col0.fract();
+                if layout.as_ref().is_some_and(|l| l.rows.is_some()) {
+                    eprintln!("msascope: layout (row order, clades, columns, pyramid) {:.3} s", took.as_secs_f64());
                 }
-                let (r, c) = v.dims();
-                v.vp.clamp(r, c);
+                let (rows, cols) = v.dims();
+                // What is at the top-left and under the cursor, in alignment coordinates.
+                let left = (cols > 0).then(|| view::aln_col(v.col_map(), (v.vp.col0.max(0.0) as usize).min(cols - 1)));
+                let top = (rows > 0).then(|| v.aln_row((v.vp.row0.max(0.0) as usize).min(rows - 1)));
+                let cursor = v.cursor.filter(|&(r, c)| r < rows && c < cols).map(|(r, c)| (v.aln_row(r), view::aln_col(v.col_map(), c)));
+                v.layout = layout;
+                v.layout_pending = false;
+                let to_view_col = |v: &MsaScope, c: usize| v.col_map().map_or(c, |m| m.view_of(c).unwrap_or_else(|e| e));
+                if let Some(left) = left {
+                    v.vp.col0 = to_view_col(v, left) as f64 + v.vp.col0.fract();
+                }
+                if let Some(top) = top {
+                    v.vp.row0 = v.view_row(top) as f64 + v.vp.row0.fract();
+                }
+                let (rows, cols) = v.dims();
+                v.cursor = cursor.map(|(r, c)| (v.view_row(r).min(rows.saturating_sub(1)), to_view_col(v, c).min(cols.saturating_sub(1))));
+                v.anchor = None;
+                v.vp.clamp(rows, cols);
                 if v.fit.is_some() && v.pending.is_none() {
                     v.pending = v.fit;
                 }
@@ -458,7 +729,7 @@ impl MsaScope {
 
     pub(super) fn set_hide_inserts(&mut self, on: bool, cx: &mut Context<Self>) {
         self.hide_inserts = on;
-        self.rebuild_columns(cx);
+        self.rebuild_layout(cx);
     }
 
     /// Hide columns with at least `pct`% gaps (`None`: show them).
@@ -468,7 +739,7 @@ impl MsaScope {
             self.settings.gappy_pct = p;
             self.settings.save();
         }
-        self.rebuild_columns(cx);
+        self.rebuild_layout(cx);
     }
 
     pub(super) fn set_scheme(&mut self, s: Scheme) {
@@ -479,7 +750,7 @@ impl MsaScope {
     }
 
     /// The next scheme that applies to the open alignment (`s`).
-    fn cycle_scheme(&mut self) {
+    pub(super) fn cycle_scheme(&mut self) {
         let kind = self.data.as_ref().map_or(msascope::alphabet::Kind::Protein, |d| d.aln.kind());
         let all: Vec<Scheme> = Scheme::ALL.into_iter().filter(|s| s.applies(kind)).collect();
         let i = all.iter().position(|&s| s == self.mode.scheme).map_or(0, |i| (i + 1) % all.len());
@@ -499,7 +770,7 @@ impl MsaScope {
     }
 
     /// Set the scale (px per cell), keeping the cell under (x, y) in place.
-    fn set_scale(&mut self, cw: f64, ch: f64, anchor: Option<(f64, f64)>) {
+    pub(super) fn set_scale(&mut self, cw: f64, ch: f64, anchor: Option<(f64, f64)>) {
         let (x, y) = anchor.unwrap_or((self.vp.width / 2.0, self.vp.height / 2.0));
         self.vp.zoom_at(cw, ch, x, y);
         let (r, c) = self.dims();
@@ -546,7 +817,7 @@ impl MsaScope {
         if self.vp.width > 0.0 { self.apply_fit(f) } else { self.pending = Some(f) }
     }
 
-    fn pan(&mut self, dx_px: f64, dy_px: f64) {
+    pub(super) fn pan(&mut self, dx_px: f64, dy_px: f64) {
         self.vp.col0 += dx_px / self.vp.cw;
         self.vp.row0 += dy_px / self.vp.ch;
         let (r, c) = self.dims();
@@ -554,7 +825,7 @@ impl MsaScope {
     }
 
     /// Scroll so that cell (row, col) is in view, roughly centred.
-    fn center_on(&mut self, row: Option<usize>, col: Option<usize>) {
+    pub(super) fn center_on(&mut self, row: Option<usize>, col: Option<usize>) {
         if let Some(c) = col {
             self.vp.col0 = c as f64 - self.vp.width / self.vp.cw / 2.0;
         }
@@ -565,8 +836,8 @@ impl MsaScope {
         self.vp.clamp(rows, cols);
     }
 
-    /// Go to a column (alignment numbering, from 1) or `row:column`. A hidden column goes to the
-    /// next shown one.
+    /// Go to a column (alignment numbering, from 1) or `row:column` (row in the order shown). A
+    /// hidden column goes to the next shown one.
     fn jump_to(&mut self, text: &str, cx: &mut Context<Self>) {
         let parse = |s: &str| s.trim().replace([',', '_'], "").parse::<usize>().ok().filter(|&n| n >= 1).map(|n| n - 1);
         let (row, col) = match text.split_once(':') {
@@ -592,7 +863,9 @@ impl MsaScope {
                 self.set_scale(view::LETTERS_CW, self.vp.ch.max(view::LETTERS_CH), None);
             }
             self.center_on(row, col);
-            self.selected_row = row.or(self.selected_row);
+            if let (Some(r), Some(c)) = (row, col) {
+                self.cursor = Some((r, c));
+            }
         } else {
             self.status = format!("Out of range: {} rows × {} columns", view::group_digits(rows), view::group_digits(cols)).into();
         }
@@ -604,7 +877,7 @@ impl MsaScope {
         self.matches = view::search_names(&d.aln.names, q);
         self.match_idx = 0;
         if let Some(&r) = self.matches.first() {
-            self.select_row(r);
+            self.select_row(self.view_row(r));
         }
         self.status = if q.is_empty() { SharedString::default() } else { format!("{} matches", view::group_digits(self.matches.len())).into() };
         cx.notify();
@@ -616,13 +889,15 @@ impl MsaScope {
         }
         let n = self.matches.len() as isize;
         self.match_idx = ((self.match_idx as isize + step).rem_euclid(n)) as usize;
-        self.select_row(self.matches[self.match_idx]);
+        self.select_row(self.view_row(self.matches[self.match_idx]));
         self.status = format!("match {} of {}", self.match_idx + 1, n).into();
         cx.notify();
     }
 
-    fn select_row(&mut self, r: usize) {
-        self.selected_row = Some(r);
+    /// Select view row `r` (as a click on its name does) and scroll it into view.
+    pub(super) fn select_row(&mut self, r: usize) {
+        self.sel = Rc::new(Selection { rows: self.rows_set(r..=r), ..Default::default() });
+        self.anchor = Some((r, self.cursor.map_or(0, |c| c.1)));
         if self.vp.ch < NAME_ROW_MIN {
             self.fit = None;
             self.set_scale(self.vp.cw, view::LETTERS_CH, None);
@@ -631,99 +906,6 @@ impl MsaScope {
         if !visible {
             self.center_on(Some(r), None);
         }
-    }
-
-    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let k = &ev.keystroke;
-        let (w, h) = (self.vp.width, self.vp.height);
-        let ctrl = k.modifiers.control || k.modifiers.platform;
-        match k.key.as_str() {
-            "left" => self.pan(-w / 8.0, 0.0),
-            "right" => self.pan(w / 8.0, 0.0),
-            "up" => self.pan(0.0, -h / 8.0),
-            "down" => self.pan(0.0, h / 8.0),
-            "pageup" => self.pan(0.0, -h * 0.9),
-            "pagedown" => self.pan(0.0, h * 0.9),
-            "home" if ctrl => self.center_on(Some(0), Some(0)),
-            "end" if ctrl => self.center_on(Some(usize::MAX / 2), Some(usize::MAX / 2)),
-            "home" => self.vp.col0 = 0.0,
-            "end" => self.pan(1e12, 0.0),
-            "+" | "=" => self.zoom_by(1, 1, None),
-            "-" => self.zoom_by(-1, -1, None),
-            "0" => self.request_fit(Fit::All),
-            "w" if !ctrl => self.request_fit(Fit::Width),
-            "h" if !ctrl => self.request_fit(Fit::Height),
-            "r" if !ctrl => self.request_fit(Fit::Readable),
-            "d" if !ctrl => self.toggle_differences(),
-            "c" if !ctrl => self.mode.by_conservation = !self.mode.by_conservation,
-            "s" if !ctrl => self.cycle_scheme(),
-            "i" if !ctrl => self.set_hide_inserts(!self.hide_inserts, cx),
-            "g" if !ctrl => {
-                let p = (!self.hide_gappy).then_some(self.settings.gappy_pct);
-                self.set_gappy(p, cx)
-            }
-            "o" if ctrl => self.prompt_open(cx),
-            "f" if ctrl => self.search.update(cx, |s, cx| s.focus(window, cx)),
-            "g" if ctrl => self.jump.update(cx, |s, cx| s.focus(window, cx)),
-            _ => return,
-        }
-        cx.stop_propagation();
-        cx.notify();
-    }
-
-    /// Differences from the consensus, or back to the scheme before it.
-    pub(super) fn toggle_differences(&mut self) {
-        if self.mode.scheme == Scheme::Differences {
-            self.mode.scheme = self.prev_scheme;
-        } else {
-            self.mode.scheme = Scheme::Differences;
-        }
-    }
-
-    fn on_scroll(&mut self, ev: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let d = ev.delta.pixel_delta(px(40.));
-        let (dx, dy) = (f64::from(d.x), f64::from(d.y));
-        let area = self.area.get();
-        let (x, y) = (f64::from(ev.position.x - area.origin.x), f64::from(ev.position.y - area.origin.y));
-        if ev.modifiers.control || ev.modifiers.platform {
-            if dy.abs() < 0.5 {
-                return;
-            }
-            let step = if dy > 0.0 { 1 } else { -1 };
-            // Ctrl+Shift zooms only horizontally, Ctrl+Alt only vertically.
-            let (sx, sy) = match (ev.modifiers.shift, ev.modifiers.alt) {
-                (true, _) => (step, 0),
-                (_, true) => (0, step),
-                _ => (step, step),
-            };
-            self.zoom_by(sx, sy, Some((x.max(0.0), y.max(0.0))));
-        } else if ev.modifiers.shift && dx.abs() < 0.5 {
-            self.pan(-dy, 0.0);
-        } else {
-            self.pan(-dx, -dy);
-        }
-        self.card_hidden = true;
-        cx.notify();
-    }
-
-    /// The cell, name row or track column under the pointer.
-    fn update_hover(&mut self, pos: Point<Pixels>) {
-        let area = self.area.get();
-        let (rows, cols) = self.dims();
-        let (x, y) = (f64::from(pos.x - area.origin.x), f64::from(pos.y - area.origin.y));
-        self.hover = self.vp.hit(x, y, rows, cols);
-        // Over the name panel: the row only.
-        let in_names = pos.x < area.origin.x && pos.x >= area.origin.x - px(self.settings.name_width);
-        self.hover_name = if in_names { self.vp.hit(0.0, y, rows, cols).map(|(r, _)| r) } else { None };
-        let in_header = pos.y < area.origin.y && pos.y >= area.origin.y - px(HEADER_H) && pos.x >= area.origin.x;
-        self.hover_track = if in_header { self.vp.hit(x, 0.0, rows.max(1), cols).map(|(_, c)| c) } else { None };
-        self.pointer = Some(pos);
-    }
-
-    /// Whether the hover card is shown: over a cell or the track header, not while dragging or
-    /// just after a scroll.
-    pub(super) fn card_visible(&self) -> bool {
-        self.data.is_some() && self.drag.is_none() && !self.card_hidden && self.pointer.is_some() && (self.hover.is_some() || self.hover_track.is_some())
     }
 
     fn step_bench(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -813,65 +995,14 @@ impl MsaScope {
             hide_gappy: self.hide_gappy,
             gappy_pct: self.settings.gappy_pct,
             overview: self.settings.overview,
+            tree: self.tree.is_some(),
+            tree_order: self.tree_order,
+            tree_panel: self.settings.tree_panel,
+            has_selection: !self.sel.is_empty(),
+            export: self.export,
         }
     }
 
-    fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus.focus(window, cx);
-        self.update_hover(ev.position);
-        if ev.modifiers.shift {
-            self.drag = Some(Drag::Block);
-        } else {
-            self.drag = Some(Drag::Pan(ev.position));
-            if let Some(r) = self.hover.map(|(r, _)| r).or(self.hover_name) {
-                self.selected_row = Some(r);
-            }
-        }
-        cx.notify();
-    }
-
-    fn on_mouse_move(&mut self, ev: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        match self.drag.filter(|_| ev.dragging()) {
-            Some(Drag::Pan(last)) => {
-                let d = ev.position - last;
-                self.pan(-f64::from(d.x), -f64::from(d.y));
-                self.drag = Some(Drag::Pan(ev.position));
-            }
-            Some(Drag::Splitter { x0, w0 }) => {
-                let w = (w0 + f32::from(ev.position.x - x0)).clamp(NAME_W_MIN, NAME_W_MAX);
-                self.settings.name_width = w.round();
-            }
-            Some(Drag::Overview) => self.overview_pan(ev.position),
-            Some(Drag::Block) | None => {}
-        }
-        if !ev.dragging() {
-            self.card_hidden = false;
-        }
-        self.update_hover(ev.position);
-        cx.notify();
-    }
-
-    /// Centre the view on the point of the overview under `pos`.
-    pub(super) fn overview_pan(&mut self, pos: Point<Pixels>) {
-        let b = self.overview_area.get();
-        let (rows, cols) = self.dims();
-        if b.size.width <= px(0.) || b.size.height <= px(0.) {
-            return;
-        }
-        let fx = (f64::from(pos.x - b.origin.x) / f64::from(b.size.width)).clamp(0.0, 1.0);
-        let fy = (f64::from(pos.y - b.origin.y) / f64::from(b.size.height)).clamp(0.0, 1.0);
-        self.vp.col0 = fx * cols as f64 - self.vp.width / self.vp.cw / 2.0;
-        self.vp.row0 = fy * rows as f64 - self.vp.height / self.vp.ch / 2.0;
-        self.vp.clamp(rows, cols);
-    }
-
-    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(Drag::Splitter { .. }) = self.drag {
-            self.settings.save();
-        }
-        self.drag = None;
-        cx.notify();
-    }
 }
 
 impl Render for MsaScope {
@@ -913,7 +1044,34 @@ impl Render for MsaScope {
 
         let t = tokens(cx);
         let main = if self.data.is_some() {
+            let tree_w = px(self.tree_w());
             let name_w = px(self.settings.name_width);
+            let splitter = |id: &'static str, left: Pixels, active: bool, tree: bool| {
+                div()
+                    .id(id)
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(left - px(SPLITTER_W / 2.0))
+                    .w(px(SPLITTER_W))
+                    .cursor_col_resize()
+                    .hover(|s| s.bg(t.border_strong))
+                    .when(active, |d| d.bg(t.accent))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |v, ev: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            v.drag = Some(if tree {
+                                Drag::TreeSplitter { x0: ev.position.x, w0: v.settings.tree_width }
+                            } else {
+                                Drag::Splitter { x0: ev.position.x, w0: v.settings.name_width }
+                            });
+                            cx.notify();
+                        }),
+                    )
+            };
+            let tree_split = self.show_tree().then(|| splitter("tree-splitter", tree_w, matches!(self.drag, Some(Drag::TreeSplitter { .. })), true));
+            let name_split = splitter("name-splitter", tree_w + name_w, matches!(self.drag, Some(Drag::Splitter { .. })), false);
             let alignment = div()
                 .id("alignment")
                 .relative()
@@ -934,27 +1092,9 @@ impl Render for MsaScope {
                 .on_scroll(cx.listener(Self::on_scroll))
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                 .child(self.alignment_canvas(window, cx))
-                // The name panel's splitter, over its right edge.
-                .child(
-                    div()
-                        .id("name-splitter")
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(name_w - px(SPLITTER_W / 2.0))
-                        .w(px(SPLITTER_W))
-                        .cursor_col_resize()
-                        .hover(|s| s.bg(t.border_strong))
-                        .when(matches!(self.drag, Some(Drag::Splitter { .. })), |d| d.bg(t.accent))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|v, ev: &MouseDownEvent, _, cx| {
-                                cx.stop_propagation();
-                                v.drag = Some(Drag::Splitter { x0: ev.position.x, w0: v.settings.name_width });
-                                cx.notify();
-                            }),
-                        ),
-                );
+                // The splitters, over the right edges of the tree and name panels.
+                .children(tree_split)
+                .child(name_split);
             // Move and release go to the row, so drags that leave the alignment (or start in the
             // overview) keep working.
             div()
@@ -973,6 +1113,7 @@ impl Render for MsaScope {
         };
 
         v_flex()
+            .id("root")
             .size_full()
             .bg(t.bg)
             .text_color(t.fg)
@@ -981,6 +1122,11 @@ impl Render for MsaScope {
                     v.focus.focus(window, cx);
                     cx.notify();
                 }
+            }))
+            // Files dropped anywhere on the window: alignments and trees.
+            .drag_over::<ExternalPaths>(move |s, _, _, _| s.border_2().border_color(t.accent))
+            .on_drop(cx.listener(|v, paths: &ExternalPaths, _, cx| {
+                v.open_dropped(paths.paths(), cx);
             }))
             .child(title)
             .child(tools)

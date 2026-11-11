@@ -1,5 +1,7 @@
-//! Write a synthetic aligned FASTA for testing msascope: `msagen ROWS COLS OUT [--protein] [--seed N]`.
-//! OUT ending in .gz is gzip-compressed; `-` writes to stdout.
+//! Write a synthetic aligned FASTA for testing msascope:
+//! `msagen ROWS COLS OUT [--protein] [--seed N] [--tree TREE.nwk]`.
+//! OUT ending in .gz is gzip-compressed; `-` writes to stdout. `--tree` also writes a Newick tree
+//! whose leaves are the sequences, each clade under its own subtree.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -8,17 +10,19 @@ use anyhow::{Context, Result, bail};
 use msascope::alphabet::Kind;
 use msascope::synth::{Spec, write_fasta};
 
-const USAGE: &str = "usage: msagen ROWS COLS OUT [--protein] [--seed N]   (OUT: file, file.gz or -)";
+const USAGE: &str = "usage: msagen ROWS COLS OUT [--protein] [--seed N] [--tree TREE.nwk]   (OUT: file, file.gz or -)";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut pos = Vec::new();
     let (mut kind, mut seed) = (Kind::Nucleotide, 1u64);
+    let mut tree: Option<String> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--protein" => kind = Kind::Protein,
             "--seed" => seed = it.next().context("--seed needs a value")?.parse()?,
+            "--tree" => tree = Some(it.next().context("--tree needs a file name")?.clone()),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -40,6 +44,12 @@ fn main() -> Result<()> {
         w.flush()?;
         Ok(())
     };
+    if let Some(p) = &tree {
+        let f = File::create(p).with_context(|| format!("creating {p}"))?;
+        let mut w = BufWriter::with_capacity(1 << 20, f);
+        msascope::synth::write_newick(spec.rows, spec.clades, seed, &mut w)?;
+        w.flush()?;
+    }
     match out {
         "-" => write(&mut std::io::stdout().lock())?,
         p => {

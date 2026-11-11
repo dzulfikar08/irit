@@ -317,7 +317,7 @@ impl Builder {
     fn finish(self) -> Result<Alignment> {
         let Some(matrix) = self.matrix else { bail!("no sequences found") };
         let inserts = self.matches.map_or_else(Vec::new, |m| inserts_from(&m, matrix.cols));
-        Ok(Alignment { names: self.names, matrix, alpha: self.alpha, inserts, accessions: Vec::new() })
+        Ok(Alignment { names: self.names, matrix, alpha: self.alpha, inserts, accessions: Vec::new(), newick: None })
     }
 }
 
@@ -394,6 +394,8 @@ enum Line<'a> {
     Rf(&'a [u8]),
     /// Stockholm `#=GS <name> AC <accession>`.
     Accession(&'a [u8], &'a [u8]),
+    /// Stockholm `#=GF NH`: part of a Newick tree.
+    Tree(&'a [u8]),
 }
 
 /// Call `f` with the 1-based line number for every sequence line and block break of a Clustal or
@@ -430,6 +432,12 @@ fn lines(mut r: impl BufRead, format: Format, mut f: impl FnMut(usize, Line) -> 
                     f(ln, Line::Accession(name, acc))?;
                 }
             }
+            Format::Stockholm if line.starts_with(b"#=GF") => {
+                let rest = line[4..].trim_ascii_start();
+                if let Some(nh) = rest.strip_prefix(b"NH") {
+                    f(ln, Line::Tree(nh.trim_ascii()))?;
+                }
+            }
             Format::Stockholm if line.starts_with(b"#") => {}
             // Consensus lines in Clustal start with whitespace.
             Format::Clustal if line[0].is_ascii_whitespace() => f(ln, Line::Break)?,
@@ -458,8 +466,10 @@ fn interleaved<'a>(open: &dyn Fn() -> Result<Reader<'a>>, format: Format, ty: Op
     let mut marks: Vec<u64> = Vec::new();
     let mut rf: Vec<u8> = Vec::new();
     let mut acc: HashMap<Vec<u8>, Box<str>> = HashMap::new();
+    let mut nh: Vec<u8> = Vec::new();
     lines(open()?, format, |ln, l| {
         match l {
+            Line::Tree(t) => nh.extend_from_slice(t),
             Line::Rf(seg) => rf.extend(seg.iter().filter(|b| !b.is_ascii_whitespace())),
             Line::Accession(name, a) => {
                 acc.insert(name.to_vec(), lossy(a).into_boxed_str());
@@ -522,7 +532,8 @@ fn interleaved<'a>(open: &dyn Fn() -> Result<Reader<'a>>, format: Format, ty: Op
     // RF wins over the marks when it covers every column.
     let inserts = if rf.len() == cols { inserts_from_rf(&rf) } else { inserts_from(&marks, cols) };
     let accessions = if acc.is_empty() { Vec::new() } else { names.iter().map(|n| acc.get(n).cloned()).collect() };
-    Ok(Alignment { names: names.iter().map(|n| lossy(n)).collect(), matrix: m, alpha, inserts, accessions })
+    let newick = (!nh.is_empty()).then(|| lossy(&nh));
+    Ok(Alignment { names: names.iter().map(|n| lossy(n)).collect(), matrix: m, alpha, inserts, accessions, newick })
 }
 #[cfg(test)]
 mod tests {

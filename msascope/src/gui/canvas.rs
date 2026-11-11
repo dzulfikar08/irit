@@ -9,13 +9,14 @@ use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
 use msascope::alphabet::GAP;
 use msascope::scheme::Colors;
-use msascope::view::{self, Scene, TILE, Viewport, aln_col};
+use msascope::view::{self, Scene, TILE, Viewport, aln_col, row_src};
 use rayon::prelude::*;
 
 use super::app::MsaScope;
 use super::fonts::tabular;
 use super::metrics::*;
 use super::tokens::tokens;
+use super::tree_panel::{TreeGeom, paint_tree};
 
 /// A residue letter shaped for the current cell size: its glyph, the x offset that centres it
 /// in a cell, and the font metrics to place its baseline.
@@ -32,13 +33,20 @@ fn rgb_h(c: u32) -> Hsla {
     rgb(c).into()
 }
 
-/// A small triangle pointing up with its base centred on `x` at `y`.
-fn notch(x: Pixels, y: Pixels, color: Hsla, window: &mut Window) {
-    let mut p = Path::new(point(x - px(3.), y));
-    p.line_to(point(x, y - px(5.)));
-    p.line_to(point(x + px(3.), y));
-    p.line_to(point(x - px(3.), y));
-    window.paint_path(p, color);
+/// Runs of `true` in `flags`, as half-open index ranges.
+fn runs(flags: &[bool]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < flags.len() {
+        if flags[i] {
+            let j = flags[i..].iter().position(|&f| !f).map_or(flags.len(), |k| i + k);
+            out.push((i, j));
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 impl MsaScope {
@@ -47,10 +55,16 @@ impl MsaScope {
         let tiles = self.tiles.clone();
         let area_cell = self.area.clone();
         let (vp, mode) = (self.vp, self.mode);
-        let hidden = self.hidden.clone();
-        let selected = self.selected_row;
+        let layout = self.layout.clone();
+        let sel = self.sel.clone();
+        let cursor = self.cursor;
+        let tree_ix = self.tree.clone();
+        let tree = self.tree.clone().filter(|_| self.show_tree());
+        let tree_hits = self.tree_hits.clone();
+        let tree_w = self.tree_w();
         let (hover, hover_name) = (self.hover, self.hover_name);
         let name_w = self.settings.name_width;
+        let left_w = tree_w + name_w;
         let t = tokens(cx);
         let theme = cx.theme();
         let mono: SharedString = theme.mono_font_family.clone();
@@ -62,8 +76,8 @@ impl MsaScope {
         canvas(
             move |bounds, window, _| {
                 let area = Bounds::new(
-                    point(bounds.origin.x + px(name_w), bounds.origin.y + px(HEADER_H)),
-                    size((bounds.size.width - px(name_w)).max(px(0.)), (bounds.size.height - px(HEADER_H)).max(px(0.))),
+                    point(bounds.origin.x + px(left_w), bounds.origin.y + px(HEADER_H)),
+                    size((bounds.size.width - px(left_w)).max(px(0.)), (bounds.size.height - px(HEADER_H)).max(px(0.))),
                 );
                 // The view reads the area size in `render`, which ran before this layout: render again
                 // on change. (`refresh` does nothing while the window draws; this schedules a frame.)
@@ -76,12 +90,15 @@ impl MsaScope {
                 let t0 = Instant::now();
                 window.paint_quad(fill(bounds, t.bg));
                 let Some(d) = data else { return };
-                let map = hidden.as_deref().map(|h| &h.map);
-                let pyramid = hidden.as_deref().map_or(&d.pyramid, |h| &h.pyramid);
-                let generation = hidden.as_deref().map_or(0, |h| h.generation);
-                let (rows, cols) = (d.aln.rows(), view::view_cols(map, d.aln.cols()));
+                let map = layout.as_deref().and_then(|l| l.map.as_ref());
+                let rview = layout.as_deref().and_then(|l| l.rows.as_ref());
+                let pyramid = layout.as_deref().map_or(&d.pyramid, |l| &l.pyramid);
+                let generation = layout.as_deref().map_or(0, |l| l.generation);
+                let (rows, cols) = (view::view_rows(rview, d.aln.rows()), view::view_cols(map, d.aln.cols()));
                 let colors = Colors::new(d.aln.alphabet(), mode, tile_theme, letters);
-                let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map, colors: &colors };
+                let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map, rows: rview, colors: &colors };
+                // The alignment row of a view row (a collapsed clade's first member).
+                let first_row = |r: usize| rview.map_or(r, |m| m.rows_of(r)[0] as usize);
                 let mono_font = Font { family: mono, ..window.text_style().font() };
                 let ui_font = Font { family: ui, features: tabular(), ..window.text_style().font() };
                 let run = |font: &Font, len: usize, color: Hsla| TextRun { len, font: font.clone(), color, background_color: None, underline: None, strikethrough: None };
@@ -173,8 +190,9 @@ impl MsaScope {
                     if letters {
                         let columns: Vec<_> = vis_c.clone().map(|v| (v, aln_col(map, v))).map(|(v, c)| (v, c, scene.column(c))).collect();
                         for r in vis_r.clone() {
+                            let src = row_src(rview, r);
                             for (v, c, col) in &columns {
-                                let code = d.aln.matrix.get(r, *c);
+                                let code = src.get(&d.aln, *c);
                                 if code == GAP {
                                     let o = point(cell_x(*v) + (cw_px - dot) / 2.0, cell_y(r) + (ch_px - dot) / 2.0);
                                     window.paint_quad(fill(Bounds::new(o, size(dot, dot)), t.gap_ink).corner_radii(dot / 2.0));
@@ -186,9 +204,46 @@ impl MsaScope {
                             }
                         }
                     }
-                    if let Some(r) = selected.filter(|r| vis_r.contains(r)) {
-                        let h = ch_px.max(px(2.));
-                        window.paint_quad(outline(Bounds::new(point(area.origin.x, cell_y(r)), size(area.size.width, h)), t.accent, BorderStyle::Solid));
+                    // Selection: cells in selected rows and columns get the accent wash and each
+                    // rectangle of them an accent outline. Rows and columns are sampled once per
+                    // pixel when cells are smaller than that.
+                    if !sel.is_empty() && !vis_r.is_empty() && !vis_c.is_empty() {
+                        let sample = |range: std::ops::Range<usize>, per_px: f64| -> Vec<usize> {
+                            let step = (1.0 / per_px).ceil().max(1.0) as usize;
+                            range.step_by(step).collect()
+                        };
+                        let rs = sample(vis_r.clone(), vp.ch);
+                        let cs = sample(vis_c.clone(), vp.cw);
+                        let rflags: Vec<bool> = rs.iter().map(|&r| sel.row_selected(first_row(r) as u32)).collect();
+                        let cflags: Vec<bool> = cs.iter().map(|&v| sel.col_selected(aln_col(map, v) as u32)).collect();
+                        let (rr, cr) = (runs(&rflags), runs(&cflags));
+                        let block = !sel.rows.is_empty() || !sel.cols.is_empty();
+                        let outline_ok = rr.len() * cr.len() <= 400;
+                        for &(ra, rb) in &rr {
+                            let (y0, y1) = (cell_y(rs[ra]), cell_y(rs.get(rb).copied().unwrap_or(vis_r.end)));
+                            for &(ca, cb) in &cr {
+                                let (x0, x1) = (cell_x(cs[ca]), cell_x(cs.get(cb).copied().unwrap_or(vis_c.end)));
+                                let b = Bounds::new(point(x0, y0), size((x1 - x0).max(px(1.)), (y1 - y0).max(px(1.))));
+                                window.paint_quad(fill(b, t.accent_soft));
+                                if block && outline_ok && !sel.rows.is_empty() {
+                                    window.paint_quad(quad(b, Corners::default(), Hsla::transparent_black(), Edges::all(px(1.5)), t.accent, BorderStyle::Solid));
+                                }
+                            }
+                        }
+                    }
+                    // Collapsed clade rows: a thin outline so they read as one row for many.
+                    if let Some(m) = rview
+                        && m.clades() > 0
+                        && vp.ch >= 4.0
+                    {
+                        for r in vis_r.clone().filter(|&r| m.clade_of(r).is_some()) {
+                            let b = Bounds::new(point(area.origin.x, cell_y(r)), size(area.size.width, ch_px));
+                            window.paint_quad(quad(b, Corners::default(), Hsla::transparent_black(), Edges::all(px(1.)), t.border_strong, BorderStyle::Dashed));
+                        }
+                    }
+                    if let Some((r, c)) = cursor.filter(|&(r, c)| vis_r.contains(&r) && vis_c.contains(&c)) {
+                        let b = Bounds::new(point(cell_x(c), cell_y(r)), size(cw_px.max(px(2.)), ch_px.max(px(2.))));
+                        window.paint_quad(quad(b, Corners::default(), Hsla::transparent_black(), Edges::all(px(2.)), t.accent, BorderStyle::Solid));
                     }
                     if let Some((r, c)) = hover
                         && vp.cw >= HOVER_MIN
@@ -199,8 +254,8 @@ impl MsaScope {
                     }
                 });
 
-                // 3. Sticky name panel.
-                let names = Bounds::new(point(bounds.origin.x, area.origin.y), size(px(name_w), area.size.height));
+                // 3. Sticky name panel, right of the tree panel.
+                let names = Bounds::new(point(bounds.origin.x + px(tree_w), area.origin.y), size(px(name_w), area.size.height));
                 window.paint_quad(fill(names, t.bg));
                 window.with_content_mask(Some(ContentMask { bounds: names }), |window| {
                     let x0 = names.origin.x + SPACE_4;
@@ -208,23 +263,48 @@ impl MsaScope {
                     if vp.ch >= NAME_ROW_MIN {
                         let fpx = FONT_SMALL.min(px((vp.ch * 0.8) as f32));
                         let line_h = fpx * 1.3;
+                        let bold = Font { weight: FontWeight::SEMIBOLD, ..ui_font.clone() };
                         let mut wrapper = window.text_system().line_wrapper(ui_font.clone(), fpx);
                         for r in vis_r.clone() {
                             let y = cell_y(r);
                             let row = Bounds::new(point(names.origin.x, y), size(px(name_w), ch_px));
-                            if Some(r) == selected {
+                            if sel.rows.contains(first_row(r) as u32) {
                                 window.paint_quad(fill(row, t.grid_header_active));
                             } else if Some(r) == hover_name || hover.is_some_and(|(hr, _)| hr == r) {
                                 window.paint_quad(fill(row, t.hover));
                             }
+                            if cursor.is_some_and(|(cr, _)| cr == r) {
+                                window.paint_quad(fill(Bounds::new(row.origin, size(px(2.), ch_px)), t.accent));
+                            }
+                            let ty = y + (ch_px - line_h) / 2.0;
+                            if let Some(k) = rview.and_then(|m| m.clade_of(r)) {
+                                // A collapsed clade: its label (or first member) in semibold, and
+                                // the number of sequences on the right.
+                                let m = rview.unwrap();
+                                let n = m.members(k).len();
+                                let count = format!("{} seqs", view::group_digits(n));
+                                let cl = window.text_system().shape_line(count.clone().into(), fpx, &[run(&ui_font, count.len(), t.fg_dim)], None);
+                                let node = layout.as_deref().and_then(|l| l.tree.as_ref()).map(|tr| tr.collapsed[k]);
+                                let label = node
+                                    .and_then(|n| tree_ix.as_deref().map(|ix| ix.tree.label(n)))
+                                    // A name, not a support value.
+                                    .filter(|l| !l.is_empty() && l.parse::<f64>().is_err())
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| format!("{} …", d.aln.names[m.members(k)[0] as usize].split('/').next().unwrap_or("")));
+                                let label_runs = [run(&bold, label.len(), t.fg)];
+                                let (text, runs) = wrapper.truncate_line(SharedString::from(label.clone()), avail - cl.width - SPACE_4, "…", &label_runs, TruncateFrom::End);
+                                let line = window.text_system().shape_line(text, fpx, &runs, None);
+                                let _ = line.paint(point(x0, ty), line_h, TextAlign::Left, None, window, cx);
+                                let _ = cl.paint(point(names.origin.x + px(name_w) - SPACE_4 - cl.width, ty), line_h, TextAlign::Left, None, window, cx);
+                                continue;
+                            }
                             // "ID/start-end": the range after the last '/' in the dim colour.
-                            let name = &d.aln.names[r];
+                            let name = &d.aln.names[first_row(r)];
                             let split = name.rfind('/').filter(|&i| i > 0 && name[i + 1..].contains('-')).unwrap_or(name.len());
                             let runs = [run(&ui_font, split, t.fg), run(&ui_font, name.len() - split, t.fg_dim)];
                             let runs = if split == name.len() { &runs[..1] } else { &runs[..] };
                             let (text, runs) = wrapper.truncate_line(SharedString::from(name.clone()), avail, "…", runs, TruncateFrom::End);
                             let line = window.text_system().shape_line(text, fpx, &runs, None);
-                            let ty = y + (ch_px - line_h) / 2.0;
                             let _ = line.paint(point(x0, ty), line_h, TextAlign::Left, None, window, cx);
                         }
                     } else if !vis_r.is_empty() {
@@ -238,7 +318,38 @@ impl MsaScope {
                         let bar = Bounds::new(point(names.origin.x + px(name_w) - SPACE_3, names.origin.y + px(y0 as f32)), size(SPACE_2 - px(1.), px((y1 - y0) as f32)));
                         window.paint_quad(fill(bar, t.fg_dim).corner_radii(px(1.5)));
                     }
+                    // Where the rows the tree does not have begin.
+                    if let Some(m) = rview
+                        && (m.tree_end as usize) < rows
+                        && tree.is_some()
+                        && vis_r.contains(&(m.tree_end as usize))
+                    {
+                        let y = cell_y(m.tree_end as usize);
+                        window.paint_quad(fill(Bounds::new(point(names.origin.x, y - px(1.)), size(px(name_w), px(1.))), t.border_strong));
+                    }
                 });
+
+                // 3b. Tree panel, left of the names.
+                if let (Some(ix), Some(tr), Some(m)) = (tree.as_deref(), layout.as_deref().and_then(|l| l.tree.as_ref()), rview) {
+                    let tb = Bounds::new(point(bounds.origin.x, area.origin.y), size(px(tree_w), area.size.height));
+                    window.paint_quad(fill(tb, t.bg));
+                    window.with_content_mask(Some(ContentMask { bounds: tb }), |window| {
+                        let g = TreeGeom { ix, tr, rows: m, bounds: Bounds::new(tb.origin, size(tb.size.width - px(1.), tb.size.height)), row0: off_y / chd, ch: vp.ch };
+                        paint_tree(&g, &t, &mut tree_hits.borrow_mut(), window);
+                        if (m.tree_end as usize) < rows && vis_r.contains(&(m.tree_end as usize)) {
+                            let y = cell_y(m.tree_end as usize);
+                            window.paint_quad(fill(Bounds::new(point(tb.origin.x, y - px(1.)), size(px(tree_w), px(1.))), t.border_strong));
+                            if vp.ch >= NAME_ROW_MIN {
+                                let s = "not in tree";
+                                let l = window.text_system().shape_line(s.into(), FONT_CAPTION, &[run(&ui_font, s.len(), t.fg_dim)], None);
+                                let _ = l.paint(point(tb.origin.x + SPACE_4, y + px(1.)), FONT_CAPTION * 1.3, TextAlign::Left, None, window, cx);
+                            }
+                        }
+                    });
+                    window.paint_quad(fill(Bounds::new(point(bounds.origin.x + px(tree_w - 1.), bounds.origin.y), size(px(1.), bounds.size.height)), t.border));
+                } else {
+                    tree_hits.borrow_mut().clear();
+                }
                 window.paint_quad(fill(Bounds::new(point(names.origin.x + px(name_w - 1.), bounds.origin.y), size(px(1.), bounds.size.height)), t.border));
 
                 // 4. Track header: ruler, consensus, identity and gaps.
@@ -246,6 +357,20 @@ impl MsaScope {
                 window.paint_quad(fill(header, t.grid_header));
                 let caption = |s: &str, color: Hsla, window: &mut Window| window.text_system().shape_line(s.to_owned().into(), FONT_CAPTION, &[run(&ui_font, s.len(), color)], None);
                 window.with_content_mask(Some(ContentMask { bounds: header }), |window| {
+                    // Selected columns: the active header colour behind the ruler numbers.
+                    if !sel.cols.is_empty() && !vis_c.is_empty() {
+                        let step = (1.0 / vp.cw).ceil().max(1.0) as usize;
+                        let cs: Vec<usize> = vis_c.clone().step_by(step).collect();
+                        let flags: Vec<bool> = cs.iter().map(|&v| sel.cols.contains(aln_col(map, v) as u32)).collect();
+                        for (a, b) in runs(&flags) {
+                            let (x0, x1) = (cell_x(cs[a]), cell_x(cs.get(b).copied().unwrap_or(vis_c.end)));
+                            window.paint_quad(fill(Bounds::new(point(x0, header.origin.y), size((x1 - x0).max(px(1.)), px(RULER_H))), t.grid_header_active));
+                        }
+                    }
+                    if let Some((_, c)) = cursor.filter(|&(_, c)| vis_c.contains(&c)) {
+                        let b = Bounds::new(point(cell_x(c), header.origin.y + px(RULER_H - 3.)), size(cw_px.max(px(2.)), px(2.)));
+                        window.paint_quad(fill(b, t.accent));
+                    }
                     // Ruler, in the alignment's own column numbers: a label on every column whose
                     // number is a multiple of the step (labels at least TICK_LABEL_GAP apart once
                     // hidden columns make the numbers uneven), minor ticks halfway.
@@ -347,30 +472,42 @@ impl MsaScope {
                             }
                         }
                     }
-                    // Hidden columns: a notch on the ruler where each hidden run was, and a faint
-                    // line down through the tracks (runs closer than 4 px share one mark).
+                    // Hidden columns: a thin tick at the ruler's foot where each hidden run was and
+                    // a faint line down through the tracks. Runs closer than HIDDEN_MARK_MERGE px
+                    // share one mark, drawn 2 px wide; the hover card over the ruler gives the
+                    // hidden columns next to the column under the pointer.
                     if let Some(m) = map {
-                        let mut last = f32::NEG_INFINITY;
-                        let line = Hsla { a: 0.3, ..t.warning };
+                        let mut marks: Vec<(f32, usize)> = Vec::new();
                         for (v, _) in m.hidden_runs(d.aln.cols(), vis_c.clone()) {
-                            let x = cell_x(v);
-                            if f32::from(x) - last < 4.0 {
-                                continue;
+                            let x = f32::from(cell_x(v)).round();
+                            match marks.last_mut() {
+                                Some((lx, n)) if x - *lx < HIDDEN_MARK_MERGE => *n += 1,
+                                _ => marks.push((x, 1)),
                             }
-                            last = f32::from(x);
-                            window.paint_quad(fill(Bounds::new(point(x, ruler_base + px(1.)), size(px(1.), px(HEADER_H - RULER_H))), line));
-                            notch(x + px(0.5), ruler_base + px(1.), t.warning, window);
+                        }
+                        let tick = Hsla { a: 0.75, ..t.warning };
+                        let line = Hsla { a: 0.16, ..t.warning };
+                        for (x, n) in marks {
+                            let w = if n > 1 { px(2.) } else { px(1.) };
+                            window.paint_quad(fill(Bounds::new(point(px(x), ruler_base - px(5.)), size(w, px(5.))), tick));
+                            window.paint_quad(fill(Bounds::new(point(px(x), ruler_base + px(1.)), size(px(1.), px(HEADER_H - RULER_H))), line));
                         }
                     }
                 });
-                // Corner: track labels, right-aligned against the alignment.
-                let corner = Bounds::new(bounds.origin, size(px(name_w), px(HEADER_H)));
+                // Corner: track labels, right-aligned against the alignment; over the tree panel,
+                // its title.
+                let corner = Bounds::new(bounds.origin, size(px(left_w), px(HEADER_H)));
                 window.paint_quad(fill(corner, t.grid_header));
                 for (label, y, h) in [("Column", 0.0, RULER_H), ("Consensus", RULER_H, CONS_H), ("Identity %", RULER_H + CONS_H, IDENT_H), ("Gaps", RULER_H + CONS_H + IDENT_H, GAPS_H)] {
                     let line = caption(label, t.fg_muted, window);
                     let lh = FONT_CAPTION * 1.25;
                     let ty = bounds.origin.y + px(y) + (px(h) - lh) / 2.0;
-                    let _ = line.paint(point(corner.origin.x + px(name_w) - SPACE_4 - line.width, ty), lh, TextAlign::Left, None, window, cx);
+                    let _ = line.paint(point(corner.origin.x + px(left_w) - SPACE_4 - line.width, ty), lh, TextAlign::Left, None, window, cx);
+                }
+                if tree.is_some() {
+                    let line = caption("Tree", t.fg_muted, window);
+                    let _ = line.paint(point(bounds.origin.x + SPACE_4, bounds.origin.y + px(HEADER_H) - FONT_CAPTION * 1.25 - SPACE_2), FONT_CAPTION * 1.25, TextAlign::Left, None, window, cx);
+                    window.paint_quad(fill(Bounds::new(point(bounds.origin.x + px(tree_w - 1.), bounds.origin.y), size(px(1.), px(HEADER_H))), t.border));
                 }
                 window.paint_quad(fill(Bounds::new(point(names.origin.x + px(name_w - 1.), bounds.origin.y), size(px(1.), px(HEADER_H))), t.border));
                 window.paint_quad(fill(Bounds::new(point(bounds.origin.x, area.origin.y - px(1.)), size(bounds.size.width, px(1.))), t.border));
@@ -382,3 +519,4 @@ impl MsaScope {
         .size_full()
     }
 }
+
