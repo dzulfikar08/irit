@@ -28,7 +28,7 @@ pub struct Node {
     label: (u32, u32),
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Tree {
     /// Node 0 is the root.
     pub nodes: Vec<Node>,
@@ -294,7 +294,7 @@ pub fn sibling_candidates(aln: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 /// How the tree's leaves matched the alignment's sequences.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Matching {
     /// Per node: the row of a matched leaf, else [`NONE`].
     pub row: Vec<u32>,
@@ -382,6 +382,7 @@ pub fn match_rows(tree: &Tree, names: &[String], accessions: &[Option<Box<str>>]
 
 /// A tree matched to an alignment, with what does not depend on which clades are collapsed:
 /// matched rows in tree order, each node's range in that order, and the drawing x of each node.
+#[derive(Clone)]
 pub struct TreeIndex {
     pub tree: Tree,
     pub matching: Matching,
@@ -400,6 +401,11 @@ pub struct TreeIndex {
 impl TreeIndex {
     pub fn new(tree: Tree, names: &[String], accessions: &[Option<Box<str>>]) -> TreeIndex {
         let matching = match_rows(&tree, names, accessions);
+        Self::with_matching(tree, matching)
+    }
+
+    /// The index of `tree` whose leaves matched rows as `matching` says.
+    pub fn with_matching(tree: Tree, matching: Matching) -> TreeIndex {
         let n = tree.len();
         let pre = tree.preorder();
         let mut x = vec![0f32; n];
@@ -478,10 +484,31 @@ pub struct TreeRows {
 /// `collapsed[n]` marks nodes the user collapsed; a collapsed node inside another collapsed one is
 /// hidden with it. Clade consensus rows are computed here ([`clade_consensus`]).
 pub fn row_view(aln: &Alignment, ix: &TreeIndex, collapsed: &[bool], tree_order: bool) -> (RowView, Option<TreeRows>) {
-    let rows = aln.rows();
     if !tree_order {
-        return (RowView::identity(rows), None);
+        return (RowView::identity(aln.rows()), None);
     }
+    row_view_kept(aln, ix, collapsed, None)
+}
+
+/// Shown leaves under each node when only the rows `keep` marks are shown.
+fn kept_counts(ix: &TreeIndex, keep: &[bool]) -> Vec<u32> {
+    let t = &ix.tree;
+    let mut n = vec![0u32; t.len()];
+    for v in t.preorder().into_iter().rev() {
+        let r = ix.matching.row[v as usize];
+        let own = (r != NONE && keep[r as usize]) as u32;
+        let kids: u32 = t.children(v).map(|c| n[c as usize]).sum();
+        n[v as usize] = own + kids;
+    }
+    n
+}
+
+/// [`row_view`] in tree order with only the rows `keep` marks (all when `None`): subtrees with no
+/// row left are left out, and collapsed clades stand for their remaining members.
+pub fn row_view_kept(aln: &Alignment, ix: &TreeIndex, collapsed: &[bool], keep: Option<&[bool]>) -> (RowView, Option<TreeRows>) {
+    let rows = aln.rows();
+    let counts = keep.map(|k| kept_counts(ix, k));
+    let size = |n: u32| counts.as_ref().map_or(ix.size(n), |c| c[n as usize] as usize);
     let t = &ix.tree;
     let mut view: Vec<u32> = Vec::with_capacity(rows);
     let mut clade_nodes: Vec<u32> = Vec::new();
@@ -494,7 +521,7 @@ pub fn row_view(aln: &Alignment, ix: &TreeIndex, collapsed: &[bool], tree_order:
     let mut shown = Vec::with_capacity(t.len());
     let mut kids = Vec::new();
     while let Some(n) = stack.pop() {
-        if ix.size(n) == 0 {
+        if size(n) == 0 {
             continue;
         }
         shown.push(n);
@@ -537,10 +564,27 @@ pub fn row_view(aln: &Alignment, ix: &TreeIndex, collapsed: &[bool], tree_order:
         }
     }
     let tree_end = view.len() as u32;
-    view.extend_from_slice(&ix.matching.rows_not_in_tree);
-    let members: Vec<Range<u32>> = clade_nodes.iter().map(|&n| ix.span[n as usize].0..ix.span[n as usize].1).collect();
-    let consensus: Vec<Vec<u8>> = members.iter().map(|m| clade_consensus(aln, &ix.order[m.start as usize..m.end as usize])).collect();
-    let rv = RowView::new(view, rows, tree_end, members, ix.order.clone(), consensus);
+    let (members, order): (Vec<Range<u32>>, Vec<u32>) = match keep {
+        None => {
+            view.extend_from_slice(&ix.matching.rows_not_in_tree);
+            (clade_nodes.iter().map(|&n| ix.span[n as usize].0..ix.span[n as usize].1).collect(), ix.order.clone())
+        }
+        Some(k) => {
+            view.extend(ix.matching.rows_not_in_tree.iter().filter(|&&r| k[r as usize]));
+            let mut order = Vec::new();
+            let members = clade_nodes
+                .iter()
+                .map(|&n| {
+                    let a = order.len() as u32;
+                    order.extend(ix.rows(n).iter().filter(|&&r| k[r as usize]));
+                    a..order.len() as u32
+                })
+                .collect();
+            (members, order)
+        }
+    };
+    let consensus: Vec<Vec<u8>> = members.iter().map(|m| clade_consensus(aln, &order[m.start as usize..m.end as usize])).collect();
+    let rv = RowView::new(view, rows, tree_end, members, order, consensus);
     (rv, Some(TreeRows { y, rows: span, collapsed: clade_nodes }))
 }
 
@@ -571,6 +615,169 @@ pub fn clade_consensus(aln: &Alignment, rows: &[u32]) -> Vec<u8> {
         }
     });
     out
+}
+
+impl Tree {
+    /// Depth of every node in edges from the root.
+    pub fn depths(&self) -> Vec<u32> {
+        let mut d = vec![0u32; self.len()];
+        for v in self.preorder().into_iter().skip(1) {
+            d[v as usize] = d[self.nodes[v as usize].parent as usize] + 1;
+        }
+        d
+    }
+
+    /// Whether `n` is `a` or below it.
+    pub fn is_under(&self, mut n: u32, a: u32) -> bool {
+        loop {
+            if n == a {
+                return true;
+            }
+            n = self.nodes[n as usize].parent;
+            if n == NONE {
+                return false;
+            }
+        }
+    }
+
+    /// Nodes of the subtree under `n`, `n` first, in pre-order.
+    pub fn subtree(&self, n: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut stack = vec![n];
+        let mut kids = Vec::new();
+        while let Some(v) = stack.pop() {
+            out.push(v);
+            kids.clear();
+            kids.extend(self.children(v));
+            stack.extend(kids.iter().rev());
+        }
+        out
+    }
+
+    /// Order the children of every node under `n` by the number of leaves `size` gives them,
+    /// smallest first (ties keep their order), so each clade's largest subtree is drawn last.
+    pub fn ladderize(&mut self, n: u32, size: &[usize]) {
+        let mut kids = Vec::new();
+        for v in self.subtree(n) {
+            kids.clear();
+            kids.extend(self.children(v));
+            if kids.len() < 2 {
+                continue;
+            }
+            kids.sort_by_key(|&c| size[c as usize]);
+            self.nodes[v as usize].first_child = kids[0];
+            for w in kids.windows(2) {
+                self.nodes[w[0] as usize].next_sibling = w[1];
+            }
+            self.nodes[*kids.last().unwrap() as usize].next_sibling = NONE;
+        }
+    }
+
+    /// The same tree rooted on the branch above node `x`, which is split in half; an old root left
+    /// with one child is removed (its two branches joined). Node numbers change: the new root is
+    /// node 0, and the rest follow in pre-order. Labels stay on their nodes (support values on
+    /// internal nodes are not moved to the branches they describe). Rooting at the root, or above
+    /// a child of a root with two children, gives the same tree.
+    pub fn reroot(&self, x: u32) -> Tree {
+        let n = self.len();
+        if x == 0 || x as usize >= n {
+            return self.clone();
+        }
+        // Neighbours of each node with the branch length, children in file order then parent.
+        let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
+        for v in self.preorder() {
+            let node = &self.nodes[v as usize];
+            if node.parent != NONE {
+                adj[node.parent as usize].push((v, node.len));
+            }
+        }
+        for (v, list) in adj.iter_mut().enumerate().skip(1) {
+            let node = &self.nodes[v];
+            list.push((node.parent, node.len));
+        }
+        let p = self.nodes[x as usize].parent;
+        let half = self.nodes[x as usize].len / 2.0;
+        let mut out = Tree { nodes: Vec::with_capacity(n + 1), labels: self.labels.clone(), has_lengths: self.has_lengths };
+        out.nodes.push(Node { parent: NONE, first_child: NONE, next_sibling: NONE, len: 0.0, label: (0, 0) });
+        let mut last = vec![NONE];
+        // (old node, the neighbour it is entered from, new parent, branch length)
+        let mut stack = vec![(p, x, 0u32, half), (x, p, 0u32, half)];
+        while let Some((v, from, np, len)) = stack.pop() {
+            let others: Vec<(u32, f32)> = adj[v as usize].iter().copied().filter(|&(u, _)| u != from).collect();
+            if v == 0 && others.len() == 1 {
+                // The old root with one branch left: join it to the branch it was entered by.
+                let (u, l) = others[0];
+                stack.push((u, v, np, len + l));
+                continue;
+            }
+            let id = out.nodes.len() as u32;
+            out.nodes.push(Node { parent: np, first_child: NONE, next_sibling: NONE, len, label: self.nodes[v as usize].label });
+            last.push(NONE);
+            match last[np as usize] {
+                NONE => out.nodes[np as usize].first_child = id,
+                prev => out.nodes[prev as usize].next_sibling = id,
+            }
+            last[np as usize] = id;
+            for &(u, l) in others.iter().rev() {
+                stack.push((u, v, id, l));
+            }
+        }
+        // Renumber in pre-order, as the parser numbers nodes.
+        let order = out.preorder();
+        let mut new_of = vec![0u32; order.len()];
+        for (i, &o) in order.iter().enumerate() {
+            new_of[o as usize] = i as u32;
+        }
+        let map = |v: u32| if v == NONE { NONE } else { new_of[v as usize] };
+        let nodes = order
+            .iter()
+            .map(|&o| {
+                let nd = out.nodes[o as usize];
+                Node { parent: map(nd.parent), first_child: map(nd.first_child), next_sibling: map(nd.next_sibling), ..nd }
+            })
+            .collect();
+        out.nodes = nodes;
+        out
+    }
+}
+
+impl TreeIndex {
+    /// The tree with every clade under `n` ladderized ([`Tree::ladderize`] by matched leaves); node
+    /// numbers stay the same.
+    pub fn ladderized(&self, n: u32) -> TreeIndex {
+        let mut tree = self.tree.clone();
+        let size: Vec<usize> = (0..tree.len() as u32).map(|v| self.size(v)).collect();
+        tree.ladderize(n, &size);
+        TreeIndex::with_matching(tree, self.matching.clone())
+    }
+
+    /// Collapse the clades under `n` that are `depth` branches below it, and expand everything
+    /// between: `collapsed` is updated. Leaves and subtrees with no matched leaf are left alone.
+    pub fn collapse_to_depth(&self, collapsed: &mut [bool], n: u32, depth: u32) {
+        let t = &self.tree;
+        let base = self.tree.depths();
+        let d0 = base[n as usize];
+        for v in t.subtree(n) {
+            if t.is_leaf(v) || self.size(v) == 0 {
+                continue;
+            }
+            collapsed[v as usize] = base[v as usize] - d0 == depth;
+        }
+    }
+
+    /// Expand every clade under `n`, `n` included.
+    pub fn expand_all(&self, collapsed: &mut [bool], n: u32) {
+        for v in self.tree.subtree(n) {
+            collapsed[v as usize] = false;
+        }
+    }
+
+    /// The rows under `n`, sorted (for a row filter).
+    pub fn rows_sorted(&self, n: u32) -> Vec<u32> {
+        let mut v = self.rows(n).to_vec();
+        v.sort_unstable();
+        v
+    }
 }
 
 #[cfg(test)]
@@ -745,5 +952,101 @@ mod tests {
         let ix = TreeIndex::new(t, &names, &[]);
         assert_eq!(ix.matching.matched, n);
         eprintln!("230k leaves: {} nodes, parse {parse:?}, match + index {:?}, {} MiB", ix.tree.len(), t1.elapsed(), ix.bytes() >> 20);
+    }
+
+    /// Newick of a tree with its lengths, for comparing shapes.
+    fn newick(t: &Tree) -> String {
+        fn go(t: &Tree, n: u32, out: &mut String) {
+            let kids: Vec<u32> = t.children(n).collect();
+            if !kids.is_empty() {
+                out.push('(');
+                for (i, &c) in kids.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    go(t, c, out);
+                }
+                out.push(')');
+            }
+            out.push_str(t.label(n));
+            if n != 0 {
+                out.push_str(&format!(":{}", t.nodes[n as usize].len));
+            }
+        }
+        let mut s = String::new();
+        go(t, 0, &mut s);
+        s
+    }
+
+    #[test]
+    fn ladderize_and_depth_collapse() {
+        let aln = parse_bytes(b">a\nA\n>b\nA\n>c\nA\n>d\nA\n>e\nA\n").unwrap();
+        let t = Tree::parse("(((a,b)X,c)Y,(d)W,e);").unwrap();
+        let ix = TreeIndex::new(t, &aln.names, &[]);
+        let l = ix.ladderized(0);
+        // W and e tie at one leaf: they keep their order.
+        assert_eq!(newick(&l.tree), "((d:0)W:0,e:0,(c:0,(a:0,b:0)X:0)Y:0)");
+        assert_eq!(l.order, [3, 4, 2, 0, 1]);
+        // Only below Y: the root keeps its order.
+        let y = (0..ix.tree.len() as u32).find(|&n| ix.tree.label(n) == "Y").unwrap();
+        assert_eq!(newick(&ix.ladderized(y).tree), "((c:0,(a:0,b:0)X:0)Y:0,(d:0)W:0,e:0)");
+        // Depth 1 from the root collapses Y and W; depth 2 collapses X and expands Y.
+        let mut c = vec![false; ix.tree.len()];
+        ix.collapse_to_depth(&mut c, 0, 1);
+        let on: Vec<&str> = (0..ix.tree.len() as u32).filter(|&n| c[n as usize]).map(|n| ix.tree.label(n)).collect();
+        assert_eq!(on, ["Y", "W"]);
+        ix.collapse_to_depth(&mut c, 0, 2);
+        let on: Vec<&str> = (0..ix.tree.len() as u32).filter(|&n| c[n as usize]).map(|n| ix.tree.label(n)).collect();
+        assert_eq!(on, ["X"]);
+        ix.expand_all(&mut c, y);
+        assert!(c.iter().all(|&f| !f));
+        assert_eq!(ix.rows_sorted(y), [0, 1, 2]);
+    }
+
+    #[test]
+    fn clade_filter_in_tree_order() {
+        let (aln, ix) = three_clades();
+        // Keep a2 and b only: clade A shows a2, clade B shows b, z (not in the tree) is hidden.
+        let keep = [false, false, true, true, false];
+        let none = vec![false; ix.tree.len()];
+        let (rv, tr) = row_view_kept(&aln, &ix, &none, Some(&keep));
+        assert_eq!(rv.expanded(), [3, 2]);
+        assert_eq!(rv.shown(0), None);
+        let tr = tr.unwrap();
+        let leaf = |l: &str| (0..ix.tree.len() as u32).find(|&n| ix.tree.label(n) == l).unwrap() as usize;
+        assert!(tr.y[leaf("a1")].is_nan() && !tr.y[leaf("a2")].is_nan());
+        // A collapsed clade stands for its remaining members only.
+        let mut c = none.clone();
+        c[1] = true;
+        let keep = [true, true, true, false, false];
+        let (rv, _) = row_view_kept(&aln, &ix, &c, Some(&keep));
+        assert_eq!(rv.len(), 3);
+        assert_eq!(rv.members(0), [1]);
+        assert_eq!(rv.expanded(), [1, 2, 0]);
+        // Everything filtered out: an empty view.
+        let (rv, _) = row_view_kept(&aln, &ix, &none, Some(&[false; 5]));
+        assert!(rv.is_empty());
+    }
+
+    #[test]
+    fn reroot_on_a_branch() {
+        let t = Tree::parse("((a:1,b:2)X:4,(c:1,d:1)Y:2);").unwrap();
+        let a = (0..t.len() as u32).find(|&n| t.label(n) == "a").unwrap();
+        let r = t.reroot(a);
+        // The old root had two children: it is removed and X–Y joined (4 + 2).
+        assert_eq!(newick(&r), "(a:0.5,(b:2,(c:1,d:1)Y:6)X:0.5)");
+        assert_eq!(r.leaf_count(), 4);
+        assert!(r.nodes.iter().enumerate().skip(1).all(|(i, n)| r.children(n.parent).any(|c| c as usize == i)));
+        // Multifurcating root: kept as an internal node.
+        let t = Tree::parse("(a:1,b:1,c:1);").unwrap();
+        assert_eq!(newick(&t.reroot(1)), "(a:0.5,(b:1,c:1):0.5)");
+        // At the root: unchanged.
+        assert_eq!(newick(&t.reroot(0)), newick(&t));
+        // Matching survives: rows are re-matched by name.
+        let aln = parse_bytes(b">a\nA\n>b\nA\n>c\nA\n>d\nA\n").unwrap();
+        let t = Tree::parse("((a:1,b:2)X:4,(c:1,d:1)Y:2);").unwrap();
+        let c = (0..t.len() as u32).find(|&n| t.label(n) == "c").unwrap();
+        let ix = TreeIndex::new(t.reroot(c), &aln.names, &[]);
+        assert_eq!(ix.order, [2, 3, 0, 1]);
     }
 }

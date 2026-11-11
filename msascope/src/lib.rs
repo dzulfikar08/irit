@@ -1,9 +1,14 @@
 //! Core of msascope, free of any GUI code: parsing, compact storage, summaries and view geometry.
 
 pub mod alphabet;
+pub mod export;
+pub mod goto;
+pub mod jobs;
 pub mod matrix;
+pub mod motif;
 pub mod parse;
 pub mod pyramid;
+pub mod rows;
 pub mod scheme;
 pub mod select;
 pub mod stats;
@@ -111,13 +116,30 @@ impl Loaded {
 
     /// [`Loaded::open`] with the residue type given instead of guessed (`--type`).
     pub fn open_as(path: &std::path::Path, ty: Option<alphabet::SeqType>) -> anyhow::Result<Self> {
+        Self::open_with(path, ty, None)
+    }
+
+    /// [`Loaded::open_as`] reporting to `progress`; returns [`parse::Cancelled`] when it is
+    /// cancelled (checked while reading and between the steps), and what was built so far is
+    /// dropped on the way out.
+    pub fn open_with(path: &std::path::Path, ty: Option<alphabet::SeqType>, progress: Option<&parse::Progress>) -> anyhow::Result<Self> {
         let (format, gzip) = parse::sniff(path).with_context(|| format!("reading {}", path.display()))?;
+        let check = || progress.map_or(Ok(()), |p| p.check());
         let t = std::time::Instant::now();
-        let aln = parse::load_as(path, ty)?;
+        let aln = parse::load_with(path, ty, progress)?;
         let parse = t.elapsed();
+        check()?;
+        if let Some(p) = progress {
+            p.set_rows(aln.rows());
+            p.set_stage(parse::Stage::Columns);
+        }
         let t = std::time::Instant::now();
         let stats = stats::ColumnStats::compute(&aln);
         let stats_t = t.elapsed();
+        check()?;
+        if let Some(p) = progress {
+            p.set_stage(parse::Stage::Overview);
+        }
         let t = std::time::Instant::now();
         let pyramid = pyramid::Pyramid::build(&aln, &stats.consensus);
         let timings = Timings { parse, stats: stats_t, pyramid: t.elapsed() };
