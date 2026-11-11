@@ -42,7 +42,11 @@ What's done, what's next, and what's further out. Items move up as evidence come
 
 - [ ] **GTDB-Tk on a desktop: measure before building.** Peak memory and time for GTDB-Tk with and
       without `--scratch_dir`, and with gPlace and `--max_memory`, on a rented large-memory machine.
-      See [GTDB-Tk and memory](research/gtdbtk-memory.md).
+      See [GTDB-Tk and memory](research/gtdbtk-memory.md). GTDB plans to move GTDB-Tk to gPlace "in
+      the coming weeks", placing directly on the full trees and dropping the backbone/class-level
+      split, so no `--placer` option ([GTDBTk#728](https://github.com/Ecogenomics/GTDBTk/issues/728)).
+      Wait for that release, then measure it; until then the `pplacer` shim stays. The placement
+      mirror and `irit-mcp`'s `split/` check will need updating for the new layout.
 - [ ] **GTDB placement data without the 60.8 GB download**: an unofficial, credited mirror
       (280 MB download) on GitHub Releases (`dzulfikar08/irit-data`) and the `dblock` entries
       `gtdbtk-r232-placement` and `-lite` (0.2.1); `dblock` stores identical files once as hard
