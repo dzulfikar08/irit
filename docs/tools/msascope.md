@@ -39,13 +39,16 @@ msascope silk.fasta --type protein # residue type given instead of guessed: dna,
 | Arrows, Page Up/Down, Home/End | Move; Ctrl+Home/End jumps to the corners |
 | Ctrl+G | Go to a column (`15000`) or row and column (`250:15000`) |
 | Ctrl+F | Find sequences by name (substring, case-insensitive); Enter / Shift+Enter for next/previous |
-| `d` | Colour mode: residues, or differences from the column consensus |
-| Click | Select a row (in the alignment or the name panel); hovering shows the sequence, column, residue, consensus and identity in the status bar |
+| `s` / `d` / `c` | Next colour scheme / differences from the consensus on and off / "by conservation" on and off |
+| `i` / `g` | Hide or show insert columns / gappy columns (at the threshold chosen in the toolbar, 50% by default) |
+| Click | Select a row (in the alignment or the name panel) |
+| Hover | A card next to the pointer: sequence, residue and its position in the sequence, column, consensus (over the track header: the column) |
+| Click or drag in the overview | Pan there |
 | Drag the name panel's right edge | Resize it (120–480 px, remembered) |
 
 A file opens at a readable zoom, not fitted to the window: the whole alignment at about 11 × 16
 pixels per cell if it fits; otherwise rows at 16 pixels, so names and residues can be read, and
-columns fitted to the width when that leaves at least 4 pixels per column (else 11 pixels). The
+columns fitted to the width when that leaves at least 7 pixels per column, enough for letters (else 11 pixels). The
 fit zooms use the exact scale, so the alignment fills the window with no empty band; they never
 zoom in past 11 × 16 pixels. `+` and `-` then move in steps of √2, from about 1/260,000 to 32
 pixels per cell. Letters appear once cells are at least 7 × 10 pixels, names once rows are at
@@ -59,16 +62,57 @@ names stay in a panel on the left while the alignment scrolls, as `ID` and a dim
 for Pfam-style names; when rows are too thin to label, the panel shows the visible rows in words
 ("rows 1,201–1,260 of 32,112") and a marker of where the view sits. The status bar shows the file
 format and residue type, the size, the hovered cell, the selected row, the load time and memory,
-and the theme. Settings (theme, name panel width) are saved in `msascope/settings.toml` in the
+and the theme. On the right, the overview panel shows the whole alignment (the shown columns),
+the visible area as a box, the visible range and the legend of the colour scheme; the toolbar
+button at the right end hides it. Settings (theme, name panel width, overview, gappy threshold)
+are saved in `msascope/settings.toml` in the
 platform's config folder (`~/.config` on Linux).
 
-Colours: nucleotides A green, C blue, G orange, T/U red, ambiguity codes grey; amino acids by
-Clustal X groups (hydrophobic blue, positive red, negative magenta, polar green, plus C, G, P and
-aromatic H/Y), without Clustal X's per-column rules yet. Behind letters the light theme uses pale
-fills and the dark theme dark fills, so the letters stay readable (at least 4.5:1 contrast, checked
-by a test). The **differences** mode fades every residue that matches its column's consensus
-towards the background and keeps the rest in full colour, which is what you want for alignments
-of near-identical genomes.
+### Colour schemes
+
+Chosen from the toolbar's colour menu (or `s`); proteins open in Clustal X, nucleotides in
+Nucleotide.
+
+| Scheme | For | Colours |
+|---|---|---|
+| Clustal X | protein | Hydrophobic blue, positive red, negative magenta, polar green, cysteine pink, glycine orange, proline yellow, aromatic H/Y cyan, only where the column passes the group's rule (the table in Jalview's Clustal X documentation, e.g. A, I, L, M, F, W, V when more than 60% of the column is W L V I M A F C H P; G and P always). Shares are of all rows, gaps included. |
+| Percent identity | both | Three steps of the accent by the share of the column with the same residue: more than 80, 60, 40% |
+| Hydrophobicity | protein | Kyte–Doolittle, blue (hydrophilic) through neutral to orange (hydrophobic) |
+| Nucleotide | DNA, RNA | A green, C blue, G orange, T/U red, other codes grey |
+| Differences | both | Residues that match the column consensus faded toward the background, the rest in their group colour |
+
+"By conservation" (`c`) fades any scheme's fill toward the background by (1 − column identity).
+Every scheme has fills for the light and the dark theme; behind letters they are pale (light) or
+dark (dark), and a test checks that the letter ink keeps at least 4.5:1 contrast on every fill.
+Residues a scheme leaves unfilled are drawn as muted letters on the background; gaps are the
+background with a small dot.
+
+Below one pixel per cell in either direction, cells are not sampled one by one. Each pixel shows
+its cells' majority residue in the scheme's strong colour, mixed from the background by
+0.08 + 0.72 × (1 − the share of cells that differ from their column's consensus), so conserved
+regions are strong and variable or gappy ones faint; a gap majority is the background with 3% of
+the text colour. Differences keeps its own rule (faded majority, mixed toward the text colour by
+the differing share).
+
+### Hiding columns
+
+Insert columns (`i`) and gappy columns (`g`) can be hidden from the toolbar's columns menu. Insert
+columns are hidden by default when the file has them. Gappy columns are those with at least 25,
+50 (default), 75, 90 or 100% gaps. The ruler keeps the alignment's own column numbers and marks
+each hidden run with a small notch and a faint line through the tracks; the status bar and the
+overview give the number hidden. Go-to (Ctrl+G) takes the alignment's column numbers; a hidden
+column goes to the next shown one. The hover card gives both numbers ("72 of 698 · 60 of 115
+shown"). Hiding rebuilds the pyramid for the shown columns in the background; the view keeps the
+old one until the new one is ready.
+
+### Hover card
+
+Over a cell: the sequence ID with its accession (from Stockholm `#=GS <name> AC`) and range; the
+residue, its three-letter name and its position in the ungapped sequence, counted from the
+name's `/start-end` when it has one (Pfam, HMMER) and from 1 otherwise; for a gap, the residues
+it falls between; the column; and the column's consensus, identity and gap share. Over the track
+header the card shows the column only. It hides while dragging and after a scroll until the
+pointer moves.
 
 ## Formats
 
@@ -76,7 +120,7 @@ of near-identical genomes.
 |---|---|---|
 | Aligned FASTA | first line starts with `>` | Wrapped or unwrapped, `\r\n` line ends, gzip (`.gz`, detected by content) |
 | Clustal | `CLUSTAL`, `MUSCLE` or `PROBCONS` header | Consensus lines and trailing residue counts are ignored |
-| Stockholm | `# STOCKHOLM` header | First alignment in the file; `#=GF/GS/GR/GC` markup is skipped; blocks must be separated by a blank line |
+| Stockholm | `# STOCKHOLM` header | First alignment in the file; `#=GC RF` and `#=GS <name> AC` are read, other markup is skipped; blocks must be separated by a blank line |
 
 A UTF-8 byte order mark and blank lines before the header are ignored.
 
@@ -84,9 +128,11 @@ Every sequence must have the same number of columns; a file that isn't aligned i
 name of the first sequence that differs. In Clustal and Stockholm, a name that appears twice in one
 block is refused with that name and its line; that is also what happens to a Stockholm or Clustal
 file whose blocks have no blank line between them (the repeated names look like duplicates), so add
-the blank lines. `-`, `.` and `~` are gaps; lower case is shown as
-upper case, so Stockholm insert columns (lower case and `.`) look the same as match columns and
-gaps. `?` is read as N (nucleotides) or X (protein). In nucleotides, hard-masked `X` and `*` are
+the blank lines. `-`, `.` and `~` are gaps and lower case is shown as upper case, but insert
+columns are kept: a column is an insert column when every row has lower case or `.` there (the
+A2M, HMMER and Pfam convention), or, in Stockholm, when `#=GC RF` marks it with `.` (RF wins
+when it covers every column). A file that writes gaps as `.` in upper-case match columns (Pfam
+seed alignments) therefore has no insert columns except all-`.` ones. `?` is read as N (nucleotides) or X (protein). In nucleotides, hard-masked `X` and `*` are
 kept as written.
 
 The residue type comes from the residues (gaps excluded) of the whole file for Clustal and
@@ -115,7 +161,8 @@ unit tests and no GUI dependency; the GPUI code only handles windows, input and 
 **Storage.** One small code per residue, row-major. Nucleotides use 16 codes (gap plus the 15 IUPAC
 letters) packed two per byte, so a 30 kb genome takes 15 kB; amino acids take one byte. Rows are
 stored in blocks of 1,024 so the matrix can grow while a file streams in, without reallocating
-(and briefly doubling) gigabytes. Lower case is not kept and `.` becomes `-`. An alignment that has
+(and briefly doubling) gigabytes. Lower case is not kept and `.` becomes `-`; which columns are
+insert columns is kept as a bitset, one bit per column. An alignment that has
 both T and U needs a 17th code, and one with `X` or `*` needs codes beyond the 16, so those are
 stored at one byte per residue like protein (no residue is rewritten to fit the 4-bit codes).
 
@@ -129,7 +176,8 @@ by line: the first pass collects names, row lengths and the residue counts that 
 the second encodes each line straight into its row, so memory is the packed matrix plus the names
 (gzip is decompressed twice). That path is single-threaded.
 
-**Column summaries.** One pass counts every residue per column (consensus, identity, gap share).
+**Column summaries.** One pass counts every residue per column (consensus, identity, gap share,
+the share of each residue code, 32 bytes per column, and the Clustal X rule results).
 The work is split by blocks of 1,024 columns so each thread's counters (128 KB) stay in cache, and
 each block keeps only the three results per column (9 bytes) once counted;
 split by rows instead, it took 15 s rather than 1 s on the 100,000 × 30,000 test.
@@ -147,7 +195,7 @@ to a residue rather than the gap, then to the lower code. For 100,000 ×
 **Rendering.** GPUI does not expose custom shaders, so the alignment area is drawn as image tiles
 of 256 × 256 device pixels. A tile is rasterised once on the CPU (in parallel across tiles, one
 pixel = one cell or one pyramid block, picking the coarsest pyramid level that is still at least
-one block per pixel) and then composited by GPUI's GPU sprite atlas; tiles are cached per scale, colour mode and
+one block per pixel, or below one pixel per cell the density of the cells each pixel covers) and then composited by GPUI's GPU sprite atlas; tiles are cached per scale, colour mode and
 theme, and evicted (and freed from the GPU atlas) when far off screen. No UI element
 is created per cell. When letters are visible, each distinct letter is shaped once per frame and
 painted per visible cell. Tracks are drawn as runs of equal-colour quads, one entry per pixel
@@ -223,6 +271,33 @@ figures in the table above were not reproduced here. Two of 15 runs (one of each
 advancing in their first phase and were dropped; the bench advances one step per frame, and a
 window that is not shown gets no frames.
 
+**After colour schemes, density, the hover card and hidden columns (2026-11-11).** Checked
+against the build before them (commit `7e209c6`) on the same machine and file
+(`msagen 20000 10000`, 200 MB in `/tmp`), the two builds run alternately. The machine was busy
+again (load average 11 to 60 on 12 threads), so single runs varied by a factor of two or more
+(the pyramid step, whose code did not change, took 0.39 to 1.34 s); the medians below are what
+can be compared, and the differences are within that noise. Window 1280 × 760; `--bench` leaves
+the overview panel out, so the alignment area is the same size in both builds.
+
+| | before (`7e209c6`) | after |
+|---|---|---|
+| Load, `--stats`, median of 16 (fastest) | 3.01 s (1.49 s) | 2.60 s (1.49 s) |
+| Column summaries step, median of 16 | 0.80 s | 0.78 s |
+| Peak RSS, `--stats` | 168 MiB | 167–168 MiB |
+| Paint median, whole alignment (fit), median of 5 | 3.9 ms | 4.2 ms |
+| Paint median, 1 px per cell | 3.7 ms | 4.2 ms |
+| Paint median, 4 px per cell | 1.9 ms | 1.7 ms |
+| Paint median, letters | 7.9 ms | 8.2 ms |
+| Peak RSS, `--bench` | 282–286 MiB | 285–291 MiB |
+
+Memory added: the insert-column bitset, 1 bit per column (3.7 KiB at 30,000 columns); the share
+of each residue code per column, 32 bytes per column (0.92 MiB at 30,000 columns) and the Clustal
+X result, 4 bytes per column; accessions only for Stockholm files that have them. While columns
+are hidden, a second pyramid for the shown columns is kept (at most the size of the first: 7 MiB
+here, 119 MiB at 100,000 × 30,000), and while it is rebuilt the old one is kept too. The bench
+does not hide columns, so the time of that rebuild at 100,000 × 30,000 has not been measured.
+PF00042 full (Stockholm, gzip, 4.8 MB) loads in 0.4 s.
+
 ## Test data
 
 `msagen ROWS COLS OUT [--protein] [--seed N]` writes a synthetic alignment (OUT ending in `.gz` is
@@ -279,22 +354,24 @@ Built so far:
   Fit, Fit width and Fit height, at the exact scale, replace the single fit-everything zoom.
 - The design system behind them (colour tokens, sizes, fonts, shortcut labels), adapted from
   Kantor by the same author.
+- Colour schemes (Clustal X with its column rules, percent identity, hydrophobicity, nucleotide,
+  differences, by conservation) in both themes, and density rendering at low zoom.
+- The overview panel (planned for later; it reuses the tile renderer, so it came early).
+- The hover card with the residue's position in the ungapped sequence.
+- Hiding insert and gappy columns, with the ruler keeping the original numbers.
 
-The current app with Pfam's PF00042 full alignment (32,112 × 698) at the zoom it opens at:
+The current app with Pfam's PF00042 full alignment (32,112 × 698; 581 insert columns hidden,
+117 shown), dark theme at the zoom it opens at, with the hover card:
 
-![msascope, light theme: PF00042 full at the readable zoom it opens at](../images/msascope/phase1-full-light.png)
+![msascope, dark theme: PF00042 full with insert columns hidden, Clustal X colours, the hover card and the overview panel](../images/msascope/phase2-4-full-dark-hover.png)
 
-![The same in the dark theme, fitted to the window (Fit all)](../images/msascope/phase1-full-dark-fit.png)
+The same alignment in the light theme, fitted to the window (Fit all): each pixel row covers 55
+sequences, and conserved columns show as strong stripes:
+
+![msascope, light theme: PF00042 full, Fit all, density rendering](../images/msascope/phase2-4-full-light-fit.png)
 
 Still to come, in order of priority:
 
-- At low zoom, blocks coloured by how strongly they agree with the column consensus instead of
-  sub-pixel cells, plus an overview panel with the visible area marked.
-- A hover card: sequence, residue and its position in the ungapped sequence, column, consensus.
-- Colour schemes: Clustal X, percent identity, hydrophobicity, nucleotide, differences from the
-  consensus, and conservation.
-- Hiding insert columns (Stockholm lowercase and `.`) and gappy columns, with the ruler keeping the
-  original column numbers.
 - A Newick tree panel with collapsible clades, rows in tree order.
 - Row, column and block selection, copy, FASTA export, drag-and-drop to open, keyboard movement.
 
@@ -315,5 +392,7 @@ Each step has to keep the load and paint times in [Measured](#measured) within 5
   than FASTA for very large files.
 - No editing, selection of columns, export, tree panel, sequence reordering or sorting by
   similarity. A linked tree panel is planned next ([roadmap](../roadmap.md)).
-- Lower-case residues (often used for unaligned or masked regions) are shown as upper case, and `.`
-  as `-`: Stockholm insert states are not told apart from match states.
+- Lower-case residues (often used for unaligned or masked regions) are shown as upper case; only
+  whole insert columns are kept, not which single residues were lower case.
+- The density view samples at most 32 pyramid blocks or cells per pixel, so it is an estimate
+  when a pixel covers more than that.
