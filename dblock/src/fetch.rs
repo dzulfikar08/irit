@@ -192,7 +192,15 @@ pub fn obtain(store: &Path, e: &Entry, opts: &Opts) -> Result<(Locked, bool)> {
     let lock = lock_database(store, &e.id)?;
     match existing(store, e) {
         Stored::Ready(l) if l.manifest_format.is_none() => return Ok((upgrade_marker(&target_dir(store, e), *l)?, true)),
-        Stored::Ready(l) => return Ok((*l, true)),
+        Stored::Ready(l) => {
+            // A folder moved or linked in from another store: its marker still names the old
+            // place. Point it here, as the lock will.
+            let dir = target_dir(store, e);
+            if project::read_marker(&dir).is_some_and(|m| m.path != l.path || m.data_path != l.data_path) {
+                project::write_marker(&dir, &l).with_context(|| format!("updating {}", dir.join(project::MARKER).display()))?;
+            }
+            return Ok((*l, true));
+        }
         Stored::Bad(why) => bail!(why),
         Stored::Absent => {}
     }
@@ -1355,6 +1363,24 @@ mod tests {
         assert!(why.contains("changed since it was fetched"), "{why}");
         assert!(obtain(store.path(), &e, &opts()).is_err());
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_folder_moved_from_another_store_is_reused_with_its_marker_updated() {
+        let (body, md5) = archive();
+        let (url, hits) = serve(body.clone());
+        let e = entry(&url, &md5, body.len(), "dir");
+        let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        obtain(first.path(), &e, &opts()).unwrap();
+        fs::rename(first.path().join("mydb"), second.path().join("mydb")).unwrap();
+        let (l, reused) = obtain(second.path(), &e, &opts()).unwrap();
+        assert!(reused);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        let here = second.path().join("mydb");
+        assert_eq!(l.path, here.display().to_string());
+        let marker = project::read_marker(&here).unwrap();
+        assert_eq!((marker.path, marker.data_path), (l.path.clone(), l.data_path.clone()));
+        assert!(l.data_path.starts_with(&l.path), "{}", l.data_path);
     }
 
     #[test]
