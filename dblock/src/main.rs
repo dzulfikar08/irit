@@ -284,7 +284,10 @@ fn cmd_fetch(dir: &Path, entries: &[Entry], only: &[String], opts: &fetch::Opts)
         eprintln!("{id}: {} ({})", e.name, human(e.size));
         match fetch::obtain(&store, e, opts) {
             Ok((found, true)) => {
-                eprintln!("  already in {}, reusing it", found.path);
+                eprintln!(
+                    "  already in {}, reusing it (file names and sizes match; `dblock verify --deep` re-hashes every file)",
+                    found.path
+                );
                 lock.upsert(found);
             }
             Ok((l, false)) => {
