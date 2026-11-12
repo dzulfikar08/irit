@@ -17,6 +17,7 @@ use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Mutex;
 
 pub const WINDOW: usize = 32768;
 const MAGIC: &[u8; 8] = b"IRITGZ01";
@@ -394,7 +395,7 @@ pub fn write_index(path: &Path, cps: &[Checkpoint], spacing: u64, every: usize) 
 
 /// A seek index on disk: the table is read up front, windows when used.
 pub struct GzIndex {
-    file: RefCell<File>,
+    file: Mutex<File>,
     pub spacing: u64,
     pub points: Vec<(u64, u64, u8, u32)>, // in_off, out_off, bits, window length
 }
@@ -435,7 +436,7 @@ impl GzIndex {
             path.display()
         );
         Ok(GzIndex {
-            file: RefCell::new(f),
+            file: Mutex::new(f),
             spacing,
             points,
         })
@@ -473,7 +474,7 @@ impl GzIndex {
 
     fn window(&self, i: usize) -> Result<Vec<u8>> {
         let n = self.points.len() as u64;
-        let mut f = self.file.borrow_mut();
+        let mut f = self.file.lock().unwrap_or_else(|e| e.into_inner());
         f.seek(SeekFrom::Start(
             HEADER + n * ENTRY + i as u64 * WINDOW as u64,
         ))?;
