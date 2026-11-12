@@ -42,6 +42,56 @@ pub fn passes(shared: u64, query_markers: usize, ref_markers: usize) -> bool {
     shared as usize >= ratio.max(1)
 }
 
+/// GTDB-Tk's AF threshold (`AF_THRESHOLD`): a hit counts for a species only with
+/// `max(AF_query, AF_reference) >= 0.5`.
+pub const SPECIES_AF: f64 = 0.5;
+/// How far below the smallest species radius the species-only rule still keeps a reference, in
+/// ANI percentage points. Absorbs the difference between skani's ANI estimate and the marker
+/// k-mer survival it implies.
+pub const SPECIES_ONLY_MARGIN: f64 = 2.0;
+/// How many standard deviations below the expected shared-marker count the rule still keeps a
+/// reference (markers are a random ~1/1000 sample, so the count is noisy for small genomes).
+pub const SPECIES_ONLY_SIGMAS: f64 = 4.0;
+
+/// The fewest shared marker k-mers a reference needs to stay in a species-only run, given the
+/// smallest species radius in the release (95.0 in R232).
+///
+/// GTDB-Tk assigns a species only through a hit with ANI >= its reference's radius (never below
+/// the release's smallest radius) and AF >= 0.5. For such a pair, at least half of the smaller
+/// genome aligns at that identity, and a 21-mer survives with probability at least ANI^21 (more
+/// when differences cluster), so at least `0.5 × (ANI/100)^21` of the smaller marker set is
+/// expected to be shared. The rule uses the radius minus [`SPECIES_ONLY_MARGIN`] and keeps
+/// anything within [`SPECIES_ONLY_SIGMAS`] standard deviations of a binomial count below that.
+/// The screen's count can only be too high, never too low, which errs the same way.
+pub fn species_min_shared(query_markers: usize, ref_markers: usize, min_radius: f64) -> u64 {
+    let m = query_markers.min(ref_markers) as f64;
+    let id = ((min_radius - SPECIES_ONLY_MARGIN) / 100.0).clamp(0.0, 1.0);
+    let p = SPECIES_AF * id.powi(MARKER_K);
+    let mean = m * p;
+    let sd = (m * p * (1.0 - p)).sqrt();
+    (mean - SPECIES_ONLY_SIGMAS * sd).floor().max(1.0) as u64
+}
+
+/// Could this reference give the species call? See [`species_min_shared`].
+pub fn could_reach_species(
+    shared: u64,
+    query_markers: usize,
+    ref_markers: usize,
+    min_radius: f64,
+) -> bool {
+    query_markers.min(ref_markers) > 0
+        && shared >= species_min_shared(query_markers, ref_markers, min_radius)
+}
+
+/// One reference that passed the screen for a query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hit {
+    /// Index of the reference (its row in `refs.bin`).
+    pub reference: u32,
+    /// Shared marker k-mers, by fingerprint (never below the true count).
+    pub shared: u64,
+}
+
 /// The fingerprint of a marker k-mer: the top 32 bits of splitmix64's finaliser.
 pub fn fingerprint(kmer: u64) -> u32 {
     let mut x = kmer;
@@ -495,9 +545,10 @@ impl ScreenIndex {
         })
     }
 
-    /// Screen each query's marker set; returns, per query, the indices of the references that
-    /// pass (ascending). One sequential pass over `markers.idx`, whatever the number of queries.
-    pub fn screen(&self, queries: &[Vec<u64>]) -> Result<Vec<Vec<u32>>> {
+    /// Screen each query's marker set; returns, per query, the references that pass, with their
+    /// shared-marker counts (ascending by reference). One sequential pass over `markers.idx`,
+    /// whatever the number of queries.
+    pub fn screen(&self, queries: &[Vec<u64>]) -> Result<Vec<Vec<Hit>>> {
         // fingerprint -> [(query, how many of its markers have this fingerprint)]
         let mut by_fp: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
         let mut seen = vec![0u64; 1 << 18]; // a bitmap over the top 24 bits
@@ -549,7 +600,10 @@ impl ScreenIndex {
             }
             for (&q, &c) in &counts {
                 if passes(c, queries[q as usize].len(), r.markers as usize) {
-                    out[q as usize].push(i as u32);
+                    out[q as usize].push(Hit {
+                        reference: i as u32,
+                        shared: c,
+                    });
                 }
             }
         }
@@ -595,6 +649,36 @@ mod tests {
         assert!(passes(46, 5000, 5000) && !passes(45, 5000, 5000));
     }
 
+    #[test]
+    fn species_rule_keeps_close_references_and_drops_distant_ones() {
+        // R232's smallest radius is 95: the rule works at 93% identity and AF 0.5, so it expects
+        // 0.5 * 0.93^21 = 10.9% of the smaller marker set shared (435.7 of 4,000), and keeps
+        // anything above that less 4 standard deviations (19.7).
+        assert_eq!(species_min_shared(4000, 5000, 95.0), 356);
+        assert_eq!(species_min_shared(5000, 4000, 95.0), 356);
+        assert_eq!(species_min_shared(385, 20_000, 95.0), 17);
+        // ANI 95 at AF 0.5 is expected to share 17.0% (681 of 4,000): kept.
+        assert!(could_reach_species(681, 4000, 5000, 95.0));
+        // ANI 85 at full alignment shares about 3.3% (131): dropped. skani's own screen keeps it.
+        assert!(!could_reach_species(131, 4000, 5000, 95.0));
+        assert!(passes(131, 4000, 5000));
+        // A higher smallest radius asks for more.
+        assert!(species_min_shared(4000, 5000, 97.0) > 356);
+        // Tiny sets still need one shared marker; empty sets never pass.
+        assert_eq!(species_min_shared(10, 10, 95.0), 1);
+        assert!(!could_reach_species(0, 10, 10, 95.0));
+        assert!(!could_reach_species(5, 0, 10, 95.0));
+        // The threshold is exact and grows with the marker set; it is never looser than
+        // skani's screen, so species-only keeps a subset of the screened-in references.
+        for m in [50usize, 385, 542, 1858, 4107, 6187] {
+            let need = species_min_shared(m, 20_000, 95.0);
+            assert!(could_reach_species(need, m, 20_000, 95.0));
+            assert!(need == 1 || !could_reach_species(need - 1, m, 20_000, 95.0));
+            assert!(need <= species_min_shared(m + 100, 20_000, 95.0));
+            assert!(passes(need, m, 20_000));
+        }
+    }
+
     /// The index screen must keep every reference a direct marker comparison keeps.
     #[test]
     fn screen_keeps_every_reference_skani_keeps() {
@@ -621,7 +705,15 @@ mod tests {
         assert_eq!(stats.markers_total, 30 * 1500);
         let ix = ScreenIndex::open(&out).unwrap();
         let small: Vec<u64> = query[..50].to_vec();
-        let got = ix.screen(&[query.clone(), small.clone(), vec![]]).unwrap();
+        let hits = ix.screen(&[query.clone(), small.clone(), vec![]]).unwrap();
+        // Counts are exact here (no fingerprint collisions among these few markers).
+        for h in &hits[0] {
+            assert_eq!(h.shared, (h.reference as u64 * 2).min(1500));
+        }
+        let got: Vec<Vec<u32>> = hits
+            .iter()
+            .map(|v| v.iter().map(|h| h.reference).collect())
+            .collect();
         for (qi, q) in [&query, &small].iter().enumerate() {
             let want: Vec<u32> = refs
                 .iter()

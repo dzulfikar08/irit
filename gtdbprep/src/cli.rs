@@ -74,6 +74,15 @@ struct AniArgs {
     /// Testing: skip the local screen and run GTDB-Tk's screen on this full skani database.
     #[arg(long)]
     full_db: Option<PathBuf>,
+    /// Range requests in flight at once while fetching sketches (1 to 16).
+    #[arg(long, default_value_t = crate::ani::source::DEFAULT_JOBS as u8,
+          value_parser = clap::value_parser!(u8).range(1..=crate::ani::source::MAX_JOBS as i64))]
+    fetch_jobs: u8,
+    /// Fetch only the references that could give the species call (ANI within reach of the
+    /// smallest species radius). Same species calls as a full run, far fewer downloads, but
+    /// GTDB-Tk's "other related references" and unassigned-hits files list fewer references.
+    #[arg(long)]
+    species_only: bool,
     /// GTDB-Tk reference data with taxonomy/, radii/ and metadata/ (the placement mirror has
     /// them; no skani/ needed).
     #[arg(long, env = "GTDBTK_DATA_PATH")]
@@ -242,6 +251,8 @@ fn run(cli: Cli) -> Result<bool> {
                 skani: a.skani,
                 allow_skani_version: a.allow_skani_version,
                 full_db: a.full_db,
+                fetch_jobs: usize::from(a.fetch_jobs),
+                species_only: a.species_only,
             };
             let t = Tools {
                 env_prefix: a.env,
@@ -250,9 +261,17 @@ fn run(cli: Cli) -> Result<bool> {
             };
             let r = crate::ani::run(&opts, &t)?;
             print!("{}", r.to_tsv());
+            if r.species_only {
+                println!(
+                    "{} reference(s) screened in, {} could give the species call (--species-only)",
+                    r.candidates, r.used
+                );
+            } else {
+                println!("{} reference(s) screened in", r.candidates);
+            }
             println!(
-                "{} reference(s) screened in, {} already cached; fetched {} bytes in {} request(s)",
-                r.candidates, r.cached, r.fetched_bytes, r.requests
+                "{} already cached; fetched {} bytes in {} request(s)",
+                r.cached, r.fetched_bytes, r.requests
             );
             println!(
                 "times: screen {:.1} s, fetch {:.1} s, GTDB-Tk {:.1} s",

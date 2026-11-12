@@ -53,13 +53,24 @@ pub struct AniOptions {
     pub allow_skani_version: bool,
     /// Verification only: run GTDB-Tk's screen against this full skani database folder instead.
     pub full_db: Option<PathBuf>,
+    /// Range requests in flight at once when fetching sketches.
+    pub fetch_jobs: usize,
+    /// Fetch only the references that could give the species call (see
+    /// [`screen::could_reach_species`]). Same species calls; fewer "other related references"
+    /// and unassigned-hits rows than GTDB-Tk on the full database.
+    pub species_only: bool,
 }
 
 /// What a run did, per genome and in total.
 #[derive(Debug, Clone, Default)]
 pub struct AniReport {
     pub genomes: Vec<GenomeReport>,
+    /// References screened in (all genomes together).
     pub candidates: usize,
+    /// References used: the screened-in ones, or in a species-only run those that could give
+    /// the species call.
+    pub used: usize,
+    pub species_only: bool,
     pub cached: usize,
     pub fetched_bytes: u64,
     pub requests: u64,
@@ -75,6 +86,7 @@ pub struct GenomeReport {
     pub id: String,
     pub markers: usize,
     pub candidates: usize,
+    pub used: usize,
 }
 
 /// GTDB-Tk's own genome listing (`_genomes_to_process`: IDs, checks), and its ANI screen
@@ -223,6 +235,27 @@ pub fn open_source(opts: &AniOptions, ix: &ScreenIndex, missing: usize) -> Resul
     Ok(Source::plain(source))
 }
 
+/// The smallest species radius in GTDB-Tk's `radii/gtdb_radii.tsv` (95.0 in R232).
+pub fn min_radius(data: &Path) -> Result<f64> {
+    let path = data.join("radii/gtdb_radii.tsv");
+    let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut min = f64::INFINITY;
+    for (n, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let field = line.split('\t').nth(2);
+        match field.map(|f| f.trim().parse::<f64>()) {
+            Some(Ok(v)) => min = min.min(v),
+            // A header line is fine; anything else is not.
+            _ if n == 0 => {}
+            _ => bail!("{}: line {}: no radius in the third column", path.display(), n + 1),
+        }
+    }
+    ensure!(min.is_finite(), "{}: no radii", path.display());
+    Ok(min)
+}
+
 fn read_genome_list(path: &Path) -> Result<BTreeMap<String, PathBuf>> {
     let m: BTreeMap<String, String> = serde_json::from_str(&fs::read_to_string(path)?)?;
     Ok(m.into_iter().map(|(k, v)| (k, PathBuf::from(v))).collect())
@@ -335,16 +368,39 @@ pub fn run(opts: &AniOptions, tools_: &crate::pipeline::Tools) -> Result<AniRepo
         let sets: Vec<Vec<u64>> = queries.iter().map(|(_, m)| m.clone()).collect();
         let hits = ix.screen(&sets)?;
         report.seconds_screen = t0.elapsed().as_secs_f64();
+        report.species_only = opts.species_only;
+        let radius = if opts.species_only {
+            Some(min_radius(&tools_.data)?)
+        } else {
+            None
+        };
+        let mut screened = BTreeSet::new();
         let mut all = BTreeSet::new();
+        // genome, reference, shared markers, query markers, reference markers, used
+        let mut rows = Vec::new();
         for ((id, m), h) in queries.iter().zip(&hits) {
+            let mut used = 0;
+            for hit in h {
+                let r_markers = ix.refs[hit.reference as usize].markers as usize;
+                let keep = radius.is_none_or(|r| {
+                    screen::could_reach_species(hit.shared, m.len(), r_markers, r)
+                });
+                screened.insert(hit.reference);
+                if keep {
+                    all.insert(hit.reference);
+                    used += 1;
+                }
+                rows.push((id.clone(), hit.reference, hit.shared, m.len(), r_markers, keep));
+            }
             report.genomes.push(GenomeReport {
                 id: id.clone(),
                 markers: m.len(),
                 candidates: h.len(),
+                used,
             });
-            all.extend(h.iter().copied());
         }
-        report.candidates = all.len();
+        report.candidates = screened.len();
+        report.used = all.len();
 
         // Fetch what the cache doesn't have, check it against the index, write the database.
         let t1 = Instant::now();
@@ -379,36 +435,43 @@ pub fn run(opts: &AniOptions, tools_: &crate::pipeline::Tools) -> Result<AniRepo
                 missing.len(),
                 src.describe()
             );
-            for chunk in missing.chunks(64) {
-                let ranges: Vec<(u64, u64)> = chunk
-                    .iter()
-                    .map(|&i| {
-                        (
-                            ix.refs[i as usize].offset,
-                            ix.refs[i as usize].length as u64,
-                        )
-                    })
-                    .collect();
-                let recs = src.read(&ranges)?;
-                for (&i, rec) in chunk.iter().zip(recs) {
-                    ensure!(
-                        Sha256::digest(&rec)[..16] == ix.refs[i as usize].sha,
-                        "reference {i}: the fetched sketch does not match the index"
-                    );
-                    // Unique per process: several runs may share one cache.
-                    let tmp = path_of(i).with_extension(format!("part{}", std::process::id()));
-                    fs::write(&tmp, &rec)?;
-                    fs::rename(&tmp, path_of(i))?;
-                }
-            }
-            report.fetched_bytes = src.fetched.get();
-            report.requests = src.requests.get();
+            let src = src.with_jobs(opts.fetch_jobs);
+            let ranges: Vec<(u64, u64)> = missing
+                .iter()
+                .map(|&i| {
+                    (
+                        ix.refs[i as usize].offset,
+                        ix.refs[i as usize].length as u64,
+                    )
+                })
+                .collect();
+            // Each sketch is checked and written to the cache as soon as it arrives, so an
+            // interrupted run keeps what it fetched.
+            let result = src.read_each(&ranges, |k, rec| {
+                let i = missing[k];
+                ensure!(
+                    Sha256::digest(&rec)[..16] == ix.refs[i as usize].sha,
+                    "reference {i}: the fetched sketch does not match the index"
+                );
+                // Unique per process: several runs may share one cache.
+                let tmp = path_of(i).with_extension(format!("part{}", std::process::id()));
+                fs::write(&tmp, &rec)?;
+                fs::rename(&tmp, path_of(i))?;
+                Ok(())
+            });
+            report.fetched_bytes = src.fetched_bytes();
+            report.requests = src.request_count();
+            result?;
         }
         let mut records = Vec::with_capacity(all.len());
+        let mut names = BTreeMap::new();
         for &i in &all {
             let rec = fs::read(path_of(i))?;
-            records.push((skani::record_name(&rec, &ix.params)?, rec));
+            let name = skani::record_name(&rec, &ix.params)?;
+            names.insert(i, name.clone());
+            records.push((name, rec));
         }
+        write_screen_tsv(&work.join("screen.tsv"), &rows, &names, radius)?;
         if db_dir.exists() {
             fs::remove_dir_all(&db_dir)?;
         }
@@ -530,18 +593,198 @@ pub fn gz_attach(index: &Path, scan: &Path, every: usize) -> Result<usize> {
     Ok(n)
 }
 
+/// The genome ID in a skani record name (`.../GCF_000009045.1_genomic.fna.gz` ->
+/// `GCF_000009045.1`), as GTDB-Tk reports it.
+fn accession(name: &str) -> &str {
+    let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    file.split_once("_genomic").map_or(file, |(a, _)| a)
+}
+
+/// `<work>/screen.tsv`: every reference that passed the screen for each genome, with the
+/// shared-marker count, and whether it was used (fetched into the small database).
+fn write_screen_tsv(
+    path: &Path,
+    rows: &[(String, u32, u64, usize, usize, bool)],
+    names: &BTreeMap<u32, String>,
+    radius: Option<f64>,
+) -> Result<()> {
+    let mut s = String::from(
+        "genome\treference_index\treference\tshared_markers\tquery_markers\treference_markers\tspecies_min_shared\tused\n",
+    );
+    for (g, i, shared, qm, rm, used) in rows {
+        let need = radius.map_or(String::from("-"), |r| {
+            screen::species_min_shared(*qm, *rm, r).to_string()
+        });
+        s += &format!(
+            "{g}\t{i}\t{}\t{shared}\t{qm}\t{rm}\t{need}\t{used}\n",
+            names.get(i).map_or("-", |n| accession(n))
+        );
+    }
+    fs::write(path, s).with_context(|| format!("writing {}", path.display()))
+}
+
 impl AniReport {
     pub fn to_tsv(&self) -> String {
-        let mut s = String::from("genome\tmarkers\tcandidates\tassigned_by_ani\n");
+        let mut s = String::from("genome\tmarkers\tcandidates\tassigned_by_ani");
+        s += if self.species_only { "\tused\n" } else { "\n" };
         for g in &self.genomes {
             s += &format!(
-                "{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}",
                 g.id,
                 g.markers,
                 g.candidates,
                 self.assigned.contains(&g.id)
             );
+            if self.species_only {
+                s += &format!("\t{}", g.used);
+            }
+            s.push('\n');
         }
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One screened-in reference for a test genome (see `testdata/species_only_hits.tsv`).
+    struct Row<'a> {
+        genome: &'a str,
+        reference: &'a str,
+        shared: u64,
+        query_markers: usize,
+        reference_markers: usize,
+        ani: f64,
+        af: f64,
+        radius: f64,
+    }
+
+    fn fixture() -> Vec<Row<'static>> {
+        include_str!("testdata/species_only_hits.tsv")
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .skip(1)
+            .map(|l| {
+                let f: Vec<&str> = l.split('\t').collect();
+                Row {
+                    genome: f[0],
+                    reference: f[1],
+                    shared: f[2].parse().unwrap(),
+                    query_markers: f[3].parse().unwrap(),
+                    reference_markers: f[4].parse().unwrap(),
+                    ani: f[5].parse().unwrap(),
+                    af: f[6].parse().unwrap(),
+                    radius: f[7].parse().unwrap(),
+                }
+            })
+            .collect()
+    }
+
+    /// GTDB-Tk 2.8.0's species rule (`ANIScreener.sort_skani_ani_screen`): the closest hit with
+    /// AF >= 0.5 (by ANI, then AF), assigned only if its ANI reaches its own radius. Returns the
+    /// closest reference and whether it was assigned.
+    fn gtdbtk_call<'a>(hits: &[&Row<'a>]) -> Option<(&'a str, bool)> {
+        let mut pass: Vec<&&Row> = hits
+            .iter()
+            .filter(|r| r.ani > 0.0 && r.af >= screen::SPECIES_AF)
+            .collect();
+        pass.sort_by(|a, b| b.ani.total_cmp(&a.ani).then(b.af.total_cmp(&a.af)));
+        pass.first().map(|r| (r.reference, r.ani >= r.radius))
+    }
+
+    #[test]
+    fn species_only_keeps_the_call_on_real_genomes() {
+        let rows = fixture();
+        let min_radius = rows.iter().map(|r| r.radius).fold(f64::INFINITY, f64::min);
+        assert_eq!(min_radius, 95.0);
+        let mut genomes: Vec<&str> = rows.iter().map(|r| r.genome).collect();
+        genomes.dedup();
+        assert_eq!(genomes.len(), 6, "{genomes:?}");
+        let (mut all, mut kept_total) = (0, 0);
+        for g in genomes {
+            let full: Vec<&Row> = rows.iter().filter(|r| r.genome == g).collect();
+            let kept: Vec<&Row> = full
+                .iter()
+                .copied()
+                .filter(|r| {
+                    screen::could_reach_species(
+                        r.shared,
+                        r.query_markers,
+                        r.reference_markers,
+                        min_radius,
+                    )
+                })
+                .collect();
+            // Nothing that could be assigned is dropped...
+            for r in &full {
+                if r.ani >= min_radius && r.af >= screen::SPECIES_AF {
+                    assert!(
+                        kept.iter().any(|k| k.reference == r.reference),
+                        "{g}: dropped {} (ANI {}, AF {})",
+                        r.reference,
+                        r.ani,
+                        r.af
+                    );
+                }
+            }
+            // ...so the call is the same.
+            assert_eq!(gtdbtk_call(&full), gtdbtk_call(&kept), "{g}");
+            // bmut is the one genome no species is assigned to.
+            let assigned = gtdbtk_call(&full).is_some_and(|(_, a)| a);
+            assert_eq!(assigned, g != "bmut", "{g}");
+            all += full.len();
+            kept_total += kept.len();
+        }
+        // And it is worth having: well under the full set is fetched.
+        assert!(kept_total * 2 < all, "{kept_total} of {all} kept");
+    }
+
+    #[test]
+    fn the_call_rule_ignores_references_below_the_smallest_radius() {
+        // The closest hit decides, even when a lower one is within its own radius; removing
+        // references that can't reach 95 never changes that.
+        let r = |reference, ani, af, radius| Row {
+            genome: "g",
+            reference,
+            shared: 0,
+            query_markers: 0,
+            reference_markers: 0,
+            ani,
+            af,
+            radius,
+        };
+        let rows = [
+            r("a", 96.5, 0.9, 97.0),
+            r("b", 96.0, 0.9, 95.0),
+            r("c", 93.0, 0.9, 95.0),
+            r("d", 99.0, 0.3, 95.0),
+        ];
+        let full: Vec<&Row> = rows.iter().collect();
+        assert_eq!(gtdbtk_call(&full), Some(("a", false)));
+        let kept: Vec<&Row> = rows.iter().filter(|r| r.ani >= 95.0).collect();
+        assert_eq!(gtdbtk_call(&kept), Some(("a", false)));
+        // Dropping "a" by its own radius instead would wrongly assign "b".
+        let wrong: Vec<&Row> = rows.iter().filter(|r| r.ani >= r.radius).collect();
+        assert_eq!(gtdbtk_call(&wrong), Some(("b", true)));
+    }
+
+    #[test]
+    fn smallest_radius_and_accessions() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join("radii")).unwrap();
+        fs::write(
+            d.path().join("radii/gtdb_radii.tsv"),
+            "s__A\tRS_GCF_1.1\t97.5\ns__B\tGB_GCA_2.1\t95.0\ns__C\tRS_GCF_3.1\t96.0\n",
+        )
+        .unwrap();
+        assert_eq!(min_radius(d.path()).unwrap(), 95.0);
+        fs::write(d.path().join("radii/gtdb_radii.tsv"), "s__A\tRS_GCF_1.1\n").unwrap();
+        assert!(min_radius(d.path()).is_err());
+        assert_eq!(
+            accession("/srv/x/GCF/000/009/045/GCF_000009045.1_genomic.fna.gz"),
+            "GCF_000009045.1"
+        );
+        assert_eq!(accession("GCA_1.1"), "GCA_1.1");
     }
 }
