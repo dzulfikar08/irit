@@ -449,13 +449,12 @@ fn shell_safe_path(field: &str, shown: &str, p: &Path) -> Check<()> {
 pub fn shovill(ctx: &Ctx, p: &ShovillParams) -> Check<Invocation> {
     let cwd = ctx.cwd.as_path();
     let mut inv = external("shovill");
-    // shovill.log carries times and the machine's CPUs and RAM. SPAdes (Shovill's default) gave
-    // different contigs.fa bytes in two identical runs in the real-tools workflow (same length within
-    // the S. aureus check; run 43194785664); SKESA's were identical.
-    inv.volatile = match p.assembler {
-        None | Some(ShovillAssembler::Spades) => &["shovill.log", "contigs.fa"],
-        Some(_) => &["shovill.log"],
-    };
+    // Nothing Shovill writes is byte-for-byte reproducible, so every output is volatile (the
+    // empty ending matches all): contigs.fa headers carry `date=YYYYMMDD`; SPAdes gave different
+    // contigs in two identical runs (real-tools workflow, run 43194785664), and so did SKESA 2.5.1
+    // with 8 CPUs (issue #5); shovill.log has times and the machine's CPUs and RAM. The contig
+    // count, length and N50 are in the tool's result and isotable's row instead.
+    inv.volatile = &[""];
     let r1 = v::existing_file(cwd, "r1", &p.r1)?;
     v::sequence_file(&r1, "r1", &p.r1, Seq::Fastq)?;
     let r2 = v::existing_file(cwd, "r2", &p.r2)?;
@@ -1983,10 +1982,10 @@ mod tests {
                 "--nocorr",
             ]
         );
-        // SKESA's contigs are reproducible; SPAdes's (also the default) are not.
-        assert_eq!(inv.volatile, ["shovill.log"]);
+        // No assembler's outputs are reproducible: every output is volatile.
+        assert_eq!(inv.volatile, [""]);
         let spades: ShovillParams = parse(json!({"r1": "reads/s1_R1.fq", "r2": "reads/s1_R2.fq", "outdir": "asm/s2"}));
-        assert_eq!(shovill(&cx, &spades).unwrap().volatile, ["shovill.log", "contigs.fa"]);
+        assert_eq!(shovill(&cx, &spades).unwrap().volatile, [""]);
         assert!(inv.expect[0][0].ends_with("asm/s1/contigs.fa"));
         assert_eq!(inv.inputs.len(), 2);
 

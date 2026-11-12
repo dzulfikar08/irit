@@ -85,6 +85,8 @@ pub fn scan(dirs: &[std::path::PathBuf]) -> Result<Scan> {
                 Some(("FastQC", fastqc_dir(path)))
             } else if name == "transposed_report.tsv" {
                 Some(("QUAST", quast(path)))
+            } else if name == "contigs.fa" && path.with_file_name("shovill.log").is_file() {
+                Some(("Shovill", shovill(path)))
             } else if name.starts_with("short_summary") && name.ends_with(".json") {
                 Some(("BUSCO", busco(path, &name)))
             } else if name == "quality_report.tsv" {
@@ -318,6 +320,45 @@ fn quast(path: &Path) -> Result<Vec<Record>> {
             Some(rec(name, Kind::Genome, fields))
         })
         .collect())
+}
+
+/// QUAST's default `--min-contig`: its `# contigs`, `Total length` and `N50` count only contigs
+/// at least this long.
+const QUAST_MIN_CONTIG: u64 = 500;
+
+/// Shovill's `<outdir>/contigs.fa` (recognised by the `shovill.log` beside it), named after its
+/// folder as Shovill always names the file contigs.fa. Contigs, length and N50 are counted the way
+/// QUAST reports them (contigs of 500 bp or more), so a QUAST report on the same assembly agrees.
+fn shovill(path: &Path) -> Result<Vec<Record>> {
+    let name = path
+        .parent()
+        .and_then(Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned())
+        .context("contigs.fa has no folder to name the sample")?;
+    let mut lens = Vec::new();
+    let mut cur: Option<u64> = None;
+    for line in std::io::BufReader::new(std::fs::File::open(path)?).lines() {
+        let line = line?;
+        if line.starts_with('>') {
+            lens.extend(cur.replace(0));
+        } else if let Some(n) = cur.as_mut() {
+            *n += line.trim_end().len() as u64;
+        } else if !line.trim().is_empty() {
+            bail!("not FASTA: sequence before the first > line");
+        }
+    }
+    lens.extend(cur);
+    lens.retain(|&l| l >= QUAST_MIN_CONTIG);
+    lens.sort_unstable_by(|a, b| b.cmp(a));
+    let total: u64 = lens.iter().sum();
+    let mut acc = 0;
+    let n50 = lens.iter().find(|&&l| {
+        acc += l;
+        acc * 2 >= total
+    });
+    let mut fields = vec![("contigs", Value::Int(lens.len() as u64)), ("length", Value::Int(total))];
+    fields.extend(n50.map(|&n| ("n50", Value::Int(n))));
+    Ok(vec![rec(name, Kind::Genome, fields)])
 }
 
 fn busco(path: &Path, name: &str) -> Result<Vec<Record>> {
@@ -641,6 +682,25 @@ mod tests {
         let r = fastqc(&data.replace("reads/x_R1.fq.gz", "stdin"), None, "y_2_fastqc").unwrap();
         assert_eq!(r.raw_name, "y_2");
         assert!(fastqc("not fastqc", None, "x").is_err());
+    }
+
+    #[test]
+    fn shovill_contigs_counted_like_quast() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("s1");
+        std::fs::create_dir(&dir).unwrap();
+        // 1000 + 600 + 499 (left out, as QUAST does) bp; N50 is 1000
+        let fa = format!(">c1 len=1000 sw=shovill-skesa/1.4.2 date=20261112\n{}\n{}\n>c2\n{}\n>c3\n{}\n", "A".repeat(600), "C".repeat(400), "G".repeat(600), "T".repeat(499));
+        std::fs::write(dir.join("contigs.fa"), fa).unwrap();
+        // without shovill.log beside it, a contigs.fa is not taken as Shovill's
+        assert!(scan(&[t.path().to_path_buf()]).unwrap().0.is_empty());
+        std::fs::write(dir.join("shovill.log"), "").unwrap();
+        let (records, seen, _) = scan(&[t.path().to_path_buf()]).unwrap();
+        assert_eq!(seen["Shovill"], 1);
+        assert_eq!(records[0].raw_name, "s1");
+        assert_eq!(records[0].fields, [("contigs", Value::Int(2)), ("length", Value::Int(1600)), ("n50", Value::Int(1000))]);
+        std::fs::write(dir.join("contigs.fa"), "ACGT\n").unwrap();
+        assert!(scan(&[t.path().to_path_buf()]).is_err());
     }
 
     #[test]

@@ -137,7 +137,7 @@ done
 [ -d "$out" ] && [ $force = 0 ] && die "Folder '$out' already exists. Try using --force"
 mkdir -p "$out"
 echo "[shovill] started $(date +%s%N)" > "$out/shovill.log"
-printf '>contig00001 len=12 cov=40.0\nACGTACGTGGCC\n>contig00002 len=8 cov=38.0\nGGGGCCAT\n' > "$out/contigs.fa"
+{ echo '>contig00001 len=12000 cov=40.0'; printf '%12000s\n' '' | tr ' ' A; echo '>contig00002 len=8000 cov=38.0'; printf '%8000s\n' '' | tr ' ' C; } > "$out/contigs.fa"
 "#;
 
 const MLST: &str = r#"
@@ -320,12 +320,13 @@ fn isolate_path_with_stand_in_tools_is_recorded_and_replayable() {
     // 1: fastp, paired-end
     let r = c.call(
         "fastp",
-        json!({"in1": "reads/s1_R1.fastq", "in2": "reads/s1_R2.fastq", "out1": "trim/s1_R1.fastq", "out2": "trim/s1_R2.fastq",
+        json!({"in1": "reads/s1_R1.fastq", "in2": "reads/s1_R2.fastq", "out1": "reads/s1_R1.fastq/trim.fq", "out2": "trim/s1_R2.fastq",
                "json": "trim/s1.fastp.json", "detect_adapter_for_pe": true}),
     );
-    assert_eq!(r["isError"], true, "trim/ doesn't exist yet: {r}");
+    assert_eq!(r["isError"], true, "a file is in the way: {r}");
     assert_eq!(r["structuredContent"]["field"], "out1");
-    std::fs::create_dir(work.join("trim")).unwrap();
+    assert!(!work.join("trim").exists(), "nothing is created for a refused call");
+    // trim/ doesn't exist yet: the server creates it
     let r = c.call(
         "fastp",
         json!({"in1": "reads/s1_R1.fastq", "in2": "reads/s1_R2.fastq", "out1": "trim/s1_R1.fastq", "out2": "trim/s1_R2.fastq",
@@ -347,8 +348,7 @@ fn isolate_path_with_stand_in_tools_is_recorded_and_replayable() {
     assert_eq!(r["structuredContent"]["error"], "tool_failed", "{r}");
     assert!(r["structuredContent"]["stderr"].as_str().unwrap().contains("not a valid FASTQ"));
 
-    // 3: Bakta with the database from $BAKTA_DB
-    std::fs::create_dir(work.join("bakta")).unwrap();
+    // 3: Bakta with the database from $BAKTA_DB (bakta/ is created by the server)
     let r = c.call("bakta", json!({"genome": "asm/s1.fna", "outdir": "bakta/s1", "genus": "Escherichia", "skip": ["plot"]}));
     assert_ne!(r["isError"], true, "{r}");
     let v = &r["structuredContent"];
@@ -404,6 +404,7 @@ fn isolate_path_with_stand_in_tools_is_recorded_and_replayable() {
                "--json=trim/s1.fastp.json", "--html=trim/s1.fastp.html", "--detect_adapter_for_pe"])
     );
     assert_eq!(outputs(fastp).len(), 4);
+    assert_eq!(fastp["dirs"], json!([work.join("trim")]));
     let gtdb = by_tool("gtdbtk_classify_wf")[0];
     assert_eq!(gtdb["env"]["GTDBTK_DATA_PATH"], work.join("db/gtdbtk/release232").to_str().unwrap());
     assert!(gtdb["inputs"].as_array().unwrap().iter().any(|i| i["path"].as_str().unwrap().ends_with("metadata/metadata.txt")));
@@ -424,8 +425,7 @@ fn isolate_path_with_stand_in_tools_is_recorded_and_replayable() {
     for d in ["trim", "bakta", "checkm2", "gtdbtk"] {
         std::fs::remove_dir_all(work.join(d)).unwrap();
     }
-    std::fs::create_dir(work.join("trim")).unwrap();
-    std::fs::create_dir(work.join("bakta")).unwrap();
+    // replay.sh creates the output folders itself
     let replay = || Command::new("sh").arg(run_dir.join("replay.sh")).env("PATH", &s.path).current_dir(work).output().unwrap();
     let out = replay();
     let err = String::from_utf8_lossy(&out.stderr);
@@ -488,9 +488,6 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
         let t = list.iter().find(|t| t["name"] == want).unwrap_or_else(|| panic!("{want} missing"));
         assert_eq!(t["inputSchema"]["additionalProperties"], false, "{want}");
     }
-    std::fs::create_dir_all(work.join("asm")).unwrap();
-    std::fs::create_dir_all(work.join("typing")).unwrap();
-
     // 1: Shovill
     let r = c.call(
         "shovill",
@@ -498,7 +495,7 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     );
     assert_ne!(r["isError"], true, "{r}");
     let v = &r["structuredContent"];
-    assert_eq!(v["assembly"], json!({"contigs": 2, "total_length": 20, "n50": 12, "longest": 12, "gc_percent": 70.0}), "{v}");
+    assert_eq!(v["assembly"], json!({"contigs": 2, "total_length": 20000, "n50": 12000, "longest": 12000, "gc_percent": 40.0}), "{v}");
     assert_eq!(v["version"], "shovill 1.4.2");
     assert_eq!(v["warnings"], json!([]));
     // a second call into the same folder needs overwrite
@@ -533,7 +530,8 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     assert_eq!(r["structuredContent"]["field"], "organism", "{r}");
 
     // 4: isotable joins mlst and AMRFinderPlus to sample s1
-    let r = c.call("isotable", json!({"dirs": ["typing"], "require": ["mlst", "amr"], "output": "typing/isotable.tsv"}));
+    // contigs and N50 come from Shovill's contigs.fa (no QUAST in irit-mcp)
+    let r = c.call("isotable", json!({"dirs": ["asm", "typing"], "require": ["contigs", "n50", "mlst", "amr"], "output": "typing/isotable.tsv"}));
     assert_ne!(r["isError"], true, "{r}");
     let samples = r["structuredContent"]["samples"].as_array().unwrap();
     assert_eq!(samples.len(), 1, "{r}");
@@ -541,6 +539,7 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     assert_eq!(s1["sample"], "s1");
     assert_eq!(s1["values"]["mlst_st"], "22", "{s1}");
     assert_eq!(s1["values"]["amr_genes"], "blaZ,mecA");
+    assert_eq!((&s1["values"]["contigs"], &s1["values"]["n50"]), (&json!("2"), &json!("12000")), "{s1}");
     assert_eq!(s1["status"], "pass", "{s1}");
     c.close();
 
@@ -559,6 +558,8 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     assert!(amr["inputs"].as_array().unwrap().iter().any(|i| i["path"].as_str().unwrap().ends_with("2026-10-29.1/version.txt")));
     let shovill_log = outputs(ok[0]).into_iter().find(|(p, _)| p.ends_with("shovill.log")).unwrap();
     assert!(ok[0]["outputs"].as_array().unwrap().iter().any(|o| o["path"] == shovill_log.0.to_str().unwrap() && o["volatile"] == true));
+    // contigs.fa too (dated headers; SKESA and SPAdes vary between identical runs): only its existence is replayed
+    assert!(ok[0]["outputs"].as_array().unwrap().iter().all(|o| o["volatile"] == true), "{}", ok[0]["outputs"]);
     let script = std::fs::read_to_string(run_dir.join("replay.sh")).unwrap();
     assert!(script.contains("want_ext_version amrfinder 4.2.7"), "{script}");
     assert!(script.contains("want_ext_version shovill 'shovill 1.4.2'"), "{script}");
@@ -566,7 +567,6 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     let all: Vec<(PathBuf, String)> = ok.iter().flat_map(|c| outputs(c)).collect();
     for d in ["asm", "typing"] {
         std::fs::remove_dir_all(work.join(d)).unwrap();
-        std::fs::create_dir(work.join(d)).unwrap();
     }
     let path = format!("{}:{}", bin.display(), s.path);
     let out = Command::new("sh").arg(run_dir.join("replay.sh")).env("PATH", &path).current_dir(work).output().unwrap();
