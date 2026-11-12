@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### msascope
+- **The reference row is remembered per file**: the reference and its options (pinned, ruler by
+  reference, compare with it) are saved in the settings file for the last 50 files and restored
+  when the same file (same size and modification time) is opened again and a row of that name is
+  there. Stale or damaged entries are ignored.
+- **Figures include the annotation tracks and the pinned reference row** shown in the window, in
+  PNG and SVG (SVG keeps track characters and labels as text). The figure's ruler counts the
+  reference's residues when the view's does.
+
 ## 0.3.3 (2026-11-12)
 
 ### irit-mcp
