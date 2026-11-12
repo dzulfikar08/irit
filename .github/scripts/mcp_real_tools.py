@@ -172,8 +172,8 @@ def main():
             failures.append(f"check {label}")
 
     def run_all(suffix=""):
-        for d in ["trim", "shovill", "typing"]:
-            os.makedirs(work / d, exist_ok=True)
+        # trim/, shovill/ and typing/ don't exist yet (the second run starts after they're moved
+        # away): irit-mcp creates output folders itself.
         for s, reads in [("mg", "reads/mg"), ("sa", "reads/ERR044595_1M")]:
             call(
                 "fastp",
@@ -337,10 +337,9 @@ def main():
                 log(f"  - `{k}` fields: {json_diff(work / f'{d}_first' / k, work / d / k)}")
     log("")
 
+    # replay.sh from a clean folder: it creates the output folders (mkdir -p) itself.
     for d in dirs:
         shutil.rmtree(work / d, ignore_errors=True)
-    for d in ["trim", "shovill", "typing"]:
-        os.makedirs(work / d)
     r = subprocess.run(["sh", str(run_dir / "replay.sh")], cwd=work, env=env, capture_output=True, text=True)
     log(f"## replay.sh: exit {r.returncode}")
     log("")
