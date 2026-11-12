@@ -1,14 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 (2026-11-12)
 
 ### irit-mcp
-- **mlst's PubMLST data is in the run record.** After locating `mlst`, the server finds its data
-  the way mlst 2.35.0 does (`$MLST_DBDIR`, else `db/` next to the real script) and hashes
-  `VERSION.txt`, the scheme map, the allele BLAST database and every scheme's profile table (about
-  180 files). `$MLST_DBDIR` is recorded and exported by `replay.sh`, and the mlst result gives
-  `database_version` (the data's date). Two builds with different scheme snapshots no longer look
-  the same in the record.
+- **mlst's PubMLST data is in the run record.** After locating `mlst`, the server asks it where its
+  data is (`mlst --help` prints the resolved `--datadir` and `--blastdb`, so `$MLST_DBDIR` and
+  wrapper scripts are followed; if it prints none, `db/` next to the real program is used) and
+  hashes `VERSION.txt`, the scheme map, the allele BLAST database and every scheme's profile table
+  (177 inputs per call for Bioconda's mlst 2.35.0). `$MLST_DBDIR` is recorded and exported by
+  `replay.sh`, and the mlst result gives `database_version` (the data's date, 2025-12-29). Two
+  builds with different scheme snapshots no longer look the same in the record.
+- **Shovill with SPAdes: `contigs.fa` is volatile.** SPAdes 3.15.5 (Shovill's default assembler)
+  gave different `contigs.fa` bytes in two identical runs (same length, same ST), so `replay.sh`
+  only checks it exists; the hash is still recorded. SKESA's contigs stay hash-checked.
+- Checked against the real tools on a GitHub runner
+  ([run 43203640701](https://github.com/dzulfikar08/irit/actions/runs/43203640701)): Shovill with
+  SPAdes and its default read correction, stitching and Pilon (ST22 again), and
+  `dblock_verify` with `deep` over the four databases, including the 162 files of the indexed
+  AMRFinderPlus folder.
 
 ## 0.3.2 (2026-11-12)
 
