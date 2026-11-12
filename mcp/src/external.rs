@@ -383,6 +383,9 @@ pub struct ShovillParams {
     /// Allow an outdir that already has files (Shovill replaces files of the same name). Default false.
     #[serde(default)]
     pub overwrite: bool,
+    /// Also make this path a link to `<outdir>/contigs.fa`, named after the sample, e.g. `genomes/s1.fna`. CheckM2, GTDB-Tk and gtdbprep_ani name genomes after the file, so give them the folder of these links. Recorded and recreated by replay.sh. An existing file there is only replaced with overwrite.
+    #[serde(default)]
+    pub link_as: Option<String>,
     /// Assembler. Shovill's default is spades.
     #[serde(default)]
     pub assembler: Option<ShovillAssembler>,
@@ -446,6 +449,16 @@ fn shell_safe_path(field: &str, shown: &str, p: &Path) -> Check<()> {
     Ok(())
 }
 
+/// `to` as seen from the folder `from` (both absolute and resolved): `../asm/s1/contigs.fa`. A
+/// relative link keeps working when the project folder is moved or copied.
+fn relative_to(from: &Path, to: &Path) -> PathBuf {
+    let (a, b): (Vec<_>, Vec<_>) = (from.components().collect(), to.components().collect());
+    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let mut out: PathBuf = std::iter::repeat_n("..", a.len() - common).collect();
+    out.extend(&b[common..]);
+    out
+}
+
 pub fn shovill(ctx: &Ctx, p: &ShovillParams) -> Check<Invocation> {
     let cwd = ctx.cwd.as_path();
     let mut inv = external("shovill");
@@ -473,6 +486,16 @@ pub fn shovill(ctx: &Ctx, p: &ShovillParams) -> Check<Invocation> {
     // already refused a non-empty one unless overwrite is true, and replay.sh reruns into it.
     inv.flag("force", true);
     inv.expect = vec![vec![outdir.join("contigs.fa")]];
+    if let Some(l) = &p.link_as {
+        let link = v::output_file(ctx, "link_as", l, p.overwrite)?;
+        let contigs = outdir.join("contigs.fa");
+        if v::resolve(&link).starts_with(v::resolve(&outdir)) {
+            return v::invalid("link_as", format!("{l} is inside outdir; put the links in a folder of their own, e.g. genomes/<sample>.fna"));
+        }
+        let target = relative_to(&v::resolve(link.parent().unwrap_or(cwd)), &v::resolve(&contigs));
+        inv.outputs.push(link.clone());
+        inv.links.push((link, target));
+    }
     if let Some(a) = p.assembler {
         inv.opt("assembler", a.name());
     }
@@ -2146,6 +2169,15 @@ mod tests {
                 "--nocorr",
             ]
         );
+        // link_as: a relative link outside outdir, recorded as an output
+        let linked: ShovillParams = parse(json!({"r1": "reads/s1_R1.fq", "r2": "reads/s1_R2.fq", "outdir": "asm/s1", "link_as": "genomes/s1.fna"}));
+        let li = shovill(&cx, &linked).unwrap();
+        assert_eq!(li.links, [(cx.root.join("genomes/s1.fna"), PathBuf::from("../asm/s1/contigs.fa"))]);
+        assert!(li.outputs.contains(&cx.root.join("genomes/s1.fna")));
+        let inside: ShovillParams = parse(json!({"r1": "reads/s1_R1.fq", "r2": "reads/s1_R2.fq", "outdir": "asm/s1", "link_as": "asm/s1/s1.fna"}));
+        assert_eq!(shovill(&cx, &inside).unwrap_err().field, "link_as");
+        assert_eq!(relative_to(Path::new("/w/genomes"), Path::new("/w/asm/s1/contigs.fa")), PathBuf::from("../asm/s1/contigs.fa"));
+        assert_eq!(relative_to(Path::new("/w"), Path::new("/w/asm/contigs.fa")), PathBuf::from("asm/contigs.fa"));
         // No assembler's outputs are reproducible: every output is volatile.
         assert_eq!(inv.volatile, [""]);
         let spades: ShovillParams = parse(json!({"r1": "reads/s1_R1.fq", "r2": "reads/s1_R2.fq", "outdir": "asm/s2"}));

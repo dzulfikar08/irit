@@ -491,9 +491,13 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     // 1: Shovill
     let r = c.call(
         "shovill",
-        json!({"r1": "reads/s1_R1.fastq", "r2": "reads/s1_R2.fastq", "outdir": "asm/s1", "assembler": "skesa", "nocorr": true, "ram": 8}),
+        json!({"r1": "reads/s1_R1.fastq", "r2": "reads/s1_R2.fastq", "outdir": "asm/s1", "assembler": "skesa", "nocorr": true, "ram": 8,
+               "link_as": "genomes/s1.fna"}),
     );
     assert_ne!(r["isError"], true, "{r}");
+    // genomes/s1.fna names the assembly for CheckM2 and GTDB-Tk; a relative link, so the project can move
+    assert_eq!(std::fs::read_link(work.join("genomes/s1.fna")).unwrap(), Path::new("../asm/s1/contigs.fa"));
+    assert_eq!(std::fs::read(work.join("genomes/s1.fna")).unwrap(), std::fs::read(work.join("asm/s1/contigs.fa")).unwrap());
     let v = &r["structuredContent"];
     assert_eq!(v["assembly"], json!({"contigs": 2, "total_length": 20000, "n50": 12000, "longest": 12000, "gc_percent": 40.0}), "{v}");
     assert_eq!(v["version"], "shovill 1.4.2");
@@ -565,7 +569,8 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     assert!(script.contains("want_ext_version shovill 'shovill 1.4.2'"), "{script}");
 
     let all: Vec<(PathBuf, String)> = ok.iter().flat_map(|c| outputs(c)).collect();
-    for d in ["asm", "typing"] {
+    assert!(script.contains("ln -sfn -- ../asm/s1/contigs.fa "), "{script}");
+    for d in ["asm", "typing", "genomes"] {
         std::fs::remove_dir_all(work.join(d)).unwrap();
     }
     let path = format!("{}:{}", bin.display(), s.path);
@@ -573,6 +578,7 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "replay failed: {err}");
     assert!(err.contains("outputs match"), "{err}");
+    assert_eq!(std::fs::read_link(work.join("genomes/s1.fna")).unwrap(), Path::new("../asm/s1/contigs.fa"));
     for (p, h) in &all {
         if p.ends_with("shovill.log") {
             assert!(p.is_file());

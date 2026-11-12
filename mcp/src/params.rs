@@ -33,6 +33,10 @@ pub struct Invocation {
     /// Data the program brings with it (found from the program's own path once it is resolved),
     /// hashed into the record with the inputs. mlst's bundled PubMLST schemes, for example.
     pub bundled_data: Option<fn(&Path, &Ctx) -> Vec<PathBuf>>,
+    /// Symlinks the server makes before the tool runs (path, target as written into the link,
+    /// relative to the link's folder), e.g. `genomes/s1.fna -> ../asm/s1/contigs.fa`. Recorded,
+    /// and recreated by replay.sh.
+    pub links: Vec<(PathBuf, PathBuf)>,
 }
 
 impl Invocation {
@@ -48,6 +52,7 @@ impl Invocation {
             expect: Vec::new(),
             volatile: &[],
             bundled_data: None,
+            links: Vec::new(),
         }
     }
     pub(crate) fn opt(&mut self, name: &str, value: impl ToString) {
