@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.4 (2026-11-12)
 
 ### msascope
 - **The reference row is remembered per file**: the reference and its options (pinned, ruler by
