@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.5 (2026-11-12)
 
 ### irit-mcp
 - **`gtdbprep_ani` tool** (#4): `gtdbprep ani` through the server, recorded and replayable.
