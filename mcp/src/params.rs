@@ -289,7 +289,7 @@ pub enum Requirement {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IsotableParams {
-    /// Results folders to search recursively for fastp, leanqc, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs.
+    /// Results folders to search recursively for fastp, leanqc, QUAST, Shovill (`contigs.fa` beside `shovill.log`), BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs.
     pub dirs: Vec<String>,
     /// Sample sheet (CSV/TSV, e.g. from sheetgen) with the real sample names to join on. Strongly recommended: without it, joins are by file name only.
     #[serde(default)]
@@ -635,7 +635,9 @@ mod tests {
         assert_eq!(bad(json!({"files": ["missing.fq"]})), "files");
         assert_eq!(bad(json!({"files": ["-r1.fq"], "threads": 0})), "threads");
         assert_eq!(bad(json!({"files": ["-r1.fq"], "phred": 40})), "phred");
-        assert_eq!(bad(json!({"files": ["-r1.fq"], "outdir": "no/such/dir"})), "outdir");
+        assert_eq!(bad(json!({"files": ["-r1.fq"], "outdir": "-r1.fq/qc"})), "outdir");
+        // a missing folder is created by the server
+        assert!(leanqc(&cx, &parse(json!({"files": ["-r1.fq"], "outdir": "no/such/dir"}))).is_ok());
         // invented parameters never reach the tool
         assert!(serde_json::from_value::<LeanqcParams>(json!({"files": ["x"], "kmer": true})).is_err());
     }

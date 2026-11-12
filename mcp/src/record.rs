@@ -58,6 +58,10 @@ pub struct CallRecord {
     pub exit_status: Option<i32>,
     pub inputs: Vec<FileRecord>,
     pub outputs: Vec<FileRecord>,
+    /// Folders the outputs go into: created by the server when missing, before the tool ran, and
+    /// by replay.sh (`mkdir -p`), so a replay works from a clean folder.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dirs: Vec<String>,
     /// Paths relative to the run folder.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stdout: Option<String>,
@@ -433,6 +437,10 @@ pub fn replay_script(log: &RunLog) -> String {
                         s += &format!("{k}={}; export {k}\n", sh_quote(v));
                     }
                 }
+                if !c.dirs.is_empty() {
+                    let dirs = c.dirs.iter().map(|d| sh_quote(d)).collect::<Vec<_>>().join(" ");
+                    s += &format!("mkdir -p -- {dirs} || exit 1\n");
+                }
                 let step = format!("step {n} {} {} {cmd}\n", c.exit_status.unwrap_or(0), runner(c));
                 if fetch {
                     s += &sh_comment(&format!("downloads databases again: {}", step.trim_end()));
@@ -649,6 +657,7 @@ mod tests {
             exit_status: Some(if status == Status::Ok { 0 } else { 2 }),
             inputs: vec![FileRecord { path: "/data/x/my reads's.fq".into(), size: 3, sha256: Some("aa".into()), symlink_to: None, volatile: false }],
             outputs: vec![FileRecord { path: "/data/x/qc/r.json".into(), size: 5, sha256: Some("bb".into()), symlink_to: None, volatile: false }],
+            dirs: Vec::new(),
             stdout: None,
             stdout_sha256: None,
             stderr: None,
@@ -686,6 +695,15 @@ mod tests {
         assert!(s.contains("# not run: files: x.fq does not exist"));
         assert_eq!(s.matches("\ncheck bb /data/x/qc/r.json").count(), 1);
         assert!(s.contains("$ran commands re-run, $checked outputs match"));
+        assert!(!s.contains("mkdir -p --"));
+    }
+
+    #[test]
+    fn replay_creates_output_folders() {
+        let mut c = call(1, Status::Ok);
+        c.dirs = vec!["/data/x/qc".into(), "/data/x/my run".into()];
+        let s = replay_script(&log_of(vec![c]));
+        assert!(s.contains("mkdir -p -- /data/x/qc '/data/x/my run' || exit 1\nstep 001 "), "{s}");
     }
 
     #[test]

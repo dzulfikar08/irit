@@ -146,7 +146,7 @@ pub fn inside_root(ctx: &Ctx, field: &str, value: &str, p: &Path) -> Check<()> {
     Ok(())
 }
 
-/// A file the tool will write: its folder must exist, it must be inside the root, and an
+/// A file the tool will write: inside the root (its folder is created if missing), and an
 /// existing file (or symlink) is only replaced with `overwrite`.
 pub fn output_file(ctx: &Ctx, field: &str, value: &str, overwrite: bool) -> Check<PathBuf> {
     non_empty(field, value)?;
@@ -162,7 +162,7 @@ pub fn output_file(ctx: &Ctx, field: &str, value: &str, overwrite: bool) -> Chec
     Ok(p)
 }
 
-/// A folder the tool will create or fill: its parent must exist and it must be inside the root.
+/// A folder the tool will create or fill, inside the root (its parent is created if missing).
 /// With `overwrite: Some(false)`, a folder that already has entries is refused.
 ///
 /// `writes_through_links`: the tool opens files in the folder by name, so a symlink already in
@@ -191,13 +191,34 @@ pub fn output_dir(ctx: &Ctx, field: &str, value: &str, overwrite: Option<bool>, 
     Ok(p)
 }
 
+/// The folder an output goes into may be missing: the server creates it before the tool runs
+/// (see `output_folders`). Whatever part of the path exists must be folders, though.
 fn parent_exists(field: &str, value: &str, p: &Path) -> Check<()> {
-    match p.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() && !parent.is_dir() => {
-            invalid(field, format!("the folder for {value} does not exist"))
+    let mut up = p.parent();
+    while let Some(d) = up.filter(|d| !d.as_os_str().is_empty()) {
+        match std::fs::metadata(d) {
+            Ok(m) if m.is_dir() => return Ok(()),
+            Ok(_) => return invalid(field, format!("{} is a file, not a folder, so {value} can't be written", d.display())),
+            Err(_) => up = d.parent(),
         }
-        _ => Ok(()),
     }
+    Ok(())
+}
+
+/// Folders the outputs go into, which the server creates when missing before the tool runs and
+/// replay.sh creates with `mkdir -p`: the parents of `outputs` other than the working folder,
+/// inside the root (outside it only when missing, with `allow_outside_root`).
+pub fn output_folders(ctx: &Ctx, outputs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = outputs
+        .iter()
+        .filter_map(|o| o.parent())
+        .filter(|d| !d.as_os_str().is_empty() && *d != ctx.cwd)
+        .filter(|d| !d.is_dir() || resolve(d).starts_with(&ctx.root))
+        .map(Path::to_path_buf)
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 pub fn non_empty_list<T>(field: &str, list: &[T]) -> Check<()> {
@@ -349,10 +370,18 @@ mod tests {
         assert!(existing_dir(d.path(), "d", "a.fq").is_err());
         assert!(output_file(&c, "o", "sheet.csv", false).is_ok());
         assert!(output_file(&c, "o", "sub", false).is_err());
-        assert!(output_file(&c, "o", "nope/sheet.csv", false).is_err());
+        // missing folders are created by the server; a file in the way is refused
+        assert!(output_file(&c, "o", "nope/deeper/sheet.csv", false).is_ok());
+        assert_eq!(
+            output_file(&c, "o", "a.fq/x/sheet.csv", false).unwrap_err().message,
+            format!("{} is a file, not a folder, so a.fq/x/sheet.csv can't be written", c.cwd.join("a.fq").display())
+        );
         assert!(output_dir(&c, "o", "qc", Some(false), true).is_ok());
         assert!(output_dir(&c, "o", "a.fq", None, true).is_err());
-        assert!(output_dir(&c, "o", "nope/qc", None, true).is_err());
+        assert!(output_dir(&c, "o", "nope/qc", None, true).is_ok());
+        assert!(output_dir(&c, "o", "a.fq/qc", None, true).is_err());
+        let outs = [c.cwd.join("sheet.csv"), c.cwd.join("nope/deeper/sheet.csv"), c.cwd.join("sub/x"), c.cwd.join("sub/y")];
+        assert_eq!(output_folders(&c, &outs), [c.cwd.join("nope/deeper"), c.cwd.join("sub")]);
     }
 
     #[test]

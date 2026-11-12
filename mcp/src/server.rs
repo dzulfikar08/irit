@@ -26,7 +26,7 @@ Parameters are checked before anything runs; unknown parameters are refused, so 
 instead of guessing flags. A tool that exits non-zero returns isError with its stderr: report it, \
 don't carry on as if it worked. Every call is recorded with input/output SHA-256s in a run folder whose \
 replay.sh re-runs the same commands without an AI; describe_run shows it. Relative paths are resolved \
-against the server's working directory. Output paths must be inside the server's root folder, and existing \
+against the server's working directory. Output paths must be inside the server's root folder (missing folders are created), and existing \
 output files are only replaced when the call passes overwrite: true (ask the user first).";
 
 /// Most of a tool's stderr is useful context for the agent, but cap it.
@@ -198,6 +198,7 @@ impl Irit {
             exit_status: None,
             inputs: Vec::new(),
             outputs: Vec::new(),
+            dirs: Vec::new(),
             stdout: None,
             stdout_sha256: None,
             stderr: None,
@@ -238,18 +239,33 @@ impl Irit {
 
         let targets: Vec<PathBuf> = inv.outputs.iter().map(|p| validate::resolve(p)).collect();
         let _claim = self.busy.claim(id, targets).await;
+        let dirs = validate::output_folders(&self.cfg.ctx, &inv.outputs);
+        rec.dirs = dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect();
         let (mut inputs, outputs) = (inv.inputs.clone(), inv.outputs.clone());
         let (bundled, prog, ctx) = (inv.bundled_data, program.clone(), self.cfg.ctx.clone());
-        let (input_recs, before) = tokio::task::spawn_blocking(move || {
+        let prepared = tokio::task::spawn_blocking(move || {
+            for d in &dirs {
+                std::fs::create_dir_all(d).map_err(|e| format!("could not create {}: {e}", d.display()))?;
+            }
             // It may run the program (mlst --help), so off the async threads.
             if let Some(bundled) = bundled {
                 inputs.extend(bundled(&prog, &ctx));
             }
-            (record::input_records(&inputs), record::snapshot(&outputs))
+            Ok::<_, String>((record::input_records(&inputs), record::snapshot(&outputs)))
         })
-            .await
-            .unwrap_or_default();
-        rec.inputs = input_recs;
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        let before = match prepared {
+            Ok((input_recs, before)) => {
+                rec.inputs = input_recs;
+                before
+            }
+            Err(e) => {
+                rec.status = Status::Error;
+                rec.error = Some(e);
+                return finish(rec, Vec::new(), String::new());
+            }
+        };
 
         let result = tokio::process::Command::new(&program)
             .args(&inv.args)
@@ -470,8 +486,8 @@ details, reads, GC and Q30, and the report paths.")]
         })
     }
 
-    #[tool(description = "Join QC, assembly and typing outputs (fastp, leanqc, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst, AMRFinderPlus) \
-found under results folders into one graded row per sample. Status, worst first: conflict (files disagree), fail, incomplete (a required \
+    #[tool(description = "Join QC, assembly and typing outputs (fastp, leanqc, QUAST, Shovill's contigs.fa, BUSCO, CheckM2, GTDB-Tk, Kraken 2, \
+mlst, AMRFinderPlus) found under results folders into one graded row per sample; include the Shovill outdirs' parent for contigs and N50. Status, worst first: conflict (files disagree), fail, incomplete (a required \
 measurement is missing), warn, pass. Returns each sample's status, reasons and values, and counts per status. Thresholds are starting \
 points, not a standard: say so when reporting grades.")]
     async fn isotable(&self, Parameters(params): Parameters<p::IsotableParams>) -> Result<CallToolResult, ErrorData> {

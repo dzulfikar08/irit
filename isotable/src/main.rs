@@ -113,8 +113,8 @@ impl Status {
 const REQUIREMENTS: &[(&str, &[&str], &str)] = &[
     ("reads", &["reads_trimmed", "reads_raw"], "read count (fastp)"),
     ("q30", &["q30_trimmed"], "Q30 (fastp)"),
-    ("contigs", &["contigs"], "contig count (QUAST)"),
-    ("n50", &["n50"], "N50 (QUAST)"),
+    ("contigs", &["contigs"], "contig count (QUAST, or Shovill's contigs.fa)"),
+    ("n50", &["n50"], "N50 (QUAST, or Shovill's contigs.fa)"),
     ("completeness", &["completeness", "busco_complete"], "completeness (CheckM2 or BUSCO)"),
     ("contamination", &["contamination"], "contamination (CheckM2)"),
     ("kraken", &["kraken_top"], "Kraken 2 report"),
