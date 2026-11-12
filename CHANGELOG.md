@@ -1,41 +1,6 @@
 # Changelog
 
-## 0.3.4 (2026-11-12)
-
-### msascope
-- **The reference row is remembered per file**: the reference and its options (pinned, ruler by
-  reference, compare with it) are saved in the settings file for the last 50 files and restored
-  when the same file (same size and modification time) is opened again and a row of that name is
-  there. Stale or damaged entries are ignored.
-- **Figures include the annotation tracks and the pinned reference row** shown in the window, in
-  PNG and SVG (SVG keeps track characters and labels as text). The figure's ruler counts the
-  reference's residues when the view's does.
-
-### leanqc
-- **Long-read views** (ONT, PacBio), for files whose median read is over 1,000 bp or with the new
-  `--long`: total bases, N50/N90, mean and median length, longest read, reads and bases per
-  log-scale length bin; each read's quality from its mean error probability, its distribution,
-  mean and median, reads (and bases) at or above Q10 and Q20, and mean read quality by length. In
-  the HTML report, the JSON (`long_reads`, documented) and the terminal summary. The FastQC checks
-  and the JSON of short-read files are unchanged. N50 and the other figures match an independent
-  calculation on a public MinION run and a 1.5 GB synthetic file; peak memory stayed at 14–23 MB.
-
-### gtdbprep
-- **`ani` fetches sketches in parallel**: `--fetch-jobs N` range requests in flight (default 4,
-  at most 16; `1` is the old one-at-a-time behaviour). Failed requests (connection errors, cut-off
-  bodies, 408, 429, 5xx) are retried up to 5 times with growing, jittered waits and `Retry-After`;
-  a request with no answer for 60 s, or a body slower than 32 KiB/s, is cut off and retried
-  instead of waiting up to 10 minutes. Each sketch goes to the cache as soon as it is checked.
-  From GTDB's server, 377 sketches (1.23 GB) took 474–562 s instead of 1,167–2,275 s; for a few
-  dozen sketches the connection's variation was as large as the gain.
-- **`ani --species-only`** (opt-in) fetches only the references whose shared marker count shows
-  they could reach ANI 95 (the smallest species radius) at AF 0.5, with a wide margin. GTDB-Tk's
-  call is the same: identical on six test genomes, with 47 instead of 882 sketches fetched
-  (147 MB instead of 2.8 GB; *M. tuberculosis* 1 instead of 377). The unassigned-hits file of an
-  unassigned genome, and possibly the "other related references" column, list fewer references
-  than GTDB-Tk's.
-- `ani` writes `<work>/screen.tsv`: every screened-in reference per genome with its shared marker
-  count and whether it was used. With `--species-only`, the summary table gains a `used` column.
+## Unreleased
 
 ### irit-mcp
 - **`gtdbprep_ani` tool** (#4): `gtdbprep ani` through the server, recorded and replayable.
@@ -78,6 +43,43 @@
 - A database folder moved or linked in from another store is reused with its `.dblock.toml`
   marker rewritten to its new place; the marker kept the old store's paths (#10). `fetch` now says
   what reuse checked (names and sizes) and that `verify --deep` re-hashes.
+
+## 0.3.4 (2026-11-12)
+
+### msascope
+- **The reference row is remembered per file**: the reference and its options (pinned, ruler by
+  reference, compare with it) are saved in the settings file for the last 50 files and restored
+  when the same file (same size and modification time) is opened again and a row of that name is
+  there. Stale or damaged entries are ignored.
+- **Figures include the annotation tracks and the pinned reference row** shown in the window, in
+  PNG and SVG (SVG keeps track characters and labels as text). The figure's ruler counts the
+  reference's residues when the view's does.
+
+### leanqc
+- **Long-read views** (ONT, PacBio), for files whose median read is over 1,000 bp or with the new
+  `--long`: total bases, N50/N90, mean and median length, longest read, reads and bases per
+  log-scale length bin; each read's quality from its mean error probability, its distribution,
+  mean and median, reads (and bases) at or above Q10 and Q20, and mean read quality by length. In
+  the HTML report, the JSON (`long_reads`, documented) and the terminal summary. The FastQC checks
+  and the JSON of short-read files are unchanged. N50 and the other figures match an independent
+  calculation on a public MinION run and a 1.5 GB synthetic file; peak memory stayed at 14–23 MB.
+
+### gtdbprep
+- **`ani` fetches sketches in parallel**: `--fetch-jobs N` range requests in flight (default 4,
+  at most 16; `1` is the old one-at-a-time behaviour). Failed requests (connection errors, cut-off
+  bodies, 408, 429, 5xx) are retried up to 5 times with growing, jittered waits and `Retry-After`;
+  a request with no answer for 60 s, or a body slower than 32 KiB/s, is cut off and retried
+  instead of waiting up to 10 minutes. Each sketch goes to the cache as soon as it is checked.
+  From GTDB's server, 377 sketches (1.23 GB) took 474–562 s instead of 1,167–2,275 s; for a few
+  dozen sketches the connection's variation was as large as the gain.
+- **`ani --species-only`** (opt-in) fetches only the references whose shared marker count shows
+  they could reach ANI 95 (the smallest species radius) at AF 0.5, with a wide margin. GTDB-Tk's
+  call is the same: identical on six test genomes, with 47 instead of 882 sketches fetched
+  (147 MB instead of 2.8 GB; *M. tuberculosis* 1 instead of 377). The unassigned-hits file of an
+  unassigned genome, and possibly the "other related references" column, list fewer references
+  than GTDB-Tk's.
+- `ani` writes `<work>/screen.tsv`: every screened-in reference per genome with its shared marker
+  count and whether it was used. With `--species-only`, the summary table gains a `used` column.
 
 ## 0.3.3 (2026-11-12)
 
