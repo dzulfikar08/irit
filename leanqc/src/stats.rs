@@ -19,6 +19,7 @@
 //! `Configuration/adapter_list.txt` and `Configuration/limits.txt`. Each translated item says
 //! which FastQC code it ports.
 
+use crate::long::{self, LongAcc, LongReads};
 use memchr::memmem::Finder;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -244,6 +245,11 @@ pub struct Acc {
     max_qc: u8,
     dup: Dup,
     tiles: Tiles,
+    /// Long-read views, kept for every file and reported for long reads.
+    long: LongAcc,
+    err: [f64; 94],
+    /// Report the long-read views whatever the read lengths (`--long`).
+    pub force_long: bool,
 }
 
 impl Acc {
@@ -268,6 +274,9 @@ impl Acc {
             max_qc: 0,
             dup: Dup { counts: HashMap::new(), reads: 0, reads_at_limit: 0, limit: dup_distinct.max(1), frozen: false },
             tiles: Tiles::Unknown,
+            long: LongAcc::default(),
+            err: long::error_table(),
+            force_long: false,
         }
     }
 
@@ -310,16 +319,19 @@ impl Acc {
 
         if let Some(q) = qual {
             let mut qsum = 0u64;
+            let mut esum = 0.0f64;
             for (i, &c) in q.iter().enumerate().take(len) {
                 self.min_qc = self.min_qc.min(c);
                 self.max_qc = self.max_qc.max(c);
                 let bin = (c.saturating_sub(33) as usize).min(QBINS - 1);
                 self.qual_tot[bin] += 1;
                 qsum += bin as u64;
+                esum += self.err[bin];
                 let s = if i < EXACT { i } else { slot_of(i) };
                 self.pos_qual[s][bin] += 1;
             }
             self.read_meanq[(qsum / len as u64) as usize] += 1;
+            self.long.add_quality(len, esum);
             self.add_tile(id, q, len.min(TILE_MAX_POS));
         } else if matches!(self.tiles, Tiles::Unknown) {
             self.tiles = Tiles::Off("no quality scores");
@@ -365,6 +377,9 @@ pub struct Report {
     pub overrepresented: Vec<Overrep>,
     pub per_tile: PerTile,
     pub checks: Vec<Check>,
+    /// Long-read views: present when the median read length is above 1,000 bp or with `--long`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub long_reads: Option<LongReads>,
 }
 
 #[derive(Serialize)]
@@ -574,6 +589,14 @@ impl Acc {
 
         let mut length_distribution: Vec<_> = self.len_hist.into_iter().collect();
         length_distribution.sort_unstable();
+        let auto_long = long::median_length(&length_distribution) > long::AUTO_MEDIAN;
+        let long_reads = (self.force_long || auto_long).then(|| {
+            // Read qualities assume Phred+33 (every long-read platform writes it).
+            if has_qual && offset != Some(33) {
+                warnings.push("long-read quality views left out: they need Phred+33 qualities".into());
+            }
+            self.long.finish(&length_distribution, if auto_long { "auto" } else { "--long" }, offset == Some(33))
+        });
 
         // FastQC tracks adapter starts up to (longest read - adapter length + 1) positions.
         // Port of FastQC AdapterContent.processSequence / calculateEnrichment.
@@ -656,6 +679,7 @@ impl Acc {
             overrepresented: over,
             per_tile,
             checks: Vec::new(),
+            long_reads,
         };
         r.checks = checks(&r, self.zero_len, over_total);
         r
@@ -1062,6 +1086,47 @@ mod tests {
         let r = a.finish("t".into(), None);
         assert_eq!(r.per_position.last().unwrap().end, 5000);
         assert_eq!(check(&r, "Per-position quality"), Status::Fail);
+    }
+
+    #[test]
+    fn long_reads_are_detected_by_median_length() {
+        // Short reads: no long-read section, and the JSON has no such field.
+        let mut a = Acc::new(10);
+        for _ in 0..3 {
+            a.add(b"r", &b"ACGT".repeat(25), Some(&[b'5'; 100]));
+        }
+        let r = a.finish("t".into(), None);
+        assert!(r.long_reads.is_none());
+        assert!(!serde_json::to_string(&r).unwrap().contains("long_reads"));
+        // ... unless forced.
+        let mut a = Acc::new(10);
+        a.force_long = true;
+        a.add(b"r", b"ACGT", Some(b"5555"));
+        let l = a.finish("t".into(), None).long_reads.unwrap();
+        assert_eq!((l.detected, l.n50, l.read_quality.as_ref().unwrap().q20_reads), ("--long", Some(4), 1));
+        // Median above 1,000 bp: on, from the same reads the FastQC modules see.
+        let mut a = Acc::new(10);
+        for len in [500usize, 1500, 3000] {
+            a.add(b"r", &b"A".repeat(len), Some(&vec![b'+'; len])); // Q10
+        }
+        let r = a.finish("t".into(), None);
+        let l = r.long_reads.as_ref().unwrap();
+        assert_eq!((l.detected, l.reads, l.bases, l.longest, l.median_length), ("auto", 3, 5000, 3000, 1500.0));
+        assert_eq!((l.n50, l.n90), (Some(3000), Some(1500)));
+        let q = l.read_quality.as_ref().unwrap();
+        assert_eq!((q.q10_reads, q.q20_reads, q.median), (3, 0, 10.0));
+        assert!(serde_json::to_string(&r).unwrap().contains("\"long_reads\":{\"detected\":\"auto\""));
+        // A median of exactly 1,000 bp is not "above".
+        let mut a = Acc::new(10);
+        a.add(b"r", &b"A".repeat(1000), None);
+        assert!(a.finish("t".into(), None).long_reads.is_none());
+        // Phred+64: lengths, but no read qualities.
+        let mut a = Acc::new(10);
+        a.force_long = true;
+        a.add(b"r", b"ACGT", Some(b"BBhh"));
+        let r = a.finish("t".into(), None);
+        assert!(r.long_reads.unwrap().read_quality.is_none());
+        assert!(r.warnings.iter().any(|w| w.contains("Phred+33")));
     }
 
     #[test]
