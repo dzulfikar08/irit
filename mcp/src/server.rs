@@ -18,7 +18,7 @@ const INSTRUCTIONS: &str = "Tools for sequencing-data housekeeping from the irit
 sheetgen (sample sheets from FASTQ folders, checked against a pipeline's schema), leanqc (read QC), \
 isotable (one graded QC row per sample from tool outputs) and dblock_* (reference databases); \
 plus the microbial isolate path with third-party tools: fastp (trimming), shovill (assembly), bakta \
-(annotation), checkm2 (completeness/contamination), gtdbtk_classify_wf (taxonomy), mlst (sequence type) and \
+(annotation), checkm2 (completeness/contamination), gtdbprep_ani and gtdbtk_classify_wf (taxonomy), mlst (sequence type) and \
 amrfinder (AMRFinderPlus resistance genes). Those need the program installed (Bioconda) and, for bakta, \
 checkm2, gtdbtk_classify_wf and amrfinder, a database (dblock_env shows dblock-managed paths); they can run for \
 hours. Their results list `warnings` when the installed version isn't the one irit-mcp was checked against. \
@@ -685,6 +685,35 @@ classify/<prefix>.{bac120,ar53}.summary.tsv.")]
             v["genomes"] = json!(genomes);
             Ok(())
         })
+    }
+
+    #[tool(description = "gtdbprep ani (irit): GTDB-Tk 2.8's ANI species screen on a laptop, without the 85 GB skani database. \
+Screens the genomes locally against a screen index (dblock gtdbtk-r232-ani-screen), fetches only the reference sketches needed into a \
+per-user cache, and runs GTDB-Tk's own screen on them. Needs GTDB-Tk 2.8 and skani 0.3.1 (`env`, or $GTDBPREP_ENV) and the \
+placement-lite data (`data_path`, or $GTDBTK_DATA_PATH). Missing sketches are only fetched with `source` set (network; `gtdb` reads \
+GTDB's server: ask the user). Returns per genome: whether the screen assigned it, the species, reference, ANI and AF. Afterwards \
+`<work>/gtdbtk_data` is a full GTDB-Tk data folder: pass it as gtdbtk_classify_wf's data_path for GTDB-Tk's usual summary files \
+(seconds for genomes the screen assigned).")]
+    async fn gtdbprep_ani(&self, Parameters(params): Parameters<x::GtdbprepAniParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("gtdbprep_ani", &params, x::gtdbprep_ani(&self.cfg.ctx, &params)).await;
+        let work = self.cfg.ctx.cwd.join(&params.work);
+        let mut v = match self.envelope(&d) {
+            Ok(v) => v,
+            Err(e) => return Ok(e),
+        };
+        let stdout = d.stdout_text();
+        v["stdout"] = json!(tail(&stdout, STDERR_LIMIT));
+        match results::gtdbprep_ani_summary(&stdout, &work) {
+            Ok(g) => v["genomes"] = json!(g),
+            Err(e) => {
+                v["error"] = json!("output_unreadable");
+                v["message"] = json!(format!("gtdbprep exited 0 but its result could not be read: {e}"));
+                v["note"] = json!("do not report this as an empty result");
+                return Ok(CallToolResult::structured_error(v));
+            }
+        }
+        v["data_path_for_classify"] = json!(work.join("gtdbtk_data"));
+        Ok(CallToolResult::structured(v))
     }
 
     #[tool(description = "Show a run record: every call with its exact command, tool version, working directory, input and output \

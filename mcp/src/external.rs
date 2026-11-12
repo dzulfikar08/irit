@@ -1067,8 +1067,8 @@ fn gtdbtk_data(field: &str, shown: &str, dir: &Path, full_tree: bool) -> Check<P
             field,
             format!(
                 "{shown} has no skani/ folder. GTDB-Tk 2.8.0 classify_wf always runs the skani ANI screen and has no option to skip it. \
-                 The placement-only data (dblock gtdbtk-r232-placement) has no ANI database; it needs the launcher in docs/research/gtdb-placement-test.md, \
-                 not classify_wf"
+                 With the placement data, run gtdbprep_ani first and pass its <work>/gtdbtk_data as data_path (it adds a small skani database); \
+                 genomes the screen doesn't assign need tree placement, see docs/research/gtdb-placement-test.md"
             ),
         );
     }
@@ -1160,6 +1160,170 @@ pub fn gtdbtk_classify_wf(ctx: &Ctx, p: &GtdbtkClassifyWfParams) -> Check<Invoca
         ("genes", p.genes),
     ] {
         inv.flag(name, on);
+    }
+    Ok(inv)
+}
+
+// ---------- gtdbprep ani (an irit binary, wrapped here beside GTDB-Tk) ----------
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GtdbprepAniParams {
+    /// Folder of genome FASTA files (plain or gzipped), as for gtdbtk_classify_wf. The file name (without extension) is the genome's name in every result.
+    pub genome_dir: String,
+    /// Extension of the genome files in genome_dir. Default fna.
+    #[serde(default)]
+    pub extension: Option<String>,
+    /// Screen index folder (meta.json, refs.bin, markers.idx): dblock's gtdbtk-r232-ani-screen (dblock_plan shows its path).
+    pub index: String,
+    /// GTDB-Tk reference data with taxonomy/, radii/ and metadata/ (no skani/ needed): dblock's gtdbtk-r232-placement-lite. Default: $GTDBTK_DATA_PATH as the server started with.
+    #[serde(default)]
+    pub data_path: Option<String>,
+    /// Work folder, inside the root. Its gtdbtk_data/ is then a complete GTDB-Tk data folder: pass `<work>/gtdbtk_data` as gtdbtk_classify_wf's data_path.
+    pub work: String,
+    /// Allow a work folder that already has files (they are replaced). Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// Where reference sketches missing from the cache come from: a path or URL of an unpacked sketches.db, a URL with {part} (with part_size), or `gtdb` to range-read GTDB's own archive. Network use, and `gtdb` loads GTDB's server: ask the user first. Omit when every sketch is cached (the call then fails naming how many are missing).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Part size in bytes, for a source with {part}.
+    #[serde(default)]
+    pub part_size: Option<u64>,
+    /// Sketch cache shared by all runs. Default: $XDG_CACHE_HOME/irit/gtdbprep-ani, else ~/.cache/irit/gtdbprep-ani, as the server started with; the path used is in the recorded command. May be outside the root: only sketches checked against the index are added.
+    #[serde(default)]
+    pub cache: Option<String>,
+    /// skani binary; must be the version the index was made with (0.3.1 for R232). Default: skani in the GTDB-Tk environment or on PATH.
+    #[serde(default)]
+    pub skani: Option<String>,
+    /// Fetch only the references that could give the species call. Same species calls, far fewer downloads; GTDB-Tk's "other related references" list fewer references.
+    #[serde(default)]
+    pub species_only: bool,
+    /// Range requests in flight at once while fetching sketches (1-16).
+    #[serde(default)]
+    pub fetch_jobs: Option<u8>,
+    /// Conda/micromamba environment with GTDB-Tk 2.8 (its bin/ goes first on PATH). Default: $GTDBPREP_ENV as the server started with, else PATH.
+    #[serde(default)]
+    pub env: Option<String>,
+    /// CPUs. Default 4.
+    #[serde(default)]
+    pub cpus: Option<u32>,
+}
+
+/// Index files hashed into the record. markers.idx (1.7 GB for R232) and gz.idx are left to
+/// `dblock verify`: hashing them on every call would cost more than the screen.
+const ANI_INDEX_FILES: [&str; 3] = ["meta.json", "refs.bin", "markers.idx"];
+/// What `gtdbprep ani` needs from the GTDB-Tk data (`ani::synthetic_data`).
+const ANI_DATA_FILES: [&str; 3] = ["metadata/metadata.txt", "radii/gtdb_radii.tsv", "taxonomy/gtdb_taxonomy.tsv"];
+
+/// GTDB-Tk's ANI screen without the 85 GB skani database (`gtdbprep ani`, gtdbprep/src/cli.rs).
+pub fn gtdbprep_ani(ctx: &Ctx, p: &GtdbprepAniParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = Invocation::new("gtdbprep");
+    // Two identical runs differed only in the logs and the gzip file (its header has a time).
+    inv.volatile = &[".log", ".gz"];
+    inv.args.push("ani".into());
+    let dir = v::existing_dir(cwd, "genome_dir", &p.genome_dir)?;
+    let ext = p.extension.as_deref().unwrap_or("fna");
+    v::extension("extension", ext)?;
+    let files = v::files_with_extension(&dir, ext);
+    if files.is_empty() {
+        return v::invalid("genome_dir", format!("no *.{} files in {}; set extension (e.g. fa, fasta, fna.gz)", ext.trim_start_matches('.'), p.genome_dir));
+    }
+    for f in &files {
+        let shown = f.strip_prefix(cwd).unwrap_or(f).to_string_lossy().into_owned();
+        v::sequence_file(f, "genome_dir", &shown, Seq::Fasta)?;
+    }
+    inv.inputs.extend(files);
+    inv.opt("genomes", &p.genome_dir);
+    inv.opt("extension", ext);
+
+    let index = v::existing_dir(cwd, "index", &p.index)?;
+    let missing: Vec<&str> = ANI_INDEX_FILES.iter().copied().filter(|f| !index.join(f).is_file()).collect();
+    if !missing.is_empty() {
+        return v::invalid("index", format!("{} has no {}; it is not a screen index (dblock add gtdbtk-r232-ani-screen)", p.index, missing.join(", ")));
+    }
+    inv.inputs.extend(["meta.json", "refs.bin"].map(|f| index.join(f)));
+    inv.opt("index", &p.index);
+
+    let (data_text, data) = db_location(ctx, "data_path", &p.data_path, "GTDBTK_DATA_PATH")?;
+    let missing: Vec<&str> = ANI_DATA_FILES.iter().copied().filter(|f| !data.join(f).is_file()).collect();
+    if !missing.is_empty() {
+        return v::invalid(
+            "data_path",
+            format!("{data_text} has no {}; the ANI screen needs GTDB-Tk's taxonomy, radii and metadata (dblock add gtdbtk-r232-placement-lite)", missing.join(", ")),
+        );
+    }
+    inv.inputs.extend(ANI_DATA_FILES.map(|f| data.join(f)));
+    // Passed as a flag, not left to gtdbprep's own $GTDBTK_DATA_PATH lookup, so the command says which.
+    inv.opt("data", v::resolve(&data).display());
+
+    let work = v::output_dir(ctx, "work", &p.work, Some(p.overwrite), true)?;
+    inv.outputs.push(work.clone());
+    inv.opt("work", &p.work);
+    inv.expect = vec![vec![work.join("assigned.json")]];
+
+    if let Some(s) = &p.source {
+        v::text("source", s)?;
+        inv.opt("source", s);
+    }
+    match (p.part_size, &p.source) {
+        (Some(n), Some(s)) if s.contains("{part}") => {
+            v::range("part_size", n, 1, u64::MAX)?;
+            inv.opt("part-size", n);
+        }
+        (Some(_), _) => return v::invalid("part_size", "part_size applies only to a source with {part}"),
+        (None, Some(s)) if s.contains("{part}") => return v::invalid("part_size", "a source with {part} needs part_size"),
+        _ => {}
+    }
+
+    // The cache gtdbprep would pick by itself, resolved here from the server's environment so the
+    // recorded command (and replay.sh) names it.
+    let cache = match &p.cache {
+        Some(c) => {
+            v::text("cache", c)?;
+            cwd.join(c)
+        }
+        None => {
+            let var = |k: &str| ctx.var(k).filter(|x| !x.is_empty()).map(PathBuf::from);
+            match var("XDG_CACHE_HOME").or_else(|| var("HOME").map(|h| h.join(".cache"))) {
+                Some(base) => base.join("irit/gtdbprep-ani"),
+                None => return v::invalid("cache", "neither XDG_CACHE_HOME nor HOME is set; pass cache"),
+            }
+        }
+    };
+    if let Some(runs) = &ctx.runs_root
+        && v::resolve(&cache).starts_with(runs)
+    {
+        return v::invalid("cache", format!("{} is inside the run records {}; tools may not write there", cache.display(), runs.display()));
+    }
+    inv.opt("cache", cache.display());
+
+    if let Some(s) = &p.skani {
+        v::text("skani", s)?;
+        // A bare name is looked up on PATH by gtdbprep; a path must exist.
+        let path = if s.contains('/') { v::existing_file(cwd, "skani", s)? } else { PathBuf::from(s) };
+        if path.is_absolute() {
+            inv.inputs.push(path);
+        }
+        inv.opt("skani", s);
+    }
+    inv.flag("species-only", p.species_only);
+    if let Some(j) = p.fetch_jobs {
+        v::range("fetch_jobs", j, 1, 16)?;
+        inv.opt("fetch-jobs", j);
+    }
+    match (&p.env, ctx.var("GTDBPREP_ENV").filter(|x| !x.is_empty())) {
+        (Some(e), _) => {
+            v::existing_dir(cwd, "env", e)?;
+            inv.opt("env", e);
+        }
+        (None, Some(e)) => inv.opt("env", e.to_string_lossy()),
+        (None, None) => {}
+    }
+    if let Some(c) = p.cpus {
+        v::range("cpus", c, 1, 1024)?;
+        inv.opt("cpus", c);
     }
     Ok(inv)
 }
@@ -2214,5 +2378,67 @@ mod tests {
             j[invented] = json!(true);
             assert!(serde_json::from_value::<AmrfinderParams>(j).is_err(), "{invented}");
         }
+    }
+
+    #[test]
+    fn gtdbprep_ani_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let mut cx = ctx(d.path());
+        write(d.path(), "genomes/b168.fna", ">c1\nACGT\n");
+        for f in ANI_INDEX_FILES {
+            write(d.path(), &format!("ix/{f}"), "x");
+        }
+        for f in ANI_DATA_FILES {
+            write(d.path(), &format!("lite/{f}"), "x");
+        }
+        cx.vars.insert("GTDBTK_DATA_PATH".into(), cx.root.join("lite").into());
+        cx.vars.insert("HOME".into(), "/home/u".into());
+        cx.vars.insert("GTDBPREP_ENV".into(), "/envs/gtdbtk".into());
+        let p: GtdbprepAniParams = parse(json!({"genome_dir": "genomes", "index": "ix", "work": "ani/w", "species_only": true}));
+        let inv = gtdbprep_ani(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            [
+                "ani".to_string(),
+                "--genomes=genomes".into(),
+                "--extension=fna".into(),
+                "--index=ix".into(),
+                format!("--data={}", cx.root.join("lite").display()),
+                "--work=ani/w".into(),
+                "--cache=/home/u/.cache/irit/gtdbprep-ani".into(),
+                "--species-only".into(),
+                "--env=/envs/gtdbtk".into(),
+            ]
+        );
+        assert!(!inv.external);
+        assert_eq!(inv.outputs, [cx.root.join("ani/w")]);
+        assert_eq!(inv.expect, [vec![cx.root.join("ani/w/assigned.json")]]);
+        // the genome, two index files (not the 1.7 GB markers.idx) and three data files
+        assert_eq!(inv.inputs.len(), 6);
+        assert!(!inv.inputs.iter().any(|i| i.ends_with("markers.idx")));
+
+        // $XDG_CACHE_HOME wins over HOME, as in gtdbprep
+        cx.vars.insert("XDG_CACHE_HOME".into(), "/xdg".into());
+        assert!(gtdbprep_ani(&cx, &p).unwrap().args.contains(&"--cache=/xdg/irit/gtdbprep-ani".to_string()));
+
+        let bad = |v: serde_json::Value| {
+            let mut base = json!({"genome_dir": "genomes", "index": "ix", "work": "ani/w"});
+            base.as_object_mut().unwrap().extend(v.as_object().unwrap().clone());
+            gtdbprep_ani(&cx, &parse(base)).unwrap_err().field
+        };
+        assert_eq!(bad(json!({"index": "genomes"})), "index");
+        assert_eq!(bad(json!({"data_path": "ix"})), "data_path");
+        assert_eq!(bad(json!({"extension": "fa"})), "genome_dir");
+        assert_eq!(bad(json!({"part_size": 1000})), "part_size");
+        assert_eq!(bad(json!({"source": "https://x/{part}"})), "part_size");
+        assert_eq!(bad(json!({"fetch_jobs": 17})), "fetch_jobs");
+        assert_eq!(bad(json!({"cache": "irit-runs/c"})), "cache");
+        assert_eq!(bad(json!({"skani": "bin/skani"})), "skani");
+        let ok = gtdbprep_ani(&cx, &parse(json!({"genome_dir": "genomes", "index": "ix", "work": "ani/w", "source": "gtdb", "fetch_jobs": 4}))).unwrap();
+        assert!(ok.args.contains(&"--source=gtdb".to_string()) && ok.args.contains(&"--fetch-jobs=4".to_string()));
+        std::fs::create_dir_all(d.path().join("ani/w")).unwrap();
+        write(d.path(), "ani/w/assigned.json", "[]");
+        assert_eq!(bad(json!({})), "work");
+        assert!(serde_json::from_value::<GtdbprepAniParams>(json!({"genome_dir": "g", "index": "i", "work": "w", "full_db": "x"})).is_err());
     }
 }
