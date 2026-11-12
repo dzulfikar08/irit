@@ -715,9 +715,15 @@ mod tests {
                             data.len()
                         )
                     };
-                    match decide(a as u64, seen) {
-                        Reply::Ok(ms) => {
-                            std::thread::sleep(Duration::from_millis(ms));
+                    let reply = decide(a as u64, seen);
+                    if let Reply::Ok(ms) = reply {
+                        std::thread::sleep(Duration::from_millis(ms));
+                    }
+                    // Counted out before answering: the client may send its next request as soon
+                    // as the body arrives, before this thread runs again.
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    match reply {
+                        Reply::Ok(_) => {
                             let _ = s.write_all(head(body.len()).as_bytes());
                             let _ = s.write_all(body);
                         }
@@ -732,7 +738,6 @@ mod tests {
                             let _ = s.write_all(&body[..body.len() / 2]);
                         }
                     }
-                    in_flight.fetch_sub(1, Ordering::SeqCst);
                 });
             }
         });
