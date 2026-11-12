@@ -1,6 +1,8 @@
-//! Export ▸ PNG / SVG of the view or of the selection (rows × shown columns). SVGs come from the
-//! core's writer (letters, names and ruler as text). PNGs rasterise the cells with the same code
-//! as the tiles, then draw the text layer of that SVG over them with resvg.
+//! Export ▸ PNG / SVG of the view or of the selection (rows × shown columns), with the `#=GC` /
+//! `#=GR` tracks and the pinned reference row shown in the window. SVGs come from the core's
+//! writer (letters, names, ruler and track characters as text). PNGs rasterise the cells and the
+//! track bands with the same code as the tiles, then draw the text layer of that SVG over them
+//! with resvg.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -8,7 +10,9 @@ use std::time::Instant;
 
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
-use msascope::export::{self, FigRow, Figure};
+use msascope::annot::TrackKind;
+use msascope::export::{self, FigRow, FigTrack, Figure, TrackBand};
+use msascope::header::{AnnotColors, Band, BandSpec, Strip};
 use msascope::pyramid::Pyramid;
 use msascope::scheme::Colors;
 use msascope::view::{self, ColumnMap, RowSrc, RowView, Scene, aln_col, row_src};
@@ -16,6 +20,7 @@ use resvg::{tiny_skia, usvg};
 
 use super::actions::clade_name;
 use super::app::MsaScope;
+use super::bands::HeaderRow;
 use super::metrics::*;
 use super::tokens::tokens;
 
@@ -78,6 +83,12 @@ impl MsaScope {
         let (nrows, ncols) = self.dims();
         let opts = self.fig;
         let names_w = if opts.names { self.settings.name_width as f64 } else { 0.0 };
+        // The annotation tracks and the pinned row as shown in the window, with their labels.
+        let track_rows: Vec<(HeaderRow, String)> =
+            self.header_bands().into_iter().filter(|b| matches!(b.row, HeaderRow::Gc(_) | HeaderRow::Gr(_) | HeaderRow::Pinned)).map(|b| (b.row, self.band_label(b.row).to_string())).collect();
+        let tracks_h: f64 = track_rows.iter().map(|(r, _)| if *r == HeaderRow::Pinned { export::PIN_PX } else { export::TRACK_PX }).sum();
+        let ref_row = self.ref_row.clone();
+        let ruler_ref = self.ref_opts.ruler;
         // Rows, alignment columns, view columns (View only) and the cell size.
         let (rows, cols, mut cw, mut ch): (Vec<RowRef>, Vec<usize>, f64, f64) = match region {
             Region::View => {
@@ -100,7 +111,7 @@ impl MsaScope {
         };
         let s = opts.scale.max(1) as f64;
         let check = |cw: f64, ch: f64| {
-            let (w, h) = export::size(names_w, opts.ruler, rows.len(), cols.len(), cw, ch);
+            let (w, h) = export::size(names_w, opts.ruler, tracks_h, rows.len(), cols.len(), cw, ch);
             match kind {
                 Kind::Svg => export::check_svg(rows.len(), cols.len()),
                 Kind::Png => export::check_png((w * s).ceil() as usize, (h * s).ceil() as usize),
@@ -164,7 +175,36 @@ impl MsaScope {
                     .zip(labels)
                     .map(|(&r, label)| FigRow { src: match r { RowRef::View(v) => row_src(rview, v), RowRef::Seq(a) => RowSrc::Seq(a as usize) }, label })
                     .collect();
-                let fig = Figure { aln: &d.aln, stats: &d.stats, colors: &colors, rows: fig_rows, cols: cols.clone(), cw, ch, names_w, ruler: opts.ruler, ui_font: format!("{ui}, sans-serif"), mono_font: format!("{mono}, monospace"), fg, muted, base };
+                let tracks: Vec<FigTrack> = track_rows
+                    .into_iter()
+                    .filter_map(|(row, label)| {
+                        let band = match row {
+                            HeaderRow::Gc(i) => TrackBand::Annot { data: &d.aln.gc[i].data, kind: d.aln.gc[i].kind() },
+                            HeaderRow::Gr(i) => TrackBand::Annot { data: &d.aln.gr[i].data, kind: TrackKind::of(&d.aln.gr[i].tag) },
+                            HeaderRow::Pinned => TrackBand::Pinned { codes: &ref_row.as_deref()?.codes },
+                            _ => return None,
+                        };
+                        Some(FigTrack { band, label })
+                    })
+                    .collect();
+                let fig = Figure {
+                    aln: &d.aln,
+                    stats: &d.stats,
+                    colors: &colors,
+                    rows: fig_rows,
+                    cols: cols.clone(),
+                    cw,
+                    ch,
+                    names_w,
+                    ruler: opts.ruler,
+                    ui_font: format!("{ui}, sans-serif"),
+                    mono_font: format!("{mono}, monospace"),
+                    fg,
+                    muted,
+                    base,
+                    tracks,
+                    ruler_ref: ref_row.as_deref().filter(|_| ruler_ref),
+                };
                 let bytes = match kind {
                     Kind::Svg => {
                         let mut out = Vec::new();
@@ -177,44 +217,71 @@ impl MsaScope {
                         let mut pix = tiny_skia::Pixmap::new(pw, ph).ok_or_else(|| std::io::Error::other("image too large"))?;
                         let bg = tile_theme.bg;
                         pix.fill(tiny_skia::Color::from_rgba8((bg >> 16) as u8, (bg >> 8) as u8, bg as u8, 255));
-                        // Cells, drawn as the tiles are.
-                        let (ox, oy) = ((names_w * s).round() as usize, (if opts.ruler { export::RULER_PX } else { 0.0 } * s).round() as usize);
+                        // Cells, drawn as the tiles are, under the ruler and the tracks.
+                        let (ox, oy) = ((names_w * s).round() as usize, ((fig.tracks_top() + fig.tracks_h()) * s).round() as usize);
                         let (cwp, chp) = (cw * s, ch * s);
                         let (cw_px, ch_px) = (((nc as f64) * cwp).round() as usize, ((nr as f64) * chp).round() as usize);
-                        let mut buf = vec![0u8; cw_px * ch_px * 4];
-                        match rows.first() {
+                        // The view's own layout, or one of just the selected rows and columns.
+                        let (sub_rows, sub_map, own);
+                        let (scene, x0, y0) = match rows.first() {
                             Some(RowRef::View(v0)) => {
                                 let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid: layout.as_deref().map_or(&d.pyramid, |l| &l.pyramid), map, rows: rview, colors: &colors, base };
-                                scene.render(cwp, chp, (first_view_col as f64 * cwp).round() as i64, (*v0 as f64 * chp).round() as i64, cw_px, ch_px, &mut buf);
+                                (scene, (first_view_col as f64 * cwp).round() as i64, (*v0 as f64 * chp).round() as i64)
                             }
                             _ => {
                                 let seqs: Vec<u32> = rows.iter().map(|r| if let RowRef::Seq(a) = r { *a } else { 0 }).collect();
                                 let n = seqs.len() as u32;
-                                let sub_rows = RowView::new(seqs, d.aln.rows(), n, Vec::new(), Vec::new(), Vec::new());
-                                let sub_map = ColumnMap { visible: cols.iter().map(|&c| c as u32).collect() };
-                                let own;
+                                sub_rows = RowView::new(seqs, d.aln.rows(), n, Vec::new(), Vec::new(), Vec::new());
+                                sub_map = ColumnMap { visible: cols.iter().map(|&c| c as u32).collect() };
                                 let pyramid = if cwp >= 1.0 && chp >= 1.0 {
                                     &d.pyramid
                                 } else {
                                     own = Pyramid::build_mapped(&d.aln, base.unwrap_or(&d.stats.consensus), Some(&sub_map.visible), Some(&sub_rows));
                                     &own
                                 };
-                                let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid, map: Some(&sub_map), rows: Some(&sub_rows), colors: &colors, base };
-                                scene.render(cwp, chp, 0, 0, cw_px, ch_px, &mut buf);
+                                (Scene { aln: &d.aln, stats: &d.stats, pyramid, map: Some(&sub_map), rows: Some(&sub_rows), colors: &colors, base }, 0, 0)
                             }
-                        }
+                        };
                         let data = pix.data_mut();
-                        for y in 0..ch_px.min(ph as usize - oy) {
-                            for x in 0..cw_px.min(pw as usize - ox) {
-                                let i = (y * cw_px + x) * 4;
-                                if buf[i + 3] == 0 {
-                                    continue;
+                        // BGRA `src` (`w` px wide) onto the image at (x, y), skipping transparent pixels.
+                        let mut blit = |src: &[u8], w: usize, h: usize, x: usize, y: usize| {
+                            for j in 0..h.min((ph as usize).saturating_sub(y)) {
+                                for i in 0..w.min((pw as usize).saturating_sub(x)) {
+                                    let k = (j * w + i) * 4;
+                                    if src[k + 3] == 0 {
+                                        continue;
+                                    }
+                                    let o = ((y + j) * pw as usize + x + i) * 4;
+                                    data[o..o + 4].copy_from_slice(&[src[k + 2], src[k + 1], src[k], 255]);
                                 }
-                                let o = ((oy + y) * pw as usize + ox + x) * 4;
-                                data[o..o + 4].copy_from_slice(&[buf[i + 2], buf[i + 1], buf[i], 255]);
                             }
-                        }
+                        };
+                        let mut buf = vec![0u8; cw_px * ch_px * 4];
+                        scene.render(cwp, chp, x0, y0, cw_px, ch_px, &mut buf);
+                        blit(&buf, cw_px, ch_px, ox, oy);
                         drop(buf);
+                        // Track bands, drawn as the header's tiles are.
+                        if !fig.tracks.is_empty() {
+                            let mut y = 0.0f32;
+                            let bands = fig
+                                .tracks
+                                .iter()
+                                .map(|t| {
+                                    let band = match t.band {
+                                        TrackBand::Annot { data, kind } => Band::Annot { data, kind },
+                                        TrackBand::Pinned { codes } => Band::Row { codes },
+                                    };
+                                    let b = BandSpec { y, h: t.height() as f32, band };
+                                    y += t.height() as f32;
+                                    b
+                                })
+                                .collect();
+                            let strip = Strip { scene: &scene, bands, identity_ref: None, bg: tile_theme.bg, annot: AnnotColors::new(&tile_theme), scale: s };
+                            let sh = strip.height_dev();
+                            let mut sbuf = vec![0u8; cw_px * sh * 4];
+                            strip.render(cwp, x0, cw_px, &mut sbuf);
+                            blit(&sbuf, cw_px, sh, ox, (fig.tracks_top() * s).round() as usize);
+                        }
                         // Names, ruler and letters on top.
                         let mut svg = Vec::new();
                         fig.svg(false, &mut svg)?;
