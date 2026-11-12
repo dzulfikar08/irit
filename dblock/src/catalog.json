@@ -348,7 +348,7 @@
     ],
     "format": "tar.gz",
     "size": 1735095710,
-    "extracted": 3500000000,
+    "extracted": 3082500727,
     "md5": "07c10655620843b517d0df0c160d911f",
     "md5_source": "https://zenodo.org/api/records/14897628",
     "env": "CHECKM2DB",

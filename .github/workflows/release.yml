@@ -139,7 +139,6 @@ jobs:
           done
           if [ "${{ matrix.arch }}" = x86_64 ]; then
             for b in $CLI_BINS; do
-              if [ "$b" = irit-gtdb-prep ]; then "$dir/$b" --help > /dev/null; continue; fi
               out="$("$dir/$b" --version)"; echo "$out"
               case "$out" in *"${VERSION}"*) ;; *) echo "::error::$b --version does not report ${VERSION}"; exit 1 ;; esac
             done
@@ -299,7 +298,6 @@ jobs:
             codesign --verify --strict "$bin"
             codesign --display --verbose=2 "$bin" 2>&1 | grep -q '^Authority=Developer ID Application' \
               || { echo "::error::$b is not Developer ID signed"; exit 1; }
-            if [ "$b" = irit-gtdb-prep ]; then "$bin" --help > /dev/null; continue; fi
             out="$("$bin" --version)"; echo "$out"
             case "$out" in *"${VERSION}"*) ;; *) echo "::error::$b --version does not report ${VERSION}"; exit 1 ;; esac
           done

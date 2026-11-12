@@ -256,7 +256,7 @@ Every URL, size and checksum in the built-in catalog was checked against the pub
 | `gtdbtk-r232-placement-lite` | 175 MB (11 parts) | 5.9 GB | Same without the full bacterial tree (no `--full_tree`). |
 | `gtdbtk-r232-ani-screen` | 2.1 GB (3 parts) | 2.3 GB | Screen index for `gtdbprep ani`, GTDB-Tk's ANI species screen without the 85 GB skani database. **Derived** from GTDB data by an unofficial mirror. See below. |
 | `gtdbtk-r232-mockup` | 26 MB | ~120 MB | Test database. For gtdbprep use `gtdbtk-r232-client` (below). |
-| `checkm2-db-v3` | 1.7 GB | ~3.5 GB | CheckM2 ≥ 1.1.0 only. |
+| `checkm2-db-v3` | 1.7 GB | 3.08 GB (measured) | CheckM2 ≥ 1.1.0 only. |
 | `silva-144-qiime2-full` | 274 MB | same | QIIME 2 ≥ 2026.4. |
 | `silva-144-qiime2-v4` | 79 MB | same | 515F/806R amplicons only. |
 | `kraken2-standard-8gb-20261022` | 5.9 GB | 7.5 GB | Runs in 8 GB RAM. |
