@@ -33,6 +33,8 @@
 - **Reports are byte-identical between runs** (#6): `remaining_if_deduplicated_percent` summed
   over duplication levels in a hash map's order, so its last digits could change from run to run
   and `replay.sh`'s hash check of the JSON report failed. The levels are now summed in order.
+  A test runs leanqc with 1 to 4 threads, eight times, on reads that push the duplication
+  estimate past its tracking limit, and compares the JSON byte for byte (it fails on the old code).
 
 ### gtdbprep
 - `irit-gtdb-prep --version` (and `-V`) works (#9); it said "unexpected argument". The release
