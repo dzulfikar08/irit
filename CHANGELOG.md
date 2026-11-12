@@ -20,6 +20,23 @@
   and the JSON of short-read files are unchanged. N50 and the other figures match an independent
   calculation on a public MinION run and a 1.5 GB synthetic file; peak memory stayed at 14–23 MB.
 
+### gtdbprep
+- **`ani` fetches sketches in parallel**: `--fetch-jobs N` range requests in flight (default 4,
+  at most 16; `1` is the old one-at-a-time behaviour). Failed requests (connection errors, cut-off
+  bodies, 408, 429, 5xx) are retried up to 5 times with growing, jittered waits and `Retry-After`;
+  a request with no answer for 60 s, or a body slower than 32 KiB/s, is cut off and retried
+  instead of waiting up to 10 minutes. Each sketch goes to the cache as soon as it is checked.
+  From GTDB's server, 377 sketches (1.23 GB) took 474–562 s instead of 1,167–2,275 s; for a few
+  dozen sketches the connection's variation was as large as the gain.
+- **`ani --species-only`** (opt-in) fetches only the references whose shared marker count shows
+  they could reach ANI 95 (the smallest species radius) at AF 0.5, with a wide margin. GTDB-Tk's
+  call is the same: identical on six test genomes, with 47 instead of 882 sketches fetched
+  (147 MB instead of 2.8 GB; *M. tuberculosis* 1 instead of 377). The unassigned-hits file of an
+  unassigned genome, and possibly the "other related references" column, list fewer references
+  than GTDB-Tk's.
+- `ani` writes `<work>/screen.tsv`: every screened-in reference per genome with its shared marker
+  count and whether it was used. With `--species-only`, the summary table gains a `used` column.
+
 ## 0.3.3 (2026-11-12)
 
 ### irit-mcp

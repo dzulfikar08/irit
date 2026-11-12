@@ -72,10 +72,13 @@ What's done, what's next, and what's further out. Items move up as evidence come
       is on irit-data (`dblock` entry `gtdbtk-r232-ani-screen`). Sketches come from an unpacked
       `sketches.db`, or, opt-in, from GTDB's archive through a seek index (2–6× the download), with
       a per-user cache; GTDB won't publish the skani folder unpacked and asked for exactly these
-      two safeguards ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)). Next:
-      parallel range requests; an opt-in "species call only" flag that fetches only references
-      that can reach their radius (far fewer downloads, but fewer "other related references" rows
-      than GTDB-Tk's).
+      two safeguards ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)). Built
+      since (unreleased): parallel range requests with retries (377 sketches from GTDB's server in
+      474–562 s instead of 1,167–2,275 s), and the opt-in `--species-only`, which fetched 47 instead of 882
+      sketches for six test genomes with the same calls (fewer unassigned-hits rows than GTDB-Tk's;
+      [measurements](research/ani-laptop.md#7-parallel-requests-and-a-species-only-mode)). Next:
+      check `--species-only` on genera with many moderately related species, where the "other
+      related references" column may lose rows.
 - [ ] **`msascope` after the redesign** (built in 0.3.0–0.3.2: themes, names, hover card, colour
       schemes, hidden insert and gappy columns, tree panel, selection, export, sort and filter,
       motif search, annotation tracks, reference row): remember the reference row between

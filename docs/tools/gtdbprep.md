@@ -298,6 +298,12 @@ These are estimates from the measured average (9.3 GB for 3,166 references). Gen
 same genus share most references, and all runs share one cache (below): a second run of the
 same genomes fetched nothing and took 18 s, and needs no `--source`.
 
+**If you only need the species, `--species-only` fetches far less.** It fetches only the
+references that could give the species call (see below). Measured with `--source gtdb` and an
+empty cache: *M. tuberculosis* H37Rv 1 reference instead of 377 (2.9 MB instead of 1.23 GB),
+*E. coli* K-12 18 instead of 420 (61 MB instead of 1.32 GB), *B. subtilis* 168 14 instead of 21.
+The species call is the same; what can be missing are rows of the other two files (below).
+
 **`--source gtdb` is opt-in, at GTDB's request.** GTDB publishes the skani database only inside its 60.8 GB
 `.tar.gz`. `gtdbprep ani` reads sketches out of that file on GTDB's server with HTTP range
 requests, through the seek index that comes with the screen index (a checkpoint every 4 MiB).
@@ -333,7 +339,40 @@ Options:
   has them). `--env` is a GTDB-Tk 2.8.0 environment.
 - `--skani` must be the version the database was made with (0.3.1 for R232), or pass
   `--allow-skani-version`. Bioconda's GTDB-Tk 2.8.0 brings skani 0.4.0 unless you pin it.
+- `--fetch-jobs N` (default 4, at most 16): range requests in flight at once. `1` fetches one at
+  a time, as earlier versions did. Failed requests (connection errors, a cut-off body, 408, 429 and 5xx)
+  are retried up to 5 times with growing waits; a request that gets no answer for 60 s, or whose
+  body arrives slower than 32 KiB/s, is cut off and retried. Each sketch is checked and written
+  to the cache as soon as it arrives, so an interrupted run keeps what it fetched.
+- `--species-only` fetches only the references that could give the species call. See below.
 - `--full-db <skani/database>` is for testing: it runs the same GTDB-Tk call on a full database.
+
+`<work>/screen.tsv` lists every reference the screen kept for each genome: its shared marker
+count, both marker counts, the count `--species-only` requires, and whether it was used.
+
+**`--species-only`.** GTDB-Tk assigns a species from the closest reference with AF >= 0.5, and
+only if that reference's ANI reaches its own radius. No radius in R232 is below 95. A reference
+that can't reach ANI 95 can therefore never give the call. If it isn't the closest, it doesn't
+matter. If it is the closest, every other reference is also below 95, so the genome is
+unassigned either way. `--species-only` drops references whose marker count shows they can't
+reach that ANI, with a wide margin:
+
+- it keeps a reference if the genome and the reference share at least the number of marker k-mers
+  expected at ANI 93 (2 points below the smallest radius, read from `radii/gtdb_radii.tsv`) and
+  AF 0.5, less 4 standard deviations (a binomial count). That is 10.9% of the smaller marker set
+  (356 of 4,000 markers), against 0.9% in skani's own screen;
+- on six test genomes (882 references screened in), every reference with ANI >= 95 and AF >= 0.5
+  was kept, the closest one to the limit with 4.7 times the shared markers required, and GTDB-Tk's
+  `ani_summary.tsv` came out byte-identical to the full run's for all five assigned genomes.
+
+What you lose: `gtdbtk.ani_screen_unassigned_hits.tsv.gz` (every skani hit of genomes the screen
+does not assign) lists only the references that were fetched. For a test genome with no species
+within reach, that was 2 rows instead of 14. GTDB-Tk's `classify` reads this file for its notes
+on genomes placed in the tree (closest reference, near misses), so those notes can differ too;
+the placement and the classification itself don't use it. The "other related references" column
+of `ani_summary.tsv` can also lose rows of more distant references: every reference dropped on the
+test genomes had ANI 87.1 or less (or no skani hit). None were lost from the five assigned genomes'
+files. Measurements: [The ANI species check on a laptop](../research/ani-laptop.md#7-parallel-requests-and-a-species-only-mode).
 
 It prints, per genome, the number of marker k-mers and of references screened in, and the bytes
 fetched. Peak memory was 1.9 GB for 9 genomes (3,166 references); GTDB-Tk's own screen on the full

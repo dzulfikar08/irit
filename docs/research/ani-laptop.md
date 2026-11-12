@@ -41,6 +41,10 @@ skani 0.3.1 (tag `v0.3.1`), GTDB-Tk 2.8.0 (commit `155d989`) and the R232 packag
   GTDB's archive is opt-in (`--source gtdb`), at GTDB's request, and fetched sketches are cached
   per user.
 - **skani 0.4.0 gave the same files as 0.3.1** on these genomes, against the same 0.3.1 database.
+- **Later additions** ([section 7](#7-parallel-requests-and-a-species-only-mode)): parallel range
+  requests, which cut 377 sketches (1.23 GB) from GTDB's server from 1,167–2,275 s to 474–562 s, and the
+  opt-in `--species-only`. On six genomes it fetched 47 of the 882 screened-in references with
+  the same species calls, but lists fewer unassigned hits than GTDB-Tk.
 
 ## 1. How `skani search` uses its database
 
@@ -160,7 +164,7 @@ R232 has one gzip member; `sketches.db` starts 3,072 bytes into the tar stream a
 
 All **measured**, except the 1 MiB compressed size, scaled from the other two. Requests went one
 at a time, from a US runner to GTDB's server in Australia, so time is mostly latency at 1 MiB and
-bandwidth at 16 MiB. Parallel requests would help; they are not built yet.
+bandwidth at 16 MiB. Parallel requests were added later; see [section 7](#7-parallel-requests-and-a-species-only-mode).
 
 **Or re-host `sketches.db` unpacked.** GitHub Release assets support single range requests (206,
 **measured**; `release-assets.githubusercontent.com`, Azure Blob behind a 302 redirect, about
@@ -244,10 +248,11 @@ The per-genome cost depends on the lineage. Well-sampled genera (Pseudomonas, th
 group) and small or partial genomes pull in hundreds to thousands of references. A cache shared
 between runs helps a lab that works on the same taxa: the second run here fetched nothing.
 
-**A cheaper mode is possible, but not exact.** The species call itself only needs references
-that can reach their radius (ANI >= 95% and AF >= 0.5). A much stricter screen would fetch far
-fewer references, but the "other related references" column and the unassigned-hits file would
-then list fewer rows than GTDB-Tk's. Not built: GTDB-Tk-identical output was the goal.
+**A cheaper mode, for the species call only.** The species call only needs references that can
+reach their radius (ANI >= 95% and AF >= 0.5). A much stricter screen fetches far fewer
+references, but the unassigned-hits file, and possibly the "other related references" column,
+then list fewer rows than GTDB-Tk's. It is now built as the opt-in `--species-only`
+([section 7](#7-parallel-requests-and-a-species-only-mode)).
 
 ## 6. What was decided
 
@@ -265,10 +270,117 @@ then list fewer rows than GTDB-Tk's. Not built: GTDB-Tk-identical output was the
    `--source` has no default (`--source gtdb` reads GTDB's archive), and fetched sketches go to one
    cache per user (`~/.cache/irit/gtdbprep-ani`), so no sketch is fetched twice on a machine. A
    local or split `sketches.db` works with `--source`; `sketches.db` is not re-hosted.
-3. **A "species call only" flag** (fetch only references that can reach their radius) is on the
-   roadmap as an opt-in for later.
+3. **A "species call only" flag** (fetch only references that can reach their radius) was
+   planned as an opt-in for later; it is now `--species-only` (section 7).
 
-## 7. Licences and credit
+## 7. Parallel requests and a species-only mode
+
+Added after the first version (2026-11-12): `--fetch-jobs` (parallel range requests, default 4)
+and `--species-only`. Measured on a 12-core laptop in Indonesia on a home connection, reading
+from GTDB's server in Australia through the 4 MiB seek index (`--source gtdb`), each run with its
+own empty cache. All numbers are **measured**. Test genomes: a *B. subtilis* 168 assembly
+(Shovill/SKESA, from ENA run DRR000852), and from NCBI *S. aureus* NCTC 8325 (GCF_000013425.1),
+*M. jannaschii* DSM 2661 (GCF_000091665.1, archaeon), *M. tuberculosis* H37Rv (GCF_000195955.2) and
+*E. coli* K-12 MG1655 (GCF_000005845.2).
+
+### Parallel range requests
+
+The client plans the same requests as before (one per sketch, or one per group of sketches near
+one checkpoint), then runs them from a pool of workers with at most `--fetch-jobs` in flight.
+Each sketch is checked against the index and written to the cache as it arrives. That keeps
+memory bounded (at most about twice `--fetch-jobs` requests' bytes are held at once), and an
+interrupted run keeps what it fetched. Failed requests are retried with growing waits and
+jitter, `Retry-After` is honoured, and a stalled request is cut off and retried.
+
+Fetch phase only (screen and GTDB-Tk excluded), sequential (irit 0.3.2) against 4 parallel
+requests. Every run of a genome fetched the same bytes in the same number of requests, and
+wherever both were run, the outputs matched: byte-identical `ani_summary.tsv` files and the same
+unassigned-hits rows. The fetch time includes writing the small database (well under a second).
+
+| Genome | Sketches | Downloaded | Requests | One at a time (s) | 4 in parallel (s) |
+|---|---:|---:|---:|---|---|
+| M. tuberculosis H37Rv | 377 | 1,225.6 MB | 370 | 2,275 (with a 10-minute stall), 1,167 | 474, 562 |
+| E. coli K-12 | 420 | 1,324.9 MB | 406 | not run | 502 |
+| S. aureus NCTC 8325 | 28 | 86.0 MB | 28 | 288, 69, 55, 53, 44 (median 55) | 47, 42, 38, 30, 29 (median 38) |
+| B. subtilis 168 | 21 | 60.8 MB | 21 | 71, 50 | 25, 185 |
+| M. jannaschii | 19 | 60.4 MB | 19 | 34, 50 | 31, 43, 59, 164 |
+
+What this shows:
+
+- **For hundreds of sketches, parallel requests were 2 to 5 times faster.** In two pairs of runs
+  on *M. tuberculosis*, one request at a time took 2,275 s (including a stall, below) and 1,167 s
+  (1.05 MB/s), four at a time 474 s and 562 s (2.2–2.6 MB/s). Neither parallel run retried
+  anything.
+- **For a few dozen sketches, the connection's own variation is as large as the effect.** Runs
+  alternating between the two on *S. aureus* favour parallel requests (median 38 s against 55 s),
+  but two parallel runs on the other small genomes took 3–4 times as long as the sequential runs
+  before them. Those two ran before retries were logged, so whether they retried is not known;
+  the later runs logged no retries. More runs at different times of day would be needed to say
+  more.
+- **Stalls.** The first sequential *M. tuberculosis* run sat for about 10 minutes on a
+  connection that delivered nothing, until irit 0.3.2's 600 s request timeout fired. One
+  sequential *S. aureus* run took 288 s instead of about 55 s. The new client cuts off a request
+  that gets no answer for 60 s, or whose body arrives slower than 32 KiB/s, and retries it.
+- `--fetch-jobs 8` was not faster than 4 here (b168: 36 and 57 s; *S. aureus* 36 s). The cap is
+  16 requests, to keep the load on GTDB's server modest; reading from GTDB stays opt-in.
+
+### Species call only (`--species-only`)
+
+GTDB-Tk's rule (`ANIScreener.sort_skani_ani_screen`, 2.8.0) takes the closest hit with
+AF >= 0.5 (max of the two directions), ordered by ANI then AF. It assigns that hit's species only
+if the ANI reaches that reference's own radius. No radius in R232 is below 95.0. So a reference
+whose ANI is below 95 can never give the call: if it is the closest AF-passing hit, every other
+hit is below 95 too, and the genome is unassigned either way. Any set of references that keeps
+all hits with ANI >= 95 therefore gives the same call. Dropping references by *their own* radius
+would not be safe: a closest hit at 96.5 with a 97 radius leaves the genome unassigned, and
+removing it would assign the next one.
+
+The client can't know the ANI before fetching, but the screen counts shared marker k-mers.
+For a pair with ANI `a` over an aligned fraction `f` of the smaller genome, a 21-mer marker
+survives with probability at least `a^21` (more if the differences cluster). So at least about
+`f × a^21` of the smaller marker set is shared. `--species-only` keeps a reference if the shared
+count is at least the binomial expectation at ANI 93 (2 points below the smallest radius, read
+from `radii/gtdb_radii.tsv`) and AF 0.5, less 4 standard deviations. That is 10.9% of the smaller
+set (356 of 4,000 markers), against skani's 0.9%. The fingerprint count can only be too high,
+which errs the same way.
+
+Checked on the five genomes above plus a sixth with no species within reach: the *B. subtilis*
+assembly with 6% of its bases changed at random (`bmut`; closest reference GCF_000009045.1 at
+ANI 93.45, so unassigned). Every species-only run used an empty cache:
+
+| Genome | Sketches (full → species-only) | Downloaded | Requests | Fetch (s) | Call | GTDB-Tk's files |
+|---|---|---|---|---|---|---|
+| M. tuberculosis | 377 → 1 | 1,225.6 → 2.9 MB | 370 → 1 | 474 → 24 | same (GCF_000195955.2, 100.0) | `ani_summary.tsv` byte-identical |
+| E. coli K-12 | 420 → 18 | 1,324.9 → 60.9 MB | 406 → 18 | 502 → 36 | same (GCA_047199095.1, 97.14) | byte-identical, all 15 other related references |
+| S. aureus | 28 → 4 | 86.0 → 11.5 MB | 28 → 4 | 29–47 → 36 | same (GCF_001027105.1, 99.86) | byte-identical |
+| B. subtilis 168 | 21 → 14 | 60.8 → 40.7 MB | 21 → 14 | 25–185 → 19 | same (GCF_000009045.1, 100.0) | byte-identical, all 13 other related references |
+| M. jannaschii | 19 → 8 | 60.4 → 25.6 MB | 19 → 8 | 31–164 → 14 | same (GCF_000091665.1, 100.0) | byte-identical |
+| bmut (unassigned) | 17 → 2 | 49.2 → 6.0 MB | 17 → 2 | 34 → 38 | same (unassigned) | unassigned hits: 2 rows instead of 14 |
+| **All six** | **882 → 47** | **2,807 → 147 MB** | | | **6 of 6 the same** | |
+
+Fetch times on the small genomes swing with the connection, as above; the drop in bytes and
+requests is the reliable figure.
+
+- **E. coli is the near-tie case.** Three references are within their radius: GCA_047199095.1
+  at 97.14, *s__Escherichia coli* GCF_003697165.2 at 96.92 and GCA_048288465.1 at 95.20. All
+  three were kept, and the call is GTDB-Tk's.
+- **The margin is wide.** skani's ANI and AF for all 882 screened-in pairs, against the rule: no
+  pair with ANI >= 95 and AF >= 0.5 was dropped, and the one closest to the threshold
+  (E. coli vs GCA_048288465.1, ANI 95.20, AF 0.81) shares 1,760 markers where the rule asks for
+  378, 4.7 times as many. Every dropped reference had ANI 87.1 or less, or no skani hit at all.
+  These pairs are a test fixture (`gtdbprep/src/ani/testdata/species_only_hits.tsv`), and a unit
+  test replays GTDB-Tk's rule on them.
+- **What is missing compared with GTDB-Tk.** The unassigned-hits file of a genome the screen
+  doesn't assign lists only the fetched references (bmut: 2 of 14 rows). GTDB-Tk's `classify`
+  reads that file for its notes on placed genomes (closest reference, near misses), so those notes
+  can be shorter; the placement and classification don't use it. The "other related references"
+  column can lose references the rule drops (here, below ANI 87.1); none were lost on these
+  genomes, whose related references are all at ANI 87.8 or more. Genomes in genera with many
+  moderately related species may lose some.
+- **It is not GTDB-Tk-identical output**, so it stays opt-in. The default still fetches every
+  reference skani's screen keeps.
+
+## 8. Licences and credit
 
 - **GTDB data** (the skani database, radii, taxonomy) is CC BY-SA 4.0 (Parks et al., the Genome
   Taxonomy Database, <https://gtdb.ecogenomic.org>). The screen index and the seek index are
