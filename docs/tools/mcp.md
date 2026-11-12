@@ -291,6 +291,7 @@ Assembles one isolate from paired-end Illumina reads.
 | `r1`, `r2` | files (required) | Read 1 and read 2 FASTQ (e.g. fastp's `out1`, `out2`). |
 | `outdir` | folder (required) | Output folder; the assembly is `<outdir>/contigs.fa`. One per sample. |
 | `overwrite` | boolean | Allow an `outdir` that has files. Default `false`. |
+| `link_as` | file | Also make this path (e.g. `genomes/s1.fna`) a relative link to `<outdir>/contigs.fa`, so CheckM2, GTDB-Tk and `gtdbprep_ani` name the genome after the sample. Recorded (`links`) and recreated by `replay.sh` (`ln -sfn`). Not inside `outdir`. |
 | `assembler` | `spades`, `skesa`, `megahit`, `velvet` | Default `spades`. |
 | `gsize` | text | Genome size like `2.8M`, `4500K`, `5000000`. Default: estimated from the reads. |
 | `depth` | integer | Sub-sample to this depth; `0` turns it off. Default 150. |
@@ -549,18 +550,22 @@ A session an agent might run (paths shortened):
 {"name": "fastp", "arguments": {"in1": "reads/s1_R1.fastq.gz", "in2": "reads/s1_R2.fastq.gz",
   "out1": "trim/s1_R1.fastq.gz", "out2": "trim/s1_R2.fastq.gz", "json": "trim/s1.fastp.json"}}
 {"name": "shovill", "arguments": {"r1": "trim/s1_R1.fastq.gz", "r2": "trim/s1_R2.fastq.gz",
-  "outdir": "asm/s1", "assembler": "skesa", "ram": 8}}
+  "outdir": "asm/s1", "assembler": "skesa", "ram": 8, "link_as": "genomes/s1.fna"}}
 {"name": "dblock_env", "arguments": {}}
 {"name": "bakta", "arguments": {"genome": "asm/s1/contigs.fa", "prefix": "s1", "outdir": "bakta/s1", "skip": ["plot"]}}
-{"name": "checkm2", "arguments": {"genomes": ["asm/s1/contigs.fa"], "outdir": "checkm2", "lowmem": true}}
+{"name": "checkm2", "arguments": {"genomes": ["genomes/s1.fna"], "outdir": "checkm2", "lowmem": true}}
+{"name": "gtdbprep_ani", "arguments": {"genome_dir": "genomes", "index": "/db/ani-screen-r232", "work": "ani", "species_only": true}}
+{"name": "gtdbtk_classify_wf", "arguments": {"genome_dir": "genomes", "data_path": "ani/gtdbtk_data", "out_dir": "gtdbtk", "pplacer_cpus": 1}}
 {"name": "mlst", "arguments": {"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.mlst.tsv"}}
 {"name": "amrfinder", "arguments": {"nucleotide": "asm/s1/contigs.fa", "organism": "Staphylococcus_aureus",
   "plus": true, "output": "typing/s1.amrfinder.tsv"}}
-{"name": "isotable", "arguments": {"dirs": ["trim", "typing"], "require": ["reads", "q30", "mlst", "amr"]}}
+{"name": "isotable", "arguments": {"dirs": ["trim", "asm", "checkm2", "gtdbtk", "typing"]}}
 ```
 
-CheckM2 and GTDB-Tk name genomes after the file (`contigs` here); for several samples, give them a
-folder of `<sample>.fa` files instead.
+None of the folders (`trim/`, `asm/`, `genomes/`, ...) need to exist first. CheckM2 and GTDB-Tk
+name genomes after the file, so Shovill's `link_as` makes `genomes/s1.fna` a link to
+`asm/s1/contigs.fa`: the genome is `s1` in their results and isotable joins it. isotable's default
+isolate requirements (reads, Q30, contigs, N50, completeness) are then all met.
 
 The run's `replay.sh` then has lines like these:
 

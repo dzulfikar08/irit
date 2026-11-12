@@ -26,6 +26,13 @@ pub struct FileRecord {
     pub volatile: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LinkRecord {
+    pub path: String,
+    /// What the link holds, as written (relative to the link's folder).
+    pub target: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
@@ -62,6 +69,9 @@ pub struct CallRecord {
     /// by replay.sh (`mkdir -p`), so a replay works from a clean folder.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dirs: Vec<String>,
+    /// Symlinks the server made before the tool ran, recreated by replay.sh (`ln -sfn`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<LinkRecord>,
     /// Paths relative to the run folder.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stdout: Option<String>,
@@ -441,6 +451,9 @@ pub fn replay_script(log: &RunLog) -> String {
                     let dirs = c.dirs.iter().map(|d| sh_quote(d)).collect::<Vec<_>>().join(" ");
                     s += &format!("mkdir -p -- {dirs} || exit 1\n");
                 }
+                for l in &c.links {
+                    s += &format!("ln -sfn -- {} {} || exit 1\n", sh_quote(&l.target), sh_quote(&safe_path(&l.path)));
+                }
                 let step = format!("step {n} {} {} {cmd}\n", c.exit_status.unwrap_or(0), runner(c));
                 if fetch {
                     s += &sh_comment(&format!("downloads databases again: {}", step.trim_end()));
@@ -658,6 +671,7 @@ mod tests {
             inputs: vec![FileRecord { path: "/data/x/my reads's.fq".into(), size: 3, sha256: Some("aa".into()), symlink_to: None, volatile: false }],
             outputs: vec![FileRecord { path: "/data/x/qc/r.json".into(), size: 5, sha256: Some("bb".into()), symlink_to: None, volatile: false }],
             dirs: Vec::new(),
+            links: Vec::new(),
             stdout: None,
             stdout_sha256: None,
             stderr: None,
@@ -704,6 +718,10 @@ mod tests {
         c.dirs = vec!["/data/x/qc".into(), "/data/x/my run".into()];
         let s = replay_script(&log_of(vec![c]));
         assert!(s.contains("mkdir -p -- /data/x/qc '/data/x/my run' || exit 1\nstep 001 "), "{s}");
+        let mut c = call(1, Status::Ok);
+        c.links = vec![LinkRecord { path: "/data/x/genomes/s 1.fna".into(), target: "../asm/s1/contigs.fa".into() }];
+        let s = replay_script(&log_of(vec![c]));
+        assert!(s.contains("ln -sfn -- ../asm/s1/contigs.fa '/data/x/genomes/s 1.fna' || exit 1\nstep 001 "), "{s}");
     }
 
     #[test]

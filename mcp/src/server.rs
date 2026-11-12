@@ -129,6 +129,18 @@ fn version_text(out: Option<std::process::Output>) -> Option<String> {
     String::from_utf8_lossy(&out.stdout).lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
 }
 
+/// Makes `link` point at `target`, replacing a symlink already there (the call's checks allowed it).
+fn make_link(link: &Path, target: &Path) -> Result<(), String> {
+    let err = |e: std::io::Error| format!("could not link {} to {}: {e}", link.display(), target.display());
+    if std::fs::symlink_metadata(link).is_ok_and(|m| m.file_type().is_symlink()) {
+        std::fs::remove_file(link).map_err(err)?;
+    }
+    #[cfg(unix)]
+    return std::os::unix::fs::symlink(target, link).map_err(err);
+    #[cfg(not(unix))]
+    return Err(format!("could not link {}: symlinks need a Unix system", link.display()));
+}
+
 fn find_on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).map(|d| d.join(name)).find(|p| p.is_file())
@@ -199,6 +211,7 @@ impl Irit {
             inputs: Vec::new(),
             outputs: Vec::new(),
             dirs: Vec::new(),
+            links: Vec::new(),
             stdout: None,
             stdout_sha256: None,
             stderr: None,
@@ -241,6 +254,12 @@ impl Irit {
         let _claim = self.busy.claim(id, targets).await;
         let dirs = validate::output_folders(&self.cfg.ctx, &inv.outputs);
         rec.dirs = dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect();
+        rec.links = inv
+            .links
+            .iter()
+            .map(|(p, t)| record::LinkRecord { path: p.to_string_lossy().into_owned(), target: t.to_string_lossy().into_owned() })
+            .collect();
+        let links = inv.links.clone();
         let (mut inputs, outputs) = (inv.inputs.clone(), inv.outputs.clone());
         let (bundled, prog, ctx) = (inv.bundled_data, program.clone(), self.cfg.ctx.clone());
         let prepared = tokio::task::spawn_blocking(move || {
@@ -251,7 +270,12 @@ impl Irit {
             if let Some(bundled) = bundled {
                 inputs.extend(bundled(&prog, &ctx));
             }
-            Ok::<_, String>((record::input_records(&inputs), record::snapshot(&outputs)))
+            let snap = record::snapshot(&outputs);
+            // After the snapshot, so the links are recorded as outputs (and checked by replay.sh).
+            for (link, target) in &links {
+                make_link(link, target)?;
+            }
+            Ok::<_, String>((record::input_records(&inputs), snap))
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
