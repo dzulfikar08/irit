@@ -19,6 +19,7 @@ leanqc reads/*.fastq.gz -o qc/ -t 4
 | `--phred 33\|64` | Quality encoding, instead of detecting it (see [Quality encoding](#quality-encoding)). |
 | `--dup-distinct N` | Distinct sequences tracked for duplication and overrepresented sequences (default 100,000, as FastQC). |
 | `--no-html` | JSON and TSV only. |
+| `--long` | Long-read views for every file (see [Long reads](#long-reads-ont-pacbio)); without it, only for files whose median read is over 1,000 bp. |
 
 Input can be plain, gzip, bzip2, xz or zstd. FASTA works; the quality modules are skipped. A
 truncated file (a gzip stream that stops early, or a last record without its quality line) is an
@@ -89,6 +90,90 @@ translations of FastQC's Java code, each marked with the FastQC class and method
   direction. More than 2,500 tiles also turns it off.
 - **Per-read quality.** The most common mean read quality; ties go to the lower score.
 
+## Long reads (ONT, PacBio)
+
+When a file's median read is longer than 1,000 bp (or with `--long`), the report gets a **Long
+reads** section and the JSON a `long_reads` object; the terminal line gets a second line with the
+same summary. Files with shorter reads are reported exactly as before: their JSON has no
+`long_reads` field.
+
+- **Lengths**: total bases, N50 and N90, mean and median length, longest read, and reads and bases
+  per length bin on a log scale (10 bins per factor of ten: 1,000–1,258 bp, 1,259–1,584 bp, …).
+  N50 is the length L such that reads of length L or more hold at least half of all bases (N90:
+  90%). These come from the exact length histogram the FastQC modules keep anyway, so they are
+  exact.
+- **Read quality**: each read's quality is the Phred score of the mean of its bases' error
+  probabilities, −10·log10(mean(10^(−Q/10))), which is how basecallers report a read's mean
+  quality; the mean of the scores (what FastQC's per-read module uses) is higher, by about 7 points
+  for a read of half Q10 and half Q30 bases. Reported: the distribution (by whole Phred score),
+  the mean and median (median to 0.1, rounded down), reads at or above Q10 and Q20 with their share
+  of reads and of bases, and the mean read quality per length bin (quality against length).
+  Qualities are read as Phred+33; with Phred+64 qualities the quality views are left out with a
+  warning.
+
+The ten FastQC checks are unchanged for long reads, so their verdicts still match FastQC's (the
+corpus file of 5–6 kb reads is compared with FastQC as before). Read them with this in mind:
+
+- **Read length** warns whenever lengths differ, which they always do for long reads.
+- **Per-read quality** uses the mean of the scores and FastQC's Q20/Q27 limits; the read-quality
+  view above is the one to use for nanopore data.
+- **Per-position modules** use FastQC's position groups (fewer than 75, about 2,000 bp wide for
+  reads up to 130 kb); groups near the longest reads are covered by few reads, and quality
+  percentiles are only computed where more than 100 reads cover a position, as in FastQC.
+- **Per-tile quality** needs Illumina read names with a tile field; nanopore (`@<uuid> runid=…`)
+  and PacBio (`@m64011_…/1/ccs`) names have none, so it is skipped with that reason, as FastQC
+  drops the module.
+- **Duplication and overrepresented sequences** look at the first 50 bases of each read, as FastQC
+  does; on nanopore reads that are not trimmed, adapter and barcode sequence at the read start
+  shows up here.
+
+JSON fields under `long_reads`:
+
+| Field | Meaning |
+|---|---|
+| `detected` | `"auto"` (median read above 1,000 bp) or `"--long"` |
+| `reads`, `bases` | reads (empty ones included) and bases |
+| `mean_length`, `median_length` | bp; the median of an even count is the mean of the two middle reads |
+| `n50`, `n90` | bp; `null` when there are no bases |
+| `longest` | bp |
+| `length_bins[]` | `min`, `max` (bp, inclusive), `reads`, `bases`, `mean_read_quality` (`null` without qualities) |
+| `read_quality` | `null` for FASTA or Phred+64; else the fields below |
+| `read_quality.reads` | reads with qualities (empty reads have none) |
+| `read_quality.mean`, `.median` | Phred, of the per-read qualities |
+| `read_quality.distribution` | `[Q, reads]` pairs: reads with quality from Q up to Q+1 |
+| `read_quality.q10_reads`, `.q10_percent`, `.q10_bases_percent` | reads with quality ≥ Q10, as a count, a percent of reads, and their bases as a percent of all bases |
+| `read_quality.q20_reads`, `.q20_percent`, `.q20_bases_percent` | the same for Q20 |
+
+Memory doesn't grow with the file: the long-read tables have a fixed size (90 length bins, read
+quality in 0.1 steps), and the length histogram has one entry per distinct read length.
+
+Measured on this project's laptop on 2026-11-12 (shared with another long job; leanqc 0.3.2 from
+main against this version, alternating runs, `--no-html`):
+
+| File | main | this version | Peak RSS (both) |
+|---|---|---|---|
+| Synthetic, 1.5 GB FASTQ, 90,010 reads, log-normal lengths (median 5 kb, up to 300 kb) | 9.3 s (median of 10) | 7.1 s (median of 10) | 22–23 MB |
+| Same generator, first 0.3 GB | | 1.4 s | 15 MB |
+| ENA DRR1060986 (MinION, *Salmonella* Dublin), 148 MB gzipped, 13,144 reads | 3.2 s (3 runs) | 2.6 s (3 runs) | 14 MB |
+| Synthetic short reads, 1 GB, 150 bp | 5.3 s (4 runs) | 3.9 s (4 runs) | 13 MB |
+
+This version also adds work (an error-probability sum per base), and the faster times were not
+traced to a cause (code generation is the likely one); take them as "not slower". The JSON for the
+short-read file is identical to main's, and for the long-read files identical apart from the new
+`long_reads` object. The synthetic file comes from `scripts/make_long_fastq.py`.
+
+Checked against an independent Python calculation (reading the FASTQ and computing every figure
+from the reads):
+
+| | DRR1060986: Python | leanqc | Synthetic: Python | leanqc |
+|---|---|---|---|---|
+| Reads / bases | 13,144 / 157,701,283 | same | 90,010 / 749,352,750 | same |
+| Mean / median length | 11,997.97 / 7,588.5 | same | 8,325.22 / 5,018 | same |
+| Longest | 127,760 | same | 300,000 | same |
+| N50 / N90 | 20,227 / 5,363 | same | 13,751 / 3,799 | same |
+| Mean / median read quality | Q19.874 / Q20.329 | Q19.87 / Q20.3 | Q13.262 / Q12.886 | Q13.26 / Q12.8 |
+| Reads ≥ Q10 / ≥ Q20 | 13,144 / 7,208 | same | 58,630 / 13,348 | same |
+
 ### Quality encoding
 
 leanqc reads qualities as Phred+64 only when the lowest character is `@` (64) or above **and** the
@@ -154,7 +239,8 @@ FastQC's time includes about 0.5 s of container start; its memory is the contain
   it.
 - FastQC's options for grouping (`--nogroup`, `--expgroup`), custom `limits.txt`, adapter and
   contaminant files are not supported.
-- Long-read specific views (read-length N50, quality by length) are not there yet.
+- The long-read views have no verdicts of their own (no thresholds are applied to N50 or read
+  quality).
 - Single-threaded per file: one huge file uses one core.
 
 ## Credit

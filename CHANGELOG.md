@@ -11,6 +11,15 @@
   PNG and SVG (SVG keeps track characters and labels as text). The figure's ruler counts the
   reference's residues when the view's does.
 
+### leanqc
+- **Long-read views** (ONT, PacBio), for files whose median read is over 1,000 bp or with the new
+  `--long`: total bases, N50/N90, mean and median length, longest read, reads and bases per
+  log-scale length bin; each read's quality from its mean error probability, its distribution,
+  mean and median, reads (and bases) at or above Q10 and Q20, and mean read quality by length. In
+  the HTML report, the JSON (`long_reads`, documented) and the terminal summary. The FastQC checks
+  and the JSON of short-read files are unchanged. N50 and the other figures match an independent
+  calculation on a public MinION run and a 1.5 GB synthetic file; peak memory stayed at 14–23 MB.
+
 ## 0.3.3 (2026-11-12)
 
 ### irit-mcp
