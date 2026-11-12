@@ -30,6 +30,9 @@ pub struct Invocation {
     /// File-name endings of outputs that differ between identical runs (logs, dated files);
     /// recorded with their hash, but replay.sh only checks they exist.
     pub volatile: &'static [&'static str],
+    /// Data the program brings with it (found from the program's own path once it is resolved),
+    /// hashed into the record with the inputs. mlst's bundled PubMLST schemes, for example.
+    pub bundled_data: Option<fn(&Path, &Ctx) -> Vec<PathBuf>>,
 }
 
 impl Invocation {
@@ -44,6 +47,7 @@ impl Invocation {
             external: false,
             expect: Vec::new(),
             volatile: &[],
+            bundled_data: None,
         }
     }
     pub(crate) fn opt(&mut self, name: &str, value: impl ToString) {

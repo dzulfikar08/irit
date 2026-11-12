@@ -271,6 +271,11 @@ fn setup() -> Setup {
         script(&tools, n, b);
     }
     fake_amrfinder_db(&work.join("db/amrfinderplus/2026-10-29.1"));
+    // mlst's bundled data, where the stand-in's `../db` is (as in Bioconda's package).
+    for (f, text) in [("VERSION.txt", "2025-12-29\n"), ("scheme_species_map.tab", "#SCHEME\tGENUS\tSPECIES\n"),
+        ("blast/mlst.fa.nsq", "x"), ("pubmlst/saureus/saureus.txt", "ST\tarcC\n22\t7\n")] {
+        write(&work, &format!("db/{f}"), text);
+    }
     for (n, seq) in [("reads/s1_R1.fastq", "@r1\nACGT\n+\nIIII\n"), ("reads/s1_R2.fastq", "@r1\nTTGA\n+\nIIII\n")] {
         write(&work, n, seq);
     }
@@ -506,6 +511,7 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     let res = &r["structuredContent"]["results"][0];
     assert_eq!((res["sample"].as_str(), res["scheme"].as_str(), res["st"].as_str()), (Some("s1"), Some("saureus"), Some("22")), "{r}");
     assert!(r["structuredContent"]["command"].as_str().unwrap().contains("--label=s1"));
+    assert_eq!(r["structuredContent"]["database_version"], "2025-12-29", "{r}");
     let r = c.call("mlst", json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.tsv"}));
     assert_eq!(r["structuredContent"]["field"], "outfile", "{r}");
 
@@ -544,6 +550,10 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     let calls = log["calls"].as_array().unwrap();
     let ok: Vec<&Value> = calls.iter().filter(|c| c["status"] == "ok").collect();
     assert_eq!(ok.iter().map(|c| c["mcp_tool"].as_str().unwrap()).collect::<Vec<_>>(), ["shovill", "mlst", "amrfinder", "isotable"]);
+    let mlst_inputs: Vec<&str> = ok[1]["inputs"].as_array().unwrap().iter().map(|i| i["path"].as_str().unwrap()).collect();
+    for want in ["db/VERSION.txt", "db/scheme_species_map.tab", "db/blast/mlst.fa.nsq", "db/pubmlst/saureus/saureus.txt"] {
+        assert!(mlst_inputs.iter().any(|p| p.ends_with(want)), "{want} not in {mlst_inputs:?}");
+    }
     let amr = ok[2];
     assert_eq!(amr["version"], "4.2.7");
     assert!(amr["inputs"].as_array().unwrap().iter().any(|i| i["path"].as_str().unwrap().ends_with("2026-10-29.1/version.txt")));

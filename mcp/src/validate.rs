@@ -21,10 +21,10 @@ pub struct Ctx {
     pub runs_root: Option<PathBuf>,
 }
 
-/// The last four are the database locations Bakta, CheckM2, GTDB-Tk and AMRFinderPlus read when no path is
-/// given; the server resolves them up front and records the value it used.
-pub const RESOLUTION_VARS: [&str; 8] =
-    ["HOME", "NXF_HOME", "DBLOCK_STORE", "XDG_DATA_HOME", "BAKTA_DB", "CHECKM2DB", "GTDBTK_DATA_PATH", "AMRFINDER_DB"];
+/// The last five are the database locations Bakta, CheckM2, GTDB-Tk, AMRFinderPlus and mlst read when no
+/// path is given; the server resolves them up front and records the value it used.
+pub const RESOLUTION_VARS: [&str; 9] =
+    ["HOME", "NXF_HOME", "DBLOCK_STORE", "XDG_DATA_HOME", "BAKTA_DB", "CHECKM2DB", "GTDBTK_DATA_PATH", "AMRFINDER_DB", "MLST_DBDIR"];
 
 impl Ctx {
     pub fn new(cwd: PathBuf, root: PathBuf, allow_outside_root: bool, runs_root: &Path) -> Ctx {

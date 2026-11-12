@@ -8,12 +8,14 @@ Used by .github/workflows/mcp-real-tools.yml. Standard library only. The run:
    `amrfinderplus-db/latest` of a folder of links to its own database, so neither dblock folder changes.
 2. Two samples. mg: Mycoplasma genitalium G37 (simulated reads, the published assembly) through
    fastp, bakta, checkm2, gtdbtk_classify_wf and amrfinder on Bakta's proteins. sa: real Illumina reads
-   of Staphylococcus aureus (ERR044595, as nf-core/bacass tests with) through fastp, shovill, mlst and
-   amrfinder. Then isotable over all results, with mlst and AMR required.
+   of Staphylococcus aureus (ERR044595, as nf-core/bacass tests with) through fastp, shovill (SKESA),
+   mlst and amrfinder, and shovill with SPAdes and its default correction steps, typed again. Then
+   isotable over all results, with mlst and AMR required.
 3. Moves those outputs aside and runs the tools again with the same paths: any output whose
    SHA-256 differs between the two identical runs is listed (the "volatile" outputs replay.sh
    can't hash-check). For JSON files, the fields that differ are listed too.
-4. Deletes the first run's outputs and runs replay.sh; then dblock_verify: the databases are unchanged.
+4. Deletes the first run's outputs and runs replay.sh; then dblock_verify with deep: every database
+   file, including the AMRFinderPlus indexes dblock built, still has its locked SHA-256.
 
 Writes a Markdown report to $GITHUB_STEP_SUMMARY (or stdout) and exits non-zero if a tool call
 failed, a result is not what the sample should give, or the replay failed.
@@ -23,6 +25,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -210,6 +213,22 @@ def main():
         row = (st.get("results") or [{}])[0]
         # ERR044595 is an EMRSA-15 isolate: ST22.
         expect(f"mlst sa{suffix}", (row.get("sample"), row.get("scheme"), row.get("st")) == ("sa", "saureus", "22"), json.dumps(row)[:300])
+        # mlst's bundled PubMLST data is in the record: its date, and the files it types with.
+        expect(f"mlst sa{suffix} data version", re.fullmatch(r"\d{4}-\d{2}-\d{2}", st.get("database_version") or "") is not None,
+               str(st.get("database_version")))
+        # Shovill's default assembler, SPAdes, with its default read correction, stitching and Pilon
+        # polishing; the SKESA run above skips them to save time. Typed again: same ST.
+        asm = call(
+            "shovill",
+            {"r1": "trim/sa_R1.fastq.gz", "r2": "trim/sa_R2.fastq.gz", "outdir": "shovill/sa_spades", "assembler": "spades",
+             "gsize": "2.8M", "depth": 30, "cpus": 4, "ram": 8},
+            f"shovill spades sa{suffix}",
+        )
+        size = asm.get("assembly", {}).get("total_length", 0)
+        expect(f"shovill spades sa{suffix}", 2_600_000 < size < 3_100_000, f"{size} bp; S. aureus is about 2.8 Mb")
+        st = call("mlst", {"contigs": ["shovill/sa_spades/contigs.fa"], "outfile": "shovill/sa_spades.mlst.tsv"}, f"mlst spades sa{suffix}")
+        row = (st.get("results") or [{}])[0]
+        expect(f"mlst spades sa{suffix}", (row.get("scheme"), row.get("st")) == ("saureus", "22"), json.dumps(row)[:300])
         amr = call(
             "amrfinder",
             {
@@ -300,8 +319,11 @@ def main():
             os.rename(work / d, work / f"{d}_first")
     run_all("_again")
     # Nothing above may have changed a fetched database (the old way, amrfinder_update, wrote into Bakta's).
-    verify = call("dblock_verify", {})
-    expect("databases unchanged", "CHANGED" not in verify.get("report", "x"), verify.get("report", "")[:600])
+    # deep: every file's SHA-256 against the lock, including the indexes dblock built for AMRFinderPlus.
+    verify = call("dblock_verify", {"deep": True}, "dblock_verify deep")
+    report_text = verify.get("report", "x")
+    expect("databases unchanged", "CHANGED" not in report_text, report_text[:600])
+    expect("AMRFinderPlus database verified deep", amr_id in report_text and "CHANGED" not in report_text, report_text[:600])
     c.close()
 
     log("## Outputs that differ between two identical runs (same paths)")

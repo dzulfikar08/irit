@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### irit-mcp
+- **mlst's PubMLST data is in the run record.** After locating `mlst`, the server finds its data
+  the way mlst 2.35.0 does (`$MLST_DBDIR`, else `db/` next to the real script) and hashes
+  `VERSION.txt`, the scheme map, the allele BLAST database and every scheme's profile table (about
+  180 files). `$MLST_DBDIR` is recorded and exported by `replay.sh`, and the mlst result gives
+  `database_version` (the data's date). Two builds with different scheme snapshots no longer look
+  the same in the record.
+
 ## 0.3.2 (2026-11-12)
 
 ### msascope

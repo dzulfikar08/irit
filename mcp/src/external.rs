@@ -449,8 +449,13 @@ fn shell_safe_path(field: &str, shown: &str, p: &Path) -> Check<()> {
 pub fn shovill(ctx: &Ctx, p: &ShovillParams) -> Check<Invocation> {
     let cwd = ctx.cwd.as_path();
     let mut inv = external("shovill");
-    // shovill.log carries times and the machine's CPUs and RAM.
-    inv.volatile = &["shovill.log"];
+    // shovill.log carries times and the machine's CPUs and RAM. SPAdes (Shovill's default) gave
+    // different contigs.fa bytes in two identical runs in the real-tools workflow (same length within
+    // the S. aureus check; run 43194785664); SKESA's were identical.
+    inv.volatile = match p.assembler {
+        None | Some(ShovillAssembler::Spades) => &["shovill.log", "contigs.fa"],
+        Some(_) => &["shovill.log"],
+    };
     let r1 = v::existing_file(cwd, "r1", &p.r1)?;
     v::sequence_file(&r1, "r1", &p.r1, Seq::Fastq)?;
     let r2 = v::existing_file(cwd, "r2", &p.r2)?;
@@ -1185,7 +1190,7 @@ fn sample_from_output(value: &str, tag: &str) -> Option<String> {
 // Flags: mlst v2.35.0 bin/mlst (`setOptions` and the main block),
 // https://github.com/tseemann/mlst/blob/v2.35.0/bin/mlst; same list as `mlst --help` of bioconda
 // mlst=2.35.0. Not offered: --csv and --legacy (isotable reads the tab-separated layout), --blastdb and
-// --datadir (the PubMLST data comes with the installed mlst, so the pinned version fixes it), --fofn,
+// --datadir (the PubMLST data comes with the installed mlst, or from $MLST_DBDIR; see `mlst_data`), --fofn,
 // --list/--longlist/--info/--check (they don't type anything), --exclude, --quiet, --debug.
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1230,9 +1235,83 @@ pub struct MlstParams {
     pub threads: Option<u32>,
 }
 
+/// The data mlst 2.35.0 types with: VERSION.txt (the data's date), scheme_species_map.tab, the BLAST
+/// database of every allele (`blast/mlst.fa.*`, built from the allele files, which are not listed
+/// separately) and each scheme's profile table (`pubmlst/<scheme>/<scheme>.txt`, allele numbers to
+/// ST). About 180 files for 2.35.0's 162 schemes.
+///
+/// Where it is comes from mlst itself: `mlst --help` prints the resolved `--datadir` and `--blastdb`
+/// defaults (bin/mlst: `$MLST_DBDIR`, else `$FindBin::RealBin/../db`), so a wrapper script in front of
+/// mlst or a set `$MLST_DBDIR` is followed. If --help gives no paths, `db/` next to the real path
+/// of the program (Bioconda's layout), or `$MLST_DBDIR`, is used.
+pub fn mlst_data(program: &Path, ctx: &Ctx) -> Vec<PathBuf> {
+    let mut cmd = std::process::Command::new(program);
+    cmd.arg("--help").current_dir(&ctx.cwd).stdin(std::process::Stdio::null());
+    if let Some(d) = ctx.var("MLST_DBDIR") {
+        cmd.env("MLST_DBDIR", d);
+    }
+    let help = cmd.output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let (datadir, blastdb) = mlst_help_paths(&help);
+    let (datadir, blastdb) = match (datadir, blastdb) {
+        (Some(d), Some(b)) => (d, b),
+        _ => {
+            let db = match ctx.var("MLST_DBDIR").filter(|v| !v.is_empty()) {
+                Some(d) => ctx.cwd.join(d),
+                None => match std::fs::canonicalize(program).ok().and_then(|r| r.parent()?.parent().map(|p| p.join("db"))) {
+                    Some(db) => db,
+                    None => return Vec::new(),
+                },
+            };
+            (db.join("pubmlst"), db.join("blast").join("mlst.fa"))
+        }
+    };
+    let mut files = Vec::new();
+    if let Some(db) = datadir.parent() {
+        files.push(db.join("VERSION.txt"));
+        files.push(db.join("scheme_species_map.tab"));
+    }
+    if let (Some(dir), Some(prefix)) = (blastdb.parent(), blastdb.file_name().and_then(|n| n.to_str()))
+        && let Ok(rd) = std::fs::read_dir(dir)
+    {
+        files.extend(rd.flatten().map(|e| e.path()).filter(|p| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.strip_prefix(prefix).is_some_and(|r| r.starts_with('.')))
+        }));
+    }
+    if let Ok(rd) = std::fs::read_dir(&datadir) {
+        for e in rd.flatten() {
+            let profile = e.path().join(format!("{}.txt", e.file_name().to_string_lossy()));
+            if profile.is_file() {
+                files.push(profile);
+            }
+        }
+    }
+    files.retain(|p| p.is_file());
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// `--datadir` and `--blastdb` defaults from mlst 2.35.0's --help, printed as
+/// `  --datadir [X]       PubMLST data folders [...] (default '/path')`.
+fn mlst_help_paths(help: &str) -> (Option<PathBuf>, Option<PathBuf>) {
+    let find = |opt: &str| {
+        help.lines().find(|l| l.trim_start().starts_with(opt)).and_then(|l| {
+            let (_, rest) = l.rsplit_once("(default '")?;
+            let path = rest.strip_suffix("')")?;
+            (!path.is_empty()).then(|| PathBuf::from(path))
+        })
+    };
+    (find("--datadir"), find("--blastdb"))
+}
+
 pub fn mlst(ctx: &Ctx, p: &MlstParams) -> Check<Invocation> {
     let cwd = ctx.cwd.as_path();
     let mut inv = external("mlst");
+    inv.bundled_data = Some(mlst_data);
+    // mlst reads it from the environment it inherits; recorded so replay.sh types with the same data.
+    if let Some(d) = ctx.var("MLST_DBDIR").filter(|v| !v.is_empty()) {
+        inv.env.insert("MLST_DBDIR".into(), d.to_string_lossy().into_owned());
+    }
     // Seen in the real-tools workflow: the JSON has the same values but its keys in another order
     // each run (mlst writes it with to_json without `canonical`, and Perl randomises hash order).
     // The table isotable reads is identical, and hash-checked.
@@ -1904,6 +1983,10 @@ mod tests {
                 "--nocorr",
             ]
         );
+        // SKESA's contigs are reproducible; SPAdes's (also the default) are not.
+        assert_eq!(inv.volatile, ["shovill.log"]);
+        let spades: ShovillParams = parse(json!({"r1": "reads/s1_R1.fq", "r2": "reads/s1_R2.fq", "outdir": "asm/s2"}));
+        assert_eq!(shovill(&cx, &spades).unwrap().volatile, ["shovill.log", "contigs.fa"]);
         assert!(inv.expect[0][0].ends_with("asm/s1/contigs.fa"));
         assert_eq!(inv.inputs.len(), 2);
 
@@ -1933,6 +2016,49 @@ mod tests {
             j[invented] = json!("x");
             assert!(serde_json::from_value::<ShovillParams>(j).is_err(), "{invented}");
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mlst_data_follows_the_program_or_mlst_dbdir() {
+        let d = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(d.path()).unwrap();
+        // Bioconda's layout: the real script in <prefix>/bin, data in <prefix>/db; PATH may hold a symlink.
+        write(&root, "pkg/bin/mlst", "#!/bin/sh\n");
+        for f in ["VERSION.txt", "scheme_species_map.tab", "blast/mlst.fa.nsq", "blast/mlst.fa.nin", "blast/other.txt",
+            "pubmlst/saureus/saureus.txt", "pubmlst/saureus/arcC.tfa", "pubmlst/ecoli/ecoli.txt", "pubmlst/stray.txt"] {
+            write(&root, &format!("pkg/db/{f}"), "x\n");
+        }
+        std::fs::create_dir(root.join("path")).unwrap();
+        std::os::unix::fs::symlink(root.join("pkg/bin/mlst"), root.join("path/mlst")).unwrap();
+        let mut cx = ctx(&root);
+        let names = |v: Vec<PathBuf>| v.iter().map(|p| p.strip_prefix(&root).unwrap().display().to_string()).collect::<Vec<_>>();
+        let want = ["pkg/db/VERSION.txt", "pkg/db/blast/mlst.fa.nin", "pkg/db/blast/mlst.fa.nsq", "pkg/db/pubmlst/ecoli/ecoli.txt",
+            "pkg/db/pubmlst/saureus/saureus.txt", "pkg/db/scheme_species_map.tab"];
+        assert_eq!(names(mlst_data(&root.join("path/mlst"), &cx)), want);
+        // $MLST_DBDIR wins, relative to the working folder, and is passed on and recorded.
+        write(&root, "mine/VERSION.txt", "2026-01-01\n");
+        cx.vars.insert("MLST_DBDIR".into(), "mine".into());
+        assert_eq!(names(mlst_data(&root.join("path/mlst"), &cx)), ["mine/VERSION.txt"]);
+        write(&root, "asm/contigs.fa", ">c\nACGT\n");
+        std::fs::create_dir(root.join("typing")).unwrap();
+        let p: MlstParams = parse(json!({"contigs": ["asm/contigs.fa"], "outfile": "typing/s1.mlst.tsv"}));
+        let inv = mlst(&cx, &p).unwrap();
+        assert_eq!(inv.env.get("MLST_DBDIR").map(String::as_str), Some("mine"));
+        assert!(inv.bundled_data.is_some());
+        // A program whose data can't be found records none (the call still runs).
+        assert!(mlst_data(&root.join("nowhere/mlst"), &ctx(&root)).is_empty());
+        // A wrapper script in front of mlst (as in the real-tools workflow): the paths come from
+        // mlst's own --help, not from where the wrapper is.
+        use std::os::unix::fs::PermissionsExt;
+        let help = format!(
+            "#!/bin/sh\necho 'OPTIONS'\necho \"  --blastdb [X]       BLAST database prefix [default via MLST_DBDIR/blast/mlst.fa; --blastdb overrides] (default '{0}/pkg/db/blast/mlst.fa')\"\necho \"  --datadir [X]       PubMLST data folders [default via MLST_DBDIR/pubmlst; --datadir overrides] (default '{0}/pkg/db/pubmlst')\"\n",
+            root.display()
+        );
+        write(&root, "wrap/mlst", &help);
+        std::fs::set_permissions(root.join("wrap/mlst"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(names(mlst_data(&root.join("wrap/mlst"), &ctx(&root))), want);
+        assert_eq!(mlst_help_paths("  --datadir [X] x (default '')\n"), (None, None));
     }
 
     #[test]
