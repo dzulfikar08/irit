@@ -27,7 +27,7 @@ use msascope::view::{self, ColumnMap, RowView, Viewport};
 
 use super::cached::CachedView;
 use super::metrics::*;
-use super::theme::{Settings, ThemeChoice, is_dark};
+use super::theme::{FileStamp, Settings, ThemeChoice, is_dark};
 use super::tokens::{self, tokens};
 
 /// The fit zooms. `Readable` is the view a file opens at (see [`view::initial_view`]).
@@ -296,6 +296,9 @@ pub struct MsaScope {
     /// The reference row's codes and residue numbers.
     pub(super) ref_row: Option<Arc<Reference>>,
     pub(super) ref_opts: RefOpts,
+    /// Size and modification time of the open file when it was opened (for remembering its
+    /// reference row).
+    pub(super) file_stamp: Option<FileStamp>,
     /// Annotation tracks switched off: `#=GC` tags, and `GR <tag>` for the reference's lines.
     pub(super) hidden_tracks: Vec<Box<str>>,
     pub(super) header_tiles: Rc<RefCell<HeaderTiles>>,
@@ -443,6 +446,7 @@ impl MsaScope {
             reference: None,
             ref_row: None,
             ref_opts: RefOpts::default(),
+            file_stamp: None,
             hidden_tracks: Vec::new(),
             header_tiles: Rc::default(),
             hover_band: None,
@@ -505,6 +509,7 @@ impl MsaScope {
         self.status = SharedString::default();
         self.error = None;
         let total = std::fs::metadata(&path).map_or(0, |m| m.len());
+        let stamp = FileStamp::of(&path);
         self.load_two_pass = msascope::parse::sniff(&path).is_ok_and(|(f, _)| f != msascope::parse::Format::Fasta);
         let job = self.jobs.start(path.clone(), total);
         let (id, progress) = (job.id, job.progress.clone());
@@ -570,6 +575,8 @@ impl MsaScope {
                         v.reset_rows(cx);
                         v.hover = None;
                         v.hidden_tracks.clear();
+                        v.file_stamp = stamp;
+                        v.restore_reference();
                         if let Some(w) = warn {
                             v.status = w.into();
                         }
@@ -618,6 +625,7 @@ impl MsaScope {
         self.layout_pending = false;
         self.clear_tree();
         self.path = None;
+        self.file_stamp = None;
         self.error = None;
         self.status = SharedString::default();
         self.matches.clear();
