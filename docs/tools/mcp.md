@@ -254,7 +254,16 @@ How they work:
 
 The large databases are not hashed into the run record (they are tens of GB). Only their small
 version files are: Bakta's `version.json`, GTDB-Tk's `metadata/metadata.txt`, AMRFinderPlus's
-`version.txt`. Use `dblock_verify` to check a database itself.
+`version.txt`. Use `dblock_verify` to check a database itself. One exception: a GTDB-Tk `skani/`
+database of at most 512 MB, such as the one `gtdbprep_ani` builds (9 MB for *B. subtilis*), is
+hashed into `gtdbtk_classify_wf`'s inputs, under the real path of its files, so the record says
+exactly which references the ANI screen compared against.
+
+`gtdbtk_classify_wf` adds a `warnings` entry (in its result and its record) when `data_path` is
+neither inside a dblock store (`$DBLOCK_STORE` or the default, or a `path` in the working folder's
+`dblock.lock`) nor a folder an earlier call of the same run wrote (`gtdbprep_ani`'s
+`<work>/gtdbtk_data`). The call still runs, but nothing in the record then says what that folder
+held beyond the files above, and `replay.sh` will use whatever it holds at replay time.
 
 #### `fastp`
 

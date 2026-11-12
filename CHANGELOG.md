@@ -11,6 +11,10 @@
   classify_wf 4.8 s, same species; the replay matched all 32 outputs. Since that folder is now an
   output of a recorded call, the run record shows where classify_wf's `GTDBTK_DATA_PATH` came from
   (#8).
+- **GTDB-Tk's data is accounted for or flagged** (#8): a `skani/` database of up to 512 MB (the one
+  `gtdbprep_ani` builds is a few MB) is hashed into `gtdbtk_classify_wf`'s inputs under its real
+  path, and the call warns when `data_path` is neither in a dblock store nor written by an earlier
+  call of the run, since the record can't then say what the folder held.
 - **Missing output folders are created** (#2): `trim/s1_R1.fastq.gz` or an `outdir` of `asm/s1`
   no longer needs `trim/` or `asm/` to exist. Only folders of checked outputs are created (so inside
   the root), a file in the way is refused, the record lists them as `dirs`, and `replay.sh` runs

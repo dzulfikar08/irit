@@ -220,6 +220,7 @@ impl Irit {
             external: false,
             error: None,
             assembly: None,
+            warnings: Vec::new(),
         };
         let finish = |mut rec: CallRecord, stdout: Vec<u8>, stderr: String| {
             rec.ended = record::now();
@@ -238,6 +239,7 @@ impl Irit {
         rec.stdout_is_output = inv.stdout_is_output;
         rec.env = inv.env.clone();
         rec.external = inv.external;
+        rec.warnings = inv.warnings.clone();
         let Some(program) = self.resolve(inv.tool, inv.external) else {
             rec.status = Status::Error;
             rec.error = Some(match (&self.cfg.bin_dir, self.cfg.tool_paths.get(inv.tool)) {
@@ -446,7 +448,9 @@ impl Irit {
         if let Some(p) = x::pinned(tool) {
             v["checked_against"] = json!(format!("{tool} {}", p.version));
         }
-        v["warnings"] = json!(x::version_warning(tool, r.version.as_deref()).into_iter().collect::<Vec<_>>());
+        let mut warnings = r.warnings.clone();
+        warnings.extend(x::version_warning(tool, r.version.as_deref()));
+        v["warnings"] = json!(warnings);
         if let Err(e) = summarize(&mut v) {
             v["error"] = json!("output_unreadable");
             v["message"] = json!(format!("{tool} exited 0 but its output could not be read: {e}"));
@@ -454,6 +458,37 @@ impl Irit {
             return Ok(CallToolResult::structured_error(v));
         }
         Ok(CallToolResult::structured(v))
+    }
+
+    /// A warning when GTDB-Tk's data folder is neither in a dblock store (whose files dblock_verify
+    /// checks) nor written by an earlier call of this run (whose outputs are hashed): then nothing
+    /// in the record says what the folder held beyond its metadata.txt (and its skani database,
+    /// when that is small enough to hash).
+    fn unrecorded_data_warning(&self, data: &Path, skani_hashed: bool) -> Option<String> {
+        let ctx = &self.cfg.ctx;
+        let data = validate::resolve(data);
+        let mut stores: Vec<PathBuf> = p::default_store(ctx).into_iter().collect();
+        if let Ok(lock) = std::fs::read_to_string(ctx.cwd.join("dblock.lock")) {
+            stores.extend(lock.lines().filter_map(|l| l.trim().strip_prefix("path = ")).map(|v| PathBuf::from(v.trim_matches('"'))));
+        }
+        if stores.iter().any(|s| data.starts_with(validate::resolve(s))) {
+            return None;
+        }
+        let st = self.state.lock().unwrap();
+        let produced = st.run.log.calls.iter().filter(|c| c.status == Status::Ok).flat_map(|c| &c.outputs).any(|o| {
+            let o = Path::new(&o.path);
+            o.starts_with(&data) || o.parent().is_some_and(|p| validate::resolve(p).starts_with(&data))
+        });
+        if produced {
+            return None;
+        }
+        Some(format!(
+            "data_path {} is not in a dblock store and no earlier call of this run wrote it, so the record holds only its \
+             metadata.txt{}; replay.sh will use whatever the folder holds then. Fetch the data with dblock_fetch, or build it \
+             with gtdbprep_ani in this run",
+            data.display(),
+            if skani_hashed { " and its skani database" } else { "" }
+        ))
     }
 
     fn read_log(&self, run_id: Option<&str>) -> Result<RunLog, String> {
@@ -703,7 +738,13 @@ Placement can need over 100 GB of RAM; on a laptop set pplacer_cpus 1 and scratc
 screen and no memory cap of its own. Returns per genome: classification, method, closest reference and ANI, and warnings, from \
 classify/<prefix>.{bac120,ar53}.summary.tsv.")]
     async fn gtdbtk_classify_wf(&self, Parameters(params): Parameters<x::GtdbtkClassifyWfParams>) -> Result<CallToolResult, ErrorData> {
-        let inv = x::gtdbtk_classify_wf(&self.cfg.ctx, &params);
+        let inv = x::gtdbtk_classify_wf(&self.cfg.ctx, &params).map(|mut i| {
+            if let Some(d) = i.env.get("GTDBTK_DATA_PATH").map(PathBuf::from) {
+                let skani_hashed = !x::small_skani_db(&d.join("skani")).is_empty();
+                i.warnings.extend(self.unrecorded_data_warning(&d, skani_hashed));
+            }
+            i
+        });
         let summaries = inv.as_ref().map(|i| i.expect.concat()).unwrap_or_default();
         let d = self.execute("gtdbtk_classify_wf", &params, inv).await;
         // Only the summaries this call wrote: a stale ar53 file from an earlier run is not a result.
