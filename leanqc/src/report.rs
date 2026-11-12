@@ -1,5 +1,6 @@
 //! Self-contained HTML report: inline SVG charts, no scripts, no external files.
 
+use crate::long::{LenBin, LongReads};
 use crate::stats::{PerTile, Report, Status};
 use std::fmt::Write;
 
@@ -249,6 +250,90 @@ fn tile_heatmap(tiles: &[u32], positions: &[usize], deviation: &[Vec<f32>]) -> S
     s
 }
 
+/// Bars over the log-scale length bins, one per bin (`None`: no bar), with the decades labelled.
+fn length_bars(bins: &[LenBin], vals: &[Option<f64>], ylabel: &str, color: &str) -> String {
+    let ymax = vals.iter().flatten().copied().fold(0.0, f64::max);
+    if bins.is_empty() || ymax <= 0.0 {
+        return "<p class=\"muted\">No data.</p>".into();
+    }
+    let a = Axes { x0: 0.0, x1: bins.len() as f64, y0: 0.0, y1: ymax * 1.05 };
+    let mut s = format!(r#"<svg viewBox="0 0 {W} {H}" role="img" aria-label="{}">"#, esc(ylabel));
+    for t in ticks(a.y0, a.y1, 5) {
+        let y = a.y(t);
+        let _ = write!(
+            s,
+            r##"<line x1="{PAD_L}" x2="{}" y1="{y:.1}" y2="{y:.1}" stroke="#e6e6e6"/><text x="{}" y="{:.1}" class="tk" text-anchor="end">{}</text>"##,
+            W - PAD_R,
+            PAD_L - 6.0,
+            y + 4.0,
+            fmt_tick(t)
+        );
+    }
+    let bw = a.x(1.0) - a.x(0.0);
+    for (i, (b, v)) in bins.iter().zip(vals).enumerate() {
+        if let Some(v) = v {
+            let _ = write!(
+                s,
+                r#"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" fill="{color}"><title>{}–{} bp: {}</title></rect>"#,
+                a.x(i as f64) + 0.5,
+                a.y(*v),
+                (bw - 1.0).max(0.5),
+                a.y(0.0) - a.y(*v),
+                b.min,
+                b.max,
+                fmt_tick(*v)
+            );
+        }
+        // Decades: a label where a bin starts at a power of ten.
+        if b.min == 10usize.pow((b.min as f64).log10().round() as u32) {
+            let _ = write!(s, r#"<text x="{:.1}" y="{}" class="tk" text-anchor="middle">{}</text>"#, a.x(i as f64), H - PAD_B + 16.0, fmt_tick(b.min as f64));
+        }
+    }
+    let _ = write!(
+        s,
+        r##"<line x1="{PAD_L}" x2="{}" y1="{}" y2="{}" stroke="#999"/><text x="{}" y="{}" class="lb" text-anchor="middle">Read length (bp, log scale)</text><text x="12" y="{}" class="lb" text-anchor="middle" transform="rotate(-90 12 {})">{}</text></svg>"##,
+        W - PAD_R,
+        H - PAD_B,
+        H - PAD_B,
+        (PAD_L + W - PAD_R) / 2.0,
+        H - 4.0,
+        H / 2.0,
+        H / 2.0,
+        esc(ylabel)
+    );
+    s
+}
+
+fn long_section(b: &mut String, l: &LongReads) {
+    b.push_str("<h2>Long reads</h2><table>");
+    let row = |b: &mut String, k: &str, v: String| {
+        let _ = write!(b, r#"<tr><th>{k}</th><td class="n">{v}</td></tr>"#);
+    };
+    let bp = |v: Option<usize>| v.map_or("n/a".into(), |v| format!("{} bp", thousands(v as u64)));
+    row(b, "Total bases", thousands(l.bases));
+    row(b, "N50 / N90", format!("{} / {}", bp(l.n50), bp(l.n90)));
+    row(b, "Mean / median length", format!("{} / {} bp", thousands(l.mean_length.round() as u64), thousands(l.median_length.round() as u64)));
+    row(b, "Longest read", bp(Some(l.longest)));
+    if let Some(q) = &l.read_quality {
+        row(b, "Read quality, mean / median", format!("Q{:.1} / Q{:.1}", q.mean, q.median));
+        row(b, "Reads ≥ Q10", format!("{} ({:.2}%; {:.2}% of bases)", thousands(q.q10_reads), q.q10_percent, q.q10_bases_percent));
+        row(b, "Reads ≥ Q20", format!("{} ({:.2}%; {:.2}% of bases)", thousands(q.q20_reads), q.q20_percent, q.q20_bases_percent));
+    }
+    b.push_str("</table>");
+    let why = if l.detected == "auto" { "the median read is longer than 1,000 bp" } else { "--long was given" };
+    let _ = write!(b, r#"<p class="muted">Shown because {why}. N50: half of all bases are in reads this long or longer. A read's quality is the Phred score of its mean error probability, as basecallers report it (lower than the mean of its scores).</p>"#);
+    b.push_str("<h3>Read length</h3>");
+    b.push_str(&length_bars(&l.length_bins, &l.length_bins.iter().map(|x| Some(x.reads as f64)).collect::<Vec<_>>(), "Reads", COLORS[3]));
+    b.push_str(&length_bars(&l.length_bins, &l.length_bins.iter().map(|x| Some(x.bases as f64)).collect::<Vec<_>>(), "Bases", COLORS[0]));
+    if let Some(q) = &l.read_quality {
+        b.push_str("<h3>Read quality</h3>");
+        let pts: Vec<_> = q.distribution.iter().map(|(q, c)| (*q as f64, *c as f64)).collect();
+        b.push_str(&line_chart(&[("reads", COLORS[2], pts)], "Read quality (Phred of the mean error)", "Reads", None, &|_| String::new()));
+        b.push_str("<h3>Read quality by length</h3>");
+        b.push_str(&length_bars(&l.length_bins, &l.length_bins.iter().map(|x| x.mean_read_quality).collect::<Vec<_>>(), "Mean read quality", COLORS[1]));
+    }
+}
+
 fn status_badge(s: Status) -> &'static str {
     match s {
         Status::Pass => r#"<b class="st pass">pass</b>"#,
@@ -276,7 +361,7 @@ pub fn html(r: &Report, version: &str) -> String {
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>leanqc: {name}</title><style>
 body{{font:15px/1.5 system-ui,sans-serif;margin:0;color:#1d1d1f;background:#fafafa}}
 main{{max-width:820px;margin:0 auto;padding:24px 20px 60px}}
-h1{{font-size:20px;margin:0 0 2px;word-break:break-all}}h2{{font-size:16px;margin:32px 0 8px}}
+h1{{font-size:20px;margin:0 0 2px;word-break:break-all}}h2{{font-size:16px;margin:32px 0 8px}}h3{{font-size:14px;margin:18px 0 6px}}
 .muted{{color:#666;font-size:13px}}table{{border-collapse:collapse;width:100%;font-size:14px}}
 td,th{{text-align:left;padding:5px 8px;border-bottom:1px solid #e3e3e3}}th{{font-weight:600}}
 td.n{{text-align:right;font-variant-numeric:tabular-nums}}
@@ -317,6 +402,10 @@ code{{font-size:12px;word-break:break-all}}
         let _ = write!(b, "<tr><td>{}</td><td>{}</td><td class=\"muted\">{}</td></tr>", status_badge(c.status), c.name, esc(&c.detail));
     }
     b.push_str(r#"</table><p class="muted">Thresholds follow FastQC's defaults. A warn or fail is a prompt to look, not a verdict: amplicon, RNA-seq and trimmed data trip some checks by design.</p>"#);
+    if let Some(l) = &r.long_reads {
+        b.push_str(r#"<p class="muted">Long reads: the checks above are FastQC's, made for short reads. Read length warns whenever lengths differ, and per-read quality uses the mean of the scores with FastQC's Q20/Q27 limits, which many nanopore reads fall under. See the long-read views below.</p>"#);
+        long_section(&mut b, l);
+    }
 
     if r.phred_offset.is_some() {
         b.push_str("<h2>Quality by position</h2>");
