@@ -28,6 +28,9 @@ measured on that machine unless it is marked **cited** (with a source) or **esti
   completeness, contamination and the isotable row (byte for byte). Not every file was
   byte-identical: the SKESA assembly varies between runs, and leanqc's JSON changes in the last
   digit of one number.
+- **After the fixes (#2–#11), `irit-mcp`'s own `replay.sh` reruns the whole run from an empty
+  folder**, with no steps added: 57 of 57 checks passed, and every file that differed is a
+  declared volatile one. See [After the fixes](#after-the-fixes).
 - **Ten problems found**, none blocking, filed as issues [#2](https://github.com/dzulfikar08/irit/issues/2)
   to [#11](https://github.com/dzulfikar08/irit/issues/11) (see [Gaps found](#gaps-found)).
 
@@ -238,6 +241,71 @@ Ten problems, most important first. None stopped the run.
 What worked without change: the deep database verify, the version pins, refusals recorded before
 anything runs, the `gtdbprep ani` sketch cache (the second and third runs fetched nothing), gPlace's
 memory cap, and isotable joining fastp, CheckM2 and GTDB-Tk into one row.
+
+## After the fixes
+
+The same run was repeated the same evening with irit built from the fixes for #2–#11, on the same
+laptop, inside an 8 GB cap with swap off, reusing the tool environments and databases (nothing
+was downloaded). It started from an empty folder holding only the reads, and every step went
+through an `irit-mcp` tool; there were no hand-made steps:
+
+`dblock_add`, `dblock_plan`, `dblock_fetch` (all three databases already in the store, reused in
+0.01 s), `dblock_env`, `dblock_verify` with `deep`, `leanqc`, `fastp`, `shovill` (with `link_as`
+naming the assembly `genomes/b168.fna`), `checkm2` on that folder, `gtdbprep_ani` (sketches
+cached), `gtdbtk_classify_wf` on the data folder `gtdbprep_ani` wrote, and `isotable` with its
+default isolate requirements.
+
+| Step | Wall (s) | Peak, cgroup (GiB) |
+|---|---:|---:|
+| dblock_verify `deep` | 11.0 | 0.59 |
+| leanqc | 2.0 | 0.02 |
+| fastp | 15.4 | 1.36 |
+| shovill (SKESA) | 225.3 | 3.06 |
+| checkm2 | 69.8 | 4.90 |
+| gtdbprep_ani | 8.1 | 0.35 |
+| gtdbtk_classify_wf | 4.0 | 0.37 |
+| isotable | 0.2 | 0.07 |
+
+- **Memory:** the whole session peaked at 5.08 GiB, with no OOM kill and the cap never reached.
+- **Time:** compute took 5.4 minutes. The 1-minute load average was 5–10 this time, against 17–43
+  in the first run, so the two wall times are not comparable.
+- **Results:** 56 contigs, 4,151,999 bp, N50 185,951; CheckM2 100.0% complete, 0.03%
+  contaminated; `s__Bacillus subtilis`, closest reference GCF_000009045.1, ANI 100.0, AF 1.0.
+- **isotable passes with its defaults now:** contigs and N50 come from Shovill's folder, counted as
+  QUAST counts them (52 contigs of 500 bp or more, N50 185,951). The first run had to switch those
+  requirements off.
+- **No warning from `gtdbtk_classify_wf`:** its data folder was written by the recorded
+  `gtdbprep_ani` call, and the 9 MB skani database in it is hashed into the record.
+- **dblock:** reusing the ANI-screen folder, which had been hard-linked from another store,
+  pointed its marker at this store. The other store's copy of the marker was left byte-identical.
+
+**Replay.** Every output was then deleted, `dblock.toml` and `dblock.lock` included, leaving the
+reads and the run record. `irit-mcp`'s own `replay.sh` was run unedited, with
+`IRIT_REPLAY_FETCH=1` so that the dblock calls could rebuild the lock (reuse; nothing downloaded),
+inside the same 8 GB cap.
+
+- **It exited 0:** "12 commands re-run, 57 outputs match", in 336 s with a 5.28 GiB peak.
+- **Files:** of the 56 output files, 49 were byte-identical. Among them are leanqc's JSON reports,
+  which differed in the first run (#6), the trimmed reads, Shovill's assembly, CheckM2's report,
+  GTDB-Tk's summaries, the skani database `gtdbprep_ani` built, and the isotable row. The 7 that
+  differed are all marked volatile: 4 logs, GTDB-Tk's `gtdbtk.json` (step times), a gzip file
+  (its header holds a time) and fastp's HTML report.
+- **The assembly:** SKESA gave the same 56-contig assembly as the run this time. It does not
+  always (57 contigs once in the first run). When it doesn't, `replay.sh` prints the new
+  assembly's contigs, length and N50 beside the run's, and reports CheckM2's and isotable's
+  outputs as following the changed assembly instead of failing; irit-mcp's tests check that
+  path.
+
+**Compared with the first run** (irit 0.3.2): the trimmed reads, fastp's JSON and GTDB-Tk's
+summaries are byte-identical. leanqc's JSON differs only in `remaining_if_deduplicated_percent`
+(`91.08363435987002` then, `91.08363435987` now), the number #6 made stable. The assembly has 56
+contigs instead of 57 (the same as the first 8 GB run), so CheckM2's files differ, while its
+completeness and contamination don't.
+
+**One snag, not irit's:** in a first attempt CheckM2 stopped with `AF_UNIX path too long`.
+Python's multiprocessing makes a socket in `$TMPDIR`, and the driver had set that to a deep
+folder, past the 108-byte limit for socket paths. A short `$TMPDIR` fixed it. That attempt was
+discarded, and the run above was started again from an empty folder.
 
 ## Limits of this test
 
