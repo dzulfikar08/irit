@@ -1383,6 +1383,44 @@ mod tests {
         assert!(l.data_path.starts_with(&l.path), "{}", l.data_path);
     }
 
+    /// A database folder hard-linked from another store (as the laptop run did to save disk): the
+    /// marker is updated here, and the other store's marker, which shared its inode, is not.
+    #[test]
+    #[cfg(unix)]
+    fn a_folder_hard_linked_from_another_store_leaves_that_store_alone() {
+        let (body, md5) = archive();
+        let (url, hits) = serve(body.clone());
+        let e = entry(&url, &md5, body.len(), "dir");
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        let (first, _) = obtain(&a, &e, &opts()).unwrap();
+        // cp -al a/mydb b/mydb
+        let mut stack = vec![PathBuf::from("mydb")];
+        while let Some(rel) = stack.pop() {
+            let src = a.join(&rel);
+            if src.is_dir() {
+                fs::create_dir_all(b.join(&rel)).unwrap();
+                stack.extend(fs::read_dir(&src).unwrap().flatten().map(|e| rel.join(e.file_name())));
+            } else {
+                fs::hard_link(&src, b.join(&rel)).unwrap();
+            }
+        }
+        let marker_a = fs::read_to_string(a.join("mydb").join(project::MARKER)).unwrap();
+        let (l, reused) = obtain(&b, &e, &opts()).unwrap();
+        assert!(reused);
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "reuse downloads nothing");
+        assert_eq!(l.fetched, first.fetched, "the data's fetch date is kept");
+        let on_disk = project::read_marker(&b.join("mydb")).unwrap();
+        assert_eq!((on_disk.path, on_disk.data_path), (l.path.clone(), l.data_path.clone()));
+        assert_eq!(fs::read_to_string(a.join("mydb").join(project::MARKER)).unwrap(), marker_a, "the other store's marker changed");
+        assert!(!listing(&b.join("mydb")).iter().any(|p| p.contains(".tmp-")), "{:?}", listing(&b.join("mydb")));
+        // a file of another size in the linked copy is refused, not reused
+        let f = b.join("mydb/mydb/a.txt");
+        fs::remove_file(&f).unwrap();
+        fs::write(&f, "changed!").unwrap();
+        assert!(obtain(&b, &e, &opts()).unwrap_err().to_string().contains("changed since it was fetched"));
+    }
+
     #[test]
     fn cleanup_leaves_other_ids_temp_folders_alone() {
         let (body, md5) = archive();

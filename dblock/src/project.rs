@@ -172,7 +172,13 @@ pub fn read_marker(db_dir: &Path) -> Option<Locked> {
     toml::from_str(&text).ok()
 }
 
+/// Written to a temporary file and renamed into place, so a marker that is a hard link (a store
+/// folder hard-linked from another store) is replaced here only, never changed in the other store.
 pub fn write_marker(db_dir: &Path, entry: &Locked) -> Result<()> {
-    std::fs::write(db_dir.join(MARKER), toml::to_string_pretty(entry)?)?;
+    let tmp = db_dir.join(format!("{MARKER}.tmp-{}", std::process::id()));
+    std::fs::write(&tmp, toml::to_string_pretty(entry)?)?;
+    std::fs::rename(&tmp, db_dir.join(MARKER)).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
     Ok(())
 }
