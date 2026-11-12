@@ -847,8 +847,10 @@ run but does not carry the data.
   is writing.
 - The RO-Crate does not include the data, and has no `agent` (who ran it) yet.
 - No streamable HTTP transport.
-- The real programs are only checked by the opt-in workflow, on a small genome and GTDB's mock
-  database: GTDB-Tk has not been run through irit-mcp with the full R232 data.
+- The real programs are checked by the opt-in workflow on small genomes and GTDB's mock database.
+  With R232 data, GTDB-Tk has run through irit-mcp only on a laptop by hand, for a genome the ANI
+  screen assigns (`gtdbprep_ani`, then `data_path: <work>/gtdbtk_data`; see
+  [the laptop run](../research/e2e-laptop.md)); tree placement through irit-mcp has not.
 - Bakta: the AMRFinderPlus data inside the Bakta v6 databases (`amrfinderplus-db/`) may be older
   than the `amrfinder` Bioconda installs with Bakta 1.12.2, and Bakta then fails with "amrfinder
   error". Give Bakta dblock's `amrfinderplus-db-4.2-2026-10-29.1` as `amrfinderplus-db/latest`
