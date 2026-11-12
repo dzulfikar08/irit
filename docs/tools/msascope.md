@@ -90,8 +90,9 @@ and the theme. On the right, the overview panel shows the whole alignment (the s
 the visible area as a box, the visible range and the legend of the colour scheme; the toolbar
 button at the right end hides it. Settings (theme, name panel width, overview, gappy threshold)
 are saved in `msascope/settings.toml` in the
-platform's config folder (`~/.config` on Linux), with the last 10 files opened; the window without
-a file lists the five most recent that still exist, with their size and age, and a click opens one.
+platform's config folder (`~/.config` on Linux), with the last 10 files opened and the reference
+row of the last 50 files (see [Reference row](#reference-row)); the window without a file lists
+the five most recent that still exist, with their size and age, and a click opens one.
 
 ### Loading
 
@@ -192,6 +193,18 @@ Sorting by identity to the reference and the minimum identity filter use it as b
 reference is an alignment row, so it stays the same row through sorting, filtering, tree order
 and collapsing; a collapsed clade can't be the reference. Opening another file clears it.
 
+The reference and its three options are remembered per file, for the last 50 files, in the
+settings file (one `reference = "…"` line each: size, modification time, row, options, row name,
+path). Opening the same file again restores them ("Reference restored: …" in the status bar)
+when the file's size and modification time are unchanged and a row of that name is there (the
+same row if its name still matches, else the first row with that name). A file rewritten since,
+a renamed row or an unreadable line just means nothing is restored. Clearing the reference
+forgets it for that file. Size and modification time come from the file's metadata, which is read
+anyway when a file is opened; a hash of the file's first block would survive copying the file,
+but needs another read and would match a rewritten file whose first block is unchanged (an
+alignment re-run with the same first sequences), where the stored row number may no longer be the
+same sequence.
+
 ### Selection, copy and export
 
 A selection is a set of rows and a set of columns, kept in the alignment's own numbering so it
@@ -218,13 +231,22 @@ zoom if larger). **Names in figures** and **Ruler in figures** add the name colu
 panel's width) and the column numbers; **PNG at 1× / 2× / 4×** sets the PNG's pixels per screen
 pixel (2× by default).
 
+Figures include the annotation tracks and the pinned reference row as the window shows them
+(the same Tracks menu switches): each `#=GC` track and the reference's `#=GR` tracks in a 14 px
+band under the ruler (`SS_cons` as helix and strand bands with arrowheads, base pairs and coil,
+`PP_cons` as bars, other tags as their characters once columns are at least 7 px wide), then the
+pinned row in a 16 px band with an accent line along its top and its letters at letter size. With
+names on, each band is labelled in the name column (the pinned row with its name and a "ref"
+tag). With "Ruler counts its residues" on, the figure's ruler numbers the reference's residues,
+and with "Compare with it" on, Differences in the figure compare with it, as on screen.
+
 - **SVG**: one rectangle per run of a colour in a row, the residue letters as text (each letter
   a `<tspan>` at its column, so a row selects and copies as its residues), names and ruler as
-  text. Letters are written when cells are at least 7 × 10 px, as on screen. Limited to 200,000
+  text; track bands as one shape per run of a value, track characters and labels as text. Letters are written when cells are at least 7 × 10 px, as on screen. Limited to 200,000
   cells: larger regions are refused with a message to export a PNG instead or select less (Pfam
   PF00042 full, 32,112 rows × 117 shown columns, is 3.8 million cells).
-- **PNG**: the cells are drawn by the same code as the screen's tiles (density colours below one
-  pixel per cell), then the names, ruler and letters are drawn over them from the SVG's text with
+- **PNG**: the cells and the track bands are drawn by the same code as the screen's tiles
+  (density colours below one pixel per cell), then the names, ruler and letters are drawn over them from the SVG's text with
   resvg and the system fonts. Limited to 16,384 px a side and 100 megapixels; a selection too
   large at letter size is drawn at the current zoom (at least 1 px per cell).
 
@@ -829,7 +851,7 @@ and a motif search (`F-x(2)-H-P`, 6,506 matches):
 
 Still to come from phase 8:
 
-- Figures have no tree, and no annotation tracks or pinned reference row.
+- Figures have no tree.
 
 Each step has to keep the load and paint times in [Measured](#measured) within 5% and 1 ms.
 
