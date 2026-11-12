@@ -238,8 +238,15 @@ impl Irit {
 
         let targets: Vec<PathBuf> = inv.outputs.iter().map(|p| validate::resolve(p)).collect();
         let _claim = self.busy.claim(id, targets).await;
-        let (inputs, outputs) = (inv.inputs.clone(), inv.outputs.clone());
-        let (input_recs, before) = tokio::task::spawn_blocking(move || (record::input_records(&inputs), record::snapshot(&outputs)))
+        let (mut inputs, outputs) = (inv.inputs.clone(), inv.outputs.clone());
+        let (bundled, prog, ctx) = (inv.bundled_data, program.clone(), self.cfg.ctx.clone());
+        let (input_recs, before) = tokio::task::spawn_blocking(move || {
+            // It may run the program (mlst --help), so off the async threads.
+            if let Some(bundled) = bundled {
+                inputs.extend(bundled(&prog, &ctx));
+            }
+            (record::input_records(&inputs), record::snapshot(&outputs))
+        })
             .await
             .unwrap_or_default();
         rec.inputs = input_recs;
@@ -566,12 +573,21 @@ file contigs.fa: give mlst a label and amrfinder an output named after the sampl
 
     #[tool(description = "mlst 2.35.0: multi-locus sequence type of assemblies (FASTA) from the PubMLST schemes bundled with mlst, \
 scheme detected unless `scheme` is set. Writes a tab-separated table to `outfile` (name it `<sample>.mlst.tsv`; with one assembly the \
-sample part is used as the row's label, which isotable joins on). Returns per assembly: scheme, ST (`-` when no scheme matched, `~`/`?` \
-marks novel or partial alleles) and alleles.")]
+sample part is used as the row's label, which isotable joins on). The bundled data's VERSION.txt, scheme map, BLAST database and \
+profile tables (or those under $MLST_DBDIR) are hashed into the record. Returns per assembly: scheme, ST (`-` when no scheme matched, \
+`~`/`?` marks novel or partial alleles) and alleles, plus `database_version`.")]
     async fn mlst(&self, Parameters(params): Parameters<x::MlstParams>) -> Result<CallToolResult, ErrorData> {
         let d = self.execute("mlst", &params, x::mlst(&self.cfg.ctx, &params)).await;
         let table = self.cfg.ctx.cwd.join(&params.outfile);
+        let db_version = d
+            .record
+            .inputs
+            .iter()
+            .find(|i| i.path.ends_with("/VERSION.txt"))
+            .and_then(|i| std::fs::read_to_string(&i.path).ok())
+            .map(|t| t.trim().to_string());
         self.external_reply(d, |v| {
+            v["database_version"] = json!(db_version);
             v["results"] = json!(results::mlst_summary(&table)?);
             v["outfile"] = json!(params.outfile);
             Ok(())

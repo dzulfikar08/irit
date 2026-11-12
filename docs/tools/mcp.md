@@ -227,7 +227,8 @@ How they work:
 - **Databases.** Pass the path, or leave it out to use the variable the program reads (`BAKTA_DB`,
   `CHECKM2DB`, `GTDBTK_DATA_PATH`, `AMRFINDER_DB`, as set when the server started). The server
   resolves it before running and records it. `dblock_env` shows the paths of databases that dblock
-  manages. mlst's PubMLST schemes come with the installed mlst, so its pinned version fixes them.
+  manages. mlst's PubMLST schemes come with the installed mlst (or `$MLST_DBDIR`): the server finds
+  them from the program's own path and hashes them into the record (below).
 - **Failure.** A non-zero exit is `tool_failed`, as for the irit tools. An exit status of 0
   without the files the program always writes is `missing_outputs`: it is recorded as a failed
   call and `replay.sh` doesn't rerun it.
@@ -416,10 +417,20 @@ Multi-locus sequence type of assemblies, with the PubMLST schemes bundled with m
 
 Returns `outfile` and `results`, one per assembly: `sample` (the name isotable joins on), `file`,
 `scheme`, `st` and `alleles` (with `full`: the table's own columns). mlst marks a novel allele `~`
-and a partial one `?`, and gives ST `-` when no scheme matched.
+and a partial one `?`, and gives ST `-` when no scheme matched. `database_version` is the date in
+the data's `VERSION.txt` (2025-12-29 for Bioconda's mlst 2.35.0).
+
+The PubMLST data mlst types with is part of the record. mlst 2.35.0 reads it from `$MLST_DBDIR`, or
+else from `db/` next to the real path of the `mlst` script (Bioconda's layout). After locating the
+program, the server asks it where (`mlst --help` prints the resolved `--datadir` and `--blastdb`, so
+a wrapper script in front of mlst is followed; if it prints none, `db/` next to the program's real
+path is used) and hashes `VERSION.txt`, `scheme_species_map.tab`, the BLAST database of every
+allele (`blast/mlst.fa.*`) and each scheme's profile table (`pubmlst/<scheme>/<scheme>.txt`): about
+180 files. The allele files themselves are covered by the BLAST database built from them. A set
+`$MLST_DBDIR` is recorded and exported by `replay.sh`.
 
 Not offered: `--csv` and `--legacy` (isotable reads the tab-separated layout), `--blastdb` and
-`--datadir` (the schemes come with the installed mlst), `--fofn`, `--exclude`, and the listing
+`--datadir` (the schemes come with the installed mlst, or `$MLST_DBDIR`), `--fofn`, `--exclude`, and the listing
 options (`--list`, `--longlist`, `--info`, `--check`).
 
 #### `amrfinder`
@@ -623,7 +634,7 @@ inputs and paths in the real-tools workflow (below) and comparing every file:
 | Tool | Volatile outputs | Why they differ |
 |---|---|---|
 | fastp | `.html` | The HTML report; the JSON report is identical. |
-| shovill | `shovill.log` | Times, and the machine's CPUs and RAM. `contigs.fa` (SKESA) is identical. |
+| shovill | `shovill.log`; with SPAdes (the default) also `contigs.fa` | Times, and the machine's CPUs and RAM. SPAdes 3.15.5 gave different `contigs.fa` bytes in two identical runs (2,803,881 bp both times, same ST); SKESA's `contigs.fa` is identical. |
 | mlst | `.json` | Same values, keys in another order (mlst writes it without sorting, and Perl randomises hash order). The TSV is identical. |
 | bakta | `.log`, `.gbff`, `.embl`, `.json`, `.svg` | Run times and dates (GenBank `LOCUS` date; in the JSON only `run.start` and `run.end`). |
 | checkm2 | `checkm2.log` | Timestamps. |
@@ -745,6 +756,13 @@ run but does not carry the data.
   now comes through `dblock_fetch` too (`gtdbtk-r232-mockup`, since GTDB fixed its MD5).
   `replay.sh` re-ran 22 commands and all 53 outputs matched
   ([run](https://github.com/dzulfikar08/irit/actions/runs/43045271505)).
+  Added on 2026-11-12: Shovill with SPAdes 3.15.5 and its default read correction, stitching and
+  Pilon (30x) gave 2,803,881 bp in 77 s and mlst ST22 again, but a different `contigs.fa` in the
+  second identical run (hence volatile); mlst's record held 177 inputs (the assembly,
+  `VERSION.txt` 2025-12-29, the scheme map, 12 BLAST files and 162 profile tables), found through
+  `mlst --help` behind the workflow's wrapper script; `dblock_verify` with `deep` re-hashed every
+  file of the four databases, including the 162 of the AMRFinderPlus folder with dblock's indexes,
+  and all matched ([run](https://github.com/dzulfikar08/irit/actions/runs/43203640701)).
 - By hand: a session with sheetgen → leanqc → isotable → dblock_catalog replayed with all 7 outputs
   matching; dblock_add, plan, verify, env and check against a local project.
 
@@ -773,13 +791,8 @@ run but does not carry the data.
 - Shovill 1.4.2 runs `spades.py --version` even when SKESA assembles; SPAdes 3.15.5's script fails
   on the newest Python a Bioconda solve can pick, and Shovill then stops ("Can't parse spades
   version"). Install it with `python=3.11` (`shovill=1.4.2 python=3.11`), as the workflow does.
-- SPAdes through Shovill was not run in the workflow (SKESA was, at 30x, without Pilon); whether
-  SPAdes's contigs are identical between two runs is not checked, so its outputs are not marked
-  volatile.
 - CheckM2 1.1.0 from Bioconda can fail to load TensorFlow on newer glibc ("cannot enable
   executable stack"). Setting `GLIBC_TUNABLES=glibc.rtld.execstack=2` for CheckM2 works around it
   (the workflow does this in a wrapper script).
-- mlst's PubMLST schemes ship inside the mlst package and are not hashed into the record; two
-  Bioconda builds of mlst 2.35.0 could in principle carry different scheme snapshots.
 - A long Bakta or GTDB-Tk call blocks until it ends; there is no progress reporting or
   cancellation beyond the client closing the connection.
