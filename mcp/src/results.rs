@@ -317,6 +317,50 @@ pub fn bakta_summary(text: &str) -> Value {
     Value::Object(sections)
 }
 
+/// `gtdbprep ani`'s per-genome table (its stdout: genome, markers, candidates, assigned_by_ani[,
+/// used]) joined with GTDB-Tk's ANI summaries in `<work>/out/classify/ani_screen`: the reference,
+/// ANI, alignment fraction and taxonomy of each genome the screen assigned.
+pub fn gtdbprep_ani_summary(stdout: &str, work: &Path) -> Result<Vec<Value>, String> {
+    let table: String = stdout.lines().take_while(|l| l.contains('\t')).map(|l| format!("{l}\n")).collect();
+    let (header, rows) = parse_table(&table);
+    if header.first().map(String::as_str) != Some("genome") {
+        return Err("no genome table in gtdbprep's output".into());
+    }
+    let mut genomes = table_objects(&header, &rows);
+    for g in &mut genomes {
+        for k in ["markers", "candidates", "used"] {
+            if let Some(n) = g[k].as_str().and_then(|s| s.parse::<u64>().ok()) {
+                g[k] = json!(n);
+            }
+        }
+        g["assigned_by_ani"] = json!(g["assigned_by_ani"] == "true");
+    }
+    let dir = work.join("out/classify/ani_screen");
+    for marker in ["bac120", "ar53"] {
+        let path = dir.join(format!("gtdbtk.{marker}.ani_summary.tsv"));
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let (h, rows) = parse_table(&text);
+        let col = |name: &str| h.iter().position(|c| c == name);
+        let (Some(user), Some(reference), Some(ani), Some(af), Some(tax)) =
+            (col("user_genome"), col("reference_genome"), col("skani_ani"), col("skani_af"), col("reference_taxonomy"))
+        else {
+            return Err(format!("{}: not a GTDB-Tk ANI summary", path.display()));
+        };
+        for r in rows {
+            let Some(g) = genomes.iter_mut().find(|g| g["genome"].as_str() == r.get(user).map(String::as_str)) else { continue };
+            let num = |i: usize| r.get(i).and_then(|s| s.parse::<f64>().ok());
+            let taxonomy = r.get(tax).cloned().unwrap_or_default();
+            g["species"] = json!(taxonomy.rsplit(';').next().filter(|s| s.starts_with("s__")));
+            g["taxonomy"] = json!(taxonomy);
+            g["reference"] = json!(r.get(reference));
+            g["ani"] = json!(num(ani));
+            g["af"] = json!(num(af));
+            g["summary_file"] = json!(path);
+        }
+    }
+    Ok(genomes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,5 +434,26 @@ mod tests {
         assert_eq!(c[0]["licence_note"], "non-commercial licence");
         let e = env_exports("export CHECKM2DB='/s/it'\\''s/db'\n# note\n");
         assert_eq!(e["CHECKM2DB"], "/s/it's/db");
+    }
+
+    #[test]
+    fn gtdbprep_ani_rows() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("out/classify/ani_screen");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("gtdbtk.bac120.ani_summary.tsv"),
+            "user_genome\treference_genome\tskani_ani\tskani_af\treference_taxonomy\tother_related_references(genome_id,species_name,radius,ANI,AF)\n\
+             b168\tGCF_000009045.1\t100.0\t1.0\td__Bacteria;g__Bacillus;s__Bacillus subtilis\tGCA_1, s__X, 95.0, 94.8, 0.886\n",
+        )
+        .unwrap();
+        let stdout = "genome\tmarkers\tcandidates\tassigned_by_ani\tused\nb168\t4089\t21\ttrue\t14\nfrag\t12\t0\tfalse\t0\n\
+                      21 reference(s) screened in, 14 could give the species call (--species-only)\n";
+        let g = gtdbprep_ani_summary(stdout, d.path()).unwrap();
+        assert_eq!(g[0]["species"], "s__Bacillus subtilis");
+        assert_eq!((&g[0]["ani"], &g[0]["af"], &g[0]["used"], &g[0]["assigned_by_ani"]), (&json!(100.0), &json!(1.0), &json!(14), &json!(true)));
+        assert_eq!(g[1]["assigned_by_ani"], false);
+        assert!(g[1].get("species").is_none());
+        assert!(gtdbprep_ani_summary("nothing\n", d.path()).is_err());
     }
 }

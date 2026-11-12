@@ -37,6 +37,29 @@
 - `ani` writes `<work>/screen.tsv`: every screened-in reference per genome with its shared marker
   count and whether it was used. With `--species-only`, the summary table gains a `used` column.
 
+### irit-mcp
+- **`gtdbprep_ani` tool** (#4): `gtdbprep ani` through the server, recorded and replayable.
+  `source` stays opt-in; the sketch cache, `$GTDBTK_DATA_PATH` and `$GTDBPREP_ENV` are resolved
+  when the server starts and written into the command. It returns each genome's species,
+  reference, ANI and AF, and `<work>/gtdbtk_data`, which `gtdbtk_classify_wf` takes as `data_path`
+  (its skani-missing message now says so). On *B. subtilis* 168 with a warm cache: 15 s, then
+  classify_wf 4.8 s, same species; the replay matched all 32 outputs. Since that folder is now an
+  output of a recorded call, the run record shows where classify_wf's `GTDBTK_DATA_PATH` came from
+  (#8).
+- **Missing output folders are created** (#2): `trim/s1_R1.fastq.gz` or an `outdir` of `asm/s1`
+  no longer needs `trim/` or `asm/` to exist. Only folders of checked outputs are created (so inside
+  the root), a file in the way is refused, the record lists them as `dirs`, and `replay.sh` runs
+  `mkdir -p` on them, so a replay works from a clean folder.
+- **Every Shovill output is volatile** (#5): `contigs.fa` headers carry the date, and SKESA 2.5.1
+  with 8 CPUs gave different assemblies from identical reads, as SPAdes did. `replay.sh` checks
+  that they exist; the contig count, length and N50 are in the result and in isotable's row.
+
+### isotable
+- **Reads Shovill's `contigs.fa`** (#7) when `shovill.log` is beside it, as the sample named after
+  its folder: contigs, length and N50, counted as QUAST does (contigs of 500 bp or more), so a
+  QUAST report on the same assembly agrees. The default isolate requirements (contigs, N50) can
+  now be met without QUAST, also through irit-mcp.
+
 ## 0.3.3 (2026-11-12)
 
 ### irit-mcp

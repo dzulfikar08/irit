@@ -88,6 +88,12 @@ leanqc writes its reports by name into `outdir`, so a symlink already in that fo
 in `outdir` resolves outside the root. sheetgen's `link_into` is exempt: sheetgen only creates
 links there and never writes through an existing one.
 
+A missing folder on the way to an output is created by the server just before the tool runs
+(`trim/s1_R1.fastq.gz` creates `trim/`; `asm/s1` as Shovill's `outdir` creates `asm/`). Only
+folders for checked outputs are created, so they are inside the root too; a file standing where
+a folder should be (`reads.fq/out.json`) is refused. The call's record lists them as `dirs`, and
+`replay.sh` runs `mkdir -p` on them before the call, so a replay works from a clean folder.
+
 The run records folder (`--runs-dir`, `./irit-runs` by default, so usually inside the root) is
 never a valid target, even with `--allow-outside-root`: an `output` of
 `irit-runs/<run>/replay.sh` is refused.
@@ -165,7 +171,7 @@ One graded row per sample ([isotable](isotable.md)).
 
 | Parameter | Type | Meaning |
 |---|---|---|
-| `dirs` | list of folders (required) | Results folders. |
+| `dirs` | list of folders (required) | Results folders. Include the folder holding Shovill's `outdir`s: contigs and N50 come from each `contigs.fa`. |
 | `sheet` | file | Sample sheet to join on (recommended). |
 | `mode` | `isolate` \| `mag` | Grading rules. |
 | `output`, `mqc` | files | Also write the TSV / MultiQC table (inside the root). |
@@ -242,8 +248,9 @@ How they work:
   `outfile` must contain `mlst` and end in `.tsv`, and with one assembly the sample part of the name
   (`s1.mlst.tsv` → `s1`) becomes mlst's `--label`, the name in its FILE column; AMRFinderPlus's
   `output` must contain `amrfinder` and end in `.tsv`, and isotable takes the sample from it
-  (`s1.amrfinder.tsv` → `s1`). Other names are refused with a message saying why. isotable's
-  parsers were not changed.
+  (`s1.amrfinder.tsv` → `s1`). Other names are refused with a message saying why. isotable reads
+  Shovill's `contigs.fa` (when `shovill.log` is beside it) as the sample named after its folder
+  (`asm/s1` → `s1`), so name each `outdir` after its sample.
 
 The large databases are not hashed into the run record (they are tens of GB). Only their small
 version files are: Bakta's `version.json`, GTDB-Tk's `metadata/metadata.txt`, AMRFinderPlus's
@@ -298,8 +305,11 @@ Assembles one isolate from paired-end Illumina reads.
 The server always sends `--force` (Shovill refuses any existing folder without it, even an empty
 one) and refuses an `outdir` whose absolute path has spaces or shell characters: Shovill pastes it
 unquoted into a shell command. Returns `contigs_file` and `assembly`: `contigs`, `total_length`,
-`n50`, `longest` and `gc_percent`, counted from `contigs.fa`. `shovill.log` is volatile (times,
-the machine's CPUs and RAM).
+`n50`, `longest` and `gc_percent`, counted from `contigs.fa`. Every output is volatile:
+`contigs.fa` headers carry the date (`date=YYYYMMDD`), and neither SPAdes nor SKESA gave the
+same assembly twice from identical reads in every test (see the volatile table). isotable reads
+`contigs.fa` itself (contigs, length, N50, counted as QUAST does), so give it the folder that
+holds the `outdir`s.
 
 Not offered: `--opts` (free text pasted into the assembler's shell command), `--tmpdir` (Shovill
 makes its own), `--check`.
@@ -389,8 +399,9 @@ Laptop options in GTDB-Tk 2.8.0, checked against [the research notes](../researc
 - `--scratch_dir` and `--pplacer_cpus` exist, and are offered.
 - **No `--skip_ani_screen`.** Since 2.7, classify_wf always runs the skani ANI screen first, and no
   command-line option skips it. So the placement-only data (dblock `gtdbtk-r232-placement`, no
-  `skani/`) can't run classify_wf: the server refuses it and points to the launcher in
-  [the placement test](../research/gtdb-placement-test.md).
+  `skani/`) can't run classify_wf by itself: the server refuses it and points to
+  [`gtdbprep_ani`](#gtdbprep_ani), whose `<work>/gtdbtk_data` adds a small skani database, and to
+  [the placement test](../research/gtdb-placement-test.md) for genomes the screen doesn't assign.
 - **The split tree needs its files.** Unless `full_tree` is set, the data must hold
   `split/backbone/pplacer/gtdbtk_package_backbone.refpkg` and `split/class_level/tree_mapping.tsv`.
   Without them pplacer would fail after the ANI screen and marker steps, so the server refuses
@@ -398,6 +409,60 @@ Laptop options in GTDB-Tk 2.8.0, checked against [the research notes](../researc
 - **No `--max_memory`.** That is a gPlace option. GTDB-Tk calls pplacer by name, so gPlace is used
   through a `pplacer` shim on `PATH` (see the same page), not through a GTDB-Tk flag.
 - `--mash_db` went away in GTDB-Tk 2.5.0 (skani replaced Mash) and isn't offered.
+
+#### `gtdbprep_ani`
+
+The laptop route to a GTDB species: [`gtdbprep ani`](gtdbprep.md#the-ani-species-screen-without-the-85-gb-database-ani) screens the
+genomes locally, fetches only the reference sketches skani would compare (into a per-user cache),
+and runs GTDB-Tk's own ANI screen on them. It needs GTDB-Tk 2.8 with skani 0.3.1, the screen index
+and the placement-lite data, not the 85 GB skani database. This is an irit binary, so it comes from
+`--bin-dir` or `PATH` like sheetgen.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `genome_dir` | folder (required) | One genome per file; the file name is the genome's name. |
+| `extension` | text | Default `fna`. |
+| `index` | folder (required) | Screen index: `meta.json`, `refs.bin`, `markers.idx` (dblock `gtdbtk-r232-ani-screen`). |
+| `data_path` | folder | GTDB-Tk data with `taxonomy/`, `radii/`, `metadata/` (dblock `gtdbtk-r232-placement-lite`). Default `$GTDBTK_DATA_PATH`; sent as `--data`. |
+| `work` | folder (required) | Work folder inside the root. |
+| `overwrite` | boolean | Allow a `work` folder that has files. |
+| `source` | text | Where sketches missing from the cache come from: a path or URL of an unpacked `sketches.db`, a URL with `{part}` (with `part_size`), or `gtdb` (range reads of GTDB's own archive). Network; ask the user first. Omit when everything is cached. |
+| `part_size` | integer | Bytes per part, for a `{part}` source only. |
+| `cache` | folder | Default `$XDG_CACHE_HOME/irit/gtdbprep-ani`, else `~/.cache/irit/gtdbprep-ani`, resolved when the server starts and sent as `--cache`. |
+| `skani` | file or name | Default: `skani` in the GTDB-Tk environment or on `PATH`. |
+| `species_only` | boolean | Fetch only references that could give the species call: same species, fewer downloads. |
+| `fetch_jobs` | 1-16 | Range requests at once. |
+| `env` | folder | Conda/micromamba environment with GTDB-Tk 2.8. Default `$GTDBPREP_ENV`; sent as `--env`. |
+| `cpus` | integer | Default 4. |
+
+The sketch cache may be outside the root, unlike other outputs: it is shared by every run on the
+machine, and gtdbprep only adds sketches it has checked against the index. It may not be inside
+the run records. The record hashes the genomes, the index's `meta.json` and `refs.bin` (not the
+1.7 GB `markers.idx`: `dblock verify` covers it) and the three data files the screen reads.
+`*.log` and the gzip file are volatile; everything else in `work` was identical in two runs.
+
+Returns `genomes` (per genome: `assigned_by_ani`, `species`, `taxonomy`, `reference`, `ani`, `af`,
+`markers`, `candidates`, and `used` with `species_only`), `stdout` (gtdbprep's own lines: sketches
+cached and fetched, times) and `data_path_for_classify`. That folder, `<work>/gtdbtk_data`, is a
+complete GTDB-Tk data folder: links to the placement-lite data plus the small skani database.
+Passed as `gtdbtk_classify_wf`'s `data_path`, it gives GTDB-Tk's usual summary files, and since
+it is an output of a recorded call, the record shows where it came from:
+
+```json
+{"name": "gtdbprep_ani", "arguments": {"genome_dir": "genomes", "index": "/db/gtdbtk-r232-ani-screen/ani-screen-r232",
+  "work": "ani/w", "species_only": true}}
+{"name": "gtdbtk_classify_wf", "arguments": {"genome_dir": "genomes", "data_path": "ani/w/gtdbtk_data",
+  "out_dir": "gtdbtk", "pplacer_cpus": 1}}
+```
+
+On the *B. subtilis* 168 assembly from [the laptop run](../research/e2e-laptop.md), with every
+sketch cached: `gtdbprep_ani` took 15 s (`s__Bacillus subtilis`, GCF_000009045.1, ANI 100), then
+`gtdbtk_classify_wf` 4.8 s (`classification_method: ani_screen`). After deleting both output
+folders, `replay.sh` recreated them and matched all 32 outputs.
+
+A genome the screen does not assign still needs tree placement, which classify_wf on this data
+can't do on a laptop yet (gPlace through a `pplacer` shim; see
+[the placement test](../research/gtdb-placement-test.md)).
 
 #### `mlst`
 
@@ -634,7 +699,8 @@ inputs and paths in the real-tools workflow (below) and comparing every file:
 | Tool | Volatile outputs | Why they differ |
 |---|---|---|
 | fastp | `.html` | The HTML report; the JSON report is identical. |
-| shovill | `shovill.log`; with SPAdes (the default) also `contigs.fa` | Times, and the machine's CPUs and RAM. SPAdes 3.15.5 gave different `contigs.fa` bytes in two identical runs (2,803,881 bp both times, same ST); SKESA's `contigs.fa` is identical. |
+| shovill | everything | `shovill.log` has times and the machine's CPUs and RAM; every `contigs.fa` header carries the date, so it differs on another day. SPAdes 3.15.5 gave different contigs in two identical runs (2,803,881 bp both times, same ST). SKESA's were identical in the real-tools workflow, but SKESA 2.5.1 with 8 CPUs gave 57 contigs once and 56 twice from identical reads in [the laptop run](../research/e2e-laptop.md). |
+| gtdbprep ani | `.log`, `.gz` | Logs; the gzip header of GTDB-Tk's unassigned-hits file carries a time. |
 | mlst | `.json` | Same values, keys in another order (mlst writes it without sorting, and Perl randomises hash order). The TSV is identical. |
 | bakta | `.log`, `.gbff`, `.embl`, `.json`, `.svg` | Run times and dates (GenBank `LOCUS` date; in the JSON only `run.start` and `run.end`). |
 | checkm2 | `checkm2.log` | Timestamps. |
@@ -752,7 +818,8 @@ run but does not carry the data.
   `dfrB_A135T`; isotable joined fastp, mlst and AMRFinderPlus into one passing row for `sa`; Bakta's
   own AMRFinderPlus step ran on the dblock database; `dblock_verify` found every database folder
   unchanged afterwards. Shovill's and AMRFinderPlus's outputs were identical between the two
-  runs (except `shovill.log`); mlst's JSON was not (see the volatile table). GTDB's mock database
+  runs (except `shovill.log`), though SKESA is not always so (see the volatile table); mlst's JSON
+  was not. GTDB's mock database
   now comes through `dblock_fetch` too (`gtdbtk-r232-mockup`, since GTDB fixed its MD5).
   `replay.sh` re-ran 22 commands and all 53 outputs matched
   ([run](https://github.com/dzulfikar08/irit/actions/runs/43045271505)).
