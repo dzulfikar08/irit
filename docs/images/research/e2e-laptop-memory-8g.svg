@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 448" width="760" height="448" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="13">
+<rect width="760" height="448" fill="#ffffff"/>
+<text x="16" y="22" font-size="15" font-weight="600" fill="#1f2328">Peak memory per step, 8 GB run (cgroup memory.peak, GiB)</text>
+<text x="16" y="40" fill="#57606a">B. subtilis 168, irit v0.3.2; whole session under MemoryMax=8G, swap off; includes page cache</text>
+<line x1="230.0" y1="66" x2="230.0" y2="408" stroke="#d0d7de" stroke-width="1"/>
+<text x="230.0" y="424" text-anchor="middle" fill="#57606a">0</text>
+<line x1="287.6" y1="66" x2="287.6" y2="408" stroke="#d0d7de" stroke-width="1"/>
+<text x="287.6" y="424" text-anchor="middle" fill="#57606a">1</text>
+<line x1="345.3" y1="66" x2="345.3" y2="408" stroke="#d0d7de" stroke-width="1"/>
+<text x="345.3" y="424" text-anchor="middle" fill="#57606a">2</text>
+<line x1="402.9" y1="66" x2="402.9" y2="408" stroke="#d0d7de" stroke-width="1"/>
+<text x="402.9" y="424" text-anchor="middle" fill="#57606a">3</text>
+<line x1="460.6" y1="66" x2="460.6" y2="408" stroke="#d0d7de" stroke-width="1"/>
+<text x="460.6" y="424" text-anchor="middle" fill="#57606a">4</text>
+<line x1="518.2" y1="66" x2="518.2" y2="408" stroke="#d0d7de" stroke-width="1"/>
+<text x="518.2" y="424" text-anchor="middle" fill="#57606a">5</text>
+<line x1="575.9" y1="66" x2="575.9" y2="408" stroke="#d0d7de" stroke-width="1"/>
+<text x="575.9" y="424" text-anchor="middle" fill="#57606a">6</text>
+<line x1="633.5" y1="66" x2="633.5" y2="408" stroke="#d0d7de" stroke-width="1"/>
+<text x="633.5" y="424" text-anchor="middle" fill="#57606a">7</text>
+<line x1="691.2" y1="66" x2="691.2" y2="408" stroke="#d0d7de" stroke-width="1"/>
+<text x="691.2" y="424" text-anchor="middle" fill="#57606a">8</text>
+<text x="222" y="87.5" text-anchor="end" fill="#1f2328">leanqc</text>
+<rect x="230" y="72" width="10.8" height="22" fill="#2f6fb3"/>
+<text x="246.8" y="87.5" fill="#1f2328">0.19</text>
+<text x="222" y="117.5" text-anchor="end" fill="#1f2328">fastp</text>
+<rect x="230" y="102" width="78.9" height="22" fill="#2f6fb3"/>
+<text x="314.9" y="117.5" fill="#1f2328">1.37</text>
+<text x="222" y="147.5" text-anchor="end" fill="#1f2328">Shovill (SKESA)</text>
+<rect x="230" y="132" width="180.9" height="22" fill="#2f6fb3"/>
+<text x="416.9" y="147.5" fill="#1f2328">3.14</text>
+<text x="222" y="177.5" text-anchor="end" fill="#1f2328">CheckM2</text>
+<rect x="230" y="162" width="332.8" height="22" fill="#2f6fb3"/>
+<text x="568.8" y="177.5" fill="#1f2328">5.77</text>
+<text x="222" y="207.5" text-anchor="end" fill="#1f2328">CheckM2 lowmem</text>
+<rect x="230" y="192" width="153.3" height="22" fill="#2f6fb3"/>
+<text x="389.3" y="207.5" fill="#1f2328">2.66</text>
+<text x="222" y="237.5" text-anchor="end" fill="#1f2328">gtdbprep ani</text>
+<rect x="230" y="222" width="45.1" height="22" fill="#2f6fb3"/>
+<text x="281.1" y="237.5" fill="#1f2328">0.78</text>
+<text x="222" y="267.5" text-anchor="end" fill="#1f2328">GTDB-Tk classify_wf (ANI)</text>
+<rect x="230" y="252" width="21.7" height="22" fill="#2f6fb3"/>
+<text x="257.7" y="267.5" fill="#1f2328">0.38</text>
+<text x="222" y="297.5" text-anchor="end" fill="#1f2328">GTDB-Tk identify</text>
+<rect x="230" y="282" width="11.1" height="22" fill="#2f6fb3"/>
+<text x="247.1" y="297.5" fill="#1f2328">0.19</text>
+<text x="222" y="327.5" text-anchor="end" fill="#1f2328">GTDB-Tk align</text>
+<rect x="230" y="312" width="20.4" height="22" fill="#2f6fb3"/>
+<text x="256.4" y="327.5" fill="#1f2328">0.35</text>
+<text x="222" y="357.5" text-anchor="end" fill="#1f2328">GTDB-Tk classify (gPlace 6G)</text>
+<rect x="230" y="342" width="311.0" height="22" fill="#2f6fb3"/>
+<text x="547.0" y="357.5" fill="#1f2328">5.39</text>
+<text x="222" y="387.5" text-anchor="end" fill="#1f2328">isotable</text>
+<rect x="230" y="372" width="8.8" height="22" fill="#2f6fb3"/>
+<text x="244.8" y="387.5" fill="#1f2328">0.15</text>
+<line x1="691.2" y1="66" x2="691.2" y2="408" stroke="#cf222e" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="685.2" y="80" text-anchor="end" fill="#cf222e">8 GiB cap</text>
+<text x="475.0" y="442" text-anchor="middle" fill="#57606a">GiB</text>
+</svg>

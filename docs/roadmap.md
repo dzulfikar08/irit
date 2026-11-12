@@ -44,6 +44,12 @@ What's done, what's next, and what's further out. Items move up as evidence come
       (`amrfinderplus-db-4.2-2026-10-29.1`: NCBI's 38 files with checksums we computed, indexed by
       `amrfinder_index` before the folder is sealed), also usable as Bakta's
       `amrfinderplus-db/latest` instead of running `amrfinder_update`.
+- [x] End-to-end run on a laptop through `irit-mcp` ([write-up](research/e2e-laptop.md)):
+      *B. subtilis* 168 from raw reads to the GTDB R232 species (leanqc, fastp, Shovill/SKESA,
+      CheckM2, `gtdbprep ani` + GTDB-Tk `classify_wf`, isotable) under a 16 GB and an 8 GB memory
+      cap; largest step 5.82 GiB, correct species (ANI 100.0). The replay reran every command with
+      three unrecorded steps added; gaps filed as [#2](https://github.com/dzulfikar08/irit/issues/2)
+      to [#11](https://github.com/dzulfikar08/irit/issues/11).
 
 ## Next
 
@@ -77,8 +83,16 @@ What's done, what's next, and what's further out. Items move up as evidence come
       larger than RAM.
 - [ ] **`dblock` additions**: GTDB-Tk split download, parallel downloads.
 - [ ] **`leanqc` additions**: long-read views (N50, quality by length).
-- [ ] **Check the `irit-mcp` wrappers on a large machine**: GTDB-Tk with the full R232 data, Bakta
-      with the full database, SPAdes through Shovill (the real-tools workflow uses SKESA).
+- [ ] **Check the `irit-mcp` wrappers on a large machine**: Bakta with the full database, SPAdes
+      through Shovill (the real-tools workflow uses SKESA). GTDB-Tk `classify_wf` has now run with
+      R232 data for a genome the ANI screen assigns, through the small data folder `gtdbprep ani`
+      builds ([laptop run](research/e2e-laptop.md)); genomes that need tree placement still go
+      through the launcher and gPlace outside irit-mcp ([#4](https://github.com/dzulfikar08/irit/issues/4)).
+- [ ] **Close the replay gaps from the laptop run**: output folders ([#2](https://github.com/dzulfikar08/irit/issues/2)),
+      naming genomes ([#3](https://github.com/dzulfikar08/irit/issues/3)), a recorded `gtdbprep ani`
+      tool ([#4](https://github.com/dzulfikar08/irit/issues/4)), Shovill and leanqc outputs that change
+      between runs ([#5](https://github.com/dzulfikar08/irit/issues/5), [#6](https://github.com/dzulfikar08/irit/issues/6)),
+      so `replay.sh` reruns the isolate path from reads to species on its own.
 
 ## Later
 
@@ -87,7 +101,11 @@ What's done, what's next, and what's further out. Items move up as evidence come
       showed a 16 GB laptop can place on its own, so this is only worth building for larger batches.
 - [ ] **Laptop benchmark for AI agents**: can an agent with these tools produce a defensible microbial
       genomics result on an 8 GB laptop, compared with a hand-built workflow (accuracy,
-      reproducibility, time, cost, human intervention)? A possible paper.
+      reproducibility, time, cost, human intervention)? A possible paper. First data point: one
+      isolate through `irit-mcp` fits an 8 GB cap and gets the right species
+      ([laptop run](research/e2e-laptop.md)), with the steps called by a scripted client rather than an
+      agent. Still to do: more genomes and lineages, an agent choosing the calls, and the
+      hand-built comparison.
 - [ ] **Instrument connection**: lab instruments run vendor software on dedicated (often older Windows)
       PCs, and labs usually connect them through a LIMS, which parses instrument exports or uses vendor
       drivers. So the practical route is the LIMS or the files instruments drop for it. Open standards exist (SiLA 2; LADS, an OPC UA companion specification for lab devices).
