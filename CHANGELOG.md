@@ -50,6 +50,10 @@
   no longer needs `trim/` or `asm/` to exist. Only folders of checked outputs are created (so inside
   the root), a file in the way is refused, the record lists them as `dirs`, and `replay.sh` runs
   `mkdir -p` on them, so a replay works from a clean folder.
+- **Shovill `link_as`** (#3): e.g. `genomes/s1.fna` becomes a relative link to
+  `<outdir>/contigs.fa`, made before Shovill runs, recorded as the call's `links` and recreated by
+  `replay.sh` (`ln -sfn`), so CheckM2, GTDB-Tk and `gtdbprep_ani` name the genome after the
+  sample and replay works without hand-made copies.
 - **Every Shovill output is volatile** (#5): `contigs.fa` headers carry the date, and SKESA 2.5.1
   with 8 CPUs gave different assemblies from identical reads, as SPAdes did. `replay.sh` checks
   that they exist; the contig count, length and N50 are in the result and in isotable's row.
