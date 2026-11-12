@@ -192,7 +192,8 @@ impl Dup {
     /// that a sequence at that level was first seen only after tracking stopped.
     // Port of FastQC DuplicationLevel.calculateLevels.
     fn remaining_percent(&self) -> f64 {
-        let mut by_level: HashMap<u32, u64> = HashMap::new();
+        // Ordered, so the float sums below come out the same in every run (a HashMap's order varies).
+        let mut by_level: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
         for &c in self.counts.values() {
             *by_level.entry(c).or_default() += 1;
         }

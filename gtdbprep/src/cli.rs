@@ -389,7 +389,9 @@ fn run(cli: Cli) -> Result<bool> {
 /// (`irit-gtdb-prep` is `gtdbprep prep`).
 pub fn main(fixed: Option<&str>) -> ExitCode {
     let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    if let Some(sub) = fixed {
+    // `--version` belongs to the program, not the subcommand (`gtdbprep prep --version` is refused).
+    let asks_version = args.get(1).is_some_and(|a| a == "--version" || a == "-V");
+    if let Some(sub) = fixed.filter(|_| !asks_version) {
         args.insert(1, sub.into());
     }
     let cli = Cli::parse_from(args);

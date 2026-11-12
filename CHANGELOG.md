@@ -60,6 +60,18 @@
   QUAST report on the same assembly agrees. The default isolate requirements (contigs, N50) can
   now be met without QUAST, also through irit-mcp.
 
+### leanqc
+- **Reports are byte-identical between runs** (#6): `remaining_if_deduplicated_percent` summed
+  over duplication levels in a hash map's order, so its last digits could change from run to run
+  and `replay.sh`'s hash check of the JSON report failed. The levels are now summed in order.
+
+### gtdbprep
+- `irit-gtdb-prep --version` (and `-V`) works (#9); it said "unexpected argument". The release
+  workflow now checks its version like the other binaries.
+
+### dblock
+- `checkm2-db-v3` is 3.08 GB on disk (measured), not ~3.5 GB (#11).
+
 ## 0.3.3 (2026-11-12)
 
 ### irit-mcp
