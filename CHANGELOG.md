@@ -75,6 +75,9 @@
 
 ### dblock
 - `checkm2-db-v3` is 3.08 GB on disk (measured), not ~3.5 GB (#11).
+- A database folder moved or linked in from another store is reused with its `.dblock.toml`
+  marker rewritten to its new place; the marker kept the old store's paths (#10). `fetch` now says
+  what reuse checked (names and sizes) and that `verify --deep` re-hashes.
 
 ## 0.3.3 (2026-11-12)
 

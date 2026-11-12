@@ -38,7 +38,9 @@ Databases live in one store shared by all projects: `store = "..."` in `dblock.t
 `.dblock.toml` marker, so a second project that wants the same database reuses it instantly.
 Before reusing a folder, dblock checks its file names and sizes against the marker; a folder that
 changed, has no marker, or holds a different release is reported and left alone, never reused or
-overwritten.
+overwritten. Names and sizes are not contents: `dblock verify --deep` re-hashes every file. A
+folder moved or linked in from another store is reused too; its marker is then rewritten to name
+where it is now. The lock's `fetched` date stays the original download's.
 
 Catalog ids become folder names, so they may only use `A-Z a-z 0-9 . _ -`, must not start with `.`
 and must not contain `..`. MD5s are accepted in either case.
