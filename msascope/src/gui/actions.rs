@@ -98,7 +98,34 @@ impl MsaScope {
         if self.sort.is_some_and(|s| s.key == SortKey::Reference) || self.filter.min_identity.is_some() || (self.ref_opts.compare && was != r) {
             self.rebuild_layout(cx);
         }
+        self.remember_reference();
         cx.notify();
+    }
+
+    /// Save the reference row and its options for this version of the open file (or forget
+    /// them when there is no reference).
+    pub(super) fn remember_reference(&mut self) {
+        let (Some(path), Some(stamp), Some(d)) = (self.path.as_deref(), self.file_stamp, self.data.as_ref()) else { return };
+        let entry = self.reference.map(|r| (r, d.aln.names[r].clone(), self.ref_opts));
+        if self.settings.remembered_ref(path, stamp).map(|m| (m.row, m.name.clone(), m.opts)) == entry {
+            return;
+        }
+        self.settings.remember_ref(path, stamp, entry);
+        self.settings.save();
+    }
+
+    /// Bring back the reference row saved for this version of the file just opened, when a row
+    /// of that name is there. Sets the fields only: the layout built next compares with it.
+    pub(super) fn restore_reference(&mut self) {
+        let (Some(path), Some(stamp), Some(d)) = (self.path.as_deref(), self.file_stamp, self.data.clone()) else { return };
+        let Some(m) = self.settings.remembered_ref(path, stamp) else { return };
+        let Some(r) = m.find_row(&d.aln.names) else { return };
+        self.ref_opts = m.opts;
+        self.reference = Some(r);
+        self.ref_row = Some(Arc::new(Reference::new(&d.aln, r)));
+        if self.status.is_empty() {
+            self.status = format!("Reference restored: {}", d.aln.names[r]).into();
+        }
     }
 
     /// `m`: the cursor's row (or the one selected row) becomes the reference; on the reference
@@ -122,6 +149,7 @@ impl MsaScope {
         if before.compare != self.ref_opts.compare && self.reference.is_some() {
             self.rebuild_layout(cx);
         }
+        self.remember_reference();
         cx.notify();
     }
 
