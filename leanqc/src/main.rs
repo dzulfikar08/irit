@@ -2,8 +2,10 @@
 //!
 //! Covers FastQC's main modules (per-position quality and base content, per-read quality,
 //! GC, length, N content, adapters, duplication, overrepresented sequences) and writes a
-//! self-contained HTML report, JSON, a summary TSV and a MultiQC general-stats table.
+//! self-contained HTML report, JSON, a summary TSV and a MultiQC general-stats table. Long reads
+//! (median length above 1,000 bp, or `--long`) also get length and read-quality views.
 
+mod long;
 mod report;
 mod stats;
 
@@ -42,6 +44,11 @@ struct Cli {
     /// Skip the HTML reports (JSON and TSV only).
     #[arg(long)]
     no_html: bool,
+
+    /// Report the long-read views (length distribution on a log scale, N50/N90, read quality) for
+    /// every file. Without it they are reported for files whose median read is over 1,000 bp.
+    #[arg(long)]
+    long: bool,
 }
 
 fn default_threads() -> usize {
@@ -59,15 +66,37 @@ fn stem(path: &Path) -> String {
     name.into_owned()
 }
 
-fn analyse(path: &Path, dup_distinct: usize, phred: Option<u8>) -> Result<Report> {
+fn analyse(path: &Path, dup_distinct: usize, phred: Option<u8>, long: bool) -> Result<Report> {
     let mut reader = needletail::parse_fastx_file(path).with_context(|| format!("opening {}", path.display()))?;
     let mut acc = stats::Acc::new(dup_distinct);
+    acc.force_long = long;
     while let Some(rec) = reader.next() {
         let rec = rec.with_context(|| format!("reading {}", path.display()))?;
         let seq = rec.seq();
         acc.add(rec.id(), &seq, rec.qual());
     }
     Ok(acc.finish(path.file_name().unwrap_or_default().to_string_lossy().into_owned(), phred))
+}
+
+/// One line for the terminal: lengths, N50/N90 and read qualities.
+fn long_summary(l: &long::LongReads) -> String {
+    let n = |v: Option<usize>| v.map_or("n/a".into(), |v| format!("{v} bp"));
+    let mut s = format!(
+        "long reads: {} bases, N50 {}, N90 {}, mean {:.0} bp, median {:.0} bp, longest {} bp",
+        l.bases,
+        n(l.n50),
+        n(l.n90),
+        l.mean_length,
+        l.median_length,
+        l.longest
+    );
+    if let Some(q) = &l.read_quality {
+        s += &format!(
+            "; read quality mean Q{:.1}, median Q{:.1}; reads >= Q10 {:.1}%, >= Q20 {:.1}%",
+            q.mean, q.median, q.q10_percent, q.q20_percent
+        );
+    }
+    s
 }
 
 fn main() -> Result<()> {
@@ -88,7 +117,7 @@ fn main() -> Result<()> {
         .par_iter()
         .map(|f| {
             let t = Instant::now();
-            let r = analyse(f, cli.dup_distinct, phred).and_then(|rep| {
+            let r = analyse(f, cli.dup_distinct, phred, cli.long).and_then(|rep| {
                 let s = stem(f);
                 let json = serde_json::to_vec(&rep)?;
                 std::fs::write(cli.outdir.join(format!("{s}_leanqc.json")), json)?;
@@ -136,6 +165,9 @@ fn main() -> Result<()> {
                     fails.len(),
                     warns.len()
                 );
+                if let Some(l) = &r.long_reads {
+                    eprintln!("  {}", long_summary(l));
+                }
                 for w in &r.warnings {
                     eprintln!("  warning: {w}");
                 }
