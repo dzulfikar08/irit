@@ -308,7 +308,9 @@ one) and refuses an `outdir` whose absolute path has spaces or shell characters:
 unquoted into a shell command. Returns `contigs_file` and `assembly`: `contigs`, `total_length`,
 `n50`, `longest` and `gc_percent`, counted from `contigs.fa`. Every output is volatile:
 `contigs.fa` headers carry the date (`date=YYYYMMDD`), and neither SPAdes nor SKESA gave the
-same assembly twice from identical reads in every test (see the volatile table). isotable reads
+same assembly twice from identical reads in every test (see the volatile table). The contig
+count, total length and N50 go into the run record (`assembly`), and `replay.sh` prints the
+replayed assembly's beside them. isotable reads
 `contigs.fa` itself (contigs, length, N50, counted as QUAST does), so give it the folder that
 holds the `outdir`s.
 
@@ -716,8 +718,26 @@ couldn't be read in the run gets one "version unknown" line instead), exports ea
 `env`, re-runs each successful call in its original folder (stdout and stderr go to `replay/NNN.*` beside the script), then checks
 the SHA-256 of every output (the last version, if several calls wrote the same file), and of stdout
 where stdout is the result (a sheet or table not written to a file, `dblock catalog`, `dblock env`).
-It exits 0 only if every command exits as it did and every hash matches. Failed and rejected calls
-appear as comments.
+It exits 0 only if every command exits as it did and every hash matches, apart from the outputs
+that follow a changed input (below). Failed and rejected calls appear as comments.
+
+**Outputs made from a volatile output.** A volatile output can feed later calls: CheckM2 and
+GTDB-Tk read Shovill's assembly, isotable reads CheckM2's report. If the replayed assembly is a
+different one, those outputs differ too, and that is not a fault of theirs. So before re-running a
+call, `replay.sh` checks every input of it that an earlier call of the run wrote (`check_in`). If
+one differs from what the call read in the run, the call's outputs are checked with `check_from`:
+a different one is printed as `differs, made by call NNN from an input that differs` and counted,
+but does not fail the replay. An output that is missing, or that differs although every input it
+was made from matched, still fails it. The last line then says how many outputs matched and how
+many differ only because of such an input. For an assembly, `replay.sh` also prints its contig
+count, length and N50 against the run's (`assembly_note`), e.g.
+
+```
+replay: call 009: assembly /data/b168/asm/b168/contigs.fa is now 56 contigs, 4151999 bp, N50 185951; the run had 57 contigs, 4152275 bp, N50 185951
+replay: call 013 reads /data/b168/genomes/b168.fna, which differs from the run
+replay: differs, made by call 013 from an input that differs: /data/b168/checkm2/quality_report.tsv
+replay: 12 commands re-run, 27 of 31 outputs match; 4 differ only because a file they were made from differs (see above)
+```
 
 A successful `dblock_fetch` is not repeated by default, since it would download the databases
 again: the script prints that it skipped it, the exact command is in a comment, and the check of the
@@ -800,7 +820,11 @@ run but does not carry the data.
   the install hint when a tool is missing. A third runs stand-ins for shovill, mlst and amrfinder
   (with a stand-in indexed database from `$AMRFINDER_DB`), then the real isotable binary, and checks
   that the mlst row (labelled from `s1.mlst.tsv`) and the AMRFinderPlus report join to sample `s1`
-  although the assembly is `contigs.fa`, then replays.
+  although the assembly is `contigs.fa`, then replays. A fourth uses a Shovill stand-in whose
+  assembly changes every run and a CheckM2 stand-in whose report holds the genome's size: after
+  deleting every output folder, `replay.sh` succeeds, prints the new assembly's contigs, length and
+  N50 beside the run's, and reports CheckM2's report and isotable's row as following it, while
+  fastp's JSON still matches; a fastp JSON changed by hand still fails the replay.
 - With the real programs: the opt-in workflow
   [`mcp-real-tools.yml`](https://github.com/dzulfikar08/irit/blob/main/.github/workflows/mcp-real-tools.yml)
   installs fastp 1.4.0, Bakta 1.12.2, CheckM2 1.1.0 and GTDB-Tk 2.8.0 from Bioconda (one

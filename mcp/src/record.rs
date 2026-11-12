@@ -92,6 +92,18 @@ pub struct CallRecord {
     pub external: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Contig count, total length and N50 of the assembly the call wrote (Shovill). Its bytes are
+    /// volatile, so replay.sh compares these instead and prints both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assembly: Option<AssemblyStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssemblyStats {
+    pub path: String,
+    pub contigs: u64,
+    pub total_length: u64,
+    pub n50: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -376,6 +388,41 @@ check_link() {
   checked=$((checked + 1))
   [ "$(readlink -- "$2" 2>/dev/null)" = "$1" ] || { echo "replay: link differs: $2" >&2; failed=1; }
 }
+# A call's input that an earlier call wrote: if it differs from what the call read in the run
+# (it came from a volatile output, such as an assembly), the call's own outputs may differ too.
+followed=0
+check_in() {
+  if [ ! -f "$3" ] || [ "$(sha "$3")" != "$2" ]; then
+    echo "replay: call $1 reads $3, which differs from the run" >&2
+    eval "drift_$1=1"
+  fi
+}
+# Like check, for the outputs of a call that reads files an earlier call wrote: if the call read
+# a file that differed (check_in), a different output follows from it and is reported, but does
+# not fail the replay. A missing output still does.
+check_from() {
+  checked=$((checked + 1))
+  if [ ! -f "$3" ]; then echo "replay: missing $3" >&2; failed=1; return; fi
+  [ "$(sha "$3")" = "$2" ] && return
+  eval "d=\${drift_$1:-0}"
+  if [ "$d" = 1 ]; then
+    followed=$((followed + 1))
+    echo "replay: differs, made by call $1 from an input that differs: $3" >&2
+  else
+    echo "replay: differs: $3" >&2; failed=1
+  fi
+}
+# Contig count, total length and N50 of an assembly, against the run's (its bytes are volatile).
+assembly_note() {
+  [ -f "$2" ] || return 0
+  got=$(awk '/^>/ { if (s) print n; n = 0; s = 1; next } { sub(/\r$/, ""); n += length($0) } END { if (s) print n }' "$2" |
+    sort -rn | awk '{ l[NR] = $1; t += $1 } END { h = 0; for (i = 1; i <= NR; i++) { h += l[i]; if (2 * h >= t) { print NR, t, l[i]; exit } } print 0, 0, 0 }')
+  if [ "$got" = "$3 $4 $5" ]; then
+    echo "replay: call $1: assembly $2 has the run's $3 contigs, $4 bp, N50 $5" >&2
+  else
+    echo "replay: call $1: assembly $2 is now $(echo "$got" | awk '{ print $1 " contigs, " $2 " bp, N50 " $3 }'); the run had $3 contigs, $4 bp, N50 $5" >&2
+  fi
+}
 "#;
 
 /// A path that can't be read as an option by `cd`, `sha256sum` and the like.
@@ -433,6 +480,8 @@ pub fn replay_script(log: &RunLog) -> String {
     // Final expected state of each output path: a later call that rewrites a file wins.
     // The flag says whether that call was a fetch, whose check only runs when fetches do.
     let mut expected: BTreeMap<String, (String, bool)> = BTreeMap::new();
+    // Files written by the calls so far: a later call that reads one checks it first (check_in).
+    let mut produced: BTreeSet<&str> = BTreeSet::new();
     for c in &log.calls {
         let n = format!("{:03}", c.id);
         s += "\n";
@@ -454,6 +503,16 @@ pub fn replay_script(log: &RunLog) -> String {
                 for l in &c.links {
                     s += &format!("ln -sfn -- {} {} || exit 1\n", sh_quote(&l.target), sh_quote(&safe_path(&l.path)));
                 }
+                // Inputs an earlier call wrote: did the replay make the same file?
+                let mut drifts = false;
+                if !fetch {
+                    for i in &c.inputs {
+                        if let (true, Some(h)) = (produced.contains(i.path.as_str()), &i.sha256) {
+                            s += &format!("check_in {n} {} {}\n", sh_quote(h), sh_quote(&safe_path(&i.path)));
+                            drifts = true;
+                        }
+                    }
+                }
                 let step = format!("step {n} {} {} {cmd}\n", c.exit_status.unwrap_or(0), runner(c));
                 if fetch {
                     s += &sh_comment(&format!("downloads databases again: {}", step.trim_end()));
@@ -464,17 +523,25 @@ pub fn replay_script(log: &RunLog) -> String {
                 } else {
                     s += &step;
                 }
+                if let Some(a) = &c.assembly {
+                    s += &format!("assembly_note {n} {} {} {} {}\n", sh_quote(&safe_path(&a.path)), a.contigs, a.total_length, a.n50);
+                }
+                let check = |h: &str, path: String| match drifts {
+                    true => format!("check_from {n} {} {path}", sh_quote(h)),
+                    false => format!("check {} {path}", sh_quote(h)),
+                };
                 for o in &c.outputs {
                     let line = match (&o.symlink_to, &o.sha256) {
                         (Some(t), _) => format!("check_link {} {}", sh_quote(t), sh_quote(&safe_path(&o.path))),
                         (None, Some(_)) if o.volatile => format!("check_exists {}", sh_quote(&safe_path(&o.path))),
-                        (None, Some(h)) => format!("check {} {}", sh_quote(h), sh_quote(&safe_path(&o.path))),
+                        (None, Some(h)) => check(h, sh_quote(&safe_path(&o.path))),
                         _ => continue,
                     };
                     expected.insert(o.path.clone(), (line, fetch));
+                    produced.insert(o.path.as_str());
                 }
                 if let (true, Some(h)) = (c.stdout_is_output, &c.stdout_sha256) {
-                    expected.insert(format!("$OUT/{n}.stdout"), (format!("check {} \"$OUT/{n}.stdout\"", sh_quote(h)), fetch));
+                    expected.insert(format!("$OUT/{n}.stdout"), (check(h, format!("\"$OUT/{n}.stdout\"")), fetch));
                 }
             }
             Status::Failed => {
@@ -501,7 +568,16 @@ pub fn replay_script(log: &RunLog) -> String {
             s += "\n";
         }
     }
-    s += "\nif [ \"$failed\" -eq 0 ]; then echo \"replay: $ran commands re-run, $checked outputs match\" >&2; fi\nexit \"$failed\"\n";
+    s += r#"
+if [ "$failed" -eq 0 ]; then
+  if [ "$followed" -eq 0 ]; then
+    echo "replay: $ran commands re-run, $checked outputs match" >&2
+  else
+    echo "replay: $ran commands re-run, $((checked - followed)) of $checked outputs match; $followed differ only because a file they were made from differs (see above)" >&2
+  fi
+fi
+exit "$failed"
+"#;
     s
 }
 
@@ -679,6 +755,7 @@ mod tests {
             env: BTreeMap::new(),
             external: false,
             error: None,
+            assembly: None,
         }
     }
 
@@ -884,6 +961,65 @@ mod tests {
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         assert!(root.join("run/replay").is_dir());
         assert!(!root.join("decoy/run/replay").exists());
+    }
+
+    /// Assembly stats, and the checks of inputs an earlier call wrote.
+    #[test]
+    fn assembly_stats_and_followed_inputs() {
+        let mut asm = call(1, Status::Ok);
+        asm.mcp_tool = "shovill".into();
+        asm.external = true;
+        asm.argv = vec!["shovill".into(), "--outdir=asm/s1".into()];
+        asm.outputs = vec![
+            FileRecord { path: "/data/x/asm/s1/contigs.fa".into(), size: 9, sha256: Some("c1".into()), symlink_to: None, volatile: true },
+            FileRecord { path: "/data/x/genomes/s1.fna".into(), size: 0, sha256: None, symlink_to: Some("../asm/s1/contigs.fa".into()), volatile: true },
+        ];
+        asm.assembly = Some(AssemblyStats { path: "/data/x/asm/s1/contigs.fa".into(), contigs: 57, total_length: 4152275, n50: 185951 });
+        let mut qc = call(2, Status::Ok);
+        qc.inputs = vec![
+            FileRecord { path: "/data/x/genomes/s1.fna".into(), size: 9, sha256: Some("c1".into()), symlink_to: None, volatile: false },
+            FileRecord { path: "/data/x/raw.fq".into(), size: 9, sha256: Some("r".into()), symlink_to: None, volatile: false },
+        ];
+        let s = replay_script(&log_of(vec![asm, qc, call(3, Status::Ok)]));
+        assert!(s.contains("step 001 0 ext shovill --outdir=asm/s1\nassembly_note 001 /data/x/asm/s1/contigs.fa 57 4152275 185951\n"), "{s}");
+        // only the input an earlier call wrote is checked, and the call's outputs may follow it
+        assert!(s.contains("check_in 002 c1 /data/x/genomes/s1.fna\nstep 002"), "{s}");
+        assert!(!s.contains("check_in 002 r "), "{s}");
+        // call 3 rewrote the same output last and read nothing an earlier call wrote: a plain check
+        assert!(s.contains("\ncheck bb /data/x/qc/r.json\n") && !s.contains("\ncheck_from "), "{s}");
+        let s = replay_script(&log_of(vec![
+            { let mut a = call(1, Status::Ok); a.outputs[0].path = "/data/x/genomes/s1.fna".into(); a },
+            { let mut q = call(2, Status::Ok); q.inputs[0].path = "/data/x/genomes/s1.fna".into(); q.outputs[0].path = "/data/x/qc/q.json".into(); q },
+        ]));
+        assert!(s.contains("\ncheck_from 002 bb /data/x/qc/q.json\n"), "{s}");
+    }
+
+    /// The shell side of check_in, check_from and assembly_note, run for real.
+    #[test]
+    #[cfg(unix)]
+    fn followed_differences_do_not_fail_but_others_do() {
+        let d = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(d.path()).unwrap();
+        fs::write(root.join("in.txt"), "new").unwrap();
+        fs::write(root.join("out.txt"), "new out").unwrap();
+        fs::write(root.join("other.txt"), "same").unwrap();
+        fs::write(root.join("asm.fa"), ">a\nACGT\n>b\nAC\r\n").unwrap();
+        let run = |body: &str| {
+            let script = format!("{REPLAY_PRELUDE}\n{body}\necho \"failed=$failed followed=$followed checked=$checked\" >&2\n");
+            let out = std::process::Command::new("sh").arg("-c").arg(script).current_dir(&root).output().unwrap();
+            String::from_utf8_lossy(&out.stderr).into_owned()
+        };
+        let same = hash_bytes(b"same");
+        let err = run(&format!("check_in 003 {} in.txt\ncheck_from 003 aa out.txt\ncheck_from 003 {same} other.txt", hash_bytes(b"old")));
+        assert!(err.contains("call 003 reads in.txt, which differs") && err.contains("failed=0 followed=1 checked=2"), "{err}");
+        let err = run(&format!("check_in 003 {} in.txt\ncheck_from 003 aa out.txt", hash_bytes(b"new")));
+        assert!(err.contains("replay: differs: out.txt") && err.contains("failed=1 followed=0"), "{err}");
+        let err = run("check_from 004 aa missing.txt");
+        assert!(err.contains("missing missing.txt") && err.contains("failed=1"), "{err}");
+        let err = run("assembly_note 001 asm.fa 2 6 4");
+        assert!(err.contains("has the run's 2 contigs, 6 bp, N50 4"), "{err}");
+        let err = run("assembly_note 001 asm.fa 3 7 4");
+        assert!(err.contains("is now 2 contigs, 6 bp, N50 4; the run had 3 contigs, 7 bp, N50 4"), "{err}");
     }
 
     #[test]

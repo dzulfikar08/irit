@@ -22,6 +22,11 @@
 - **Every Shovill output is volatile** (#5): `contigs.fa` headers carry the date, and SKESA 2.5.1
   with 8 CPUs gave different assemblies from identical reads, as SPAdes did. `replay.sh` checks
   that they exist; the contig count, length and N50 are in the result and in isotable's row.
+- **Replay explains outputs made from a volatile one** (#5). The contig count, length and N50
+  are now recorded with the Shovill call (`assembly`), and `replay.sh` prints the replayed
+  assembly's beside them. Before each call it checks the inputs an earlier call wrote; when one
+  differs (a new assembly), that call's different outputs (CheckM2's report, isotable's row) are
+  reported as following it instead of failing the replay. Anything else that differs still fails.
 
 ### isotable
 - **Reads Shovill's `contigs.fa`** (#7) when `shovill.log` is beside it, as the sample named after

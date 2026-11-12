@@ -587,3 +587,85 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
         assert_eq!(&sha256(p), h, "{} differs after replay", p.display());
     }
 }
+
+/// Shovill whose assembly changes every run (as SKESA's did on the laptop): one base more each time.
+const SHOVILL_UNSTABLE: &str = r#"
+[ "${1:-}" = --version ] && { echo "shovill 1.4.2"; exit 0; }
+out=
+for a in "$@"; do case "$a" in --outdir=*) out=${a#--outdir=} ;; esac; done
+mkdir -p "$out"
+runs="$(dirname "$0")/.shovill-runs"
+n=$(( $(cat "$runs" 2>/dev/null || echo 0) + 1 )); echo $n > "$runs"
+echo "[shovill] run $n" > "$out/shovill.log"
+{ printf '>contig00001 date=%s\n' "$(date +%Y%m%d)"; printf "%$((12000 + n))s\n" '' | tr ' ' A; printf '>contig00002\n'; printf '%8000s\n' '' | tr ' ' C; } > "$out/contigs.fa"
+"#;
+
+/// CheckM2 reporting each genome's size, so its report follows the assembly.
+const CHECKM2_SIZED: &str = r#"
+[ "${1:-}" = --version ] && { echo "1.1.0"; exit 0; }
+out= ; dir=
+for a in "$@"; do case "$a" in --output-directory=*) out=${a#--output-directory=} ;; --*) ;; *) dir=$a ;; esac; done
+mkdir -p "$out"
+printf 'Name\tCompleteness\tContamination\tGenome_Size\n' > "$out/quality_report.tsv"
+for f in "$dir"/*.fna; do b=$(basename "$f" .fna); printf '%s\t100.0\t0.03\t%s\n' "$b" "$(wc -c < "$f" | tr -d ' ')" >> "$out/quality_report.tsv"; done
+"#;
+
+/// The B. subtilis laptop run's shape with an assembler that is not reproducible: from a folder
+/// with every output deleted, irit-mcp's replay.sh reruns everything; the assembly differs and is
+/// reported with its contigs, length and N50 beside the run's; CheckM2's report and isotable's row,
+/// made from it, are reported as following it and don't fail the replay; the trimmed reads still
+/// match. An output that changes without such a cause still fails.
+#[test]
+fn outputs_made_from_a_volatile_assembly_follow_it_on_replay() {
+    let s = setup();
+    let work = &s.work;
+    script(&work.join("fake-bin"), "shovill", SHOVILL_UNSTABLE);
+    script(&work.join("fake-bin"), "checkm2", CHECKM2_SIZED);
+    let bin = irit_bin_dir();
+    let mut c = Client::spawn(work, &["--bin-dir", bin.to_str().unwrap()], &[("PATH", &s.path)]);
+    let mut ok = |tool: &str, args: Value| {
+        let r = c.call(tool, args);
+        assert_ne!(r["isError"], true, "{r}");
+        r["structuredContent"].clone()
+    };
+    ok("fastp", json!({"in1": "reads/s1_R1.fastq", "in2": "reads/s1_R2.fastq", "out1": "trim/b168_R1.fastq", "out2": "trim/b168_R2.fastq", "json": "trim/b168.fastp.json"}));
+    let v = ok("shovill", json!({"r1": "trim/b168_R1.fastq", "r2": "trim/b168_R2.fastq", "outdir": "asm/b168", "link_as": "genomes/b168.fna", "ram": 8}));
+    assert_eq!(v["assembly"]["total_length"], 20001, "{v}");
+    ok("checkm2", json!({"genome_dir": "genomes", "outdir": "checkm2", "db": "db/checkm2"}));
+    let v = ok("isotable", json!({"dirs": ["trim", "asm", "checkm2"], "output": "b168.isotable.tsv"}));
+    assert_eq!(v["samples"][0]["values"]["assembly_length"], "20001", "{v}");
+    c.close();
+
+    let run_dir = work.join("irit-runs/test-run");
+    let log: Value = serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
+    let shovill = log["calls"].as_array().unwrap().iter().find(|c| c["mcp_tool"] == "shovill").unwrap();
+    assert_eq!(shovill["assembly"]["n50"], 12001, "{shovill}");
+    let fastp_json = work.join("trim/b168.fastp.json");
+    let fastp_hash = sha256(&fastp_json);
+    for d in ["trim", "asm", "genomes", "checkm2"] {
+        std::fs::remove_dir_all(work.join(d)).unwrap();
+    }
+    std::fs::remove_file(work.join("b168.isotable.tsv")).unwrap();
+    let path = format!("{}:{}", bin.display(), s.path);
+    let replay = |script: &str| Command::new("sh").arg(run_dir.join(script)).env("PATH", &path).current_dir(work).output().unwrap();
+    let out = replay("replay.sh");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "replay failed: {err}");
+    let asm = work.join("asm/b168/contigs.fa");
+    assert!(err.contains(&format!("assembly {} is now 2 contigs, 20002 bp, N50 12002; the run had 2 contigs, 20001 bp, N50 12001", asm.display())), "{err}");
+    assert!(err.contains(&format!("reads {}, which differs from the run", work.join("genomes/b168.fna").display())), "{err}");
+    for f in ["checkm2/quality_report.tsv", "b168.isotable.tsv"] {
+        assert!(err.contains(&format!("from an input that differs: {}", work.join(f).display())), "{f}: {err}");
+    }
+    assert!(err.contains("differ only because a file they were made from differs"), "{err}");
+    assert!(!err.lines().any(|l| l.starts_with("replay: differs: ")), "{err}");
+    assert_eq!(sha256(&fastp_json), fastp_hash);
+
+    // fastp's JSON is not made from the assembly: if it changes, the replay fails
+    let broken = std::fs::read_to_string(run_dir.join("replay.sh")).unwrap().replace("step 001 0 ext fastp", "step 001 0 ext true");
+    std::fs::write(run_dir.join("replay-broken.sh"), broken).unwrap();
+    std::fs::write(&fastp_json, "{}").unwrap();
+    let out = replay("replay-broken.sh");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains(&format!("replay: differs: {}", fastp_json.display())), "{err}");
+}
