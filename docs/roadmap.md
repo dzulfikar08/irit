@@ -70,9 +70,11 @@ What's done, what's next, and what's further out. Items move up as evidence come
       parallel range requests; an opt-in "species call only" flag that fetches only references
       that can reach their radius (far fewer downloads, but fewer "other related references" rows
       than GTDB-Tk's).
-- [ ] **`msascope` redesign** ([mockups](tools/msascope.md#planned-redesign)): themes, sequence names
-      and a readable default zoom are built; next the hover card, colour schemes, hiding insert and gappy columns, a tree
-      panel, selection and export. Later: multi-threaded gzip, alignments larger than RAM.
+- [ ] **`msascope` after the redesign** (built in 0.3.0–0.3.2: themes, names, hover card, colour
+      schemes, hidden insert and gappy columns, tree panel, selection, export, sort and filter,
+      motif search, annotation tracks, reference row): remember the reference row between
+      sessions, annotation tracks and the pinned row in figures, multi-threaded gzip, alignments
+      larger than RAM.
 - [ ] **`dblock` additions**: GTDB-Tk split download, parallel downloads.
 - [ ] **`leanqc` additions**: long-read views (N50, quality by length).
 - [ ] **Check the `irit-mcp` wrappers on a large machine**: GTDB-Tk with the full R232 data, Bakta
