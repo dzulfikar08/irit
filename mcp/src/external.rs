@@ -1140,6 +1140,9 @@ pub fn gtdbtk_classify_wf(ctx: &Ctx, p: &GtdbtkClassifyWfParams) -> Check<Invoca
     inv.opt("genome_dir", &p.genome_dir);
     let (data_text, data) = db_location(ctx, "data_path", &p.data_path, "GTDBTK_DATA_PATH")?;
     inv.inputs.push(gtdbtk_data("data_path", &data_text, &data, p.full_tree)?);
+    // A small skani database (the one gtdbprep_ani builds, a few MB) is hashed into the record;
+    // the full one (85 GB in R232) is left to dblock_verify, like the other large databases.
+    inv.inputs.extend(small_skani_db(&data.join("skani")));
     // GTDB-Tk has no data-path flag: it reads GTDBTK_DATA_PATH, recorded and exported by replay.sh.
     inv.env.insert("GTDBTK_DATA_PATH".into(), v::resolve(&data).to_string_lossy().into_owned());
     let out = v::output_dir(ctx, "out_dir", &p.out_dir, Some(p.overwrite), true)?;
@@ -1350,6 +1353,30 @@ pub fn gtdbprep_ani(ctx: &Ctx, p: &GtdbprepAniParams) -> Check<Invocation> {
         inv.opt("cpus", c);
     }
     Ok(inv)
+}
+
+/// Up to this much skani database is hashed into a GTDB-Tk call's inputs.
+pub const SKANI_HASH_LIMIT: u64 = 512 << 20;
+
+/// The entries of GTDB-Tk's `skani/` folder, resolved (so a linked database is hashed under its
+/// real path, where the call that built it recorded it), if they hold at most
+/// [`SKANI_HASH_LIMIT`] bytes in all; nothing for a larger one.
+pub fn small_skani_db(skani: &Path) -> Vec<PathBuf> {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(skani).into_iter().flatten().flatten().map(|e| v::resolve(&e.path())).collect();
+    entries.sort();
+    let mut total = 0u64;
+    let mut stack = entries.clone();
+    while let Some(p) = stack.pop() {
+        match std::fs::metadata(&p) {
+            Ok(m) if m.is_dir() => stack.extend(std::fs::read_dir(&p).into_iter().flatten().flatten().map(|e| e.path())),
+            Ok(m) => total += m.len(),
+            Err(_) => {}
+        }
+        if total > SKANI_HASH_LIMIT {
+            return Vec::new();
+        }
+    }
+    entries
 }
 
 /// An output whose name isotable's file search must recognise: it ends in `.tsv` and holds `tag`

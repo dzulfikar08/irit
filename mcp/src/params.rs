@@ -40,6 +40,8 @@ pub struct Invocation {
     /// An assembly the tool writes: its contig count, length and N50 are recorded, and replay.sh
     /// prints them beside the replayed assembly's (Shovill's outputs are volatile).
     pub assembly: Option<PathBuf>,
+    /// Notes for the agent and the record that don't stop the call (data the record can't vouch for).
+    pub warnings: Vec<String>,
 }
 
 impl Invocation {
@@ -57,6 +59,7 @@ impl Invocation {
             bundled_data: None,
             links: Vec::new(),
             assembly: None,
+            warnings: Vec::new(),
         }
     }
     pub(crate) fn opt(&mut self, name: &str, value: impl ToString) {
@@ -507,7 +510,7 @@ fn dblock_common(ctx: &Ctx, inv: &mut Invocation, project_dir: &Option<String>, 
 
 /// The store dblock uses when dblock.toml names none (`project::default_store`):
 /// `$DBLOCK_STORE`, else `$XDG_DATA_HOME/dblock`, else `$HOME/.local/share/dblock`.
-fn default_store(ctx: &Ctx) -> Option<PathBuf> {
+pub(crate) fn default_store(ctx: &Ctx) -> Option<PathBuf> {
     if let Some(s) = ctx.var("DBLOCK_STORE") {
         return Some(PathBuf::from(s));
     }

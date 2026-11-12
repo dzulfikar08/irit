@@ -383,7 +383,10 @@ fn isolate_path_with_stand_in_tools_is_recorded_and_replayable() {
     assert_eq!(v["genomes"][0]["gtdb"], "d__Bacteria;p__Pseudomonadota;s__Escherichia coli");
     assert_eq!(v["genomes"][1]["classification_method"], "ANI");
     assert_eq!(v["version"], "gtdbtk: version 2.7.2 Copyright 2017 Pierre-Alain Chaumeil");
-    assert!(v["warnings"][0].as_str().unwrap().contains("2.7.2"), "{v}");
+    // the data is in no dblock store and no call of this run wrote it (#8); then the version
+    let w = v["warnings"].as_array().unwrap();
+    assert!(w[0].as_str().unwrap().contains("is not in a dblock store and no earlier call of this run wrote it"), "{v}");
+    assert!(w[1].as_str().unwrap().contains("2.7.2"), "{v}");
 
     // a flag GTDB-Tk 2.8.0 doesn't have never reaches it
     let r = c.call("gtdbtk_classify_wf", json!({"genome_dir": "asm", "out_dir": "g2", "skip_ani_screen": true}));
@@ -668,4 +671,74 @@ fn outputs_made_from_a_volatile_assembly_follow_it_on_replay() {
     let out = replay("replay-broken.sh");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && err.contains(&format!("replay: differs: {}", fastp_json.display())), "{err}");
+}
+
+/// gtdbprep ani: writes `<work>/gtdbtk_data` (links to the data's folders, plus `skani/database`
+/// linking to `<work>/db`), `assigned.json`, and prints its per-genome table, like the real one.
+const GTDBPREP: &str = r#"
+[ "${1:-}" = --version ] && { echo "gtdbprep 0.3.4"; exit 0; }
+[ "${1:-}" = ani ] || die "expected ani"
+shift
+genomes= ; ext=fna ; work= ; data=
+for a in "$@"; do
+  case "$a" in
+    --genomes=*) genomes=${a#--genomes=} ;;
+    --extension=*) ext=${a#--extension=} ;;
+    --data=*) data=${a#--data=} ;;
+    --work=*) work=${a#--work=} ;;
+    --index=*|--cache=*|--source=*|--part-size=*|--fetch-jobs=*|--env=*|--skani=*|--cpus=*|--species-only) ;;
+    *) die "unknown option $a" ;;
+  esac
+done
+mkdir -p "$work/db"
+echo "sketches of 21 references" > "$work/db/sketches.db"
+rm -rf "$work/gtdbtk_data"; mkdir -p "$work/gtdbtk_data/skani"
+for d in "$data"/*; do [ "$(basename "$d")" = skani ] || ln -s "$(cd "$d" && pwd -P)" "$work/gtdbtk_data/$(basename "$d")"; done
+ln -s "$(cd "$work/db" && pwd -P)" "$work/gtdbtk_data/skani/database"
+printf 'genome\tmarkers\tcandidates\tassigned_by_ani\n'
+for f in "$genomes"/*."$ext"; do printf '%s\t120\t21\ttrue\n' "$(basename "$f" ".$ext")"; done
+echo '["s1"]' > "$work/assigned.json"
+"#;
+
+/// GTDB-Tk's data folder (#8): in a dblock store, or written by an earlier call of the run
+/// (gtdbprep_ani's `<work>/gtdbtk_data`, whose small skani database is then hashed into the
+/// call's inputs under its real path), it is accounted for; anywhere else the call warns.
+#[test]
+fn gtdbtk_data_from_the_run_or_a_store_is_vouched_for_else_warned_about() {
+    let s = setup();
+    let work = &s.work;
+    script(&work.join("fake-bin"), "gtdbprep", GTDBPREP);
+    for f in ["meta.json", "refs.bin", "markers.idx"] {
+        write(work, &format!("db/ani-screen-r232/{f}"), "x");
+    }
+    write(work, "db/gtdbtk/release232/taxonomy/gtdb_taxonomy.tsv", "x\n");
+    write(work, "db/gtdbtk/release232/radii/gtdb_radii.tsv", "x\n");
+    let cache = work.join("cache");
+    let store = work.join("store");
+    let spawn = |store: &Path| {
+        Client::spawn(work, &[], &[("PATH", &s.path), ("XDG_CACHE_HOME", cache.to_str().unwrap()), ("DBLOCK_STORE", store.to_str().unwrap())])
+    };
+    let mut c = spawn(&store);
+    let warned = |r: &Value| {
+        assert_ne!(r["isError"], true, "{r}");
+        r["structuredContent"]["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("not in a dblock store"))
+    };
+    let r = c.call("gtdbtk_classify_wf", json!({"genome_dir": "asm", "out_dir": "g1", "data_path": "db/gtdbtk/release232"}));
+    assert!(warned(&r), "{r}");
+    let r = c.call("gtdbprep_ani", json!({"genome_dir": "asm", "index": "db/ani-screen-r232", "data_path": "db/gtdbtk/release232", "work": "ani"}));
+    assert_ne!(r["isError"], true, "{r}");
+    let r = c.call("gtdbtk_classify_wf", json!({"genome_dir": "asm", "out_dir": "g2", "data_path": "ani/gtdbtk_data"}));
+    assert!(!warned(&r), "{r}");
+    c.close();
+    let log: Value = serde_json::from_slice(&std::fs::read(work.join("irit-runs/test-run/run.json")).unwrap()).unwrap();
+    let calls = log["calls"].as_array().unwrap();
+    assert!(calls[0]["warnings"][0].as_str().unwrap().contains("not in a dblock store"), "{}", calls[0]);
+    let sketches = work.join("ani/db/sketches.db");
+    assert!(calls[2]["inputs"].as_array().unwrap().iter().any(|i| i["path"] == sketches.to_str().unwrap()), "{}", calls[2]);
+    assert!(calls[2].get("warnings").is_none(), "{}", calls[2]);
+    // the same data inside the dblock store: no warning
+    let mut c = spawn(&work.join("db"));
+    let r = c.call("gtdbtk_classify_wf", json!({"genome_dir": "asm", "out_dir": "g3", "data_path": "db/gtdbtk/release232"}));
+    assert!(!warned(&r), "{r}");
+    c.close();
 }
