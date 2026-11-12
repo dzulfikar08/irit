@@ -219,6 +219,7 @@ impl Irit {
             env: Default::default(),
             external: false,
             error: None,
+            assembly: None,
         };
         let finish = |mut rec: CallRecord, stdout: Vec<u8>, stderr: String| {
             rec.ended = record::now();
@@ -314,6 +315,14 @@ impl Irit {
         }
         rec.exit_status = out.status.code();
         rec.status = if out.status.success() { Status::Ok } else { Status::Failed };
+        if let (true, Some(a)) = (out.status.success(), &inv.assembly) {
+            rec.assembly = results::assembly_stats(a).ok().map(|v| record::AssemblyStats {
+                path: a.to_string_lossy().into_owned(),
+                contigs: v["contigs"].as_u64().unwrap_or(0),
+                total_length: v["total_length"].as_u64().unwrap_or(0),
+                n50: v["n50"].as_u64().unwrap_or(0),
+            });
+        }
         if !out.status.success() {
             rec.error = Some(match out.status.code() {
                 Some(c) => format!("exit status {c}"),

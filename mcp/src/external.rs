@@ -486,6 +486,7 @@ pub fn shovill(ctx: &Ctx, p: &ShovillParams) -> Check<Invocation> {
     // already refused a non-empty one unless overwrite is true, and replay.sh reruns into it.
     inv.flag("force", true);
     inv.expect = vec![vec![outdir.join("contigs.fa")]];
+    inv.assembly = Some(outdir.join("contigs.fa"));
     if let Some(l) = &p.link_as {
         let link = v::output_file(ctx, "link_as", l, p.overwrite)?;
         let contigs = outdir.join("contigs.fa");

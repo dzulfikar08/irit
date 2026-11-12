@@ -37,6 +37,9 @@ pub struct Invocation {
     /// relative to the link's folder), e.g. `genomes/s1.fna -> ../asm/s1/contigs.fa`. Recorded,
     /// and recreated by replay.sh.
     pub links: Vec<(PathBuf, PathBuf)>,
+    /// An assembly the tool writes: its contig count, length and N50 are recorded, and replay.sh
+    /// prints them beside the replayed assembly's (Shovill's outputs are volatile).
+    pub assembly: Option<PathBuf>,
 }
 
 impl Invocation {
@@ -53,6 +56,7 @@ impl Invocation {
             volatile: &[],
             bundled_data: None,
             links: Vec::new(),
+            assembly: None,
         }
     }
     pub(crate) fn opt(&mut self, name: &str, value: impl ToString) {
