@@ -210,12 +210,21 @@ pub fn default_cache(work: &Path) -> PathBuf {
 }
 
 /// Pick the source of full sketches.
-pub fn open_source(opts: &AniOptions, ix: &ScreenIndex, missing: usize) -> Result<Source> {
+/// `missing` sketches of `missing_bytes` (uncompressed) together are not in the cache; the error
+/// without a source says how much that is, so the network use can be weighed before allowing it.
+pub fn open_source(opts: &AniOptions, ix: &ScreenIndex, missing: usize, missing_bytes: u64) -> Result<Source> {
     let Some(source) = opts.source.as_deref() else {
+        let narrower = if opts.species_only {
+            String::new()
+        } else {
+            " --species-only fetches only the references within a species radius, often far fewer.".into()
+        };
         bail!(
-            "{missing} reference sketch(es) are not in the cache; pass --source with an unpacked \
-             sketches.db (path or URL), or --source gtdb to range-read GTDB's own archive (this \
-             loads GTDB's server, so it is opt-in; fetched sketches are cached and never fetched twice)"
+            "{missing} reference sketch(es), {} uncompressed, are not in the cache; pass --source with \
+             an unpacked sketches.db (path or URL), or --source gtdb to range-read about that much \
+             from GTDB's own archive (this loads GTDB's server, so it is opt-in; fetched sketches are \
+             cached and never fetched twice).{narrower}",
+            human_bytes(missing_bytes)
         )
     };
     if source == "gtdb" {
@@ -233,6 +242,18 @@ pub fn open_source(opts: &AniOptions, ix: &ScreenIndex, missing: usize) -> Resul
         return Source::parts(source, size);
     }
     Ok(Source::plain(source))
+}
+
+/// `17 MB`, `1.2 GB`, `512 kB` (decimal units, one decimal below 10).
+fn human_bytes(n: u64) -> String {
+    let units = [("GB", 1e9), ("MB", 1e6), ("kB", 1e3)];
+    for (unit, size) in units {
+        let v = n as f64 / size;
+        if v >= 1.0 {
+            return if v < 10.0 { format!("{v:.1} {unit}") } else { format!("{v:.0} {unit}") };
+        }
+    }
+    format!("{n} B")
 }
 
 /// The smallest species radius in GTDB-Tk's `radii/gtdb_radii.tsv` (95.0 in R232).
@@ -429,7 +450,8 @@ pub fn run(opts: &AniOptions, tools_: &crate::pipeline::Tools) -> Result<AniRepo
             }
         }
         if !missing.is_empty() {
-            let src = open_source(opts, &ix, missing.len())?;
+            let bytes = missing.iter().map(|&i| ix.refs[i as usize].length as u64).sum();
+            let src = open_source(opts, &ix, missing.len(), bytes)?;
             eprintln!(
                 "gtdbprep: fetching {} reference sketch(es) from {}",
                 missing.len(),
@@ -786,5 +808,13 @@ mod tests {
             "GCF_000009045.1"
         );
         assert_eq!(accession("GCA_1.1"), "GCA_1.1");
+    }
+
+    #[test]
+    fn sizes_for_the_missing_sketch_message() {
+        assert_eq!(human_bytes(17_400_000), "17 MB");
+        assert_eq!(human_bytes(1_234_000_000), "1.2 GB");
+        assert_eq!(human_bytes(512_000), "512 kB");
+        assert_eq!(human_bytes(900), "900 B");
     }
 }

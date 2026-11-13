@@ -460,6 +460,10 @@ machine, and gtdbprep only adds sketches it has checked against the index. It ma
 the run records. The record hashes the genomes, the index's `meta.json` and `refs.bin` (not the
 1.7 GB `markers.idx`: `dblock verify` covers it) and the three data files the screen reads.
 `*.log` and the gzip file are volatile; everything else in `work` was identical in two runs.
+The cache isn't part of the record, so on another machine `replay.sh` fetches the sketches again
+from the recorded `--source` (GTDB's server for `gtdb`), or fails without one; a comment above the
+call in `replay.sh` says which. When sketches are missing and no `source` is given, the error says
+how many and how many MB, so the network use can be weighed before allowing it.
 
 Returns `genomes` (per genome: `assigned_by_ani`, `species`, `taxonomy`, `reference`, `ani`, `af`,
 `markers`, `candidates`, and `used` with `species_only`), `stdout` (gtdbprep's own lines: sketches
@@ -604,8 +608,11 @@ step 005 0 ext gtdbtk classify_wf --genome_dir=asm --out_dir=gtdbtk --pplacer_cp
 
 ### `describe_run`, `list_runs`
 
-`describe_run` (`run_id`, default the current run) returns the whole call log plus the paths of
-`replay.sh` and the RO-Crate. `list_runs` lists the runs in the runs folder with call counts.
+`describe_run` (`run_id`, default the current run) returns the paths of `replay.sh` and the
+RO-Crate and a summary of each call: tool, status, version, exit status, error, warnings and output
+paths. `detail: true` returns every call's full record instead (command, environment, every input and
+output with SHA-256), which can be tens of kB per call; `call_id` returns one call in full.
+`list_runs` lists the runs in the runs folder with call counts.
 
 ### Errors
 
