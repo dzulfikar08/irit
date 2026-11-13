@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+Fixes from an AI agent reproducing Neumann et al. 2025 (*K. pneumoniae* from alfalfa sprouts,
+MRA e01270-25) through irit-mcp alone (#14-#19).
+
+### irit-mcp
+- **A used run folder is refused** (#14): irit-mcp won't start when `<runs-dir>/<run-id>/` already
+  holds a record. Reusing `--run-id` restarted call numbering and overwrote `run.json`, `replay.sh`,
+  the RO-Crate and `calls/NNN.*`, losing the earlier session's record.
+- **Databases fall back to `dblock.lock`** (#16): with no path given and the variable unset,
+  `gtdbtk_classify_wf`, `gtdbprep_ani` (data and `index`, now optional), `checkm2`, `bakta` and
+  `amrfinder` use the one database of that kind locked in the working folder, and `warnings` names
+  it; two candidates are refused.
+- **Warnings from stderr** (#18): CheckM2's scikit-learn `InconsistentVersionWarning` and
+  AMRFinderPlus's `WARNING:` lines go into `warnings`. AMRFinderPlus from an unactivated conda
+  environment gets `CONDA_PREFIX` set to it.
+- **`describe_run` summarises by default** (#19): tool, status, version, error, warnings and outputs
+  per call; `detail: true` for the full records (170 kB for 26 calls), `call_id` for one.
+- `amrfinder` names Bakta's trimmed AMRFinderPlus copy instead of calling it an incomplete download;
+  `replay.sh` says where a `gtdbprep ani` call's sketches come from on another machine (#19).
+
+### isotable
+- **GTDB from the ANI screen** (#15): `classify/ani_screen/*.ani_summary.tsv` (`reference_taxonomy`)
+  counts as the GTDB classification, so a run where the screen assigned every genome no longer
+  comes out `incomplete` under `--require gtdb`.
+- **GC for Shovill assemblies** (#15), over the same contigs of 500 bp or more as the contig count,
+  length and N50 (QUAST's rule); the requirement help names the cutoff. On the paper's isolates:
+  57.04 / 57.15 / 57.35 against the paper's 57.06 / 57.15 / 57.35.
+
+### dblock
+- **No download without the prepare program** (#17): `fetch` refuses a database whose `prepare`
+  program (`amrfinder_index`) isn't on `PATH` before downloading it, instead of after; `plan` says
+  it won't fetch, and notes databases whose tool isn't installed.
+
+### gtdbprep
+- The missing-sketch error says how much would be fetched and suggests `--species-only` (#19).
+
 ## 0.3.5 (2026-11-12)
 
 ### irit-mcp
