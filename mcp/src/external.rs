@@ -70,6 +70,50 @@ pub fn version_warning(tool: &str, reported: Option<&str>) -> Option<String> {
     }
 }
 
+/// Warnings a tool printed on stderr that irit-mcp knows matter, for the result's `warnings` (a
+/// zero exit doesn't show them otherwise).
+/// - CheckM2: scikit-learn's `InconsistentVersionWarning`, when its bundled models were saved with
+///   another scikit-learn than the one installed ("might lead to breaking code or invalid results").
+/// - AMRFinderPlus: its own `WARNING:` lines.
+pub fn stderr_warnings(tool: &str, stderr: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |w: String| {
+        if !out.contains(&w) {
+            out.push(w);
+        }
+    };
+    for line in stderr.lines().map(str::trim) {
+        match tool {
+            "checkm2" => {
+                if let Some(at) = line.find("Trying to unpickle estimator") {
+                    let what = line[at..].split(". ").next().unwrap_or_default();
+                    // One per version pair, not one per estimator.
+                    let versions = what.split_once(" from version ").map_or(what, |(_, v)| v);
+                    add(format!(
+                        "CheckM2: scikit-learn InconsistentVersionWarning: its models were saved with scikit-learn {versions}, which scikit-learn says might give invalid results; install the scikit-learn version CheckM2's package pins"
+                    ));
+                }
+            }
+            "amrfinder" => {
+                if let Some(w) = line.strip_prefix("WARNING:") {
+                    add(format!("AMRFinderPlus: {}", w.trim()));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The conda environment a program lives in (`<prefix>/bin/<program>`, symlinks followed, with
+/// `<prefix>/conda-meta`). AMRFinderPlus from Bioconda looks for `$CONDA_PREFIX` and warns when it
+/// is unset (an environment used without being activated).
+pub fn conda_prefix(program: &Path) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(program).ok()?;
+    let prefix = real.parent()?.parent()?;
+    prefix.join("conda-meta").is_dir().then(|| prefix.to_path_buf())
+}
+
 fn external(tool: &'static str) -> Invocation {
     let mut inv = Invocation::new(tool);
     inv.external = true;
@@ -81,11 +125,10 @@ fn list_item(value: &str) -> String {
     if value.starts_with('-') { format!("./{value}") } else { value.to_string() }
 }
 
-/// A database location from the parameter, else from the variable the tool itself reads.
-/// Returns the text to pass on and the path resolved against the working folder.
 /// Where a database is: the parameter, else the environment variable the server started with,
 /// else the one database of that kind locked in the working folder's `dblock.lock` (a warning
-/// then says which, since nothing in the call named it).
+/// then says which, since nothing in the call named it). Returns the text to pass on and the path
+/// resolved against the working folder.
 fn db_location(ctx: &Ctx, inv: &mut Invocation, field: &str, given: &Option<String>, var: &str) -> Check<(String, PathBuf)> {
     let text = match given {
         Some(g) => {
@@ -2599,5 +2642,32 @@ mod tests {
         let e = gtdbprep_ani(&cx, &p).unwrap_err();
         assert_eq!(e.field, "data_path");
         assert!(e.message.contains("gtdbtk-r232-placement-lite, gtdbtk-r226-placement-lite"), "{}", e.message);
+    }
+
+    #[test]
+    fn known_stderr_warnings_are_surfaced() {
+        let checkm2 = "[12:00] INFO: Running\n/env/lib/python3.12/site-packages/checkm2/../sklearn/base.py:525: InconsistentVersionWarning: Trying to unpickle estimator MinMaxScaler from version 1.6.1 when using version 1.9.1. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:\n  warnings.warn(\n/env/.../base.py:525: InconsistentVersionWarning: Trying to unpickle estimator DecisionTreeRegressor from version 1.6.1 when using version 1.9.1. This might lead to breaking code\n";
+        let w = stderr_warnings("checkm2", checkm2);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("1.6.1 when using version 1.9.1") && w[0].contains("invalid results"), "{w:?}");
+        let amr = "Software version: 4.2.7\nWARNING: This was compiled for running under bioconda, but $CONDA_PREFIX was not found\nReverting to hard coded directory: /x\n";
+        assert_eq!(stderr_warnings("amrfinder", amr), ["AMRFinderPlus: This was compiled for running under bioconda, but $CONDA_PREFIX was not found"]);
+        assert!(stderr_warnings("checkm2", amr).is_empty());
+        assert!(stderr_warnings("shovill", checkm2).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn conda_prefix_follows_the_program() {
+        let d = tempfile::tempdir().unwrap();
+        let env = std::fs::canonicalize(d.path()).unwrap().join("envs/amr");
+        write(&env, "bin/amrfinder", "");
+        assert_eq!(conda_prefix(&env.join("bin/amrfinder")), None);
+        std::fs::create_dir(env.join("conda-meta")).unwrap();
+        assert_eq!(conda_prefix(&env.join("bin/amrfinder")), Some(env.clone()));
+        // a symlink on PATH pointing into the environment
+        std::fs::create_dir(d.path().join("bin")).unwrap();
+        std::os::unix::fs::symlink(env.join("bin/amrfinder"), d.path().join("bin/amrfinder")).unwrap();
+        assert_eq!(conda_prefix(&d.path().join("bin/amrfinder")), Some(env));
     }
 }

@@ -226,6 +226,12 @@ How they work:
 - **Versions.** The first line of the program's `--version` goes into the run record. If the
   version isn't the pinned one, the call still runs, but its result has a `warnings` entry. Every
   result also has `version` and `checked_against`.
+- **Warnings on stderr.** Some warnings a tool prints still matter after a zero exit; they go into
+  `warnings` (result and record): CheckM2's scikit-learn `InconsistentVersionWarning` (models saved
+  with another scikit-learn, which "might lead to … invalid results") and AMRFinderPlus's `WARNING:`
+  lines. AMRFinderPlus from a conda environment that isn't activated gets `CONDA_PREFIX` set to that
+  environment (found from the program's path), as activation would; the database is always passed
+  with `--database`, so that doesn't change which one is used.
 - **Checks before running.** Inputs must exist and look right: FASTQ for fastp and Shovill, FASTA
   for Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus (plain or gzip; bzip2, xz and zstd are
   refused, and so is an empty file). Databases are checked for the files the program itself needs

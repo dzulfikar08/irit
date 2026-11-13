@@ -21,7 +21,7 @@ plus the microbial isolate path with third-party tools: fastp (trimming), shovil
 (annotation), checkm2 (completeness/contamination), gtdbprep_ani and gtdbtk_classify_wf (taxonomy), mlst (sequence type) and \
 amrfinder (AMRFinderPlus resistance genes). Those need the program installed (Bioconda) and, for bakta, \
 checkm2, gtdbtk_classify_wf and amrfinder, a database (dblock_env shows dblock-managed paths); they can run for \
-hours. Their results list `warnings` when the installed version isn't the one irit-mcp was checked against. \
+hours. Their results list `warnings` when the installed version isn't the one irit-mcp was checked against, and for warnings the tool printed that matter (read them). \
 Parameters are checked before anything runs; unknown parameters are refused, so read each tool's schema \
 instead of guessing flags. A tool that exits non-zero returns isError with its stderr: report it, \
 don't carry on as if it worked. Every call is recorded with input/output SHA-256s in a run folder whose \
@@ -294,14 +294,18 @@ impl Irit {
             }
         };
 
-        let result = tokio::process::Command::new(&program)
-            .args(&inv.args)
-            .envs(&inv.env)
-            .current_dir(&self.cfg.ctx.cwd)
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .output()
-            .await;
+        let mut cmd = tokio::process::Command::new(&program);
+        cmd.args(&inv.args).envs(&inv.env).current_dir(&self.cfg.ctx.cwd).stdin(std::process::Stdio::null()).kill_on_drop(true);
+        // Bioconda's AMRFinderPlus warns without $CONDA_PREFIX (an environment used unactivated).
+        // Not recorded in `env`: the prefix is this machine's, and the database is always passed
+        // with --database, so the result doesn't depend on it.
+        if inv.tool == "amrfinder"
+            && std::env::var_os("CONDA_PREFIX").is_none()
+            && let Some(prefix) = x::conda_prefix(&program)
+        {
+            cmd.env("CONDA_PREFIX", prefix);
+        }
+        let result = cmd.output().await;
         let out = match result {
             Ok(o) => o,
             Err(e) => {
@@ -315,6 +319,7 @@ impl Irit {
         for o in &mut rec.outputs {
             o.volatile = inv.volatile.iter().any(|end| o.path.ends_with(end));
         }
+        rec.warnings.extend(x::stderr_warnings(inv.tool, &String::from_utf8_lossy(&out.stderr)));
         rec.exit_status = out.status.code();
         rec.status = if out.status.success() { Status::Ok } else { Status::Failed };
         if let (true, Some(a)) = (out.status.success(), &inv.assembly) {
