@@ -42,7 +42,8 @@ jobs:
           # Shovill 1.4.2 asks `spades.py --version` even when SKESA assembles; SPAdes 3.15.5's script
           # fails on the newer Python the solver otherwise picks, so Shovill's environment gets 3.11.
           for spec in "bakta bakta=1.12.2" "checkm2 checkm2=1.1.0" "gtdbtk gtdbtk=2.8.0" "shovill shovill=1.4.2 python=3.11" \
-                      "mlst mlst=2.35.0" "amrfinder ncbi-amrfinderplus=4.2.7"; do
+                      "mlst mlst=2.35.0" "amrfinder ncbi-amrfinderplus=4.2.7" "megahit megahit=1.2.9" "coverm coverm=0.8.0" \
+                      "metabat2 metabat2=2.18"; do
             set -- $spec
             name=$1; shift
             micromamba create -y -n "$name" -c conda-forge -c bioconda "$@"
@@ -51,14 +52,16 @@ jobs:
           mkdir -p "$HOME/tool-bin"
           root=${MAMBA_ROOT_PREFIX:?setup-micromamba sets MAMBA_ROOT_PREFIX}
           # program:environment. amrfinder_index is what dblock runs to index the AMRFinderPlus database.
-          for pe in fastp:fastp bakta:bakta checkm2:checkm2 gtdbtk:gtdbtk shovill:shovill mlst:mlst amrfinder:amrfinder amrfinder_index:amrfinder; do
+          for pe in fastp:fastp bakta:bakta checkm2:checkm2 gtdbtk:gtdbtk shovill:shovill mlst:mlst amrfinder:amrfinder amrfinder_index:amrfinder \
+                    megahit:megahit coverm:coverm metabat2:metabat2; do
             t=${pe%%:*}; e=${pe#*:}
             # CheckM2's TensorFlow library asks for an executable stack, which newer glibc refuses
             # ("cannot enable executable stack"); this tunable allows it for that process only.
             extra=""; [ "$t" = checkm2 ] && extra="GLIBC_TUNABLES=glibc.rtld.execstack=2; export GLIBC_TUNABLES"
             printf '#!/bin/sh\nPATH=%s/envs/%s/bin:$PATH\nexport PATH\n%s\nexec %s/envs/%s/bin/%s "$@"\n' "$root" "$e" "$extra" "$root" "$e" "$t" > "$HOME/tool-bin/$t"
             chmod +x "$HOME/tool-bin/$t"
-            "$HOME/tool-bin/$t" --version | head -n 1
+            # MetaBAT2 has no --version; the first line of its --help (on stderr) names it
+            if [ "$t" = metabat2 ]; then "$HOME/tool-bin/$t" --help 2>&1 >/dev/null | head -n 1; else "$HOME/tool-bin/$t" --version | head -n 1; fi
           done
           # Bakta 1.12.2 calls its own environment's amrfinder; it must read the 4.2 database format.
           "$root/envs/bakta/bin/amrfinder" --version
@@ -112,5 +115,7 @@ jobs:
             work/gtdbtk_first/classify/*.summary.tsv
             work/typing_first/*
             work/shovill_first/sa/shovill.log
+            work/mag_first/depth.tsv
+            work/mag_first/asm/log
             work/dblock.lock
           if-no-files-found: warn

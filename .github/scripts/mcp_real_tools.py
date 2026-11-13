@@ -229,6 +229,27 @@ def main():
         st = call("mlst", {"contigs": ["shovill/sa_spades/contigs.fa"], "outfile": "shovill/sa_spades.mlst.tsv"}, f"mlst spades sa{suffix}")
         row = (st.get("results") or [{}])[0]
         expect(f"mlst spades sa{suffix}", (row.get("scheme"), row.get("st")) == ("saureus", "22"), json.dumps(row)[:300])
+        # The MAG route on a two-genome mock metagenome: the S. aureus reads (53x) and the
+        # M. genitalium pairs (about 10x) assembled together with MEGAHIT, CoverM depth with the two
+        # read sets as two samples, then MetaBAT2. mag/ doesn't exist yet: the server creates it.
+        pairs = {"r1": ["trim/sa_R1.fastq.gz", "trim/mg_R1.fastq.gz"], "r2": ["trim/sa_R2.fastq.gz", "trim/mg_R2.fastq.gz"]}
+        meta = call("megahit", {**pairs, "outdir": "mag/asm", "memory_gb": 4, "threads": 4}, f"megahit{suffix}")
+        size = meta.get("assembly", {}).get("total_length", 0)
+        expect(f"megahit{suffix}", 2_600_000 < size < 4_500_000, f"{size} bp; S. aureus is about 2.8 Mb and M. genitalium 0.58 Mb")
+        depth = call(
+            "coverm_contig",
+            {"reference": "mag/asm/final.contigs.fa", **pairs, "output": "mag/depth.tsv", "methods": ["metabat"], "threads": 4},
+            f"coverm_contig{suffix}",
+        )
+        mapped = [m.get("percent", 0) for m in depth.get("mapped", [])]
+        expect(f"coverm_contig{suffix}", len(mapped) == 2 and min(mapped) > 50, json.dumps(depth.get("mapped"))[:300])
+        bins = call(
+            "metabat2",
+            {"contigs": "mag/asm/final.contigs.fa", "depth": "mag/depth.tsv", "outdir": "mag/bins", "threads": 4},
+            f"metabat2{suffix}",
+        )
+        longest = max((b.get("total_length", 0) for b in bins.get("bins", [])), default=0)
+        expect(f"metabat2{suffix}", 2_000_000 < longest < 3_200_000, f"{bins.get('bin_count')} bins, largest {longest} bp; S. aureus is about 2.8 Mb")
         amr = call(
             "amrfinder",
             {
@@ -292,7 +313,7 @@ def main():
             f"gtdbtk_classify_wf{suffix}",
         )
 
-    dirs = ["trim", "shovill", "typing", "bakta", "checkm2", "gtdbtk"]
+    dirs = ["trim", "shovill", "typing", "bakta", "checkm2", "gtdbtk", "mag"]
     run_all()
     table = call(
         "isotable",
