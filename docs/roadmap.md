@@ -126,6 +126,9 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [ ] **Gaps the paper redo showed**: QUAST-style assembly stats, coverage by read mapping, and
       virulence/typing (Kleborate, VirulenceFinder/VFDB); then a MAG route for metagenomes
       (assembly, binning, abundance, dereplication) on 8 GB.
+- [x] **How much depth is enough** ([write-up](research/coverage-depth.md)): on the paper's three
+      *K. pneumoniae*, every Table 1 call held down to 15× (20× is a practical target, 2.5 times as
+      many isolates per run as 50×); below that Shovill needs `gsize` (#22).
 - [ ] **Instrument connection**: lab instruments run vendor software on dedicated (often older Windows)
       PCs, and labs usually connect them through a LIMS, which parses instrument exports or uses vendor
       drivers. So the practical route is the LIMS or the files instruments drop for it. Open standards exist (SiLA 2; LADS, an OPC UA companion specification for lab devices).
