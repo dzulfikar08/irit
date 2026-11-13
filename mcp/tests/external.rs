@@ -469,7 +469,7 @@ fn missing_tool_gives_an_install_hint() {
     // an unknown --tool-path name is refused at startup
     let out = Command::new(env!("CARGO_BIN_EXE_irit-mcp")).args(["--tool-path", "prokka=/x"]).current_dir(work).output().unwrap();
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not one of fastp, shovill, bakta, checkm2, gtdbtk, mlst, amrfinder"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not one of fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder"));
 }
 
 /// Reads to assembly (Shovill), typing (mlst) and resistance genes (AMRFinderPlus), then isotable

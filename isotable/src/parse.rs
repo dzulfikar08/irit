@@ -87,6 +87,12 @@ pub fn scan(dirs: &[std::path::PathBuf]) -> Result<Scan> {
                 Some(("QUAST", quast(path)))
             } else if name == "contigs.fa" && path.with_file_name("shovill.log").is_file() {
                 Some(("Shovill", shovill(path)))
+            } else if name == "assembly.fasta" && path.with_file_name("flye.log").is_file() {
+                // Flye's `<outdir>/assembly.fasta`, named after its folder like Shovill's.
+                Some(("Flye", shovill(path)))
+            } else if name == "consensus.fasta" && path.with_file_name("consensus_probs.hdf").is_file() {
+                // medaka_consensus's polished `<outdir>/consensus.fasta`; it replaces the draft.
+                Some(("Medaka", shovill(path)))
             } else if name.starts_with("short_summary") && name.ends_with(".json") {
                 Some(("BUSCO", busco(path, &name)))
             } else if name == "quality_report.tsv" {
@@ -127,7 +133,21 @@ pub fn scan(dirs: &[std::path::PathBuf]) -> Result<Scan> {
             }
         }
     }
+    drop_polished_drafts(&mut out, &mut skipped);
     Ok((out, seen, skipped))
+}
+
+/// A Medaka consensus is the polished version of a draft assembly in the same scan (Flye's): the
+/// draft would only disagree with it by a few bases, so its record is left out, not a conflict.
+fn drop_polished_drafts(out: &mut Vec<Record>, skipped: &mut Vec<String>) {
+    let polished: Vec<String> = out.iter().filter(|r| r.tool == "Medaka").map(|r| r.raw_name.clone()).collect();
+    out.retain(|r| {
+        let draft = r.tool == "Flye" && polished.contains(&r.raw_name);
+        if draft {
+            skipped.push(format!("{} (Flye draft of {}; its Medaka consensus is used instead)", r.source, r.raw_name));
+        }
+        !draft
+    });
 }
 
 fn rec(raw_name: impl Into<String>, kind: Kind, fields: Vec<(&'static str, Value)>) -> Record {
@@ -725,6 +745,31 @@ mod tests {
         assert_eq!(records[0].fields, [("contigs", Value::Int(2)), ("length", Value::Int(1600)), ("n50", Value::Int(1000)), ("gc", Value::Num(62.5))]);
         std::fs::write(dir.join("contigs.fa"), "ACGT\n").unwrap();
         assert!(scan(&[t.path().to_path_buf()]).is_err());
+    }
+
+    #[test]
+    fn long_read_assemblies_and_polished_drafts() {
+        let t = tempfile::tempdir().unwrap();
+        let (flye, medaka) = (t.path().join("flye/s1"), t.path().join("medaka/s1"));
+        std::fs::create_dir_all(&flye).unwrap();
+        std::fs::create_dir_all(&medaka).unwrap();
+        std::fs::write(flye.join("assembly.fasta"), format!(">contig_1\n{}\n>contig_2\n{}\n", "A".repeat(5000), "C".repeat(800))).unwrap();
+        // without flye.log beside it, an assembly.fasta is not taken as Flye's
+        assert!(scan(&[t.path().to_path_buf()]).unwrap().0.is_empty());
+        std::fs::write(flye.join("flye.log"), "").unwrap();
+        let (records, seen, _) = scan(&[t.path().to_path_buf()]).unwrap();
+        assert_eq!((seen["Flye"], records.len()), (1, 1));
+        assert_eq!(records[0].raw_name, "s1");
+        assert_eq!(records[0].fields, [("contigs", Value::Int(2)), ("length", Value::Int(5800)), ("n50", Value::Int(5000))]);
+        // The Medaka consensus of the same sample replaces the draft (a few bases differ).
+        std::fs::write(medaka.join("consensus.fasta"), format!(">contig_1\n{}\n>contig_2\n{}\n", "A".repeat(5001), "C".repeat(800))).unwrap();
+        std::fs::write(medaka.join("consensus_probs.hdf"), "").unwrap();
+        let (records, seen, skipped) = scan(&[t.path().to_path_buf()]).unwrap();
+        assert_eq!((seen["Flye"], seen["Medaka"]), (1, 1));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tool, "Medaka");
+        assert_eq!(records[0].fields[1], ("length", Value::Int(5801)));
+        assert!(skipped.iter().any(|s| s.contains("Flye draft of s1")), "{skipped:?}");
     }
 
     #[test]

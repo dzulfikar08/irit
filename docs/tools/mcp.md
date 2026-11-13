@@ -7,7 +7,7 @@ with a `replay.sh` that repeats the same commands without any AI.
 
 It also wraps seven third-party tools for the microbial isolate path, so a whole run (trim,
 assemble, annotate, check quality, classify, type, find resistance genes) is recorded and
-replayable the same way: fastp, Shovill, Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus. See
+replayable the same way: fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus. See
 [Third-party tools](#third-party-tools).
 
 ## Why
@@ -63,7 +63,7 @@ Any client that takes a JSON config (Claude Desktop's `claude_desktop_config.jso
 | Option | Effect |
 |---|---|
 | `--bin-dir DIR` | Folder holding the irit binaries (env `IRIT_BIN_DIR`). Default: search `PATH`. |
-| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`). Repeatable. Default: search `PATH`. |
+| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `flye`, `medaka_consensus`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`). Repeatable. Default: search `PATH`. |
 | `--runs-dir DIR` | Where run records go (env `IRIT_RUNS_DIR`). Default `./irit-runs`. |
 | `--run-id ID` | Name of this session's run folder. Default `<UTC time>-<pid>`. The server refuses to start when that folder already holds a record, so a second session can't overwrite the first one's. |
 | `--root DIR` | Folder the tools may write in. Default: the server's working folder. |
@@ -217,7 +217,7 @@ and `catalog` (extra catalog JSON).
 
 ### Third-party tools
 
-Seven tools wrap programs irit doesn't ship. Each one is pinned to an upstream version: its
+Nine tools wrap programs irit doesn't ship. Each one is pinned to an upstream version: its
 parameters are exactly the flags that version has, read from its source at that release tag (for
 Shovill, mlst and AMRFinderPlus also compared with `--help` of the Bioconda package).
 Nothing else is offered, so an agent can't pass a flag the program doesn't know.
@@ -226,6 +226,8 @@ Nothing else is offered, so an agent can't pass a flag the program doesn't know.
 |---|---|---|---|---|
 | `fastp` | fastp | 1.4.0 | [`src/main.cpp`](https://github.com/OpenGene/fastp/blob/v1.4.0/src/main.cpp) | `fastp=1.4.0` |
 | `shovill` | Shovill | 1.4.2 | [`bin/shovill`](https://github.com/tseemann/shovill/blob/v1.4.2/bin/shovill) (`setOptions` and the checks after it) | `shovill=1.4.2` |
+| `flye` | Flye | 2.9.6 | [`flye/main.py`](https://github.com/mikolmogorov/Flye/blob/2.9.6/flye/main.py) (the argparse block and `_check_input`) | `flye=2.9.6` |
+| `medaka` | Medaka `medaka_consensus` | 2.2.2 | [`scripts/medaka_consensus`](https://github.com/nanoporetech/medaka/blob/v2.2.2/scripts/medaka_consensus) (its `getopts` string) | `medaka=2.2.2` |
 | `bakta` | Bakta | 1.12.2 | [`bakta/utils.py`](https://github.com/oschwengers/bakta/blob/v1.12.2/bakta/utils.py), DB check from [`bakta/db.py`](https://github.com/oschwengers/bakta/blob/v1.12.2/bakta/db.py) | `bakta=1.12.2` |
 | `checkm2` | CheckM2 `predict` | 1.1.0 | [`checkm2/main.py`](https://github.com/chklovski/CheckM2/blob/1.1.0/checkm2/main.py) | `checkm2=1.1.0` |
 | `gtdbtk_classify_wf` | GTDB-Tk `classify_wf` | 2.8.0 | [`gtdbtk/cli.py`](https://github.com/Ecogenomics/GTDBTk/blob/2.8.0/gtdbtk/cli.py), data folders from [`config/common.py`](https://github.com/Ecogenomics/GTDBTk/blob/2.8.0/gtdbtk/config/common.py) | `gtdbtk=2.8.0` |
@@ -350,6 +352,59 @@ holds the `outdir`s.
 
 Not offered: `--opts` (free text pasted into the assembler's shell command), `--tmpdir` (Shovill
 makes its own), `--check`.
+
+#### `flye`
+
+Assembles one isolate from long reads: ONT R10.4.1 reads basecalled with hac or sup (the default
+`read_type`, `nano-hq`), older ONT reads, or PacBio. See
+[Nanopore reads to isolate results on a laptop](../research/nanopore-laptop.md) for a measured run.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `reads` | list of files (required) | Long-read FASTQ or FASTA files of one isolate (plain or gzip). |
+| `read_type` | `nano-hq`, `nano-raw`, `nano-corr`, `pacbio-hifi`, `pacbio-raw`, `pacbio-corr` | Default `nano-hq`. |
+| `outdir` | folder (required) | Output folder; the assembly is `<outdir>/assembly.fasta`. One per sample. |
+| `overwrite` | boolean | Allow an `outdir` that has files (Flye then continues from them; prefer an empty folder). |
+| `link_as` | file | As Shovill's: a link named after the sample to `<outdir>/assembly.fasta`. |
+| `genome_size` | text | Like `5.5m` or `5000000`. Needed for `asm_coverage`. |
+| `asm_coverage` | integer | Use only the longest reads up to this depth for the first stage (caps memory on deep data). |
+| `threads`, `iterations`, `min_overlap`, `read_error` | numbers | As the Flye flags. |
+| `meta`, `keep_haplotypes`, `no_alt_contigs`, `scaffold` | booleans | As the Flye flags. |
+| `deterministic` | boolean | Build disjointigs single-threaded so identical runs give identical assemblies (slower). |
+
+Returns `assembly_file`, `assembly` (`contigs`, `total_length`, `n50`, `longest`, `gc_percent`)
+and `contigs`: per contig its length, depth and whether Flye closed it into a circle, from
+`assembly_info.txt`. A complete bacterial genome is one circular chromosome plus circular
+plasmids. Every output is volatile (multi-threaded runs differ; `flye.log` has times); the contig
+count, length and N50 go into the run record, as for Shovill. isotable reads `assembly.fasta` when
+`flye.log` is beside it.
+
+Not offered: `--extra-params` (free text into Flye's configuration), `--resume`,
+`--resume-from`, `--stop-after`, `--polish-target`, and the deprecated `--subassemblies`,
+`--plasmids`, `--trestle` and `--hifi-error`.
+
+#### `medaka`
+
+Polishes a long-read draft (Flye's `assembly.fasta`) with the same reads, using `medaka_consensus`.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `reads` | file (required) | The long reads (FASTQ or FASTA). |
+| `draft` | file (required) | The draft assembly FASTA. |
+| `outdir` | folder (required) | Must be empty; the result is `<outdir>/consensus.fasta`. |
+| `link_as`, `overwrite` | file, boolean | As Flye's; `overwrite` only replaces the link. |
+| `model` | text | A medaka model, e.g. `r1041_e82_400bps_bacterial_methylation`. Needed when the read headers don't name the basecalling model, which is the case for many archive downloads. |
+| `bacteria` | boolean | `--bacteria`: pick the bacterial model from the read headers. |
+| `threads`, `batch_size` | integers | As `-t` and `-b`. Lower `batch_size` to use less memory. |
+
+`medaka_consensus` is a bash script with short options only, so its arguments are separate words
+(`-i reads.fq`), and a path starting with `-` gets `./` in front. Its version comes from `medaka
+--version` beside it. Returns `assembly_file` and `assembly` for `consensus.fasta`. isotable reads
+`consensus.fasta` when `consensus_probs.hdf` is beside it, and then leaves out the Flye draft of
+the same sample.
+
+Not offered: `-f` (reuses or replaces old intermediate files; the server wants an empty `outdir`
+instead), `-x`, `-B`, `-M`, `-p`, `-g`, `-r` and `-q`.
 
 #### `bakta`
 

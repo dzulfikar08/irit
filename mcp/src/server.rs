@@ -18,8 +18,8 @@ const INSTRUCTIONS: &str = "Tools for sequencing-data housekeeping from the irit
 sheetgen (sample sheets from FASTQ folders, checked against a pipeline's schema), leanqc (read QC), \
 isotable (one graded QC row per sample from tool outputs), seqplan (isolates per sequencing run at a target coverage) and \
 dblock_* (reference databases); \
-plus the microbial isolate path with third-party tools: fastp (trimming), shovill (assembly), bakta \
-(annotation), checkm2 (completeness/contamination), gtdbprep_ani and gtdbtk_classify_wf (taxonomy), mlst (sequence type) and \
+plus the microbial isolate path with third-party tools: fastp (trimming), shovill (Illumina assembly), flye and \
+medaka (nanopore/PacBio long-read assembly and polishing), bakta (annotation), checkm2 (completeness/contamination), gtdbprep_ani and gtdbtk_classify_wf (taxonomy), mlst (sequence type) and \
 amrfinder (AMRFinderPlus resistance genes). Those need the program installed (Bioconda) and, for bakta, \
 checkm2, gtdbtk_classify_wf and amrfinder, a database (dblock_env shows dblock-managed paths); they can run for \
 hours. Their results list `warnings` when the installed version isn't the one irit-mcp was checked against, and for warnings the tool printed that matter (read them). \
@@ -177,7 +177,12 @@ impl Irit {
         if let Some(v) = self.state.lock().unwrap().versions.get(program) {
             return v.clone();
         }
-        let out = tokio::process::Command::new(program).arg("--version").stdin(std::process::Stdio::null()).output().await;
+        // medaka_consensus has no --version of its own; `medaka` in the same folder reports it.
+        let asked = match program.file_name() {
+            Some(n) if n == "medaka_consensus" => program.with_file_name("medaka"),
+            _ => program.to_path_buf(),
+        };
+        let out = tokio::process::Command::new(&asked).arg("--version").stdin(std::process::Stdio::null()).output().await;
         let v = version_text(out.ok());
         self.state.lock().unwrap().versions.insert(program.to_path_buf(), v.clone());
         v
@@ -569,8 +574,8 @@ gave run_price: seqplan has no prices. Writes nothing.")]
         self.reply(d, |d, v| v["plan"] = serde_json::from_str(&d.stdout_text()).unwrap_or(Value::Null))
     }
 
-    #[tool(description = "Join QC, assembly and typing outputs (fastp, leanqc, QUAST, Shovill's contigs.fa, BUSCO, CheckM2, GTDB-Tk, Kraken 2, \
-mlst, AMRFinderPlus) found under results folders into one graded row per sample; include the Shovill outdirs' parent for contigs and N50. Status, worst first: conflict (files disagree), fail, incomplete (a required \
+    #[tool(description = "Join QC, assembly and typing outputs (fastp, leanqc, QUAST, Shovill's contigs.fa, Flye's assembly.fasta, Medaka's consensus.fasta, BUSCO, CheckM2, GTDB-Tk, Kraken 2, \
+mlst, AMRFinderPlus) found under results folders into one graded row per sample; include the Shovill/Flye/Medaka outdirs' parent for contigs and N50. Status, worst first: conflict (files disagree), fail, incomplete (a required \
 measurement is missing), warn, pass. Returns each sample's status, reasons and values, and counts per status. Thresholds are starting \
 points, not a standard: say so when reporting grades.")]
     async fn isotable(&self, Parameters(params): Parameters<p::IsotableParams>) -> Result<CallToolResult, ErrorData> {
@@ -666,6 +671,36 @@ file contigs.fa: give mlst a label and amrfinder an output named after the sampl
         self.external_reply(d, |v| {
             v["contigs_file"] = json!(contigs);
             v["assembly"] = results::assembly_stats(&contigs)?;
+            Ok(())
+        })
+    }
+
+    #[tool(description = "Flye 2.9.6: assemble a bacterial isolate from long reads (ONT R10.4.1 hac/sup reads are read_type nano-hq, \
+the default). Writes `<outdir>/assembly.fasta` plus `assembly_info.txt` (each contig's length, depth and whether it is circular); \
+use one empty outdir per sample. A 5 Mb genome at 50-100x takes roughly 10-30 minutes and a few GB of RAM. Returns the assembly's \
+contig count, total length, N50, longest contig and GC %, and per contig its depth and circularity. Flye recovers small plasmids \
+less reliably than consensus assemblers: check plasmid-borne genes. Polish with medaka next for fewer small insertions/deletions.")]
+    async fn flye(&self, Parameters(params): Parameters<x::FlyeParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("flye", &params, x::flye(&self.cfg.ctx, &params)).await;
+        let dir = self.cfg.ctx.cwd.join(&params.outdir);
+        self.external_reply(d, |v| {
+            v["assembly_file"] = json!(dir.join("assembly.fasta"));
+            v["assembly"] = results::assembly_stats(&dir.join("assembly.fasta"))?;
+            v["contigs"] = json!(results::flye_info(&dir.join("assembly_info.txt"))?);
+            Ok(())
+        })
+    }
+
+    #[tool(description = "Medaka 2.2.2 (medaka_consensus): polish a long-read draft assembly (e.g. Flye's assembly.fasta) with the \
+same reads. Writes `<outdir>/consensus.fasta`; outdir must be empty. Give `model` (e.g. r1041_e82_400bps_bacterial_methylation; \
+`medaka tools list_models` lists them) unless the read headers name the basecalling model, which many archive downloads don't. \
+Runs on the CPU here: expect tens of minutes for a 5 Mb genome. Returns the polished assembly's contig count, total length, N50 and GC %.")]
+    async fn medaka(&self, Parameters(params): Parameters<x::MedakaParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("medaka", &params, x::medaka(&self.cfg.ctx, &params)).await;
+        let consensus = self.cfg.ctx.cwd.join(&params.outdir).join("consensus.fasta");
+        self.external_reply(d, |v| {
+            v["assembly_file"] = json!(consensus);
+            v["assembly"] = results::assembly_stats(&consensus)?;
             Ok(())
         })
     }

@@ -236,6 +236,28 @@ pub fn assembly_stats(path: &Path) -> Result<Value, String> {
     }))
 }
 
+/// Flye's `assembly_info.txt` (Flye 2.9.6 `flye/assembly/scaffolder.py` header `#seq_name length
+/// cov. circ. repeat mult. alt_group graph_path`): per contig its name, length, mean depth and
+/// whether Flye closed it into a circle. A complete bacterial genome is one circular chromosome
+/// plus circular plasmids.
+pub fn flye_info(path: &Path) -> Result<Vec<Value>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let header: Vec<&str> = lines.next().ok_or_else(|| format!("{}: empty", path.display()))?.trim_start_matches('#').split('\t').collect();
+    let col = |name: &str| header.iter().position(|h| h.trim() == name).ok_or_else(|| format!("{}: no {name} column", path.display()));
+    let (name, len, cov, circ) = (col("seq_name")?, col("length")?, col("cov.")?, col("circ.")?);
+    let mut out = Vec::new();
+    for l in lines {
+        let f: Vec<&str> = l.split('\t').collect();
+        let get = |i: usize| f.get(i).copied().ok_or_else(|| format!("{}: short line {l:?}", path.display()));
+        let length: u64 = get(len)?.parse().map_err(|_| format!("{}: bad length in {l:?}", path.display()))?;
+        let depth: f64 = get(cov)?.parse().map_err(|_| format!("{}: bad cov. in {l:?}", path.display()))?;
+        out.push(json!({"name": get(name)?, "length": length, "depth": depth, "circular": get(circ)? == "Y"}));
+    }
+    out.sort_by(|a, b| b["length"].as_u64().cmp(&a["length"].as_u64()));
+    Ok(out)
+}
+
 /// mlst's table: one object per row. With a header (`--full`), keyed by its lower-cased column
 /// names; without, mlst 2.35.0's layout FILE, SCHEME, ST, then one `gene(allele)` per column.
 /// `sample` is what isotable will join the row to.
@@ -364,6 +386,27 @@ pub fn gtdbprep_ani_summary(stdout: &str, work: &Path) -> Result<Vec<Value>, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flye_assembly_info() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("assembly_info.txt");
+        std::fs::write(
+            &f,
+            "#seq_name\tlength\tcov.\tcirc.\trepeat\tmult.\talt_group\tgraph_path\n\
+             contig_2\t120544\t131\tY\tN\t2\t*\t2\n\
+             contig_1\t5301822\t68\tY\tN\t1\t*\t1\n\
+             contig_3\t4012\t240\tN\tY\t4\t*\t-3\n",
+        )
+        .unwrap();
+        let c = flye_info(&f).unwrap();
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[0], json!({"name": "contig_1", "length": 5301822, "depth": 68.0, "circular": true}));
+        assert_eq!(c[2]["circular"], json!(false));
+        std::fs::write(&f, "#seq_name\tlength\n").unwrap();
+        assert!(flye_info(&f).unwrap_err().contains("cov."));
+        assert!(flye_info(&d.path().join("missing.txt")).is_err());
+    }
 
     #[test]
     fn external_outputs() {

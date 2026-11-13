@@ -1,4 +1,4 @@
-//! Third-party tools (fastp, Shovill, Bakta, CheckM2, GTDB-Tk, mlst, AMRFinderPlus): typed
+//! Third-party tools (fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst, AMRFinderPlus): typed
 //! parameters, checks before running, and their argument vectors.
 //!
 //! Every flag here exists in the pinned upstream version (see [`PINNED`]); the comment above each
@@ -21,9 +21,13 @@ pub struct Pinned {
     pub url: &'static str,
 }
 
-pub const PINNED: [Pinned; 7] = [
+pub const PINNED: [Pinned; 9] = [
     Pinned { tool: "fastp", version: "1.4.0", bioconda: "fastp=1.4.0", url: "https://github.com/OpenGene/fastp" },
     Pinned { tool: "shovill", version: "1.4.2", bioconda: "shovill=1.4.2", url: "https://github.com/tseemann/shovill" },
+    Pinned { tool: "flye", version: "2.9.6", bioconda: "flye=2.9.6", url: "https://github.com/mikolmogorov/Flye" },
+    // medaka_consensus (the polishing script) reports no version itself; the server asks `medaka`
+    // beside it, which prints `medaka 2.2.2`.
+    Pinned { tool: "medaka_consensus", version: "2.2.2", bioconda: "medaka=2.2.2", url: "https://github.com/nanoporetech/medaka" },
     Pinned { tool: "bakta", version: "1.12.2", bioconda: "bakta=1.12.2", url: "https://github.com/oschwengers/bakta" },
     Pinned { tool: "checkm2", version: "1.1.0", bioconda: "checkm2=1.1.0", url: "https://github.com/chklovski/CheckM2" },
     Pinned { tool: "gtdbtk", version: "2.8.0", bioconda: "gtdbtk=2.8.0", url: "https://github.com/Ecogenomics/GTDBTk" },
@@ -647,6 +651,288 @@ pub fn shovill(ctx: &Ctx, p: &ShovillParams) -> Check<Invocation> {
     }
     for (name, on) in [("trim", p.trim), ("noreadcorr", p.noreadcorr), ("nostitch", p.nostitch), ("nocorr", p.nocorr)] {
         inv.flag(name, on);
+    }
+    Ok(inv)
+}
+
+/// `link_as` for an assembler: a link named after the sample to `assembly`, outside `outdir`.
+fn assembly_link(ctx: &Ctx, inv: &mut Invocation, link_as: &Option<String>, outdir: &Path, assembly: &Path, overwrite: bool) -> Check<()> {
+    let Some(l) = link_as else { return Ok(()) };
+    let link = v::output_file(ctx, "link_as", l, overwrite)?;
+    if v::resolve(&link).starts_with(v::resolve(outdir)) {
+        return v::invalid("link_as", format!("{l} is inside outdir; put the links in a folder of their own, e.g. genomes/<sample>.fna"));
+    }
+    let target = relative_to(&v::resolve(link.parent().unwrap_or(ctx.cwd.as_path())), &v::resolve(assembly));
+    inv.outputs.push(link.clone());
+    inv.links.push((link, target));
+    Ok(())
+}
+
+/// A genome size the way Flye reads it (`flye/main.py` `_parse_genome_size`): digits with an
+/// optional k, m or g, e.g. `5m`, `5.5m`, `2.6g`, `5000000`.
+fn flye_genome_size(g: &str) -> Check<()> {
+    let num = g.trim_end_matches(['k', 'm', 'g', 'K', 'M', 'G']);
+    let ok = !num.is_empty() && g.len() - num.len() <= 1 && num.chars().all(|c| c.is_ascii_digit() || c == '.') && num.parse::<f64>().is_ok_and(|x| x > 0.0);
+    if !ok {
+        return v::invalid("genome_size", format!("{g:?} is not a genome size like 5m, 5.5m or 5000000"));
+    }
+    Ok(())
+}
+
+// ---------- Flye ----------
+// Flags: Flye 2.9.6 flye/main.py (`main`, the argparse block and `_check_input`),
+// https://github.com/mikolmogorov/Flye/blob/2.9.6/flye/main.py; same list as `flye --help` of the
+// bioconda flye=2.9.6 package.
+// Not offered: --extra-params (free text into Flye's configuration), --resume/--resume-from/
+// --stop-after (a partial run isn't a result), --polish-target (polishing only, no assembly),
+// --subassemblies, --plasmids and --trestle (deprecated or unused), --hifi-error (deprecated alias
+// of --read-error), --debug.
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FlyeReads {
+    /// ONT R10.4.1 (or R9 Guppy 5+) reads basecalled with hac or sup: under 3 % error. The usual choice today.
+    NanoHq,
+    /// Older ONT reads (pre-R9 Guppy 5), 10-20 % error.
+    NanoRaw,
+    /// ONT reads corrected by another tool (under 3 % error).
+    NanoCorr,
+    /// PacBio HiFi reads (under 1 % error).
+    PacbioHifi,
+    /// PacBio CLR reads.
+    PacbioRaw,
+    /// PacBio reads corrected by another tool.
+    PacbioCorr,
+}
+
+impl FlyeReads {
+    fn flag(self) -> &'static str {
+        match self {
+            FlyeReads::NanoHq => "nano-hq",
+            FlyeReads::NanoRaw => "nano-raw",
+            FlyeReads::NanoCorr => "nano-corr",
+            FlyeReads::PacbioHifi => "pacbio-hifi",
+            FlyeReads::PacbioRaw => "pacbio-raw",
+            FlyeReads::PacbioCorr => "pacbio-corr",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FlyeParams {
+    /// Long-read FASTQ or FASTA files (plain or gzip) of one isolate.
+    pub reads: Vec<String>,
+    /// Read type. Default nano-hq (ONT R10.4.1 hac/sup).
+    #[serde(default)]
+    pub read_type: Option<FlyeReads>,
+    /// Output folder, inside the root. The assembly is `<outdir>/assembly.fasta`, with `assembly_info.txt` (length, coverage and whether each contig is circular) and `assembly_graph.gfa`; use one folder per sample.
+    pub outdir: String,
+    /// Allow an outdir that already has files. Flye then continues from what is there rather than starting clean, so prefer an empty folder. Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// Also make this path a link to `<outdir>/assembly.fasta`, named after the sample, e.g. `genomes/s1.fna`, for CheckM2, GTDB-Tk and gtdbprep_ani. Recorded and recreated by replay.sh.
+    #[serde(default)]
+    pub link_as: Option<String>,
+    /// Estimated genome size, e.g. 5.5m. Needed for asm_coverage. Default: Flye estimates it.
+    #[serde(default)]
+    pub genome_size: Option<String>,
+    /// Use only the longest reads up to this coverage for the first (disjointig) stage, which caps memory on deep data; all reads are still used later. Needs genome_size. E.g. 50.
+    #[serde(default)]
+    pub asm_coverage: Option<u32>,
+    /// Threads (Flye's default is 1).
+    #[serde(default)]
+    pub threads: Option<u32>,
+    /// Polishing iterations Flye runs itself (default 1).
+    #[serde(default)]
+    pub iterations: Option<u32>,
+    /// Minimum read overlap (default: chosen from the reads).
+    #[serde(default)]
+    pub min_overlap: Option<u32>,
+    /// Expected read error rate as a fraction, e.g. 0.03 (default: set by read_type).
+    #[serde(default)]
+    pub read_error: Option<f64>,
+    /// Metagenome / uneven coverage mode.
+    #[serde(default)]
+    pub meta: bool,
+    /// Don't collapse alternative haplotypes.
+    #[serde(default)]
+    pub keep_haplotypes: bool,
+    /// Don't output contigs for alternative haplotypes.
+    #[serde(default)]
+    pub no_alt_contigs: bool,
+    /// Scaffold contigs using the assembly graph (off by default).
+    #[serde(default)]
+    pub scaffold: bool,
+    /// Build disjointigs single-threaded, so identical runs give identical assemblies (slower).
+    #[serde(default)]
+    pub deterministic: bool,
+}
+
+pub fn flye(ctx: &Ctx, p: &FlyeParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("flye");
+    // Multi-threaded disjointig assembly isn't reproducible (Flye's own --deterministic exists for
+    // that), and flye.log has times, so every output is volatile; the assembly's contig count,
+    // length and N50 are recorded instead.
+    inv.volatile = &[""];
+    v::non_empty_list("reads", &p.reads)?;
+    let read_type = p.read_type.unwrap_or(FlyeReads::NanoHq);
+    let mut reads = Vec::new();
+    for r in &p.reads {
+        let path = v::existing_file(cwd, "reads", r)?;
+        if reads.contains(&path) {
+            return v::invalid("reads", format!("{r} is listed twice"));
+        }
+        if v::sequence_file(&path, "reads", r, Seq::Fastq).is_err() {
+            v::sequence_file(&path, "reads", r, Seq::Fasta).map_err(|e| v::Invalid { message: format!("{r} is neither FASTQ nor FASTA ({})", e.message), ..e })?;
+        }
+        reads.push(path);
+    }
+    inv.inputs.extend(reads);
+    // nargs="+": the files follow the flag as separate words; `./` keeps one starting with `-`
+    // from being read as an option.
+    inv.args.push(format!("--{}", read_type.flag()));
+    inv.args.extend(p.reads.iter().map(|r| list_item(r)));
+    let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(p.overwrite), true)?;
+    inv.outputs.push(outdir.clone());
+    inv.opt("out-dir", &p.outdir);
+    let assembly = outdir.join("assembly.fasta");
+    inv.expect = vec![vec![assembly.clone()]];
+    inv.assembly = Some(assembly.clone());
+    assembly_link(ctx, &mut inv, &p.link_as, &outdir, &assembly, p.overwrite)?;
+    if let Some(g) = &p.genome_size {
+        flye_genome_size(g)?;
+        inv.opt("genome-size", g);
+    }
+    if let Some(c) = p.asm_coverage {
+        if p.genome_size.is_none() {
+            return v::invalid("asm_coverage", "needs genome_size (Flye refuses --asm-coverage without --genome-size)");
+        }
+        v::range("asm_coverage", c, 1, 10_000)?;
+        inv.opt("asm-coverage", c);
+    }
+    if let Some(t) = p.threads {
+        v::range("threads", t, 1, 1024)?;
+        inv.opt("threads", t);
+    }
+    if let Some(i) = p.iterations {
+        v::range("iterations", i, 0, 10)?;
+        inv.opt("iterations", i);
+    }
+    if let Some(m) = p.min_overlap {
+        v::range("min_overlap", m, 1000, 100_000)?;
+        inv.opt("min-overlap", m);
+    }
+    if let Some(e) = p.read_error {
+        if !e.is_finite() || e <= 0.0 || e >= 1.0 {
+            return v::invalid("read_error", "a fraction between 0 and 1, e.g. 0.03");
+        }
+        inv.opt("read-error", e);
+    }
+    if p.keep_haplotypes && p.no_alt_contigs {
+        return v::invalid("no_alt_contigs", "keep_haplotypes and no_alt_contigs contradict each other");
+    }
+    for (name, on) in [
+        ("meta", p.meta),
+        ("keep-haplotypes", p.keep_haplotypes),
+        ("no-alt-contigs", p.no_alt_contigs),
+        ("scaffold", p.scaffold),
+        ("deterministic", p.deterministic),
+    ] {
+        inv.flag(name, on);
+    }
+    Ok(inv)
+}
+
+// ---------- Medaka ----------
+// Flags: medaka 2.2.2 scripts/medaka_consensus (the `getopts` string and usage text),
+// https://github.com/nanoporetech/medaka/blob/v2.2.2/scripts/medaka_consensus. It is a bash script
+// with short options only (getopts), so values are separate words, not `--name=value`; paths
+// starting with `-` get `./` in front.
+// Not offered: -f (it reuses or replaces old intermediate files; irit-mcp refuses a non-empty
+// outdir instead), -x, -B (regions), -M, -p (the prefix would hide the file isotable reads), -g/-r
+// (gap filling stays the default: draft sequence), -q.
+
+/// A medaka model name or `--bacteria`: letters, digits and `_ . : -` only (no paths; models are
+/// resolved by medaka itself).
+fn medaka_model(m: &str) -> Check<()> {
+    if m.is_empty() || m.starts_with('-') || !m.chars().all(|c| c.is_ascii_alphanumeric() || "_.:-".contains(c)) {
+        return v::invalid("model", format!("{m:?} is not a medaka model name like r1041_e82_400bps_bacterial_methylation"));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MedakaParams {
+    /// The long reads the draft was assembled from (FASTQ or FASTA, plain or gzip).
+    pub reads: String,
+    /// Draft assembly FASTA to polish, e.g. Flye's `<outdir>/assembly.fasta`.
+    pub draft: String,
+    /// Output folder, inside the root; must be empty. The polished assembly is `<outdir>/consensus.fasta`.
+    pub outdir: String,
+    /// Also make this path a link to `<outdir>/consensus.fasta`, named after the sample, e.g. `genomes/s1.fna`. Recorded and recreated by replay.sh. An existing file there is only replaced with overwrite.
+    #[serde(default)]
+    pub link_as: Option<String>,
+    /// Replace an existing link_as file. (outdir must still be empty: medaka would reuse old intermediate files.)
+    #[serde(default)]
+    pub overwrite: bool,
+    /// Medaka model, e.g. r1041_e82_400bps_bacterial_methylation (`medaka tools list_models` lists them). Default: chosen by medaka from the read headers, which fails for reads whose headers lost the basecaller's model (e.g. many archive downloads); then name it here.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Pick medaka's bacterial (methylation-aware) model automatically (`--bacteria`). Needs read headers that name the basecalling model; otherwise give `model`.
+    #[serde(default)]
+    pub bacteria: bool,
+    /// Threads for feature creation (medaka's default is 1). medaka recommends no more than 2 for its inference step; this sets the alignment and feature threads.
+    #[serde(default)]
+    pub threads: Option<u32>,
+    /// Batch size, which controls memory use (medaka's default 100). Lower it if medaka runs out of memory.
+    #[serde(default)]
+    pub batch_size: Option<u32>,
+}
+
+pub fn medaka(ctx: &Ctx, p: &MedakaParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("medaka_consensus");
+    // The consensus is computed on a GPU or CPU in batches; its bytes are not promised identical
+    // between runs, and the folder holds logs and a BAM, so every output is volatile.
+    inv.volatile = &[""];
+    let reads = v::existing_file(cwd, "reads", &p.reads)?;
+    if v::sequence_file(&reads, "reads", &p.reads, Seq::Fastq).is_err() {
+        v::sequence_file(&reads, "reads", &p.reads, Seq::Fasta)
+            .map_err(|e| v::Invalid { message: format!("{} is neither FASTQ nor FASTA ({})", p.reads, e.message), ..e })?;
+    }
+    let draft = v::existing_file(cwd, "draft", &p.draft)?;
+    v::sequence_file(&draft, "draft", &p.draft, Seq::Fasta)?;
+    if draft == reads {
+        return v::invalid("draft", "draft is the same file as reads");
+    }
+    inv.inputs.extend([reads, draft]);
+    let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(false), true)?;
+    inv.outputs.push(outdir.clone());
+    for (flag, value) in [("-i", &p.reads), ("-d", &p.draft), ("-o", &p.outdir)] {
+        inv.args.push(flag.into());
+        inv.args.push(list_item(value));
+    }
+    let consensus = outdir.join("consensus.fasta");
+    inv.expect = vec![vec![consensus.clone()]];
+    inv.assembly = Some(consensus.clone());
+    assembly_link(ctx, &mut inv, &p.link_as, &outdir, &consensus, p.overwrite)?;
+    if let Some(m) = &p.model {
+        medaka_model(m)?;
+        inv.args.extend(["-m".into(), m.clone()]);
+    }
+    if let Some(t) = p.threads {
+        v::range("threads", t, 1, 1024)?;
+        inv.args.extend(["-t".into(), t.to_string()]);
+    }
+    if let Some(b) = p.batch_size {
+        v::range("batch_size", b, 1, 10_000)?;
+        inv.args.extend(["-b".into(), b.to_string()]);
+    }
+    if p.bacteria {
+        inv.args.push("--bacteria".into());
     }
     Ok(inv)
 }
@@ -2348,6 +2634,102 @@ mod tests {
             let mut j = base.clone();
             j[invented] = json!("x");
             assert!(serde_json::from_value::<ShovillParams>(j).is_err(), "{invented}");
+        }
+    }
+
+    #[test]
+    fn flye_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        write(d.path(), "reads/s1.fastq", "@a\nACGT\n+\nIIII\n");
+        write(d.path(), "-s1b.fasta", ">a\nACGT\n");
+        write(d.path(), "reads/notes.txt", "hello\n");
+        let p: FlyeParams = parse(json!({
+            "reads": ["reads/s1.fastq"], "outdir": "asm/s1", "genome_size": "5.5m", "asm_coverage": 50,
+            "threads": 6, "deterministic": true, "link_as": "genomes/s1.fna"
+        }));
+        let inv = flye(&cx, &p).unwrap();
+        assert_eq!(inv.tool, "flye");
+        assert_eq!(
+            inv.args,
+            ["--nano-hq", "reads/s1.fastq", "--out-dir=asm/s1", "--genome-size=5.5m", "--asm-coverage=50", "--threads=6", "--deterministic"]
+        );
+        assert!(inv.expect[0][0].ends_with("asm/s1/assembly.fasta"));
+        assert_eq!(inv.assembly.as_deref(), Some(cx.root.join("asm/s1/assembly.fasta").as_path()));
+        assert_eq!(inv.links, [(cx.root.join("genomes/s1.fna"), PathBuf::from("../asm/s1/assembly.fasta"))]);
+        assert_eq!(inv.volatile, [""]);
+        // several files, FASTA too; a name starting with `-` can't become a flag
+        let two: FlyeParams = parse(json!({"reads": ["reads/s1.fastq", "-s1b.fasta"], "outdir": "asm/s2", "read_type": "pacbio-hifi"}));
+        assert_eq!(flye(&cx, &two).unwrap().args, ["--pacbio-hifi", "reads/s1.fastq", "./-s1b.fasta", "--out-dir=asm/s2"]);
+
+        let base = json!({"reads": ["reads/s1.fastq"], "outdir": "asm/x"});
+        let bad = |extra: serde_json::Value| {
+            let mut j = base.clone();
+            j.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            flye(&cx, &parse(j)).unwrap_err()
+        };
+        assert_eq!(bad(json!({"reads": []})).field, "reads");
+        assert_eq!(bad(json!({"reads": ["reads/s1.fastq", "reads/s1.fastq"]})).field, "reads");
+        assert_eq!(bad(json!({"reads": ["reads/notes.txt"]})).field, "reads");
+        assert_eq!(bad(json!({"reads": ["reads/missing.fq"]})).field, "reads");
+        assert_eq!(bad(json!({"asm_coverage": 50})).field, "asm_coverage"); // needs genome_size
+        assert_eq!(bad(json!({"genome_size": "big"})).field, "genome_size");
+        assert_eq!(bad(json!({"genome_size": "5mm"})).field, "genome_size");
+        assert_eq!(bad(json!({"read_error": 3.0})).field, "read_error");
+        assert_eq!(bad(json!({"keep_haplotypes": true, "no_alt_contigs": true})).field, "no_alt_contigs");
+        assert_eq!(bad(json!({"outdir": "../asm"})).field, "outdir");
+        assert_eq!(bad(json!({"link_as": "asm/x/s1.fna"})).field, "link_as");
+        write(d.path(), "asm/full/assembly.fasta", ">c\nA\n");
+        assert_eq!(bad(json!({"outdir": "asm/full"})).field, "outdir");
+        assert!(flye(&cx, &parse(json!({"reads": ["reads/s1.fastq"], "outdir": "asm/full", "overwrite": true}))).is_ok());
+        for invented in ["extra_params", "resume", "stop_after", "polish_target", "plasmids"] {
+            let mut j = base.clone();
+            j[invented] = json!(true);
+            assert!(serde_json::from_value::<FlyeParams>(j).is_err(), "{invented}");
+        }
+    }
+
+    #[test]
+    fn medaka_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        write(d.path(), "reads/s1.fastq.gz.txt", "@a\nACGT\n+\nIIII\n");
+        write(d.path(), "reads/s1.fastq", "@a\nACGT\n+\nIIII\n");
+        write(d.path(), "asm/s1/assembly.fasta", ">c\nACGT\n");
+        let p: MedakaParams = parse(json!({
+            "reads": "reads/s1.fastq", "draft": "asm/s1/assembly.fasta", "outdir": "polished/s1",
+            "model": "r1041_e82_400bps_bacterial_methylation", "threads": 2, "batch_size": 50, "link_as": "genomes/s1.fna"
+        }));
+        let inv = medaka(&cx, &p).unwrap();
+        assert_eq!(inv.tool, "medaka_consensus");
+        assert_eq!(
+            inv.args,
+            ["-i", "reads/s1.fastq", "-d", "asm/s1/assembly.fasta", "-o", "polished/s1", "-m", "r1041_e82_400bps_bacterial_methylation", "-t", "2", "-b", "50"]
+        );
+        assert!(inv.expect[0][0].ends_with("polished/s1/consensus.fasta"));
+        assert_eq!(inv.links, [(cx.root.join("genomes/s1.fna"), PathBuf::from("../polished/s1/consensus.fasta"))]);
+        assert_eq!(inv.inputs.len(), 2);
+        let auto: MedakaParams = parse(json!({"reads": "reads/s1.fastq", "draft": "asm/s1/assembly.fasta", "outdir": "polished/s2", "bacteria": true}));
+        assert_eq!(medaka(&cx, &auto).unwrap().args.last().map(String::as_str), Some("--bacteria"));
+
+        let base = json!({"reads": "reads/s1.fastq", "draft": "asm/s1/assembly.fasta", "outdir": "polished/x"});
+        let bad = |extra: serde_json::Value| {
+            let mut j = base.clone();
+            j.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            medaka(&cx, &parse(j)).unwrap_err()
+        };
+        assert_eq!(bad(json!({"draft": "reads/s1.fastq"})).field, "draft"); // reads, not an assembly
+        assert_eq!(bad(json!({"model": "-f"})).field, "model");
+        assert_eq!(bad(json!({"model": "a b"})).field, "model");
+        assert_eq!(bad(json!({"model": "../m.tar.gz"})).field, "model");
+        assert_eq!(bad(json!({"threads": 0})).field, "threads");
+        // outdir must be empty even with overwrite: medaka_consensus would reuse old intermediate files
+        write(d.path(), "polished/old/calls_to_draft.bam", "x");
+        assert_eq!(bad(json!({"outdir": "polished/old", "overwrite": true})).field, "outdir");
+        for invented in ["force", "regions", "prefix", "qualities"] {
+            let mut j = base.clone();
+            j[invented] = json!(true);
+            assert!(serde_json::from_value::<MedakaParams>(j).is_err(), "{invented}");
         }
     }
 
