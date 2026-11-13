@@ -50,6 +50,11 @@ What's done, what's next, and what's further out. Items move up as evidence come
       cap; largest step 5.82 GiB, correct species (ANI 100.0). The replay reran every command with
       three unrecorded steps added; gaps filed as [#2](https://github.com/dzulfikar08/irit/issues/2)
       to [#11](https://github.com/dzulfikar08/irit/issues/11).
+- [x] `seqplan` (unreleased): isolates per sequencing run and cost per isolate at a target
+      coverage, from Illumina's specifications and reported nanopore yields, each cited
+      ([seqplan](tools/seqplan.md)). Next: measure how low the coverage can go for this kind of
+      work (subsampling the *K. pneumoniae* reads from the paper reproduction), so a plan can use
+      a measured coverage instead of a habit.
 
 ## Next
 

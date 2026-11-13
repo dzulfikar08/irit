@@ -11,6 +11,7 @@ Each command-line tool is one static Rust binary: no Java, no conda, no containe
 | [`leanqc`](docs/tools/leanqc.md) | Read quality control with an offline HTML report | FastQC | 1.6 MB |
 | [`isotable`](docs/tools/isotable.md) | Joins fastp, leanqc, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs into one graded row per sample (isolates or MAGs) | Per-pipeline summary scripts | 2.6 MB |
 | [`dblock`](docs/tools/dblock.md) | Downloads, verifies and pins reference databases (GTDB-Tk, CheckM2, SILVA, Kraken 2, Bakta, CARD) with a lock file | Each tool's own downloader | 4.9 MB |
+| [`seqplan`](docs/tools/seqplan.md) | Plans a sequencing run before you sequence: isolates per run and cost per isolate at a target coverage, from Illumina's specifications and reported nanopore yields | Spreadsheets and vendor calculators | — |
 | [`irit-mcp`](docs/tools/mcp.md) | Gives AI agents (any MCP client) the irit tools as typed, checked tools, and records every call with a `replay.sh` that reruns it without the AI | Agents calling CLIs through a free-form shell | 3.1 MB |
 | [`gtdbprep`](docs/tools/gtdbprep.md) | Laptop half of a split GTDB-Tk: renames genomes, runs identify + align, and writes a ~4 KB-per-genome bundle for placement elsewhere | Downloading the 100 GB GTDB-Tk package | 1.6 MB |
 | [`msascope`](docs/tools/msascope.md) | GPU-drawn desktop viewer for very large multiple sequence alignments (100,000 × 30,000 tested) | Jalview, AliView, SeaView | desktop app |
@@ -42,7 +43,7 @@ Or download from the [latest release](https://github.com/dzulfikar08/irit/releas
   Developer ID and notarised by Apple.
 - **Linux** (x86_64, ARM64): `irit-<arch>-linux.tar.gz`, statically linked, runs on old distributions
   too; `msascope-<arch>-linux.tar.gz` needs glibc 2.39 or newer.
-- **Windows** (x86_64): `irit-x86_64-windows.zip` with sheetgen, leanqc, isotable and dblock. Not
+- **Windows** (x86_64): `irit-x86_64-windows.zip` with sheetgen, leanqc, isotable, dblock and seqplan. Not
   code-signed, so SmartScreen may warn the first time.
 
 Check downloads against the release's `SHA256SUMS`; see
@@ -51,7 +52,7 @@ Check downloads against the release's `SHA256SUMS`; see
 Or build with Rust:
 
 ```sh
-cargo install --git https://github.com/dzulfikar08/irit sheetgen leanqc isotable dblock irit-mcp gtdbprep
+cargo install --git https://github.com/dzulfikar08/irit sheetgen leanqc isotable dblock seqplan irit-mcp gtdbprep
 ```
 
 or build from a checkout with `cargo build --release` (binaries in `target/release/`).

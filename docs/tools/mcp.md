@@ -2,7 +2,7 @@
 
 `irit-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives AI
 agents (Claude Code, Claude Desktop and other MCP clients) the irit tools as typed tools. Each call
-runs the real `sheetgen`, `leanqc`, `isotable` or `dblock` binary, and is written to a run record
+runs the real `sheetgen`, `leanqc`, `isotable`, `seqplan` or `dblock` binary, and is written to a run record
 with a `replay.sh` that repeats the same commands without any AI.
 
 It also wraps seven third-party tools for the microbial isolate path, so a whole run (trim,
@@ -182,6 +182,23 @@ One graded row per sample ([isotable](isotable.md)).
 
 Returns `counts` per status and `samples`, each with `status`, `reasons` (a list) and `values`
 (the other columns).
+
+### `seqplan`
+
+Isolates per sequencing run at a target coverage ([seqplan](seqplan.md)). Writes nothing.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `kit` | kit id (required) | e.g. `miseq-v3`, `nextseq-p1`, `novaseq-x-1.5b`, `minion-r10.4.1`; `seqplan --list-kits` lists them. |
+| `reads` | e.g. `2x150` | Read configuration. Default: the kit's first listed one. |
+| `organism` or `genome_size` | preset id, or bp with k/M/G | Exactly one. Presets use NCBI's expected genome size. |
+| `coverage` | number | Target mean coverage. Default 50. |
+| `usable`, `imbalance` | numbers | Usable fraction of the run (default 0.8 Illumina, 1.0 nanopore) and barcode-imbalance margin (default 1.3). |
+| `samples` | integer | Isolates to sequence: adds runs needed and cost per isolate for them. |
+| `run_price`, `currency` | number, label | The user's own run price. There are no built-in prices. |
+
+Returns `plan`: bases and read pairs per isolate, the kit's output range with its `basis` and
+`source`, and isolates per run, runs and costs at both ends of the range (`low`, `high`).
 
 ### `dblock_*`
 

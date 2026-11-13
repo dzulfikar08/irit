@@ -10,6 +10,7 @@
 - [leanqc: read quality control](tools/leanqc.md)
 - [isotable: one row per sample](tools/isotable.md)
 - [dblock: reference databases](tools/dblock.md)
+- [seqplan: isolates per sequencing run](tools/seqplan.md)
 - [irit-mcp: tools for AI agents](tools/mcp.md)
 - [gtdbprep: GTDB-Tk without the 100 GB download](tools/gtdbprep.md)
 - [msascope: large alignment viewer](tools/msascope.md)
