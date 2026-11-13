@@ -83,7 +83,10 @@ fn list_item(value: &str) -> String {
 
 /// A database location from the parameter, else from the variable the tool itself reads.
 /// Returns the text to pass on and the path resolved against the working folder.
-fn db_location(ctx: &Ctx, field: &str, given: &Option<String>, var: &str) -> Check<(String, PathBuf)> {
+/// Where a database is: the parameter, else the environment variable the server started with,
+/// else the one database of that kind locked in the working folder's `dblock.lock` (a warning
+/// then says which, since nothing in the call named it).
+fn db_location(ctx: &Ctx, inv: &mut Invocation, field: &str, given: &Option<String>, var: &str) -> Check<(String, PathBuf)> {
     let text = match given {
         Some(g) => {
             v::text(field, g)?;
@@ -91,18 +94,59 @@ fn db_location(ctx: &Ctx, field: &str, given: &Option<String>, var: &str) -> Che
         }
         None => match ctx.var(var) {
             Some(x) if !x.is_empty() => x.to_string_lossy().into_owned(),
-            _ => {
-                return v::invalid(
-                    field,
-                    format!(
-                        "no database given and {var} is not set; pass {field} (dblock_env shows the path of a dblock-managed database)"
-                    ),
-                );
-            }
+            _ => match locked_db(&ctx.cwd, |db| db.get("env").and_then(toml::Value::as_str) == Some(var)) {
+                Ok(Some((id, path))) => {
+                    inv.warnings.push(format!("{field}: {var} is not set, so the database locked in dblock.lock was used: {id} at {path}"));
+                    path
+                }
+                Ok(None) => {
+                    return v::invalid(
+                        field,
+                        format!(
+                            "no database given, {var} is not set and dblock.lock here locks none; pass {field} (dblock_env shows the path of a dblock-managed database)"
+                        ),
+                    );
+                }
+                Err(e) => return v::invalid(field, format!("no database given and {var} is not set; {e}; pass {field}")),
+            },
         },
     };
     let path = ctx.cwd.join(&text);
     Ok((text, path))
+}
+
+/// The one database in `<cwd>/dblock.lock` that `pick` accepts: its id and data path. `None`
+/// when there is no lock file or nothing matches; an error when several match or the lock is
+/// unreadable.
+fn locked_db(cwd: &Path, pick: impl Fn(&toml::Table) -> bool) -> Result<Option<(String, String)>, String> {
+    let lock = cwd.join("dblock.lock");
+    let text = match std::fs::read_to_string(&lock) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("dblock.lock: {e}")),
+    };
+    let doc: toml::Table = text.parse().map_err(|e| format!("dblock.lock is not valid TOML: {e}"))?;
+    let found: Vec<(String, String)> = doc
+        .get("database")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_table)
+        .filter(|db| pick(db))
+        .filter_map(|db| {
+            let id = db.get("id")?.as_str()?;
+            let path = db.get("data_path").or_else(|| db.get("path"))?.as_str()?;
+            Some((id.to_string(), path.to_string()))
+        })
+        .collect();
+    match found.len() {
+        0 => Ok(None),
+        1 => Ok(found.into_iter().next()),
+        _ => Err(format!(
+            "dblock.lock locks several matching databases ({})",
+            found.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>().join(", ")
+        )),
+    }
 }
 
 fn output_file_opt(
@@ -655,7 +699,7 @@ impl BaktaSkip {
 pub struct BaktaParams {
     /// Genome assembly, FASTA (plain or gzip).
     pub genome: String,
-    /// Bakta database folder (the one holding version.json, schema v6 for Bakta 1.12). Default: $BAKTA_DB as the server started with. dblock_env shows the path of a dblock-managed one (bakta-db-v6-full or -light).
+    /// Bakta database folder (the one holding version.json, schema v6 for Bakta 1.12). Default: $BAKTA_DB as the server started with, else the one locked in ./dblock.lock. dblock_env shows the path of a dblock-managed one (bakta-db-v6-full or -light).
     #[serde(default)]
     pub db: Option<String>,
     /// Output folder, inside the root.
@@ -760,7 +804,7 @@ pub fn bakta(ctx: &Ctx, p: &BaktaParams) -> Check<Invocation> {
     let genome = v::existing_file(cwd, "genome", &p.genome)?;
     v::sequence_file(&genome, "genome", &p.genome, Seq::Fasta)?;
     inv.inputs.push(genome);
-    let (db_text, db) = db_location(ctx, "db", &p.db, "BAKTA_DB")?;
+    let (db_text, db) = db_location(ctx, &mut inv, "db", &p.db, "BAKTA_DB")?;
     // version.json only: the database itself is tens of GB (dblock_verify checks it).
     inv.inputs.push(bakta_db("db", &db_text, &db)?);
     inv.opt("db", &db_text);
@@ -868,7 +912,7 @@ pub struct Checkm2Params {
     /// Allow a non-empty outdir. CheckM2 (--force) then DELETES everything in it first. Default false.
     #[serde(default)]
     pub overwrite: bool,
-    /// CheckM2 DIAMOND database: the .dmnd file, or a folder holding exactly one. Default: $CHECKM2DB as the server started with (dblock_env shows the path for checkm2-db-v3).
+    /// CheckM2 DIAMOND database: the .dmnd file, or a folder holding exactly one. Default: $CHECKM2DB as the server started with, else the one locked in ./dblock.lock (dblock_env shows the path for checkm2-db-v3).
     #[serde(default)]
     pub db: Option<String>,
     /// Threads.
@@ -964,7 +1008,7 @@ pub fn checkm2(ctx: &Ctx, p: &Checkm2Params) -> Check<Invocation> {
             }
         }
     }
-    let (db_text, db) = db_location(ctx, "db", &p.db, "CHECKM2DB")?;
+    let (db_text, db) = db_location(ctx, &mut inv, "db", &p.db, "CHECKM2DB")?;
     let dmnd = checkm2_db("db", &db_text, &db)?;
     // Pass the file itself; the database (about 3 GB) is not hashed (dblock_verify does that).
     inv.opt("database_path", dmnd.to_string_lossy());
@@ -1021,7 +1065,7 @@ pub struct GtdbtkClassifyWfParams {
     /// Allow an out_dir that already has files (GTDB-Tk writes over them). Default false.
     #[serde(default)]
     pub overwrite: bool,
-    /// GTDB-Tk reference data folder (the release folder holding metadata/, markers/, skani/, ...). Default: $GTDBTK_DATA_PATH as the server started with. dblock_env shows the path for gtdbtk-r232.
+    /// GTDB-Tk reference data folder (the release folder holding metadata/, markers/, skani/, ...). Default: $GTDBTK_DATA_PATH as the server started with, else the one locked in ./dblock.lock. dblock_env shows the path for gtdbtk-r232.
     #[serde(default)]
     pub data_path: Option<String>,
     /// Prefix of the output files. Default gtdbtk.
@@ -1138,7 +1182,7 @@ pub fn gtdbtk_classify_wf(ctx: &Ctx, p: &GtdbtkClassifyWfParams) -> Check<Invoca
     }
     inv.inputs.extend(files);
     inv.opt("genome_dir", &p.genome_dir);
-    let (data_text, data) = db_location(ctx, "data_path", &p.data_path, "GTDBTK_DATA_PATH")?;
+    let (data_text, data) = db_location(ctx, &mut inv, "data_path", &p.data_path, "GTDBTK_DATA_PATH")?;
     inv.inputs.push(gtdbtk_data("data_path", &data_text, &data, p.full_tree)?);
     // A small skani database (the one gtdbprep_ani builds, a few MB) is hashed into the record;
     // the full one (85 GB in R232) is left to dblock_verify, like the other large databases.
@@ -1201,9 +1245,10 @@ pub struct GtdbprepAniParams {
     /// Extension of the genome files in genome_dir. Default fna.
     #[serde(default)]
     pub extension: Option<String>,
-    /// Screen index folder (meta.json, refs.bin, markers.idx): dblock's gtdbtk-r232-ani-screen (dblock_plan shows its path).
-    pub index: String,
-    /// GTDB-Tk reference data with taxonomy/, radii/ and metadata/ (no skani/ needed): dblock's gtdbtk-r232-placement-lite. Default: $GTDBTK_DATA_PATH as the server started with.
+    /// Screen index folder (meta.json, refs.bin, markers.idx): dblock's gtdbtk-r232-ani-screen (dblock_plan shows its path). Default: the ANI-screen index locked in ./dblock.lock.
+    #[serde(default)]
+    pub index: Option<String>,
+    /// GTDB-Tk reference data with taxonomy/, radii/ and metadata/ (no skani/ needed): dblock's gtdbtk-r232-placement-lite. Default: $GTDBTK_DATA_PATH as the server started with, else the one locked in ./dblock.lock.
     #[serde(default)]
     pub data_path: Option<String>,
     /// Work folder, inside the root. Its gtdbtk_data/ is then a complete GTDB-Tk data folder: pass `<work>/gtdbtk_data` as gtdbtk_classify_wf's data_path.
@@ -1265,15 +1310,26 @@ pub fn gtdbprep_ani(ctx: &Ctx, p: &GtdbprepAniParams) -> Check<Invocation> {
     inv.opt("genomes", &p.genome_dir);
     inv.opt("extension", ext);
 
-    let index = v::existing_dir(cwd, "index", &p.index)?;
+    let index_text = match &p.index {
+        Some(i) => i.clone(),
+        None => match locked_db(cwd, |db| db.get("id").and_then(toml::Value::as_str).is_some_and(|id| id.contains("ani-screen"))) {
+            Ok(Some((id, path))) => {
+                inv.warnings.push(format!("index: none given, so the ANI-screen index locked in dblock.lock was used: {id} at {path}"));
+                path
+            }
+            Ok(None) => return v::invalid("index", "no index given and dblock.lock here locks no ANI-screen index (dblock add gtdbtk-r232-ani-screen)"),
+            Err(e) => return v::invalid("index", format!("no index given; {e}")),
+        },
+    };
+    let index = v::existing_dir(cwd, "index", &index_text)?;
     let missing: Vec<&str> = ANI_INDEX_FILES.iter().copied().filter(|f| !index.join(f).is_file()).collect();
     if !missing.is_empty() {
-        return v::invalid("index", format!("{} has no {}; it is not a screen index (dblock add gtdbtk-r232-ani-screen)", p.index, missing.join(", ")));
+        return v::invalid("index", format!("{index_text} has no {}; it is not a screen index (dblock add gtdbtk-r232-ani-screen)", missing.join(", ")));
     }
     inv.inputs.extend(["meta.json", "refs.bin"].map(|f| index.join(f)));
-    inv.opt("index", &p.index);
+    inv.opt("index", &index_text);
 
-    let (data_text, data) = db_location(ctx, "data_path", &p.data_path, "GTDBTK_DATA_PATH")?;
+    let (data_text, data) = db_location(ctx, &mut inv, "data_path", &p.data_path, "GTDBTK_DATA_PATH")?;
     let missing: Vec<&str> = ANI_DATA_FILES.iter().copied().filter(|f| !data.join(f).is_file()).collect();
     if !missing.is_empty() {
         return v::invalid(
@@ -1651,7 +1707,7 @@ pub struct AmrfinderParams {
     /// Which tool wrote the GFF. AMRFinderPlus's default is genbank; use bakta for Bakta's GFF3.
     #[serde(default)]
     pub annotation_format: Option<AmrAnnotationFormat>,
-    /// AMRFinderPlus database folder (holding version.txt, indexed). Default: $AMRFINDER_DB as the server started with.
+    /// AMRFinderPlus database folder (holding version.txt, indexed). Default: $AMRFINDER_DB as the server started with, else the one locked in ./dblock.lock.
     /// dblock_env shows the path of a dblock-managed one (amrfinderplus-db-4.2-2026-10-29.1).
     #[serde(default)]
     pub database: Option<String>,
@@ -1814,7 +1870,7 @@ pub fn amrfinder(ctx: &Ctx, p: &AmrfinderParams) -> Check<Invocation> {
         }
         inv.opt("annotation_format", serde_json::to_value(a).unwrap().as_str().unwrap());
     }
-    let (db_text, db) = db_location(ctx, "database", &p.database, "AMRFINDER_DB")?;
+    let (db_text, db) = db_location(ctx, &mut inv, "database", &p.database, "AMRFINDER_DB")?;
     if let Some(o) = &p.organism {
         v::text("organism", o)?;
     }
@@ -2500,5 +2556,48 @@ mod tests {
         write(d.path(), "ani/w/assigned.json", "[]");
         assert_eq!(bad(json!({})), "work");
         assert!(serde_json::from_value::<GtdbprepAniParams>(json!({"genome_dir": "g", "index": "i", "work": "w", "full_db": "x"})).is_err());
+    }
+
+    #[test]
+    fn databases_fall_back_to_the_projects_dblock_lock() {
+        let d = tempfile::tempdir().unwrap();
+        let mut cx = ctx(d.path());
+        cx.vars.insert("HOME".into(), "/home/u".into());
+        write(d.path(), "genomes/b168.fna", ">c1\nACGT\n");
+        for f in ANI_INDEX_FILES {
+            write(d.path(), &format!("store/ani/ix/{f}"), "x");
+        }
+        for f in ANI_DATA_FILES {
+            write(d.path(), &format!("store/lite/release232/{f}"), "x");
+        }
+        let store = cx.root.join("store");
+        let p: GtdbprepAniParams = parse(json!({"genome_dir": "genomes", "work": "ani/w"}));
+        // no lock file: the same refusals as before
+        let e = gtdbprep_ani(&cx, &p).unwrap_err();
+        assert_eq!(e.field, "index");
+        // as dblock writes it (other keys left out)
+        let lock = format!(
+            "[[database]]\nid = \"gtdbtk-r232-ani-screen\"\npath = \"{s}/ani\"\ndata_path = \"{s}/ani/ix\"\n\n\
+             [[database]]\nid = \"gtdbtk-r232-placement-lite\"\npath = \"{s}/lite\"\ndata_path = \"{s}/lite/release232\"\nenv = \"GTDBTK_DATA_PATH\"\n",
+            s = store.display()
+        );
+        write(d.path(), "dblock.lock", &lock);
+        let inv = gtdbprep_ani(&cx, &p).unwrap();
+        assert!(inv.args.contains(&format!("--index={}/ani/ix", store.display())), "{:?}", inv.args);
+        assert!(inv.args.contains(&format!("--data={}/lite/release232", store.display())), "{:?}", inv.args);
+        // and says so, naming the database
+        assert_eq!(inv.warnings.len(), 2, "{:?}", inv.warnings);
+        assert!(inv.warnings[0].contains("gtdbtk-r232-ani-screen") && inv.warnings[1].contains("GTDBTK_DATA_PATH is not set"), "{:?}", inv.warnings);
+        // a parameter or the environment variable still wins, without a warning
+        let mut cx2 = ctx(d.path());
+        cx2.vars.insert("HOME".into(), "/home/u".into());
+        cx2.vars.insert("GTDBTK_DATA_PATH".into(), store.join("lite/release232").into());
+        let inv = gtdbprep_ani(&cx2, &parse(json!({"genome_dir": "genomes", "index": "store/ani/ix", "work": "ani/w"}))).unwrap();
+        assert!(inv.warnings.is_empty(), "{:?}", inv.warnings);
+        // two candidates: refused, naming both
+        write(d.path(), "dblock.lock", &format!("{lock}\n[[database]]\nid = \"gtdbtk-r226-placement-lite\"\ndata_path = \"/x\"\nenv = \"GTDBTK_DATA_PATH\"\n"));
+        let e = gtdbprep_ani(&cx, &p).unwrap_err();
+        assert_eq!(e.field, "data_path");
+        assert!(e.message.contains("gtdbtk-r232-placement-lite, gtdbtk-r226-placement-lite"), "{}", e.message);
     }
 }
