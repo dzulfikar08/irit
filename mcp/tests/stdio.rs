@@ -51,7 +51,7 @@ fn leanqc_over_stdio_is_recorded_and_replayable() {
 
     let tools = c.request("tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    for want in ["sheetgen", "leanqc", "isotable", "dblock_catalog", "dblock_plan", "dblock_fetch", "dblock_verify", "dblock_check", "dblock_env", "describe_run", "list_runs"] {
+    for want in ["sheetgen", "leanqc", "isotable", "seqplan", "dblock_catalog", "dblock_plan", "dblock_fetch", "dblock_verify", "dblock_check", "dblock_env", "describe_run", "list_runs"] {
         assert!(names.contains(&want), "{want} missing from {names:?}");
     }
     let leanqc_schema = &tools["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "leanqc").unwrap()["inputSchema"];
@@ -201,4 +201,26 @@ fn review_repros_over_stdio() {
     assert!(out.status.success(), "replay failed: {}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stderr).contains("outputs match"));
     assert!(!work.join("PWNED").exists() && !run_dir.join("PWNED").exists());
+}
+
+/// seqplan through the server: the plan comes back as structured JSON, and the call is replayable.
+#[test]
+fn seqplan_over_stdio() {
+    let bin = bin_dir();
+    assert!(bin.join(format!("seqplan{}", std::env::consts::EXE_SUFFIX)).is_file(), "build seqplan too (cargo build -p seqplan)");
+    let tmp = tempfile::tempdir().unwrap();
+    let work = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut c = Client::start(&work, &bin);
+    let r = c.call("seqplan", json!({"kit": "miseq-v3", "genome_size": "5.5M", "coverage": 50.0, "samples": 96, "run_price": 1500.0, "currency": "USD"}));
+    assert_eq!(r["isError"], false, "{r}");
+    let plan = &r["structuredContent"]["plan"];
+    assert_eq!(plan["low"]["isolates_per_run"], 29);
+    assert_eq!(plan["high"]["isolates_per_run"], 33);
+    assert_eq!(plan["kit"]["source"], "https://www.illumina.com/systems/sequencing-platforms/miseq/specifications.html");
+    let r = c.call("seqplan", json!({"kit": "hiseq-2000", "genome_size": "5.5M"}));
+    assert_eq!(r["isError"], true);
+    c.close();
+    let run_dir = work.join("irit-runs/test-run");
+    let out = Command::new("sh").arg(run_dir.join("replay.sh")).env("IRIT_BIN_DIR", &bin).current_dir(&work).output().unwrap();
+    assert!(out.status.success(), "replay failed: {}", String::from_utf8_lossy(&out.stderr));
 }

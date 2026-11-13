@@ -16,7 +16,8 @@ use std::sync::{Arc, Mutex};
 
 const INSTRUCTIONS: &str = "Tools for sequencing-data housekeeping from the irit project: \
 sheetgen (sample sheets from FASTQ folders, checked against a pipeline's schema), leanqc (read QC), \
-isotable (one graded QC row per sample from tool outputs) and dblock_* (reference databases); \
+isotable (one graded QC row per sample from tool outputs), seqplan (isolates per sequencing run at a target coverage) and \
+dblock_* (reference databases); \
 plus the microbial isolate path with third-party tools: fastp (trimming), shovill (assembly), bakta \
 (annotation), checkm2 (completeness/contamination), gtdbprep_ani and gtdbtk_classify_wf (taxonomy), mlst (sequence type) and \
 amrfinder (AMRFinderPlus resistance genes). Those need the program installed (Bioconda) and, for bakta, \
@@ -557,6 +558,15 @@ details, reads, GC and Q30, and the report paths.")]
             v["reports"] = json!(reports);
             v.as_object_mut().unwrap().remove("outputs"); // the reports already list the paths
         })
+    }
+
+    #[tool(description = "Plan a sequencing run before sequencing: bases and read pairs per isolate at a target coverage (padded by a \
+barcode-imbalance margin), isolates per run, and, with samples, runs needed. Run output comes from the vendor's specification \
+(Illumina) or reported typical yields (nanopore, marked as such), each with its source URL. Cost per isolate only when the user \
+gave run_price: seqplan has no prices. Writes nothing.")]
+    async fn seqplan(&self, Parameters(params): Parameters<p::SeqplanParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("seqplan", &params, p::seqplan(&self.cfg.ctx, &params)).await;
+        self.reply(d, |d, v| v["plan"] = serde_json::from_str(&d.stdout_text()).unwrap_or(Value::Null))
     }
 
     #[tool(description = "Join QC, assembly and typing outputs (fastp, leanqc, QUAST, Shovill's contigs.fa, BUSCO, CheckM2, GTDB-Tk, Kraken 2, \

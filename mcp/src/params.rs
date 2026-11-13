@@ -272,6 +272,97 @@ pub fn leanqc(ctx: &Ctx, p: &LeanqcParams) -> Check<Invocation> {
     Ok(inv)
 }
 
+// ---------- seqplan ----------
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SeqplanParams {
+    /// Kit or flow cell id, e.g. miseq-v3, miseq-v2, iseq-100, nextseq-550-mid, nextseq-p1, nextseq-p2, novaseq-x-1.5b,
+    /// minion-r10.4.1, flongle-r10.4.1. An unknown id is refused with the full list.
+    pub kit: String,
+    /// Read configuration, e.g. 2x150. Default: the kit's usual one (2x300 for miseq-v3, 2x150 for most others).
+    #[serde(default)]
+    pub reads: Option<String>,
+    /// Organism preset with NCBI's expected genome size, e.g. klebsiella-pneumoniae, escherichia-coli,
+    /// staphylococcus-aureus, mycobacterium-tuberculosis. Give this or genome_size.
+    #[serde(default)]
+    pub organism: Option<String>,
+    /// Genome size in bp with an optional k/M/G suffix, e.g. 5.5M.
+    #[serde(default)]
+    pub genome_size: Option<String>,
+    /// Target mean coverage per isolate (×). Default 50.
+    #[serde(default)]
+    pub coverage: Option<f64>,
+    /// Fraction of run output that ends up in sample reads. Default 0.8 (Illumina), 1.0 (nanopore).
+    #[serde(default)]
+    pub usable: Option<f64>,
+    /// Barcode-imbalance margin (1-10). Default 1.3.
+    #[serde(default)]
+    pub imbalance: Option<f64>,
+    /// Number of isolates to sequence: also returns runs needed and cost per isolate for them.
+    #[serde(default)]
+    pub samples: Option<u64>,
+    /// Price of one run as the user gave it. Never invent prices: leave this out unless the user gave one.
+    #[serde(default)]
+    pub run_price: Option<f64>,
+    /// Currency label for run_price, e.g. USD or IDR.
+    #[serde(default)]
+    pub currency: Option<String>,
+}
+
+pub fn seqplan(_ctx: &Ctx, p: &SeqplanParams) -> Check<Invocation> {
+    let mut inv = Invocation::new("seqplan");
+    v::db_id("kit", &p.kit)?;
+    inv.opt("kit", &p.kit);
+    if let Some(r) = &p.reads {
+        let ok = r == "long"
+            || r.split_once('x').is_some_and(|(n, l)| {
+                !n.is_empty() && !l.is_empty() && n.chars().chain(l.chars()).all(|c| c.is_ascii_digit())
+            });
+        if !ok {
+            return v::invalid("reads", format!("{r:?} is not a read configuration like 2x150"));
+        }
+        inv.opt("reads", r);
+    }
+    match (&p.organism, &p.genome_size) {
+        (Some(o), None) => {
+            v::db_id("organism", o)?;
+            inv.opt("organism", o);
+        }
+        (None, Some(s)) => {
+            let ok = !s.is_empty() && s.len() <= 16 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.');
+            if !ok {
+                return v::invalid("genome_size", format!("{s:?} is not a size like 5.5M"));
+            }
+            inv.opt("genome-size", s);
+        }
+        _ => return v::invalid("genome_size", "give exactly one of organism and genome_size"),
+    }
+    for (field, flag, val) in [("coverage", "coverage", p.coverage), ("usable", "usable", p.usable), ("imbalance", "imbalance", p.imbalance), ("run_price", "run-price", p.run_price)] {
+        if let Some(x) = val {
+            if !(x.is_finite() && x >= 0.0) {
+                return v::invalid(field, "must be a non-negative number");
+            }
+            inv.opt(flag, x);
+        }
+    }
+    if let Some(n) = p.samples {
+        if n == 0 {
+            return v::invalid("samples", "must be at least 1");
+        }
+        inv.opt("samples", n);
+    }
+    if let Some(c) = &p.currency {
+        if c.is_empty() || c.len() > 8 || !c.chars().all(|c| c.is_ascii_alphabetic()) {
+            return v::invalid("currency", format!("{c:?} is not a currency label like USD"));
+        }
+        inv.opt("currency", c);
+    }
+    inv.opt("format", "json");
+    inv.stdout_is_output = true;
+    Ok(inv)
+}
+
 // ---------- isotable ----------
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -638,6 +729,32 @@ mod tests {
 
     fn parse<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> T {
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn seqplan_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        let p: SeqplanParams = parse(json!({"kit": "miseq-v3", "genome_size": "5.5M", "coverage": 50.0, "samples": 96, "run_price": 1500.0, "currency": "USD"}));
+        let inv = seqplan(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            ["--kit=miseq-v3", "--genome-size=5.5M", "--coverage=50", "--run-price=1500", "--samples=96", "--currency=USD", "--format=json"]
+        );
+        assert!(inv.outputs.is_empty() && inv.inputs.is_empty());
+        let p: SeqplanParams = parse(json!({"kit": "nextseq-p1", "reads": "2x150", "organism": "klebsiella-pneumoniae"}));
+        assert_eq!(seqplan(&cx, &p).unwrap().args, ["--kit=nextseq-p1", "--reads=2x150", "--organism=klebsiella-pneumoniae", "--format=json"]);
+
+        let bad = |v: serde_json::Value| seqplan(&cx, &parse(v)).unwrap_err().field;
+        assert_eq!(bad(json!({"kit": "--help", "genome_size": "5M"})), "kit");
+        assert_eq!(bad(json!({"kit": "miseq-v3"})), "genome_size");
+        assert_eq!(bad(json!({"kit": "miseq-v3", "genome_size": "5M", "organism": "escherichia-coli"})), "genome_size");
+        assert_eq!(bad(json!({"kit": "miseq-v3", "genome_size": "5M;rm"})), "genome_size");
+        assert_eq!(bad(json!({"kit": "miseq-v3", "genome_size": "5M", "reads": "2x"})), "reads");
+        assert_eq!(bad(json!({"kit": "miseq-v3", "genome_size": "5M", "run_price": -1.0})), "run_price");
+        assert_eq!(bad(json!({"kit": "miseq-v3", "genome_size": "5M", "samples": 0})), "samples");
+        assert_eq!(bad(json!({"kit": "miseq-v3", "genome_size": "5M", "currency": "U$D"})), "currency");
+        assert!(serde_json::from_value::<SeqplanParams>(json!({"kit": "miseq-v3", "price_list": "x"})).is_err());
     }
 
     #[test]
