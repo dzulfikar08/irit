@@ -172,8 +172,9 @@ impl Irit {
         }
     }
 
-    /// `program --version`, or None when it fails or prints nothing.
-    async fn version(&self, program: &Path) -> Option<String> {
+    /// `program --version` (or what [`x::version_probe`] says for the tool), or None when it
+    /// fails or prints nothing.
+    async fn version(&self, tool: &str, program: &Path) -> Option<String> {
         if let Some(v) = self.state.lock().unwrap().versions.get(program) {
             return v.clone();
         }
@@ -182,8 +183,14 @@ impl Irit {
             Some(n) if n == "medaka_consensus" => program.with_file_name("medaka"),
             _ => program.to_path_buf(),
         };
-        let out = tokio::process::Command::new(&asked).arg("--version").stdin(std::process::Stdio::null()).output().await;
-        let v = version_text(out.ok());
+        let (arg, on_stderr) = x::version_probe(tool);
+        let out = tokio::process::Command::new(&asked).arg(arg).stdin(std::process::Stdio::null()).output().await;
+        let v = version_text(out.ok().map(|mut o| {
+            if on_stderr {
+                o.stdout = std::mem::take(&mut o.stderr);
+            }
+            o
+        }));
         self.state.lock().unwrap().versions.insert(program.to_path_buf(), v.clone());
         v
     }
@@ -257,7 +264,7 @@ impl Irit {
             return finish(rec, Vec::new(), String::new());
         };
         rec.program = Some(program.to_string_lossy().into_owned());
-        rec.version = self.version(&program).await;
+        rec.version = self.version(inv.tool, &program).await;
 
         let targets: Vec<PathBuf> = inv.outputs.iter().map(|p| validate::resolve(p)).collect();
         let _claim = self.busy.claim(id, targets).await;
@@ -691,6 +698,20 @@ less reliably than consensus assemblers: check plasmid-borne genes. Polish with 
         })
     }
 
+    #[tool(description = "MEGAHIT 1.2.9: assemble a metagenome (or a co-assembly) from Illumina reads, for binning into MAGs. Writes \
+`<outdir>/final.contigs.fa`. Memory for graph building is capped by `memory_gb` (default 4 GB; MEGAHIT's own default of 90% of the \
+machine's RAM ignores memory caps). Takes minutes to hours. Returns the contig count, total length, N50, longest contig and GC %. \
+Next: coverm_contig (depth) and metabat2 (bins).")]
+    async fn megahit(&self, Parameters(params): Parameters<x::MegahitParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("megahit", &params, x::megahit(&self.cfg.ctx, &params)).await;
+        let contigs = self.cfg.ctx.cwd.join(&params.outdir).join("final.contigs.fa");
+        self.external_reply(d, |v| {
+            v["contigs_file"] = json!(contigs);
+            v["assembly"] = results::assembly_stats(&contigs)?;
+            Ok(())
+        })
+    }
+
     #[tool(description = "Medaka 2.2.2 (medaka_consensus): polish a long-read draft assembly (e.g. Flye's assembly.fasta) with the \
 same reads. Writes `<outdir>/consensus.fasta`; outdir must be empty. Give `model` (e.g. r1041_e82_400bps_bacterial_methylation; \
 `medaka tools list_models` lists them) unless the read headers name the basecalling model, which many archive downloads don't. \
@@ -701,6 +722,44 @@ Runs on the CPU here: expect tens of minutes for a 5 Mb genome. Returns the poli
         self.external_reply(d, |v| {
             v["assembly_file"] = json!(consensus);
             v["assembly"] = results::assembly_stats(&consensus)?;
+            Ok(())
+        })
+    }
+
+    #[tool(description = "CoverM 0.8.0 contig: map each sample's paired reads to the contigs (strobealign by default) and write a \
+per-contig coverage table. With methods [\"metabat\"] the table is MetaBAT2's depth input; give one read pair per sample (more samples \
+help binning). Returns per sample the reads mapped and the percentage, from CoverM's log.")]
+    async fn coverm_contig(&self, Parameters(params): Parameters<x::CovermContigParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("coverm_contig", &params, x::coverm_contig(&self.cfg.ctx, &params)).await;
+        let mapped = results::coverm_mapped(&d.stderr);
+        let table = self.cfg.ctx.cwd.join(&params.output);
+        self.external_reply(d, |v| {
+            v["output"] = json!(params.output);
+            v["contigs_with_coverage"] = json!(results::table_rows(&table)?);
+            v["mapped"] = json!(mapped);
+            Ok(())
+        })
+    }
+
+    #[tool(description = "MetaBAT 2.18: bin metagenome contigs into genomes (MAGs) by depth and tetranucleotide frequency. Give the \
+assembly and coverm_contig's metabat depth table. Writes `<outdir>/<prefix>.<n>.fa` (prefix bin): run checkm2 on outdir with \
+extension fa for completeness/contamination, then gtdbprep_ani / gtdbtk_classify_wf, then isotable mode mag for MIMAG tiers. Seed 1 \
+unless set, so bins repeat. Returns each bin's contigs, length, N50 and GC %.")]
+    async fn metabat2(&self, Parameters(params): Parameters<x::Metabat2Params>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("metabat2", &params, x::metabat2(&self.cfg.ctx, &params)).await;
+        let outdir = self.cfg.ctx.cwd.join(&params.outdir);
+        let prefix = x::metabat2_prefix(&params).to_string();
+        self.external_reply(d, |v| {
+            let mut bins = Vec::new();
+            for b in x::metabat2_bins(&outdir, &prefix) {
+                let mut s = results::assembly_stats(&b)?;
+                s["bin"] = json!(b.file_stem().map(|n| n.to_string_lossy().into_owned()));
+                s["file"] = json!(b);
+                bins.push(s);
+            }
+            v["bin_count"] = json!(bins.len());
+            v["binned_length"] = json!(bins.iter().map(|b| b["total_length"].as_u64().unwrap_or(0)).sum::<u64>());
+            v["bins"] = json!(bins);
             Ok(())
         })
     }

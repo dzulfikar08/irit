@@ -21,7 +21,7 @@ pub struct Pinned {
     pub url: &'static str,
 }
 
-pub const PINNED: [Pinned; 9] = [
+pub const PINNED: [Pinned; 12] = [
     Pinned { tool: "fastp", version: "1.4.0", bioconda: "fastp=1.4.0", url: "https://github.com/OpenGene/fastp" },
     Pinned { tool: "shovill", version: "1.4.2", bioconda: "shovill=1.4.2", url: "https://github.com/tseemann/shovill" },
     // Flye's --version prints the build too: `2.9.6-b1802` for the 2.9.6 release (and Bioconda's).
@@ -34,7 +34,19 @@ pub const PINNED: [Pinned; 9] = [
     Pinned { tool: "gtdbtk", version: "2.8.0", bioconda: "gtdbtk=2.8.0", url: "https://github.com/Ecogenomics/GTDBTk" },
     Pinned { tool: "mlst", version: "2.35.0", bioconda: "mlst=2.35.0", url: "https://github.com/tseemann/mlst" },
     Pinned { tool: "amrfinder", version: "4.2.7", bioconda: "ncbi-amrfinderplus=4.2.7", url: "https://github.com/ncbi/amr" },
+    Pinned { tool: "megahit", version: "1.2.9", bioconda: "megahit=1.2.9", url: "https://github.com/voutcn/megahit" },
+    Pinned { tool: "coverm", version: "0.8.0", bioconda: "coverm=0.8.0", url: "https://github.com/wwood/CoverM" },
+    Pinned { tool: "metabat2", version: "2.18", bioconda: "metabat2=2.18", url: "https://bitbucket.org/berkeleylab/metabat" },
 ];
+
+/// Arguments that make a tool print its version, and whether it prints it on stderr. MetaBAT2
+/// has no --version; its --help starts `MetaBAT: ... (version 2:2.18; <build date>)` on stderr.
+pub fn version_probe(tool: &str) -> (&'static str, bool) {
+    match tool {
+        "metabat2" => ("--help", true),
+        _ => ("--version", false),
+    }
+}
 
 pub fn pinned(tool: &str) -> Option<&'static Pinned> {
     PINNED.iter().find(|p| p.tool == tool)
@@ -59,6 +71,8 @@ pub fn version_number(line: &str) -> Option<&str> {
     line.split_whitespace()
         .map(|w| w.trim_end_matches([',', ';', ')']))
         .map(|w| w.strip_prefix('v').unwrap_or(w))
+        // MetaBAT's `2:2.18` (major series, then version)
+        .map(|w| w.rsplit_once(':').filter(|(a, _)| a.chars().all(|c| c.is_ascii_digit())).map_or(w, |(_, b)| b))
         .find(|w| w.starts_with(|c: char| c.is_ascii_digit()) && w.contains('.'))
 }
 
@@ -2281,6 +2295,404 @@ pub fn amrfinder(ctx: &Ctx, p: &AmrfinderParams) -> Check<Invocation> {
     Ok(inv)
 }
 
+/// Read files for a tool that takes them as comma-separated lists (MEGAHIT): each must exist,
+/// look like FASTQ/FASTA, and have no comma in its name.
+fn read_list(ctx: &Ctx, inv: &mut Invocation, field: &str, values: &[String]) -> Check<String> {
+    let mut seen = Vec::new();
+    for value in values {
+        if value.contains(',') {
+            return v::invalid(field, format!("{value} has a comma, which MEGAHIT reads as a list separator; rename the file"));
+        }
+        let p = v::existing_file(&ctx.cwd, field, value)?;
+        v::sequence_file(&p, field, value, Seq::Fastq)?;
+        if seen.contains(&p) || inv.inputs.contains(&p) {
+            return v::invalid(field, format!("{value} is given twice"));
+        }
+        seen.push(p);
+    }
+    inv.inputs.extend(seen);
+    Ok(values.iter().map(|x| list_item(x)).collect::<Vec<_>>().join(","))
+}
+
+/// Paired read lists: as many read 2 files as read 1 files.
+fn read_pairs(r1: &[String], r2: &[String]) -> Check<()> {
+    if r1.len() != r2.len() {
+        return v::invalid("r2", format!("{} read 1 file(s) but {} read 2 file(s); they pair up in order", r1.len(), r2.len()));
+    }
+    Ok(())
+}
+
+// ---------- MEGAHIT ----------
+// Flags: MEGAHIT v1.2.9 `src/megahit` (Python getopt in `parse_option`: short -1 -2 -r -m -o -t,
+// long --out-dir= --memory= --k-list= ...; `--force` is accepted there though the usage text
+// doesn't list it), https://github.com/voutcn/megahit/blob/v1.2.9/src/megahit
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum MegahitPreset {
+    /// `--min-count 1 --k-list 21,29,...,141`: more sensitive for low-coverage members, slower.
+    MetaSensitive,
+    /// `--k-min 27 --k-max 127 --k-step 10`: large, complex metagenomes such as soil.
+    MetaLarge,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MegahitParams {
+    /// Read 1 FASTQ files (plain or gzip), paired with r2 in order. Several runs of one sample (or a co-assembly of several samples) go in one call.
+    #[serde(default)]
+    pub r1: Vec<String>,
+    /// Read 2 FASTQ files, as many as r1.
+    #[serde(default)]
+    pub r2: Vec<String>,
+    /// Single-end or merged reads (FASTQ, plain or gzip).
+    #[serde(default)]
+    pub single: Vec<String>,
+    /// Output folder, inside the root. The assembly is `<outdir>/final.contigs.fa`.
+    pub outdir: String,
+    /// Allow an outdir that already has files (MEGAHIT writes over them). Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// Memory for building the de Bruijn graph, in GB (0.5-4096). Default 4. MEGAHIT's own default is 90% of the machine's RAM, which ignores a memory cap (cgroup, container) and gets it killed under one; keep this below the cap.
+    #[serde(default)]
+    pub memory_gb: Option<f64>,
+    /// Threads. MEGAHIT's default is every logical CPU.
+    #[serde(default)]
+    pub threads: Option<u32>,
+    #[serde(default)]
+    pub presets: Option<MegahitPreset>,
+    /// k-mer sizes, e.g. 21,29,39,59,79,99,119,141: odd, 15-255, ascending, steps of at most 28. Overrides the preset's k-mers.
+    #[serde(default)]
+    pub k_list: Option<String>,
+    /// Drop contigs shorter than this. MEGAHIT's default 200.
+    #[serde(default)]
+    pub min_contig_len: Option<u32>,
+    /// Minimum multiplicity for keeping a (k_min+1)-mer. MEGAHIT's default 2.
+    #[serde(default)]
+    pub min_count: Option<u32>,
+}
+
+/// MEGAHIT's default `--memory` (0.9: a fraction of the machine's memory) replaced by this many GB.
+pub const MEGAHIT_DEFAULT_MEMORY_GB: f64 = 4.0;
+
+pub fn megahit(ctx: &Ctx, p: &MegahitParams) -> Check<Invocation> {
+    let mut inv = external("megahit");
+    // The log and options.json carry times and paths; the contigs depend on thread scheduling
+    // (not checked to be byte-identical), so every output is volatile, as with Shovill, and the
+    // assembly's contig count, length and N50 are recorded instead.
+    inv.volatile = &[""];
+    if p.r1.is_empty() && p.single.is_empty() {
+        return v::invalid("r1", "give paired reads (r1 and r2) and/or single reads");
+    }
+    read_pairs(&p.r1, &p.r2)?;
+    let r1 = (!p.r1.is_empty()).then(|| read_list(ctx, &mut inv, "r1", &p.r1)).transpose()?;
+    let r2 = (!p.r2.is_empty()).then(|| read_list(ctx, &mut inv, "r2", &p.r2)).transpose()?;
+    let se = (!p.single.is_empty()).then(|| read_list(ctx, &mut inv, "single", &p.single)).transpose()?;
+    // getopt takes the argument after a short option whatever it starts with.
+    for (flag, list) in [("-1", r1), ("-2", r2), ("-r", se)] {
+        if let Some(l) = list {
+            inv.args.push(flag.into());
+            inv.args.push(l);
+        }
+    }
+    let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(p.overwrite), true)?;
+    inv.outputs.push(outdir.clone());
+    inv.opt("out-dir", &p.outdir);
+    // MEGAHIT refuses any existing folder, even an empty one, without --force (which only skips
+    // that check). irit-mcp has refused a non-empty one unless overwrite is true.
+    inv.flag("force", true);
+    inv.expect = vec![vec![outdir.join("final.contigs.fa")]];
+    inv.assembly = Some(outdir.join("final.contigs.fa"));
+    let gb = p.memory_gb.unwrap_or(MEGAHIT_DEFAULT_MEMORY_GB);
+    if !gb.is_finite() || !(0.5..=4096.0).contains(&gb) {
+        return v::invalid("memory_gb", format!("{gb} is outside 0.5..=4096 GB"));
+    }
+    // In bytes: a value between 0 and 1 would be read as a fraction of the machine's memory.
+    inv.opt("memory", (gb * 1e9).round() as u64);
+    if let Some(t) = p.threads {
+        v::range("threads", t, 1, 1024)?;
+        inv.opt("num-cpu-threads", t);
+    }
+    if let Some(pr) = p.presets {
+        inv.opt("presets", match pr {
+            MegahitPreset::MetaSensitive => "meta-sensitive",
+            MegahitPreset::MetaLarge => "meta-large",
+        });
+    }
+    if let Some(k) = &p.k_list {
+        let ks: Option<Vec<u32>> = k.split(',').map(|x| x.parse().ok()).collect();
+        let ok = ks.as_ref().is_some_and(|ks| {
+            !ks.is_empty()
+                && ks.iter().all(|&k| k % 2 == 1 && (15..=255).contains(&k))
+                && ks.windows(2).all(|w| w[1] > w[0] && w[1] - w[0] <= 28)
+        });
+        if !ok {
+            return v::invalid("k_list", format!("{k:?} is not ascending odd k-mer sizes in 15-255, steps of at most 28 (e.g. 21,29,39)"));
+        }
+        inv.opt("k-list", k);
+    }
+    if let Some(m) = p.min_contig_len {
+        inv.opt("min-contig-len", m);
+    }
+    if let Some(c) = p.min_count {
+        v::range("min_count", c, 1, 1_000_000)?;
+        inv.opt("min-count", c);
+    }
+    Ok(inv)
+}
+
+// ---------- CoverM ----------
+// Flags: CoverM v0.8.0 `coverm contig --full-help` (src/cli.rs), https://github.com/wwood/CoverM/tree/v0.8.0
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CovermMapper {
+    /// strobealign (CoverM's default): fast, low memory.
+    Strobealign,
+    /// minimap2 -x sr
+    #[serde(rename = "minimap2-sr")]
+    Minimap2Sr,
+    /// bwa mem
+    BwaMem,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CovermMethod {
+    /// Mean coverage (CoverM's default).
+    Mean,
+    TrimmedMean,
+    CoveredFraction,
+    CoveredBases,
+    Variance,
+    Length,
+    Count,
+    ReadsPerBase,
+    Rpkm,
+    Tpm,
+    /// MetaBAT's depth table (contigName, contigLen, totalAvgDepth, then depth and variance per sample): the `depth` input of metabat2. Only on its own.
+    Metabat,
+}
+
+impl CovermMethod {
+    fn name(self) -> &'static str {
+        match self {
+            CovermMethod::Mean => "mean",
+            CovermMethod::TrimmedMean => "trimmed_mean",
+            CovermMethod::CoveredFraction => "covered_fraction",
+            CovermMethod::CoveredBases => "covered_bases",
+            CovermMethod::Variance => "variance",
+            CovermMethod::Length => "length",
+            CovermMethod::Count => "count",
+            CovermMethod::ReadsPerBase => "reads_per_base",
+            CovermMethod::Rpkm => "rpkm",
+            CovermMethod::Tpm => "tpm",
+            CovermMethod::Metabat => "metabat",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CovermContigParams {
+    /// Contigs FASTA (plain or gzip), e.g. MEGAHIT's final.contigs.fa.
+    pub reference: String,
+    /// Read 1 FASTQ files (plain or gzip), one per sample, paired with r2 in order. Each pair is a column of coverage.
+    pub r1: Vec<String>,
+    /// Read 2 FASTQ files, as many as r1.
+    pub r2: Vec<String>,
+    /// Output table (TSV), inside the root. For binning, name it e.g. `<sample>.depth.tsv` and use methods ["metabat"].
+    pub output: String,
+    /// Replace an existing output. Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    #[serde(default)]
+    pub mapper: Option<CovermMapper>,
+    /// Coverage methods. Default: CoverM's (mean). ["metabat"] writes MetaBAT2's depth table.
+    #[serde(default)]
+    pub methods: Vec<CovermMethod>,
+    /// Exclude reads below this percent identity (e.g. 95). Default 0.
+    #[serde(default)]
+    pub min_read_percent_identity: Option<f64>,
+    /// Exclude reads with less than this percent of their bases aligned (e.g. 75). Default 0.
+    #[serde(default)]
+    pub min_read_aligned_percent: Option<f64>,
+    /// Threads for mapping and sorting. CoverM's default is 1.
+    #[serde(default)]
+    pub threads: Option<u32>,
+}
+
+pub fn coverm_contig(ctx: &Ctx, p: &CovermContigParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("coverm");
+    inv.args.push("contig".into());
+    let reference = v::existing_file(cwd, "reference", &p.reference)?;
+    v::sequence_file(&reference, "reference", &p.reference, Seq::Fasta)?;
+    inv.inputs.push(reference.clone());
+    inv.opt("reference", &p.reference);
+    v::non_empty_list("r1", &p.r1)?;
+    read_pairs(&p.r1, &p.r2)?;
+    let mut reads = Vec::new();
+    for (a, b) in p.r1.iter().zip(&p.r2) {
+        for (field, value) in [("r1", a), ("r2", b)] {
+            let path = v::existing_file(cwd, field, value)?;
+            v::sequence_file(&path, field, value, Seq::Fastq)?;
+            if inv.inputs.contains(&path) {
+                return v::invalid(field, format!("{value} is given twice"));
+            }
+            inv.inputs.push(path);
+            reads.push(list_item(value));
+        }
+    }
+    let out = v::output_file(ctx, "output", &p.output, p.overwrite)?;
+    if inv.inputs.contains(&out) {
+        return v::invalid("output", "output is one of the inputs");
+    }
+    inv.outputs.push(out.clone());
+    inv.opt("output-file", &p.output);
+    inv.expect = vec![vec![out]];
+    if let Some(m) = p.mapper {
+        inv.opt("mapper", match m {
+            CovermMapper::Strobealign => "strobealign",
+            CovermMapper::Minimap2Sr => "minimap2-sr",
+            CovermMapper::BwaMem => "bwa-mem",
+        });
+    }
+    for (field, val) in [("min_read_percent_identity", p.min_read_percent_identity), ("min_read_aligned_percent", p.min_read_aligned_percent)] {
+        if let Some(x) = val {
+            if !x.is_finite() || !(0.0..=100.0).contains(&x) {
+                return v::invalid(field, format!("{x} is not a percentage (0-100)"));
+            }
+            inv.opt(&field.replace('_', "-"), x);
+        }
+    }
+    if let Some(t) = p.threads {
+        v::range("threads", t, 1, 1024)?;
+        inv.opt("threads", t);
+    }
+    if p.methods.contains(&CovermMethod::Metabat) && p.methods.len() > 1 {
+        return v::invalid("methods", "metabat writes a table of its own and can't be combined with other methods");
+    }
+    // Both take several values (clap num_args 1..), which end at the next option: methods first,
+    // then the reads, last, one value per argument.
+    if !p.methods.is_empty() {
+        inv.args.push("--methods".into());
+        inv.args.extend(p.methods.iter().map(|m| m.name().to_string()));
+    }
+    inv.args.push("--coupled".into());
+    inv.args.extend(reads);
+    Ok(inv)
+}
+
+// ---------- MetaBAT2 ----------
+// Flags: MetaBAT 2.18 `metabat2 --help` (src/metabat2.cpp, boost::program_options; it has no
+// --version: irit-mcp reads the version from --help), https://bitbucket.org/berkeleylab/metabat
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Metabat2Params {
+    /// Contigs FASTA (plain or gzip): the metagenome assembly.
+    pub contigs: String,
+    /// Depth table from coverm_contig with methods ["metabat"] (or jgi_summarize_bam_contig_depths). Without it MetaBAT2 bins on tetranucleotide frequency alone, which works poorly.
+    #[serde(default)]
+    pub depth: Option<String>,
+    /// Folder for the bins, inside the root: `<outdir>/<prefix>.<n>.fa`, one FASTA per bin, ready for checkm2 and gtdbprep_ani/gtdbtk_classify_wf (extension fa).
+    pub outdir: String,
+    /// Allow an outdir that already has files (bins of the same name are replaced; others stay). Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// Bin file name prefix (letters, digits, _ . -). Default `bin`.
+    #[serde(default)]
+    pub prefix: Option<String>,
+    /// Shortest contig to bin, at least 1500. MetaBAT2's default 2500.
+    #[serde(default)]
+    pub min_contig: Option<u32>,
+    /// Smallest bin written, in bp. MetaBAT2's default 200000.
+    #[serde(default)]
+    pub min_bin_size: Option<u32>,
+    /// Random seed, 1 or more. Default here 1: MetaBAT2's own default (0) draws a random seed, so its bins would differ between runs.
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// Threads. MetaBAT2's default is every core.
+    #[serde(default)]
+    pub threads: Option<u32>,
+    /// Also write `<prefix>.unbinned.fa` with the contigs left out.
+    #[serde(default)]
+    pub unbinned: bool,
+    /// Leave the per-sample depths out of the bin FASTA headers.
+    #[serde(default)]
+    pub no_sample_depths: bool,
+}
+
+/// The seed irit-mcp passes when none is given (MetaBAT2's 0 means a random one).
+pub const METABAT2_DEFAULT_SEED: u64 = 1;
+
+pub fn metabat2_prefix(p: &Metabat2Params) -> &str {
+    p.prefix.as_deref().unwrap_or("bin")
+}
+
+pub fn metabat2(ctx: &Ctx, p: &Metabat2Params) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("metabat2");
+    let contigs = v::existing_file(cwd, "contigs", &p.contigs)?;
+    v::sequence_file(&contigs, "contigs", &p.contigs, Seq::Fasta)?;
+    inv.inputs.push(contigs);
+    inv.opt("inFile", &p.contigs);
+    if let Some(d) = &p.depth {
+        let depth = v::existing_file(cwd, "depth", d)?;
+        let first = std::fs::read_to_string(&depth).ok().and_then(|t| t.lines().next().map(str::to_string)).unwrap_or_default();
+        if !first.starts_with("contigName\tcontigLen\ttotalAvgDepth") {
+            return v::invalid("depth", format!("{d} is not a MetaBAT depth table (its header must start contigName, contigLen, totalAvgDepth); make one with coverm_contig methods [\"metabat\"]"));
+        }
+        inv.inputs.push(depth);
+        inv.opt("abdFile", d);
+    }
+    let prefix = metabat2_prefix(p);
+    if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) || prefix.starts_with(['-', '.']) {
+        return v::invalid("prefix", format!("{prefix:?} must be letters, digits and _ . - (not starting with - or .)"));
+    }
+    let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(p.overwrite), true)?;
+    inv.outputs.push(outdir.clone());
+    // A file in outdir among the outputs, so the server creates the folder (MetaBAT2 doesn't).
+    inv.outputs.push(outdir.join(format!("{prefix}.1.fa")));
+    inv.opt("outFile", format!("{}/{prefix}", p.outdir.trim_end_matches('/')));
+    if let Some(m) = p.min_contig {
+        v::range("min_contig", m, 1500, u32::MAX)?;
+        inv.opt("minContig", m);
+    }
+    if let Some(s) = p.min_bin_size {
+        inv.opt("minClsSize", s);
+    }
+    let seed = p.seed.unwrap_or(METABAT2_DEFAULT_SEED);
+    if seed == 0 {
+        return v::invalid("seed", "0 makes MetaBAT2 draw a random seed; give 1 or more");
+    }
+    inv.opt("seed", seed);
+    if let Some(t) = p.threads {
+        v::range("threads", t, 1, 1024)?;
+        inv.opt("numThreads", t);
+    }
+    inv.flag("unbinned", p.unbinned);
+    inv.flag("noSampleDepths", p.no_sample_depths);
+    Ok(inv)
+}
+
+/// MetaBAT2's bins in `outdir`: `<prefix>.<n>.fa`, in bin-number order.
+pub fn metabat2_bins(outdir: &Path, prefix: &str) -> Vec<PathBuf> {
+    let mut bins: Vec<(u64, PathBuf)> = std::fs::read_dir(outdir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let n = name.strip_prefix(prefix)?.strip_prefix('.')?.strip_suffix(".fa")?.parse().ok()?;
+            Some((n, e.path()))
+        })
+        .collect();
+    bins.sort();
+    bins.into_iter().map(|(_, p)| p).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2561,6 +2973,155 @@ mod tests {
         for invented in ["skip_ani_screen", "max_memory", "mash_db"] {
             assert!(serde_json::from_value::<GtdbtkClassifyWfParams>(base(json!({invented: true}))).is_err(), "{invented}");
         }
+    }
+
+    #[test]
+    fn megahit_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        for f in ["reads/a_1.fq.gz", "reads/a_2.fq.gz", "reads/b_1.fq", "reads/b_2.fq", "reads/x,y.fq"] {
+            write(d.path(), f, "@a\nACGT\n+\nIIII\n");
+        }
+        let p: MegahitParams = parse(json!({
+            "r1": ["reads/a_1.fq.gz", "reads/b_1.fq"], "r2": ["reads/a_2.fq.gz", "reads/b_2.fq"], "outdir": "asm/meta",
+            "memory_gb": 6, "threads": 6, "presets": "meta-sensitive", "min_contig_len": 1000
+        }));
+        let inv = megahit(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            [
+                "-1",
+                "reads/a_1.fq.gz,reads/b_1.fq",
+                "-2",
+                "reads/a_2.fq.gz,reads/b_2.fq",
+                "--out-dir=asm/meta",
+                "--force",
+                "--memory=6000000000",
+                "--num-cpu-threads=6",
+                "--presets=meta-sensitive",
+                "--min-contig-len=1000",
+            ]
+        );
+        assert_eq!(inv.inputs.len(), 4);
+        assert!(inv.assembly.as_ref().unwrap().ends_with("asm/meta/final.contigs.fa"));
+        // memory defaults to 4 GB in bytes, never MEGAHIT's 90%-of-the-machine fraction
+        let inv = megahit(&cx, &parse(json!({"single": ["reads/b_1.fq"], "outdir": "asm/se"}))).unwrap();
+        assert_eq!(inv.args, ["-r", "reads/b_1.fq", "--out-dir=asm/se", "--force", "--memory=4000000000"]);
+        let bad = |j: serde_json::Value| megahit(&cx, &parse(j)).unwrap_err();
+        assert_eq!(bad(json!({"outdir": "asm/x"})).field, "r1");
+        assert_eq!(bad(json!({"r1": ["reads/a_1.fq.gz"], "outdir": "asm/x"})).field, "r2");
+        assert_eq!(bad(json!({"single": ["reads/x,y.fq"], "outdir": "asm/x"})).field, "single");
+        assert_eq!(bad(json!({"single": ["reads/b_1.fq", "reads/b_1.fq"], "outdir": "asm/x"})).field, "single");
+        assert_eq!(bad(json!({"single": ["reads/b_1.fq"], "outdir": "asm/x", "memory_gb": 0.2})).field, "memory_gb");
+        for k in ["21,20", "21,29,99", "29,21", "13,21", "21,x"] {
+            assert_eq!(bad(json!({"single": ["reads/b_1.fq"], "outdir": "asm/x", "k_list": k})).field, "k_list", "{k}");
+        }
+        assert!(megahit(&cx, &parse(json!({"single": ["reads/b_1.fq"], "outdir": "asm/x", "k_list": "21,41,59"}))).is_ok());
+        write(d.path(), "asm/full/final.contigs.fa", ">c\nA\n");
+        assert_eq!(bad(json!({"single": ["reads/b_1.fq"], "outdir": "asm/full"})).field, "outdir");
+        assert!(megahit(&cx, &parse(json!({"single": ["reads/b_1.fq"], "outdir": "asm/full", "overwrite": true}))).is_ok());
+    }
+
+    #[test]
+    fn coverm_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        for f in ["reads/a_1.fq", "reads/a_2.fq", "reads/-b_1.fq", "reads/-b_2.fq"] {
+            write(d.path(), f, "@a\nACGT\n+\nIIII\n");
+        }
+        write(d.path(), "asm/final.contigs.fa", ">k141_1\nACGT\n");
+        let p: CovermContigParams = parse(json!({
+            "reference": "asm/final.contigs.fa", "r1": ["reads/a_1.fq", "reads/-b_1.fq"], "r2": ["reads/a_2.fq", "reads/-b_2.fq"],
+            "output": "depth/s.depth.tsv", "methods": ["metabat"], "threads": 6, "min_read_percent_identity": 95
+        }));
+        let inv = coverm_contig(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            [
+                "contig",
+                "--reference=asm/final.contigs.fa",
+                "--output-file=depth/s.depth.tsv",
+                "--min-read-percent-identity=95",
+                "--threads=6",
+                "--methods",
+                "metabat",
+                "--coupled",
+                "reads/a_1.fq",
+                "reads/a_2.fq",
+                "reads/-b_1.fq",
+                "reads/-b_2.fq",
+            ]
+        );
+        let bad = |j: serde_json::Value| coverm_contig(&cx, &parse(j)).unwrap_err();
+        let base = json!({"reference": "asm/final.contigs.fa", "r1": ["reads/a_1.fq"], "r2": ["reads/a_2.fq"], "output": "d.tsv"});
+        let with = |k: &str, v: serde_json::Value| {
+            let mut j = base.clone();
+            j[k] = v;
+            j
+        };
+        assert_eq!(bad(with("methods", json!(["metabat", "mean"]))).field, "methods");
+        assert_eq!(bad(with("r2", json!([]))).field, "r2");
+        assert_eq!(bad(with("r1", json!([]))).field, "r1");
+        assert_eq!(bad(with("min_read_aligned_percent", json!(120))).field, "min_read_aligned_percent");
+        assert_eq!(bad(with("output", json!("reads/a_1.fq"))).field, "output");
+        assert_eq!(bad(with("reference", json!("reads/a_1.fq"))).field, "reference");
+        // a value starting with - is never read as a flag
+        assert!(coverm_contig(&cx, &parse(with("methods", json!(["mean", "variance"])))).is_ok());
+        assert!(serde_json::from_value::<CovermContigParams>(with("mapper", json!("minimap2-sr"))).is_ok());
+    }
+
+    #[test]
+    fn metabat2_args_checks_and_bins() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        write(d.path(), "asm/final.contigs.fa", ">k141_1\nACGT\n");
+        write(d.path(), "depth/s.depth.tsv", "contigName\tcontigLen\ttotalAvgDepth\ts.bam\ts.bam-var\nk141_1\t4\t1\t1\t0\n");
+        write(d.path(), "depth/mean.tsv", "Contig\ts Mean\nk141_1\t1\n");
+        let p: Metabat2Params = parse(json!({
+            "contigs": "asm/final.contigs.fa", "depth": "depth/s.depth.tsv", "outdir": "bins/s", "min_contig": 2000, "threads": 6
+        }));
+        let inv = metabat2(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            [
+                "--inFile=asm/final.contigs.fa",
+                "--abdFile=depth/s.depth.tsv",
+                "--outFile=bins/s/bin",
+                "--minContig=2000",
+                "--seed=1",
+                "--numThreads=6",
+            ]
+        );
+        // the folder is created by the server: a file in it is among the outputs
+        assert!(inv.outputs.iter().any(|o| o.ends_with("bins/s/bin.1.fa")));
+        let bad = |j: serde_json::Value| metabat2(&cx, &parse(j)).unwrap_err();
+        assert_eq!(bad(json!({"contigs": "asm/final.contigs.fa", "depth": "depth/mean.tsv", "outdir": "b"})).field, "depth");
+        assert_eq!(bad(json!({"contigs": "asm/final.contigs.fa", "outdir": "b", "min_contig": 1000})).field, "min_contig");
+        assert_eq!(bad(json!({"contigs": "asm/final.contigs.fa", "outdir": "b", "seed": 0})).field, "seed");
+        for prefix in ["", "-x", ".x", "a/b", "a b"] {
+            assert_eq!(bad(json!({"contigs": "asm/final.contigs.fa", "outdir": "b", "prefix": prefix})).field, "prefix", "{prefix:?}");
+        }
+        let inv = metabat2(&cx, &parse(json!({"contigs": "asm/final.contigs.fa", "outdir": "b/", "prefix": "s1", "seed": 7, "unbinned": true}))).unwrap();
+        assert_eq!(inv.args, ["--inFile=asm/final.contigs.fa", "--outFile=b/s1", "--seed=7", "--unbinned"]);
+        // bins in number order; the unbinned file and others are not bins
+        for f in ["bin.10.fa", "bin.2.fa", "bin.1.fa", "bin.unbinned.fa", "bin.3.fa.fai", "other.1.fa"] {
+            write(d.path(), &format!("out/{f}"), ">c\nA\n");
+        }
+        let names: Vec<String> =
+            metabat2_bins(&d.path().join("out"), "bin").iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["bin.1.fa", "bin.2.fa", "bin.10.fa"]);
+    }
+
+    #[test]
+    fn metabat_version_from_help() {
+        assert_eq!(
+            version_number("MetaBAT: Metagenome Binning based on Abundance and Tetranucleotide frequency (version 2:2.18; 20260506_185317)"),
+            Some("2.18")
+        );
+        assert_eq!(version_number("MEGAHIT v1.2.9"), Some("1.2.9"));
+        assert_eq!(version_number("coverm 0.8.0"), Some("0.8.0"));
+        assert_eq!(version_probe("metabat2"), ("--help", true));
+        assert_eq!(version_probe("megahit"), ("--version", false));
     }
 
     #[test]

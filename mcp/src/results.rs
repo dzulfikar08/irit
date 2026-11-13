@@ -194,6 +194,33 @@ pub fn gtdbtk_summary(path: &Path) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
+/// CoverM's per-sample mapping lines on stderr: `In sample 'X', found N reads mapped out of M
+/// total (P%)`.
+pub fn coverm_mapped(stderr: &str) -> Vec<Value> {
+    stderr
+        .lines()
+        .filter_map(|l| {
+            let rest = &l[l.find("In sample '")? + "In sample '".len()..];
+            let (sample, rest) = rest.split_once("', found ")?;
+            let (mapped, rest) = rest.split_once(" reads mapped out of ")?;
+            let (total, rest) = rest.split_once(" total (")?;
+            let pct = rest.split_once('%')?.0;
+            Some(json!({
+                "sample": sample,
+                "reads_mapped": mapped.trim().parse::<u64>().ok()?,
+                "reads_total": total.trim().parse::<u64>().ok()?,
+                "percent": pct.trim().parse::<f64>().ok()?,
+            }))
+        })
+        .collect()
+}
+
+/// Data rows of a table with a header line.
+pub fn table_rows(path: &Path) -> Result<usize, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(text.lines().skip(1).filter(|l| !l.trim().is_empty()).count())
+}
+
 /// Contig count, total length, N50, longest contig and GC % of an assembly FASTA (Shovill's
 /// contigs.fa), computed here: Shovill prints its own stats only to its log.
 pub fn assembly_stats(path: &Path) -> Result<Value, String> {
@@ -406,6 +433,18 @@ mod tests {
         std::fs::write(&f, "#seq_name\tlength\n").unwrap();
         assert!(flye_info(&f).unwrap_err().contains("cov."));
         assert!(flye_info(&d.path().join("missing.txt")).is_err());
+    }
+
+    #[test]
+    fn coverm_mapping_lines() {
+        let log = "[2026-11-13T05:00:00Z INFO  coverm::contig] Using min-covered-fraction 0%\n\
+                   [2026-11-13T05:10:00Z INFO  coverm] In sample 'final.contigs.fa/ERR2809130_1.fastq.gz', found 1234567 reads mapped out of 4445596 total (27.77%)\n\
+                   some other line\n";
+        assert_eq!(
+            coverm_mapped(log),
+            [json!({"sample": "final.contigs.fa/ERR2809130_1.fastq.gz", "reads_mapped": 1234567, "reads_total": 4445596, "percent": 27.77})]
+        );
+        assert!(coverm_mapped("In sample 'x', found many reads").is_empty());
     }
 
     #[test]

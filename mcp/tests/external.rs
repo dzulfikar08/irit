@@ -77,13 +77,14 @@ const CHECKM2: &str = r#"
 [ "${1:-}" = --version ] && { echo "1.1.0"; exit 0; }
 [ "${1:-}" = predict ] || die "expected predict"
 shift
-out= ; inputs=
+out= ; inputs= ; ext=fna
 while [ $# -gt 0 ]; do
   case "$1" in
     --output-directory=*) out=${1#--output-directory=} ;;
     --database_path=*) [ -f "${1#--database_path=}" ] || die "no database" ;;
     --force|--lowmem|--general|--specific|--allmodels|--genes|--remove_intermediates) ;;
-    --threads=*|--ttable=*|--extension=*) ;;
+    --extension=*) ext=${1#--extension=}; ext=${ext#.} ;;
+    --threads=*|--ttable=*) ;;
     --input) shift; inputs="$*"; break ;;
     *) die "unknown option $1" ;;
   esac
@@ -92,7 +93,7 @@ done
 mkdir -p "$out"
 printf 'Name\tCompleteness\tContamination\tCompleteness_Model_Used\n' > "$out/quality_report.tsv"
 for i in $inputs; do
-  if [ -d "$i" ]; then set -- "$i"/*.fna; else set -- "$i"; fi
+  if [ -d "$i" ]; then set -- "$i"/*."$ext"; else set -- "$i"; fi
   for f in "$@"; do b=$(basename "$f"); printf '%s\t99.1\t0.4\tGradient Boost\n' "${b%.*}" >> "$out/quality_report.tsv"; done
 done
 "#;
@@ -234,6 +235,72 @@ fn fake_amrfinder_db(dir: &Path) {
     write(dir, "taxgroup.tsv", "#taxgroup\tgpipe_taxgroup\tnumber_of_nucl_ref_genes\nStaphylococcus_aureus\tStaphylococcus_aureus\t2\n");
 }
 
+const MEGAHIT: &str = r#"
+[ "${1:-}" = --version ] && { echo "MEGAHIT v1.2.9"; exit 0; }
+out= ; reads=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -1|-2|-r) shift; reads="$reads,$1" ;;
+    --out-dir=*) out=${1#--out-dir=} ;;
+    --memory=*) [ "${1#--memory=}" -gt 1 ] || die "memory given as a fraction of the machine" ;;
+    --force|--num-cpu-threads=*|--presets=*|--k-list=*|--min-contig-len=*|--min-count=*) ;;
+    *) die "unknown option $1" ;;
+  esac
+  shift
+done
+[ -n "$reads" ] || die "no reads"
+for f in $(echo "$reads" | tr ',' ' '); do [ -f "$f" ] || die "cannot open $f"; done
+mkdir -p "$out"
+echo "started $(date +%s%N)" > "$out/log"
+printf '>k141_1 flag=1 multi=5.0000 len=12\nACGTACGTACGT\n>k141_2 flag=1 multi=3.0000 len=8\nGGGGCCCC\n' > "$out/final.contigs.fa"
+"#;
+
+const COVERM: &str = r#"
+[ "${1:-}" = --version ] && { echo "coverm 0.8.0"; exit 0; }
+[ "${1:-}" = contig ] || die "expected contig"
+shift
+out= ; ref= ; methods= ; mode=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reference=*) ref=${1#--reference=} ;;
+    --output-file=*) out=${1#--output-file=} ;;
+    --mapper=*|--threads=*|--min-read-percent-identity=*|--min-read-aligned-percent=*) ;;
+    --methods) mode=m ;;
+    --coupled) mode=c ;;
+    -*) die "unknown option $1" ;;
+    *) case "$mode" in m) methods="$methods $1" ;; c) [ -f "$1" ] || die "cannot open $1" ;; *) die "stray $1" ;; esac ;;
+  esac
+  shift
+done
+[ -f "$ref" ] || die "no reference"
+case "$methods" in
+  *metabat*) printf 'contigName\tcontigLen\ttotalAvgDepth\ts1.bam\ts1.bam-var\nk141_1\t12\t5\t5\t0.5\nk141_2\t8\t3\t3\t0.2\n' > "$out" ;;
+  *) printf 'Contig\ts1 Mean\nk141_1\t5\nk141_2\t3\n' > "$out" ;;
+esac
+echo "[2026-11-13T05:10:00Z INFO  coverm] In sample 'final.contigs.fa/s1_R1.fastq', found 90 reads mapped out of 100 total (90.00%)" >&2
+"#;
+
+const METABAT2: &str = r#"
+case "${1:-}" in
+  --help) echo "MetaBAT: Metagenome Binning based on Abundance and Tetranucleotide frequency (version 2:2.18; 20260506_185317)" >&2; exit 0 ;;
+  --version) echo "unrecognised option '--version'" >&2; exit 1 ;;
+esac
+in= ; out=
+for a in "$@"; do
+  case "$a" in
+    --inFile=*) in=${a#--inFile=} ;;
+    --outFile=*) out=${a#--outFile=} ;;
+    --abdFile=*) [ -f "${a#--abdFile=}" ] || die "no depth file" ;;
+    --minContig=*|--minClsSize=*|--seed=*|--numThreads=*|--unbinned|--noSampleDepths) ;;
+    *) die "unknown option $a" ;;
+  esac
+done
+[ -f "$in" ] || die "no contigs"
+[ -d "$(dirname "$out")" ] || die "output folder missing"
+printf '>k141_1\nACGTACGTACGT\n' > "$out.1.fa"
+printf '>k141_2\nGGGGCCCC\n' > "$out.2.fa"
+"#;
+
 /// The irit binaries (isotable): `$IRIT_BIN_DIR`, else the workspace's target/release or target/debug.
 fn irit_bin_dir() -> PathBuf {
     let exe = format!("isotable{}", std::env::consts::EXE_SUFFIX);
@@ -267,6 +334,9 @@ fn setup() -> Setup {
         ("shovill", SHOVILL),
         ("mlst", MLST),
         ("amrfinder", AMRFINDER),
+        ("megahit", MEGAHIT),
+        ("coverm", COVERM),
+        ("metabat2", METABAT2),
     ] {
         script(&tools, n, b);
     }
@@ -444,6 +514,103 @@ fn isolate_path_with_stand_in_tools_is_recorded_and_replayable() {
     let bare = "/usr/bin:/bin";
     let out = Command::new("sh").arg(run_dir.join("replay.sh")).env("PATH", bare).current_dir(work).output().unwrap();
     assert!(!out.status.success());
+}
+
+/// Metagenome to MAGs with stand-ins: MEGAHIT, CoverM (MetaBAT depth), MetaBAT2, CheckM2 on the
+/// bins and isotable in MAG mode, then replayed.
+#[test]
+fn mag_path_with_stand_in_tools_is_recorded_and_replayable() {
+    let s = setup();
+    let work = &s.work;
+    let bin = irit_bin_dir();
+    let mut c = Client::spawn(work, &["--bin-dir", bin.to_str().unwrap()], &[("PATH", &s.path)]);
+    let tools = c.request("tools/list", json!({}));
+    let list = tools["result"]["tools"].as_array().unwrap();
+    for want in ["megahit", "coverm_contig", "metabat2"] {
+        let t = list.iter().find(|t| t["name"] == want).unwrap_or_else(|| panic!("{want} missing"));
+        assert_eq!(t["inputSchema"]["additionalProperties"], false, "{want}");
+    }
+    // 1: MEGAHIT, memory in bytes (4 GB by default, not MEGAHIT's 90% of the machine)
+    let r = c.call("megahit", json!({"r1": ["reads/s1_R1.fastq"], "r2": ["reads/s1_R2.fastq"], "outdir": "asm/meta", "threads": 2}));
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    assert_eq!(v["assembly"]["contigs"], 2, "{v}");
+    assert_eq!(v["assembly"]["total_length"], 20);
+    assert_eq!(v["version"], "MEGAHIT v1.2.9");
+    assert_eq!(v["warnings"], json!([]));
+    assert!(v["command"].as_str().unwrap().contains("--memory=4000000000"), "{v}");
+    // 2: CoverM's MetaBAT depth table
+    let r = c.call(
+        "coverm_contig",
+        json!({"reference": "asm/meta/final.contigs.fa", "r1": ["reads/s1_R1.fastq"], "r2": ["reads/s1_R2.fastq"],
+               "output": "depth/s1.depth.tsv", "methods": ["metabat"], "threads": 2}),
+    );
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    assert_eq!(v["contigs_with_coverage"], 2, "{v}");
+    assert_eq!(v["mapped"][0]["percent"], 90.0);
+    assert_eq!(v["version"], "coverm 0.8.0");
+    // 3: MetaBAT2; its version comes from --help on stderr
+    let r = c.call("metabat2", json!({"contigs": "asm/meta/final.contigs.fa", "depth": "depth/s1.depth.tsv", "outdir": "bins/s1"}));
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    assert_eq!(v["bin_count"], 2, "{v}");
+    assert_eq!(v["bins"][0]["bin"], "bin.1");
+    assert_eq!(v["binned_length"], 20);
+    assert!(v["version"].as_str().unwrap().contains("version 2:2.18"), "{v}");
+    assert_eq!(v["warnings"], json!([]), "{v}");
+    assert!(v["command"].as_str().unwrap().contains("--seed=1"), "{v}");
+    // a plain coverage table is not a depth table
+    let r = c.call(
+        "coverm_contig",
+        json!({"reference": "asm/meta/final.contigs.fa", "r1": ["reads/s1_R1.fastq"], "r2": ["reads/s1_R2.fastq"], "output": "depth/mean.tsv"}),
+    );
+    assert_ne!(r["isError"], true, "{r}");
+    let r = c.call("metabat2", json!({"contigs": "asm/meta/final.contigs.fa", "depth": "depth/mean.tsv", "outdir": "bins/x"}));
+    assert_eq!(r["structuredContent"]["field"], "depth", "{r}");
+    // 4: CheckM2 on the bins, then isotable in MAG mode
+    let r = c.call("checkm2", json!({"genome_dir": "bins/s1", "extension": "fa", "outdir": "checkm2", "db": "db/checkm2"}));
+    assert_ne!(r["isError"], true, "{r}");
+    assert_eq!(r["structuredContent"]["genomes"][1]["genome"], "bin.2", "{r}");
+    let r = c.call("isotable", json!({"dirs": ["checkm2"], "mode": "mag", "output": "mags.tsv"}));
+    assert_ne!(r["isError"], true, "{r}");
+    let samples = r["structuredContent"]["samples"].as_array().unwrap();
+    assert_eq!(samples.len(), 2, "{r}");
+    assert_eq!(samples[0]["values"]["mimag_tier"], "high*", "{r}");
+    c.close();
+
+    // run record and replay
+    let run_dir = work.join("irit-runs/test-run");
+    let log: Value = serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
+    let ok: Vec<&Value> = log["calls"].as_array().unwrap().iter().filter(|c| c["status"] == "ok").collect();
+    assert_eq!(
+        ok.iter().map(|c| c["mcp_tool"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["megahit", "coverm_contig", "metabat2", "coverm_contig", "checkm2", "isotable"]
+    );
+    // MEGAHIT's outputs are volatile (as Shovill's); the bins and depth table are not
+    assert!(ok[0]["outputs"].as_array().unwrap().iter().all(|o| o["volatile"] == true), "{}", ok[0]["outputs"]);
+    assert!(ok[2]["outputs"].as_array().unwrap().iter().all(|o| o["volatile"] != true), "{}", ok[2]["outputs"]);
+    let script = std::fs::read_to_string(run_dir.join("replay.sh")).unwrap();
+    assert!(script.contains("want_ext_version metabat2 "), "{script}");
+    let all: Vec<(PathBuf, String)> = ok.iter().flat_map(|c| outputs(c)).collect();
+    for d in ["asm", "depth", "bins", "checkm2"] {
+        std::fs::remove_dir_all(work.join(d)).unwrap();
+    }
+    std::fs::remove_file(work.join("mags.tsv")).unwrap();
+    let path = format!("{}:{}", bin.display(), s.path);
+    let out = Command::new("sh").arg(run_dir.join("replay.sh")).env("PATH", &path).current_dir(work).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "replay failed: {err}");
+    assert!(err.contains("outputs match"), "{err}");
+    // MetaBAT2's version is read from --help on replay too, so there is no mismatch warning
+    assert!(!err.contains("warning: metabat2"), "{err}");
+    for (p, h) in &all {
+        if p.ends_with("log") {
+            assert!(p.is_file());
+            continue;
+        }
+        assert_eq!(&sha256(p), h, "{} differs after replay", p.display());
+    }
 }
 
 /// A tool that isn't installed is an error with an install hint, recorded as such; nothing runs.

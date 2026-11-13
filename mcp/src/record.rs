@@ -404,7 +404,11 @@ want_version() {
   [ "$got" = "$2" ] || echo "replay: warning: $1 reports '$got'; the run used '$2'" >&2
 }
 want_ext_version() {
-  got=$(ext "$1" --version 2>/dev/null | head -n 1)
+  case $1 in
+    # no --version; the first line of --help (on stderr) has it
+    metabat2) got=$(ext "$1" --help 2>&1 >/dev/null | head -n 1) ;;
+    *) got=$(ext "$1" --version 2>/dev/null | head -n 1) ;;
+  esac
   [ "$got" = "$2" ] || echo "replay: warning: $1 reports '$got'; the run used '$2'" >&2
 }
 step() {
