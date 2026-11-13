@@ -7,6 +7,12 @@
 #
 #   --build N   CFBundleVersion, which must grow with every upload (e.g. 0.3.5.42)
 #
+# Entitlements: scripts/assets/msascope-mas.entitlements (TEAMID filled in here): the sandbox, files
+# the user chooses (open/save panels, drops, Finder) and bookmarks to reopen them; no network, no
+# JIT, no temporary exceptions. scripts/assets/msascope-sandbox-test.entitlements is the same
+# without team ids, for an ad-hoc signed test copy (msascope.yml). No comments in those files:
+# codesign's entitlements parser rejects them.
+#
 # Environment:
 #   APPLE_TEAM_ID               the team identifier (10 characters)
 #   MAS_PROFILE_PATH            the Mac App Store provisioning profile (.provisionprofile)
