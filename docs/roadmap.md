@@ -37,10 +37,10 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [x] `irit-mcp` wraps fastp 1.4.0, Bakta 1.12.2, CheckM2 1.1.0 and GTDB-Tk 2.8.0 `classify_wf`, with
       only the flags of those versions, input and database checks, and the same run records and
       `replay.sh` (0.3.0). Tested with stand-ins for the programs.
-- [x] More `irit-mcp` wrappers (unreleased): Shovill 1.4.2, mlst 2.35.0 and AMRFinderPlus 4.2.7, so
+- [x] More `irit-mcp` wrappers (0.3.2): Shovill 1.4.2, mlst 2.35.0 and AMRFinderPlus 4.2.7, so
       the isolate path from reads to resistance genes has no step outside the record. Checked with
       the real programs on real *S. aureus* reads (ST22, *mecA*) in the real-tools workflow.
-- [x] `dblock` additions (unreleased): the AMRFinderPlus database as a pinned entry
+- [x] `dblock` additions (0.3.2): the AMRFinderPlus database as a pinned entry
       (`amrfinderplus-db-4.2-2026-10-29.1`: NCBI's 38 files with checksums we computed, indexed by
       `amrfinder_index` before the folder is sealed), also usable as Bakta's
       `amrfinderplus-db/latest` instead of running `amrfinder_update`.
@@ -50,7 +50,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
       cap; largest step 5.82 GiB, correct species (ANI 100.0). The replay reran every command with
       three unrecorded steps added; gaps filed as [#2](https://github.com/dzulfikar08/irit/issues/2)
       to [#11](https://github.com/dzulfikar08/irit/issues/11).
-- [x] `seqplan` (unreleased): isolates per sequencing run and cost per isolate at a target
+- [x] `seqplan` (0.4.0): isolates per sequencing run and cost per isolate at a target
       coverage, from Illumina's specifications and reported nanopore yields, each cited
       ([seqplan](tools/seqplan.md)). Next: measure how low the coverage can go for this kind of
       work (subsampling the *K. pneumoniae* reads from the paper reproduction), so a plan can use
@@ -78,7 +78,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
       `sketches.db`, or, opt-in, from GTDB's archive through a seek index (2–6× the download), with
       a per-user cache; GTDB won't publish the skani folder unpacked and asked for exactly these
       two safeguards ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)). Built
-      since (unreleased): parallel range requests with retries (377 sketches from GTDB's server in
+      since (0.3.4): parallel range requests with retries (377 sketches from GTDB's server in
       474–562 s instead of 1,167–2,275 s), and the opt-in `--species-only`, which fetched 47 instead of 882
       sketches for six test genomes with the same calls (fewer unassigned-hits rows than GTDB-Tk's;
       [measurements](research/ani-laptop.md#7-parallel-requests-and-a-species-only-mode)). Next:
@@ -89,7 +89,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
       motif search, annotation tracks, reference row): remember the reference row between
       sessions, annotation tracks and the pinned row in figures, multi-threaded gzip, alignments
       larger than RAM.
-- [ ] **Nanopore isolates on a laptop**: `flye` and `medaka` tools in `irit-mcp` (unreleased). One
+- [ ] **Nanopore isolates on a laptop**: `flye` and `medaka` tools in `irit-mcp` (0.4.0). One
       carbapenemase-producing *K. pneumoniae* gave the same ST, the same 49 AMRFinderPlus elements,
       the same completeness and the same GTDB species from ONT reads alone as from Illumina, in an
       8 GB cap ([write-up](research/nanopore-laptop.md)). isotable reads long-read QC, the record

@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-14)
 
-Fixes from an AI agent reproducing Neumann et al. 2025 (*K. pneumoniae* from alfalfa sprouts,
-MRA e01270-25) through irit-mcp alone (#14-#19).
+New: `seqplan` (plan a sequencing run), long-read isolates (`flye`, `medaka`) and metagenomes to
+MAGs (`megahit`, `coverm_contig`, `metabat2`) in irit-mcp, and msascope's menu bar and Mac App Store
+preparation. Fixes from an AI agent reproducing Neumann et al. 2025 (*K. pneumoniae* from alfalfa
+sprouts, MRA e01270-25) through irit-mcp alone (#14-#19), and from the depth experiment and the
+nanopore run (#21-#25).
 
 ### irit-mcp
 - **A used run folder is refused** (#14): irit-mcp won't start when `<runs-dir>/<run-id>/` already
