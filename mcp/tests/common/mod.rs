@@ -18,11 +18,12 @@ impl Client {
         Client::spawn(cwd, &["--bin-dir", bin.to_str().unwrap()], &[])
     }
 
-    /// irit-mcp in `cwd` with run id `test-run`, extra arguments and environment.
+    /// irit-mcp in `cwd` with run id `test-run` (a `--run-id` in `args` wins), extra arguments and
+    /// environment.
     pub fn spawn(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Client {
         let mut child = Command::new(env!("CARGO_BIN_EXE_irit-mcp"))
-            .args(args)
             .args(["--run-id", "test-run"])
+            .args(args)
             .envs(env.iter().copied())
             .current_dir(cwd)
             .stdin(Stdio::piped())

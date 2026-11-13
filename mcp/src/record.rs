@@ -140,6 +140,21 @@ pub fn new_run_id() -> String {
     format!("{}-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ"), std::process::id())
 }
 
+/// Refuse a run folder that already holds a record: a new session would restart call numbering
+/// and overwrite `run.json`, `replay.sh` and the call outputs, losing the earlier run's provenance.
+/// An empty folder (made by hand, say) is fine.
+pub fn check_run_dir_unused(runs_root: &Path, run_id: &str) -> Result<(), String> {
+    let dir = runs_root.join(run_id);
+    if !fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some()) {
+        return Ok(());
+    }
+    Err(format!(
+        "run folder {} already holds a run record (run id {run_id}); a new session would overwrite it. \
+         Pick another --run-id, or leave it out for a fresh <UTC time>-<pid> id",
+        dir.display()
+    ))
+}
+
 impl Run {
     pub fn new(runs_root: &Path, run_id: &str) -> Run {
         Run {
@@ -1182,5 +1197,22 @@ mod tests {
             assert!(graph.iter().any(|e| e["@id"] == p && e["@type"] == "File"), "{p}");
         }
         assert_eq!(root["conformsTo"]["@id"], "https://w3id.org/ro/wfrun/process/0.6");
+    }
+
+    #[test]
+    fn a_used_run_folder_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        // new, or an empty folder: fine
+        assert!(check_run_dir_unused(d.path(), "agent-1").is_ok());
+        fs::create_dir(d.path().join("agent-1")).unwrap();
+        assert!(check_run_dir_unused(d.path(), "agent-1").is_ok());
+        // a recorded session's folder: refused, before anything is overwritten
+        let mut run = Run::new(d.path(), "agent-1");
+        run.add(call(1, Status::Ok)).unwrap();
+        let before = fs::read(d.path().join("agent-1/run.json")).unwrap();
+        let e = check_run_dir_unused(d.path(), "agent-1").unwrap_err();
+        assert!(e.contains("already holds a run record") && e.contains("--run-id"), "{e}");
+        assert_eq!(fs::read(d.path().join("agent-1/run.json")).unwrap(), before);
+        assert!(check_run_dir_unused(d.path(), "agent-2").is_ok());
     }
 }

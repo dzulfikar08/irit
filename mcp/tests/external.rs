@@ -715,10 +715,11 @@ fn gtdbtk_data_from_the_run_or_a_store_is_vouched_for_else_warned_about() {
     write(work, "db/gtdbtk/release232/radii/gtdb_radii.tsv", "x\n");
     let cache = work.join("cache");
     let store = work.join("store");
-    let spawn = |store: &Path| {
-        Client::spawn(work, &[], &[("PATH", &s.path), ("XDG_CACHE_HOME", cache.to_str().unwrap()), ("DBLOCK_STORE", store.to_str().unwrap())])
+    // a second session in the same folder needs its own run id
+    let spawn = |store: &Path, run_id: &str| {
+        Client::spawn(work, &["--run-id", run_id], &[("PATH", &s.path), ("XDG_CACHE_HOME", cache.to_str().unwrap()), ("DBLOCK_STORE", store.to_str().unwrap())])
     };
-    let mut c = spawn(&store);
+    let mut c = spawn(&store, "test-run");
     let warned = |r: &Value| {
         assert_ne!(r["isError"], true, "{r}");
         r["structuredContent"]["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("not in a dblock store"))
@@ -737,7 +738,7 @@ fn gtdbtk_data_from_the_run_or_a_store_is_vouched_for_else_warned_about() {
     assert!(calls[2]["inputs"].as_array().unwrap().iter().any(|i| i["path"] == sketches.to_str().unwrap()), "{}", calls[2]);
     assert!(calls[2].get("warnings").is_none(), "{}", calls[2]);
     // the same data inside the dblock store: no warning
-    let mut c = spawn(&work.join("db"));
+    let mut c = spawn(&work.join("db"), "test-run-2");
     let r = c.call("gtdbtk_classify_wf", json!({"genome_dir": "asm", "out_dir": "g3", "data_path": "db/gtdbtk/release232"}));
     assert!(!warned(&r), "{r}");
     c.close();

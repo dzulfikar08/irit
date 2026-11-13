@@ -18,7 +18,8 @@ Usage: irit-mcp [--bin-dir DIR] [--tool-path NAME=PATH]... [--runs-dir DIR] [--r
   --tool-path NAME=PATH  Where a third-party tool is: fastp, shovill, bakta, checkm2, gtdbtk, mlst or
                          amrfinder. Default: PATH.
   --runs-dir DIR         Where run records go (env IRIT_RUNS_DIR). Default: ./irit-runs
-  --run-id ID            Name of this session's run folder. Default: <UTC time>-<pid>
+  --run-id ID            Name of this session's run folder, which must not hold a record yet.
+                         Default: <UTC time>-<pid>
   --root DIR             Tools may only write inside this folder. Default: the working directory.
   --allow-outside-root   Let tools write anywhere the server's user can (not recommended).
 
@@ -71,6 +72,7 @@ fn main() -> anyhow::Result<()> {
     let root = root.map_or_else(|| cwd.clone(), |r| cwd.join(r));
     let root = std::fs::canonicalize(&root).map_err(|e| anyhow::anyhow!("--root {}: {e}", root.display()))?;
     anyhow::ensure!(root.is_dir(), "--root {} is not a folder", root.display());
+    record::check_run_dir_unused(&cwd.join(&runs_dir), &run_id).map_err(anyhow::Error::msg)?;
     let cfg = server::Config {
         bin_dir: bin_dir.map(|d| std::fs::canonicalize(cwd.join(&d)).unwrap_or_else(|_| cwd.join(d))),
         tool_paths: tool_paths.into_iter().map(|(k, p)| (k, cwd.join(p))).collect(),
