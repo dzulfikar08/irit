@@ -7,12 +7,23 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ["msascope/**", ".github/workflows/msascope.yml"]
+    paths: ["msascope/**", "scripts/macos-app.sh", "scripts/build-dmg.sh", "scripts/acknowledgements.sh", "scripts/assets/**", ".github/workflows/msascope.yml"]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # msascope's dependencies must stay permissively licensed: its App Store edition depends on it
+  # (msascope/deny.toml explains).
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: msascope/Cargo.toml
+          command: check licenses
+
   build:
     strategy:
       fail-fast: false
@@ -66,7 +77,12 @@ jobs:
         run: |
           set -euo pipefail
           brew install librsvg
-          ./scripts/build-dmg.sh --name msascope-test target/${{ matrix.target }}/release/msascope dist
+          cargo install cargo-about --locked --features cli
+          ./scripts/acknowledgements.sh dist/Acknowledgements.html
+          MSASCOPE_ACKNOWLEDGEMENTS=dist/Acknowledgements.html \
+            ./scripts/build-dmg.sh --name msascope-test target/${{ matrix.target }}/release/msascope dist
+          test -f dist/msascope.app/Contents/Resources/Acknowledgements.html
+          plutil -p dist/msascope.app/Contents/Info.plist | grep -q CFBundleDocumentTypes
           plutil -p dist/msascope.app/Contents/Info.plist | grep -E 'CFBundle(Identifier|Executable|Name)'
           grep -q '<string>com.dzulfikar.irit.msascope</string>' dist/msascope.app/Contents/Info.plist
           dist/msascope.app/Contents/MacOS/msascope --help > /dev/null
@@ -74,6 +90,22 @@ jobs:
           hdiutil attach -nobrowse -readonly -mountpoint "$mnt" dist/msascope-test.dmg
           test -d "$mnt/msascope.app" && test -L "$mnt/Applications"
           hdiutil detach "$mnt"
+      # The App Store edition runs sandboxed: an ad-hoc signed copy with its sandbox entitlements
+      # must still start, and must not be able to read a file the user didn't choose.
+      - name: Sandboxed copy (App Store entitlements, ad-hoc)
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: |
+          set -euo pipefail
+          rm -rf sbx && mkdir sbx && ditto dist/msascope.app sbx/msascope.app
+          codesign --force --sign - --entitlements scripts/assets/msascope-sandbox-test.entitlements sbx/msascope.app
+          codesign -d --entitlements - --xml sbx/msascope.app | plutil -p - | grep -q app-sandbox
+          sbx/msascope.app/Contents/MacOS/msascope --help > /dev/null
+          f="$PWD/msascope/tests/data/pf00042_seed_40x20.sto"
+          if sbx/msascope.app/Contents/MacOS/msascope --stats "$f" > sbx/out.txt 2>&1; then
+            echo "::error::the sandboxed msascope read a file nobody chose"; cat sbx/out.txt; exit 1
+          fi
+          cat sbx/out.txt
+          grep -qi "not permitted" sbx/out.txt
       - uses: actions/upload-artifact@v4
         with:
           name: msascope-${{ matrix.name }}

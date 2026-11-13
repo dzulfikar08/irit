@@ -34,6 +34,37 @@ msascope big.fa --stats --sort identity        # also time row figures, a sort a
 window) takes alignments and trees: a tree is matched to the open alignment, and an alignment
 and a tree dropped together are opened as a pair.
 
+On macOS, Finder's **Open With ▸ msascope** (and dropping files on its Dock icon) opens alignments
+(`.fa`, `.fasta`, `.fas`, `.fna`, `.faa`, `.afa`, `.mfa`, `.aln`, `.clustal`, `.sto`, `.stk`,
+`.stockholm`, `.gz`) and trees (`.nwk`, `.newick`, `.tree`, `.treefile`). msascope registers as an
+alternative app for these, never as the default one.
+
+### Menu bar and window
+
+| Menu | Items (shortcuts: ⌘ on macOS, Ctrl elsewhere) |
+|---|---|
+| msascope | About msascope, Acknowledgements, Hide (⌘H) / Hide Others / Show All (macOS), Quit (Ctrl+Q) |
+| File | Open… (Ctrl+O), Open Sample Alignment, Export… (Ctrl+E), Close File, Close Window (Ctrl+W) |
+| Edit | Copy Selection (Ctrl+C), Select All (Ctrl+A) |
+| Help | msascope Help (this page), Acknowledgements |
+
+On macOS, closing the window keeps msascope running, as Mac apps do; clicking its Dock icon opens
+a new window. On Linux and Windows, closing the last window quits. **Acknowledgements** opens the
+licences of the open-source code msascope is built from (`Acknowledgements.html` in the app, or next
+to the binary in the Linux archive; this repository's `msascope/THIRD_PARTY.md` in a source build).
+
+### Mac App Store edition
+
+The Mac App Store edition runs in Apple's App Sandbox, so it can only read files you choose. It
+works the same, with these differences:
+
+- It opens files through Open…, a drop on the window or the Dock icon, and Finder. Paths on the
+  command line, `--stats` and `--bench` are for the free download.
+- Recent files reopen after a relaunch (msascope keeps a security-scoped bookmark for each).
+- A tree saved next to an alignment is hidden from it until you allow that folder: **File ▸ Allow
+  Access to Folder…** (the status bar says so when no tree was found). msascope remembers the folder.
+- Its settings are kept apart from the free download's.
+
 | Input | Action |
 |---|---|
 | Wheel / trackpad | Scroll (Shift+wheel: horizontal) |

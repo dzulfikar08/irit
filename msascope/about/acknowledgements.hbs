@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>msascope acknowledgements</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.6rem; } h2 { font-size: 1.15rem; margin-top: 2.5rem; }
+  pre { white-space: pre-wrap; font-size: 12px; background: color-mix(in srgb, currentColor 6%, transparent); padding: 1rem; border-radius: 6px; }
+  ul.crates { columns: 2; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>Acknowledgements</h1>
+<p>msascope is built on open-source software. These are the licences of the code compiled into it,
+grouped by licence text, with the packages each one covers.</p>
+<!--EXTRA-->
+{{#each licenses}}
+<h2>{{name}}</h2>
+<ul class="crates">
+{{#each used_by}}<li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+{{/each}}
+</ul>
+<pre>{{text}}</pre>
+{{/each}}
+</body>
+</html>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- msascope, Mac App Store edition (scripts/build-mas-pkg.sh fills in TEAMID). Files: only those
+     the user chooses (open/save panels, drops, Finder), plus bookmarks to reopen them later.
+     No network, no JIT, no temporary exceptions. -->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.app-sandbox</key><true/>
+  <key>com.apple.security.files.user-selected.read-write</key><true/>
+  <key>com.apple.security.files.bookmarks.app-scope</key><true/>
+  <key>com.apple.application-identifier</key><string>TEAMID.com.dzulfikar.irit.msascope</string>
+  <key>com.apple.developer.team-identifier</key><string>TEAMID</string>
+</dict>
+</plist>

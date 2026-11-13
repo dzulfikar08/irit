@@ -1,0 +1,100 @@
+name: msascope Mac App Store
+
+# Builds the Mac App Store edition of msascope (sandboxed, signed for the store, as a .pkg) and,
+# with upload=true, sends it to App Store Connect. It doesn't submit anything for review: attach
+# the build to a version in App Store Connect and submit it there.
+#
+#   gh workflow run msascope-mas.yml --ref v0.3.6                 # build and validate only
+#   gh workflow run msascope-mas.yml --ref v0.3.6 -f upload=true  # also upload
+#
+# Needs, in the `release` environment (main and v* tags only): MAS_APP_P12_BASE64 (Apple
+# Distribution), MAS_INSTALLER_P12_BASE64 (3rd Party Mac Developer Installer), MAS_P12_PASSWORD,
+# MAS_PROVISIONPROFILE_BASE64 (Mac App Store profile for com.dzulfikar.irit.msascope),
+# APPLE_TEAM_ID, and the existing ASC_KEY_ID / ASC_KEY_BASE64 / ASC_ISSUER_ID (an App Store
+# Connect API key whose role can upload builds: Developer, App Manager or Admin).
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Upload the .pkg to App Store Connect (otherwise build and validate only)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: msascope-mas
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  mas:
+    name: msascope.pkg (Mac App Store)
+    runs-on: macos-15
+    timeout-minutes: 120
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - run: brew install librsvg   # rsvg-convert, for the icon
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-macos-universal
+          cache-on-failure: true
+      # First, so a missing secret fails the job before the long build.
+      - name: Keychain (Apple Distribution + Installer), provisioning profile, API key
+        env:
+          MAS_APP_P12_BASE64: ${{ secrets.MAS_APP_P12_BASE64 }}
+          MAS_INSTALLER_P12_BASE64: ${{ secrets.MAS_INSTALLER_P12_BASE64 }}
+          MAS_P12_PASSWORD: ${{ secrets.MAS_P12_PASSWORD }}
+          MAS_PROVISIONPROFILE_BASE64: ${{ secrets.MAS_PROVISIONPROFILE_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+        run: ./scripts/ci-keychain.sh setup-mas
+      - name: Universal binary (arm64 + x86_64)
+        run: ./scripts/macos-universal.sh dist/universal msascope -- msascope
+      - name: Acknowledgements (licences of msascope's dependencies)
+        run: |
+          cargo install cargo-about --locked --features cli
+          ./scripts/acknowledgements.sh dist/Acknowledgements.html
+      - name: Sandboxed app, signed for the store, packaged
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MSASCOPE_ACKNOWLEDGEMENTS: dist/Acknowledgements.html
+        run: |
+          set -euo pipefail
+          version="$(awk '/^\[workspace.package\]/{s=1;next} /^\[/{s=0} s && /^version *=/{gsub(/.*= *"|".*/,""); print; exit}' Cargo.toml)"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          # CFBundleVersion must grow with every upload, rejected ones included.
+          ./scripts/build-mas-pkg.sh --build "${version}.${GITHUB_RUN_NUMBER}" dist/universal/msascope dist
+      - name: Validate with App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.appstoreconnect/private_keys
+          cp "$ASC_KEY_PATH" ~/.appstoreconnect/private_keys/
+          xcrun altool --validate-app -f "dist/msascope-${VERSION}.pkg" -t macos --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+      - name: Upload to App Store Connect
+        if: inputs.upload
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: xcrun altool --upload-app -f "dist/msascope-${VERSION}.pkg" -t macos --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+      - if: always()
+        run: |
+          ./scripts/ci-keychain.sh cleanup
+          rm -rf ~/.appstoreconnect/private_keys
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msascope-mas
+          path: dist/msascope-${{ env.VERSION }}.pkg
+          if-no-files-found: error
+          retention-days: 30
