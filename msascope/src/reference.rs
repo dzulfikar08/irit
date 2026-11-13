@@ -28,7 +28,12 @@ impl Reference {
             n += (c != GAP) as u32;
         }
         before.push(n);
-        Reference { row, codes, before, start: crate::name_range(&aln.names[row]).map_or(1, |(a, _)| a) }
+        Reference {
+            row,
+            codes,
+            before,
+            start: crate::name_range(&aln.names[row]).map_or(1, |(a, _)| a),
+        }
     }
 
     /// Residues in the row.
@@ -60,7 +65,11 @@ impl Reference {
     /// shares (to 1/255); 0 where the reference has a gap.
     pub fn identity(&self, stats: &ColumnStats, c: usize) -> f32 {
         let code = self.codes[c];
-        if code == GAP { 0.0 } else { stats.shares[c][code as usize & (NCODES - 1)] as f32 / 255.0 }
+        if code == GAP {
+            0.0
+        } else {
+            stats.shares[c][code as usize & (NCODES - 1)] as f32 / 255.0
+        }
     }
 
     pub fn bytes(&self) -> usize {
@@ -72,11 +81,20 @@ impl Reference {
 /// number, major)` where the reference has a residue whose number is a multiple of `step`
 /// (major: labelled) or of `minor` (a minor tick; 0 for none), and, with `first`, its first
 /// residue in the range as a major mark.
-pub fn ruler_marks(r: &Reference, map: Option<&ColumnMap>, range: std::ops::Range<usize>, step: usize, minor: usize, first: bool) -> Vec<(usize, usize, bool)> {
+pub fn ruler_marks(
+    r: &Reference,
+    map: Option<&ColumnMap>,
+    range: std::ops::Range<usize>,
+    step: usize,
+    minor: usize,
+    first: bool,
+) -> Vec<(usize, usize, bool)> {
     let mut out = Vec::new();
     let mut first = first;
     for v in range {
-        let Some(p) = r.position(aln_col(map, v)) else { continue };
+        let Some(p) = r.position(aln_col(map, v)) else {
+            continue;
+        };
         if p.is_multiple_of(step) || first {
             out.push((v, p, true));
         } else if minor > 0 && p.is_multiple_of(minor) {
@@ -94,7 +112,10 @@ mod tests {
 
     fn aln() -> Alignment {
         // columns:         0123456789
-        parse_bytes(b"# STOCKHOLM 1.0\nR/11-16 -AC..DE-FG\nx       AAC..DQ-FG\ny       -AT.aDE-F-\n//\n").unwrap()
+        parse_bytes(
+            b"# STOCKHOLM 1.0\nR/11-16 -AC..DE-FG\nx       AAC..DQ-FG\ny       -AT.aDE-F-\n//\n",
+        )
+        .unwrap()
     }
 
     #[test]
@@ -114,7 +135,10 @@ mod tests {
         assert_eq!(r.column_of(17), None);
         // without a range, from 1
         let r = Reference::new(&a, 1);
-        assert_eq!((r.start, r.position(0), r.column_of(3)), (1, Some(1), Some(2)));
+        assert_eq!(
+            (r.start, r.position(0), r.column_of(3)),
+            (1, Some(1), Some(2))
+        );
     }
 
     #[test]
@@ -136,15 +160,32 @@ mod tests {
         let s = ColumnStats::compute(&a);
         let r = Reference::new(&a, 0);
         // every 2nd residue: 12 (col 2), 14 (col 6), 16 (col 9)
-        let majors = |m: Vec<(usize, usize, bool)>| m.into_iter().filter(|x| x.2).map(|x| (x.0, x.1)).collect::<Vec<_>>();
-        assert_eq!(majors(ruler_marks(&r, None, 0..a.cols(), 2, 0, false)), [(2, 12), (6, 14), (9, 16)]);
+        let majors = |m: Vec<(usize, usize, bool)>| {
+            m.into_iter()
+                .filter(|x| x.2)
+                .map(|x| (x.0, x.1))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            majors(ruler_marks(&r, None, 0..a.cols(), 2, 0, false)),
+            [(2, 12), (6, 14), (9, 16)]
+        );
         // with the first residue in view
-        assert_eq!(majors(ruler_marks(&r, None, 3..a.cols(), 2, 0, true)), [(5, 13), (6, 14), (9, 16)]);
+        assert_eq!(
+            majors(ruler_marks(&r, None, 3..a.cols(), 2, 0, true)),
+            [(5, 13), (6, 14), (9, 16)]
+        );
         // labels every 4th, minor ticks every 2nd
-        assert_eq!(ruler_marks(&r, None, 0..a.cols(), 4, 2, false), [(2, 12, true), (6, 14, false), (9, 16, true)]);
+        assert_eq!(
+            ruler_marks(&r, None, 0..a.cols(), 4, 2, false),
+            [(2, 12, true), (6, 14, false), (9, 16, true)]
+        );
         // inserts (columns 3 and 4) hidden: the same residues, at view columns shifted by 2
         let m = ColumnMap::hiding(&a, &s, true, None).unwrap();
         assert_eq!(m.visible, [0, 1, 2, 5, 6, 7, 8, 9]);
-        assert_eq!(majors(ruler_marks(&r, Some(&m), 0..m.len(), 2, 0, false)), [(2, 12), (4, 14), (7, 16)]);
+        assert_eq!(
+            majors(ruler_marks(&r, Some(&m), 0..m.len(), 2, 0, false)),
+            [(2, 12), (4, 14), (7, 16)]
+        );
     }
 }

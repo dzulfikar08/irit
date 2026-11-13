@@ -13,13 +13,15 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::v_flex;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+
+use super::menu;
 use msascope::Loaded;
 use msascope::alphabet::SeqType;
 use msascope::jobs::{Done, Jobs};
 use msascope::motif::Hits;
-use msascope::rows::{Filter, RowStats, Sort};
 use msascope::pyramid::Pyramid;
 use msascope::reference::Reference;
+use msascope::rows::{Filter, RowStats, Sort};
 use msascope::scheme::{self, ColorMode, Scheme};
 use msascope::select::{ExportOptions, RangeSet, Selection};
 use msascope::tree::{self, TreeIndex, TreeRows};
@@ -104,8 +106,12 @@ pub struct Bench {
 }
 
 /// (name, zoom x, zoom y) phases of `--bench`; zoom `None` means "fit the whole alignment".
-const BENCH_PHASES: [(&str, Option<(i32, i32)>); 4] =
-    [("overview (fit)", None), ("1 px per cell", Some((0, 0))), ("4 px per cell", Some((4, 4))), ("letters, 12x16 px", Some((7, 8)))];
+const BENCH_PHASES: [(&str, Option<(i32, i32)>); 4] = [
+    ("overview (fit)", None),
+    ("1 px per cell", Some((0, 0))),
+    ("4 px per cell", Some((4, 4))),
+    ("letters, 12x16 px", Some((7, 8))),
+];
 const BENCH_FRAMES: usize = 240;
 
 /// What is shown when columns are hidden or rows follow a tree: the column map, the row view,
@@ -137,12 +143,17 @@ pub struct RefOpts {
 
 impl Default for RefOpts {
     fn default() -> Self {
-        RefOpts { pin: true, ruler: false, compare: true }
+        RefOpts {
+            pin: true,
+            ruler: false,
+            compare: true,
+        }
     }
 }
 
 /// Header tiles: the track bands rasterised, by tile index along x.
-pub type HeaderTiles = msascope::header::TileStore<msascope::header::HeaderKey, i64, Arc<RenderImage>>;
+pub type HeaderTiles =
+    msascope::header::TileStore<msascope::header::HeaderKey, i64, Arc<RenderImage>>;
 
 /// What the Find box searches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,7 +203,11 @@ pub struct OverviewCache {
 pub(super) enum Drag {
     /// Pan the alignment: the last pointer position, the cell pressed, and whether the pointer
     /// has moved (a press and release without moving is a click: it places the cursor).
-    Pan { last: Point<Pixels>, cell: Option<(usize, usize)>, moved: bool },
+    Pan {
+        last: Point<Pixels>,
+        cell: Option<(usize, usize)>,
+        moved: bool,
+    },
     /// Shift+drag: select the block from `anchor` (view row, view column) to the pointer.
     Block { anchor: (usize, usize) },
     /// Drag over names: select the rows from `anchor` (a view row), added to `base`.
@@ -356,62 +371,98 @@ pub struct MsaScope {
 }
 
 impl MsaScope {
-    pub fn new(path: Option<PathBuf>, tree: Option<PathBuf>, ty: Option<SeqType>, bench: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let jump = cx.new(|cx| InputState::new(window, cx).placeholder("Column, row:col or name:pos"));
+    pub fn new(
+        path: Option<PathBuf>,
+        tree: Option<PathBuf>,
+        ty: Option<SeqType>,
+        bench: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let jump =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Column, row:col or name:pos"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find sequence"));
-        let filter_name = cx.new(|cx| InputState::new(window, cx).placeholder("Name or accession, or /regex/"));
+        let filter_name =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Name or accession, or /regex/"));
         let filter_ident = cx.new(|cx| InputState::new(window, cx).placeholder("0–100"));
         let filter_gaps = cx.new(|cx| InputState::new(window, cx).placeholder("0–100"));
         let subs = vec![
-            cx.subscribe_in(&jump, window, |this, state, ev: &InputEvent, window, cx| match ev {
-                InputEvent::PressEnter { .. } => {
-                    let text = state.read(cx).value().to_string();
-                    this.go_to(&text, cx);
-                }
-                InputEvent::Blur => this.refocus(window, cx),
-                _ => {}
-            }),
-            cx.subscribe_in(&search, window, |this, state, ev: &InputEvent, window, cx| match ev {
-                InputEvent::Change => {
-                    let q = state.read(cx).value().to_string();
-                    match this.find_mode {
-                        FindMode::Names => this.run_search(&q, cx),
-                        FindMode::Motif => this.run_motif(&q, cx),
+            cx.subscribe_in(
+                &jump,
+                window,
+                |this, state, ev: &InputEvent, window, cx| match ev {
+                    InputEvent::PressEnter { .. } => {
+                        let text = state.read(cx).value().to_string();
+                        this.go_to(&text, cx);
                     }
-                }
-                InputEvent::PressEnter { shift, .. } => match this.find_mode {
-                    FindMode::Names => this.next_match(if *shift { -1 } else { 1 }, cx),
-                    FindMode::Motif => this.next_hit(if *shift { -1 } else { 1 }, cx),
+                    InputEvent::Blur => this.refocus(window, cx),
+                    _ => {}
                 },
-                InputEvent::Blur => this.refocus(window, cx),
-                _ => {}
-            }),
-            cx.subscribe_in(&filter_name, window, |this, _, ev: &InputEvent, window, cx| match ev {
-                InputEvent::Change => this.read_filter(cx),
-                InputEvent::Blur => this.refocus(window, cx),
-                _ => {}
-            }),
-            cx.subscribe_in(&filter_ident, window, |this, _, ev: &InputEvent, window, cx| match ev {
-                InputEvent::Change => this.read_filter(cx),
-                InputEvent::Blur => this.refocus(window, cx),
-                _ => {}
-            }),
-            cx.subscribe_in(&filter_gaps, window, |this, _, ev: &InputEvent, window, cx| match ev {
-                InputEvent::Change => this.read_filter(cx),
-                InputEvent::Blur => this.refocus(window, cx),
-                _ => {}
-            }),
+            ),
+            cx.subscribe_in(
+                &search,
+                window,
+                |this, state, ev: &InputEvent, window, cx| match ev {
+                    InputEvent::Change => {
+                        let q = state.read(cx).value().to_string();
+                        match this.find_mode {
+                            FindMode::Names => this.run_search(&q, cx),
+                            FindMode::Motif => this.run_motif(&q, cx),
+                        }
+                    }
+                    InputEvent::PressEnter { shift, .. } => match this.find_mode {
+                        FindMode::Names => this.next_match(if *shift { -1 } else { 1 }, cx),
+                        FindMode::Motif => this.next_hit(if *shift { -1 } else { 1 }, cx),
+                    },
+                    InputEvent::Blur => this.refocus(window, cx),
+                    _ => {}
+                },
+            ),
+            cx.subscribe_in(
+                &filter_name,
+                window,
+                |this, _, ev: &InputEvent, window, cx| match ev {
+                    InputEvent::Change => this.read_filter(cx),
+                    InputEvent::Blur => this.refocus(window, cx),
+                    _ => {}
+                },
+            ),
+            cx.subscribe_in(
+                &filter_ident,
+                window,
+                |this, _, ev: &InputEvent, window, cx| match ev {
+                    InputEvent::Change => this.read_filter(cx),
+                    InputEvent::Blur => this.refocus(window, cx),
+                    _ => {}
+                },
+            ),
+            cx.subscribe_in(
+                &filter_gaps,
+                window,
+                |this, _, ev: &InputEvent, window, cx| match ev {
+                    InputEvent::Change => this.read_filter(cx),
+                    InputEvent::Blur => this.refocus(window, cx),
+                    _ => {}
+                },
+            ),
             // Follow the OS appearance while the theme is "System".
             cx.observe_window_appearance(window, |v, window, cx| {
                 if v.settings.theme == ThemeChoice::System {
-                    tokens::apply_palette(ThemeChoice::System.palette(is_dark(window.appearance())), cx);
+                    tokens::apply_palette(
+                        ThemeChoice::System.palette(is_dark(window.appearance())),
+                        cx,
+                    );
                     window.refresh();
                     cx.notify();
                 }
             }),
         ];
-        let title_bar = CachedView::manual(cx, |v: &mut MsaScope, window, cx| v.render_title_bar(window, cx).into_any_element());
-        let toolbar = CachedView::manual(cx, |v: &mut MsaScope, window, cx| v.render_toolbar(window, cx).into_any_element());
+        let title_bar = CachedView::manual(cx, |v: &mut MsaScope, window, cx| {
+            v.render_title_bar(window, cx).into_any_element()
+        });
+        let toolbar = CachedView::manual(cx, |v: &mut MsaScope, window, cx| {
+            v.render_toolbar(window, cx).into_any_element()
+        });
         let mut v = MsaScope {
             data: None,
             status: SharedString::default(),
@@ -420,7 +471,14 @@ impl MsaScope {
             load_two_pass: false,
             path: None,
             ty,
-            vp: Viewport { col0: 0.0, row0: 0.0, cw: view::LETTERS_CW, ch: view::LETTERS_CH, width: 0.0, height: 0.0 },
+            vp: Viewport {
+                col0: 0.0,
+                row0: 0.0,
+                cw: view::LETTERS_CW,
+                ch: view::LETTERS_CH,
+                width: 0.0,
+                height: 0.0,
+            },
             pending: None,
             fit: None,
             mode: ColorMode::new(Scheme::ClustalX),
@@ -479,7 +537,13 @@ impl MsaScope {
             jump,
             search,
             focus: cx.focus_handle(),
-            bench: bench.then(|| Bench { phase: 0, frame: 0, last: None, intervals: Vec::new(), paint_ms: Rc::default() }),
+            bench: bench.then(|| Bench {
+                phase: 0,
+                frame: 0,
+                last: None,
+                intervals: Vec::new(),
+                paint_ms: Rc::default(),
+            }),
             settings: Settings::load(),
             title_bar,
             toolbar,
@@ -510,15 +574,20 @@ impl MsaScope {
         self.error = None;
         let total = std::fs::metadata(&path).map_or(0, |m| m.len());
         let stamp = FileStamp::of(&path);
-        self.load_two_pass = msascope::parse::sniff(&path).is_ok_and(|(f, _)| f != msascope::parse::Format::Fasta);
+        self.load_two_pass =
+            msascope::parse::sniff(&path).is_ok_and(|(f, _)| f != msascope::parse::Format::Fasta);
         let job = self.jobs.start(path.clone(), total);
         let (id, progress) = (job.id, job.progress.clone());
         cx.notify();
         let ty = self.ty;
-        let task = cx.background_executor().spawn(async move { Loaded::open_with(&path, ty, Some(&progress)) });
+        let task = cx
+            .background_executor()
+            .spawn(async move { Loaded::open_with(&path, ty, Some(&progress)) });
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
                 let running = this.update(cx, |v, cx| {
                     let on = v.jobs.is_current(id);
                     if on {
@@ -535,7 +604,9 @@ impl MsaScope {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |v, cx| {
-                let Done::Current(path, result) = v.jobs.finish(id, result) else { return };
+                let Done::Current(path, result) = v.jobs.finish(id, result) else {
+                    return;
+                };
                 match result {
                     Ok(l) => {
                         v.settings.add_recent(&path);
@@ -551,7 +622,9 @@ impl MsaScope {
                         let warn = match l.aln.warnings.as_slice() {
                             [] => None,
                             [w] => Some(w.clone()),
-                            [w, rest @ ..] => Some(format!("{w} (and {} more, see the terminal)", rest.len())),
+                            [w, rest @ ..] => {
+                                Some(format!("{w} (and {} more, see the terminal)", rest.len()))
+                            }
                         };
                         if let Some(rss) = peak_rss_mb() {
                             eprintln!("msascope: peak RSS after load {rss} MiB");
@@ -582,9 +655,21 @@ impl MsaScope {
                         }
                         // The tree: one given with the file, else the file's own (#=GF NH), else
                         // a sibling file with the same stem.
-                        let source = v.next_tree.take().map(TreeSource::File).or(embedded.map(TreeSource::Embedded)).or_else(|| {
-                            v.path.as_deref().and_then(|p| tree::sibling_candidates(p).into_iter().find(|c| c.is_file())).map(TreeSource::File)
-                        });
+                        let source = v
+                            .next_tree
+                            .take()
+                            .map(TreeSource::File)
+                            .or(embedded.map(TreeSource::Embedded))
+                            .or_else(|| {
+                                v.path
+                                    .as_deref()
+                                    .and_then(|p| {
+                                        tree::sibling_candidates(p)
+                                            .into_iter()
+                                            .find(|c| c.is_file())
+                                    })
+                                    .map(TreeSource::File)
+                            });
                         match source {
                             Some(s) => v.load_tree(s, cx),
                             None => v.rebuild_layout(cx),
@@ -609,7 +694,10 @@ impl MsaScope {
     /// keep the alignment that was open.
     pub(super) fn cancel_load(&mut self, cx: &mut Context<Self>) {
         if let Some(p) = self.jobs.cancel() {
-            let name = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+            let name = p.file_name().map_or_else(
+                || p.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
             eprintln!("msascope: cancelled loading {name}");
             self.status = format!("Cancelled loading {name}").into();
             cx.notify();
@@ -670,12 +758,21 @@ impl MsaScope {
     /// for the next one), anything else is opened as an alignment.
     pub(super) fn open_any(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let mut head = [0u8; 256];
-        let n = std::fs::File::open(&path).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+        let n = std::fs::File::open(&path)
+            .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+            .unwrap_or(0);
         if tree::looks_like_tree(&path, &head[..n]) {
             if self.data.is_some() && self.loading().is_none() {
                 self.load_tree(TreeSource::File(path), cx);
             } else {
-                self.status = format!("{} will be matched to the next alignment opened", path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())).into();
+                self.status = format!(
+                    "{} will be matched to the next alignment opened",
+                    path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |n| n.to_string_lossy().into_owned()
+                    )
+                )
+                .into();
                 self.next_tree = Some(path);
                 cx.notify();
             }
@@ -685,13 +782,19 @@ impl MsaScope {
     }
 
     /// Several dropped files: alignments first, so a tree dropped with one is matched to it.
-    pub(super) fn open_dropped(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+    pub(crate) fn open_dropped(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         let mut trees = Vec::new();
         let mut alns = Vec::new();
         for p in paths {
             let mut head = [0u8; 256];
-            let n = std::fs::File::open(p).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
-            if tree::looks_like_tree(p, &head[..n]) { trees.push(p.clone()) } else { alns.push(p.clone()) }
+            let n = std::fs::File::open(p)
+                .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+                .unwrap_or(0);
+            if tree::looks_like_tree(p, &head[..n]) {
+                trees.push(p.clone())
+            } else {
+                alns.push(p.clone())
+            }
         }
         match (alns.into_iter().next(), trees.into_iter().next()) {
             (Some(a), t) => {
@@ -709,7 +812,13 @@ impl MsaScope {
     pub(super) fn load_tree(&mut self, source: TreeSource, cx: &mut Context<Self>) {
         let Some(d) = self.data.clone() else { return };
         let name: SharedString = match &source {
-            TreeSource::File(p) => p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()).into(),
+            TreeSource::File(p) => p
+                .file_name()
+                .map_or_else(
+                    || p.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                )
+                .into(),
             TreeSource::Embedded(_) => "tree in the file (#=GF NH)".into(),
         };
         self.tree_loading = true;
@@ -718,7 +827,8 @@ impl MsaScope {
         let task = cx.background_executor().spawn(async move {
             let t0 = Instant::now();
             let text = match source {
-                TreeSource::File(p) => std::fs::read_to_string(&p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?,
+                TreeSource::File(p) => std::fs::read_to_string(&p)
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?,
                 TreeSource::Embedded(s) => s,
             };
             let t = tree::Tree::parse(&text)?;
@@ -776,7 +886,9 @@ impl MsaScope {
 
     /// Collapse or expand a node of the tree.
     pub(super) fn toggle_clade(&mut self, node: u32, cx: &mut Context<Self>) {
-        let Some(f) = self.collapsed.get_mut(node as usize) else { return };
+        let Some(f) = self.collapsed.get_mut(node as usize) else {
+            return;
+        };
         *f = !*f;
         self.rebuild_layout(cx);
     }
@@ -799,7 +911,13 @@ impl MsaScope {
         cx.notify();
         let task = cx.background_executor().spawn(async move {
             let path = std::env::temp_dir().join("msascope-sample-2000x3000.fa");
-            let spec = msascope::synth::Spec { rows: 2000, cols: 3000, kind: msascope::alphabet::Kind::Nucleotide, clades: 12, seed: 1 };
+            let spec = msascope::synth::Spec {
+                rows: 2000,
+                cols: 3000,
+                kind: msascope::alphabet::Kind::Nucleotide,
+                clades: 12,
+                seed: 1,
+            };
             let mut out = std::io::BufWriter::new(std::fs::File::create(&path)?);
             msascope::synth::write_fasta(&spec, &mut out)?;
             std::io::Write::flush(&mut out)?;
@@ -820,7 +938,12 @@ impl MsaScope {
     }
 
     pub(super) fn prompt_open(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: None });
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: None,
+        });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await {
                 this.update(cx, |v, cx| v.open_dropped(&paths, cx)).ok();
@@ -838,7 +961,12 @@ impl MsaScope {
 
     /// Shown (view) rows and columns.
     pub(super) fn dims(&self) -> (usize, usize) {
-        self.data.as_ref().map_or((0, 0), |d| (view::view_rows(self.row_view(), d.aln.rows()), view::view_cols(self.col_map(), d.aln.cols())))
+        self.data.as_ref().map_or((0, 0), |d| {
+            (
+                view::view_rows(self.row_view(), d.aln.rows()),
+                view::view_cols(self.col_map(), d.aln.cols()),
+            )
+        })
     }
 
     pub(super) fn col_map(&self) -> Option<&ColumnMap> {
@@ -865,7 +993,10 @@ impl MsaScope {
     /// Sequences shown and in the file, when a filter hides some.
     pub(super) fn shown_of(&self) -> Option<(usize, usize)> {
         let d = self.data.as_ref()?;
-        self.layout.as_deref().and_then(|l| l.shown).map(|n| (n, d.aln.rows()))
+        self.layout
+            .as_deref()
+            .and_then(|l| l.shown)
+            .map(|n| (n, d.aln.rows()))
     }
 
     /// Whether the tree panel is shown: a tree in tree order, with the panel switched on.
@@ -875,7 +1006,11 @@ impl MsaScope {
 
     /// Width of the tree panel (0 when hidden) and of the tree and name panels together.
     pub(super) fn tree_w(&self) -> f32 {
-        if self.show_tree() { self.settings.tree_width } else { 0.0 }
+        if self.show_tree() {
+            self.settings.tree_width
+        } else {
+            0.0
+        }
     }
 
     /// The reference the views compare with: set, and "compare" on.
@@ -901,41 +1036,98 @@ impl MsaScope {
         self.layout_gen += 1;
         let generation = self.layout_gen;
         let inserts = self.hide_inserts && !d.aln.inserts.is_empty();
-        let gappy = self.hide_gappy.then(|| self.settings.gappy_pct as f32 / 100.0);
+        let gappy = self
+            .hide_gappy
+            .then(|| self.settings.gappy_pct as f32 / 100.0);
         let tree = self.tree.clone().filter(|_| self.tree_order);
         let (sort, filter, reference) = (self.sort, self.filter.clone(), self.reference);
         let base = self.compare_base();
-        if !inserts && gappy.is_none() && tree.is_none() && sort.is_none() && !filter.is_active() && base.is_none() && self.layout.is_none() {
+        if !inserts
+            && gappy.is_none()
+            && tree.is_none()
+            && sort.is_none()
+            && !filter.is_active()
+            && base.is_none()
+            && self.layout.is_none()
+        {
             self.layout_pending = false;
             return;
         }
         let need_stats = sort.is_some_and(|s| s.key.needs_stats()) || filter.needs_stats();
-        let key: StatsKey = (inserts, self.hide_gappy.then_some(self.settings.gappy_pct), reference);
-        let cached = self.row_stats.as_ref().filter(|(k, _)| *k == key).map(|(_, s)| s.clone());
+        let key: StatsKey = (
+            inserts,
+            self.hide_gappy.then_some(self.settings.gappy_pct),
+            reference,
+        );
+        let cached = self
+            .row_stats
+            .as_ref()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, s)| s.clone());
         let collapsed = self.collapsed.clone();
         self.layout_pending = true;
         cx.notify();
         let task = cx.background_executor().spawn(async move {
             let t0 = Instant::now();
             let map = ColumnMap::hiding(&d.aln, &d.stats, inserts, gappy);
-            let stats = need_stats.then(|| cached.unwrap_or_else(|| Arc::new(RowStats::compute(&d.aln, &d.stats.consensus, map.as_ref(), reference))));
+            let stats = need_stats.then(|| {
+                cached.unwrap_or_else(|| {
+                    Arc::new(RowStats::compute(
+                        &d.aln,
+                        &d.stats.consensus,
+                        map.as_ref(),
+                        reference,
+                    ))
+                })
+            });
             let keep = filter.keep(&d.aln, stats.as_deref());
             let t_rows = t0.elapsed();
             let (rows, tree_rows) = match (sort, &tree) {
-                (Some(s), _) => (Some(msascope::rows::flat_view(&d.aln, keep.as_deref(), Some(s), stats.as_deref())), None),
+                (Some(s), _) => (
+                    Some(msascope::rows::flat_view(
+                        &d.aln,
+                        keep.as_deref(),
+                        Some(s),
+                        stats.as_deref(),
+                    )),
+                    None,
+                ),
                 (None, Some(ix)) => {
                     let (rv, tr) = tree::row_view_kept(&d.aln, ix, &collapsed, keep.as_deref());
                     (Some(rv), tr)
                 }
-                (None, None) if keep.is_some() => (Some(msascope::rows::flat_view(&d.aln, keep.as_deref(), None, None)), None),
+                (None, None) if keep.is_some() => (
+                    Some(msascope::rows::flat_view(
+                        &d.aln,
+                        keep.as_deref(),
+                        None,
+                        None,
+                    )),
+                    None,
+                ),
                 (None, None) => (None, None),
             };
             let shown = keep.as_ref().map(|k| k.iter().filter(|&&x| x).count());
             let t_order = t0.elapsed() - t_rows;
             let layout = (map.is_some() || rows.is_some() || base.is_some()).then(|| {
-                let against = base.as_deref().map_or(&d.stats.consensus[..], |b| &b.codes[..]);
-                let pyramid = Pyramid::build_mapped(&d.aln, against, map.as_ref().map(|m| &m.visible[..]), rows.as_ref());
-                Arc::new(Layout { map, rows, tree: tree_rows, pyramid, generation, shown, base })
+                let against = base
+                    .as_deref()
+                    .map_or(&d.stats.consensus[..], |b| &b.codes[..]);
+                let pyramid = Pyramid::build_mapped(
+                    &d.aln,
+                    against,
+                    map.as_ref().map(|m| &m.visible[..]),
+                    rows.as_ref(),
+                );
+                Arc::new(Layout {
+                    map,
+                    rows,
+                    tree: tree_rows,
+                    pyramid,
+                    generation,
+                    shown,
+                    base,
+                })
             });
             (layout, stats, (t_rows, t_order, t0.elapsed()))
         });
@@ -1012,9 +1204,18 @@ impl MsaScope {
 
     /// The next scheme that applies to the open alignment (`s`).
     pub(super) fn cycle_scheme(&mut self) {
-        let kind = self.data.as_ref().map_or(msascope::alphabet::Kind::Protein, |d| d.aln.kind());
-        let all: Vec<Scheme> = Scheme::ALL.into_iter().filter(|s| s.applies(kind)).collect();
-        let i = all.iter().position(|&s| s == self.mode.scheme).map_or(0, |i| (i + 1) % all.len());
+        let kind = self
+            .data
+            .as_ref()
+            .map_or(msascope::alphabet::Kind::Protein, |d| d.aln.kind());
+        let all: Vec<Scheme> = Scheme::ALL
+            .into_iter()
+            .filter(|s| s.applies(kind))
+            .collect();
+        let i = all
+            .iter()
+            .position(|&s| s == self.mode.scheme)
+            .map_or(0, |i| (i + 1) % all.len());
         self.set_scheme(all[i]);
     }
 
@@ -1022,7 +1223,12 @@ impl MsaScope {
         self.settings.overview && self.bench.is_none() && self.data.is_some()
     }
 
-    pub(super) fn set_theme(&mut self, choice: ThemeChoice, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn set_theme(
+        &mut self,
+        choice: ThemeChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.settings.theme = choice;
         self.settings.save();
         tokens::apply_palette(choice.palette(is_dark(window.appearance())), cx);
@@ -1041,7 +1247,10 @@ impl MsaScope {
     /// Zoom by whole √2 steps; ends any fit.
     pub(super) fn zoom_by(&mut self, sx: i32, sy: i32, anchor: Option<(f64, f64)>) {
         self.fit = None;
-        let (cw, ch) = (view::zoom_step(self.vp.cw, sx), view::zoom_step(self.vp.ch, sy));
+        let (cw, ch) = (
+            view::zoom_step(self.vp.cw, sx),
+            view::zoom_step(self.vp.ch, sy),
+        );
         self.set_scale(cw, ch, anchor);
     }
 
@@ -1075,7 +1284,11 @@ impl MsaScope {
 
     /// A fit chosen from the toolbar or a key: now if the area size is known, else at first layout.
     pub(super) fn request_fit(&mut self, f: Fit) {
-        if self.vp.width > 0.0 { self.apply_fit(f) } else { self.pending = Some(f) }
+        if self.vp.width > 0.0 {
+            self.apply_fit(f)
+        } else {
+            self.pending = Some(f)
+        }
     }
 
     pub(super) fn pan(&mut self, dx_px: f64, dy_px: f64) {
@@ -1106,7 +1319,11 @@ impl MsaScope {
         if let Some(&r) = self.matches.first() {
             self.select_row(r);
         }
-        self.status = if q.is_empty() { SharedString::default() } else { format!("{} matches", view::group_digits(self.matches.len())).into() };
+        self.status = if q.is_empty() {
+            SharedString::default()
+        } else {
+            format!("{} matches", view::group_digits(self.matches.len())).into()
+        };
         cx.notify();
     }
 
@@ -1127,17 +1344,24 @@ impl MsaScope {
         let Some(r) = self.view_row(row) else {
             let mut rows = RangeSet::new();
             rows.add(row as u32, row as u32 + 1);
-            self.sel = Rc::new(Selection { rows, ..Default::default() });
+            self.sel = Rc::new(Selection {
+                rows,
+                ..Default::default()
+            });
             self.status = "That sequence is hidden by the row filter".into();
             return;
         };
-        self.sel = Rc::new(Selection { rows: self.rows_set(r..=r), ..Default::default() });
+        self.sel = Rc::new(Selection {
+            rows: self.rows_set(r..=r),
+            ..Default::default()
+        });
         self.anchor = Some((r, self.cursor.map_or(0, |c| c.1)));
         if self.vp.ch < NAME_ROW_MIN {
             self.fit = None;
             self.set_scale(self.vp.cw, view::LETTERS_CH, None);
         }
-        let visible = self.vp.row0 <= r as f64 && (r as f64) < self.vp.row0 + self.vp.height / self.vp.ch - 1.0;
+        let visible = self.vp.row0 <= r as f64
+            && (r as f64) < self.vp.row0 + self.vp.height / self.vp.ch - 1.0;
         if !visible {
             self.center_on(Some(r), None);
         }
@@ -1146,7 +1370,12 @@ impl MsaScope {
     fn step_bench(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(b) = &mut self.bench else { return };
         // Wait for the file, the window size, and a tree and layout still being built.
-        if self.data.is_none() || self.vp.width <= 0.0 || self.pending.is_some() || self.tree_loading || self.layout_pending {
+        if self.data.is_none()
+            || self.vp.width <= 0.0
+            || self.pending.is_some()
+            || self.tree_loading
+            || self.layout_pending
+        {
             window.request_animation_frame();
             return;
         }
@@ -1180,7 +1409,8 @@ impl MsaScope {
         }
         let b = self.bench.as_mut().unwrap();
         if let Some(last) = b.last {
-            b.intervals.push(now.duration_since(last).as_secs_f64() * 1000.0);
+            b.intervals
+                .push(now.duration_since(last).as_secs_f64() * 1000.0);
         }
         b.last = Some(now);
         b.frame += 1;
@@ -1190,7 +1420,12 @@ impl MsaScope {
             let stats = |v: &mut Vec<f64>| {
                 v.sort_by(f64::total_cmp);
                 let q = |p: f64| v[((v.len() - 1) as f64 * p) as usize];
-                format!("median {:.1} ms, p95 {:.1} ms, max {:.1} ms", q(0.5), q(0.95), q(1.0))
+                format!(
+                    "median {:.1} ms, p95 {:.1} ms, max {:.1} ms",
+                    q(0.5),
+                    q(0.95),
+                    q(1.0)
+                )
             };
             let slow = iv.iter().filter(|&&x| x > 25.0).count();
             eprintln!(
@@ -1214,7 +1449,11 @@ impl MsaScope {
     }
 
     fn chrome_key(&self, window: &Window, cx: &App) -> ChromeKey {
-        let file = self.path.as_ref().and_then(|p| p.file_name()).map(|n| SharedString::from(n.to_string_lossy().into_owned()));
+        let file = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| SharedString::from(n.to_string_lossy().into_owned()));
         ChromeKey {
             file,
             loading: self.loading().is_some(),
@@ -1246,7 +1485,6 @@ impl MsaScope {
             hidden_tracks: self.hidden_tracks.clone(),
         }
     }
-
 }
 
 impl Render for MsaScope {
@@ -1285,7 +1523,8 @@ impl Render for MsaScope {
             if chrome_changed {
                 div().flex_none().w_full().h(h).child(v).into_any_element()
             } else {
-                v.cached(StyleRefinement::default().flex_none().w_full().h(h)).into_any_element()
+                v.cached(StyleRefinement::default().flex_none().w_full().h(h))
+                    .into_any_element()
             }
         };
         let title = chrome(&self.title_bar, TITLE_BAR_HEIGHT);
@@ -1311,16 +1550,34 @@ impl Render for MsaScope {
                         cx.listener(move |v, ev: &MouseDownEvent, _, cx| {
                             cx.stop_propagation();
                             v.drag = Some(if tree {
-                                Drag::TreeSplitter { x0: ev.position.x, w0: v.settings.tree_width }
+                                Drag::TreeSplitter {
+                                    x0: ev.position.x,
+                                    w0: v.settings.tree_width,
+                                }
                             } else {
-                                Drag::Splitter { x0: ev.position.x, w0: v.settings.name_width }
+                                Drag::Splitter {
+                                    x0: ev.position.x,
+                                    w0: v.settings.name_width,
+                                }
                             });
                             cx.notify();
                         }),
                     )
             };
-            let tree_split = self.show_tree().then(|| splitter("tree-splitter", tree_w, matches!(self.drag, Some(Drag::TreeSplitter { .. })), true));
-            let name_split = splitter("name-splitter", tree_w + name_w, matches!(self.drag, Some(Drag::Splitter { .. })), false);
+            let tree_split = self.show_tree().then(|| {
+                splitter(
+                    "tree-splitter",
+                    tree_w,
+                    matches!(self.drag, Some(Drag::TreeSplitter { .. })),
+                    true,
+                )
+            });
+            let name_split = splitter(
+                "name-splitter",
+                tree_w + name_w,
+                matches!(self.drag, Some(Drag::Splitter { .. })),
+                false,
+            );
             let alignment = div()
                 .id("alignment")
                 .relative()
@@ -1336,13 +1593,24 @@ impl Render for MsaScope {
                         cx.notify();
                     }
                 }))
+                .key_context("Alignment")
                 .track_focus(&self.focus)
+                .on_action(cx.listener(|v, _: &menu::CopySelection, window, cx| {
+                    v.copy(true, window, cx);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|v, _: &menu::SelectAllCells, _, cx| {
+                    v.select_all();
+                    cx.notify();
+                }))
                 .on_key_down(cx.listener(Self::on_key))
                 .on_scroll(cx.listener(Self::on_scroll))
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                 .child(self.alignment_canvas(window, cx))
                 // The tree's context menu, over the tree panel.
-                .when(self.show_tree(), |d| d.child(self.tree_menu_overlay(tree_w, cx)))
+                .when(self.show_tree(), |d| {
+                    d.child(self.tree_menu_overlay(tree_w, cx))
+                })
                 // The name panel's context menu (the reference row).
                 .child(self.name_menu_overlay(tree_w, name_w, cx))
                 // The splitters, over the right edges of the tree and name panels.
@@ -1359,7 +1627,9 @@ impl Render for MsaScope {
                 .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
                 .on_mouse_move(cx.listener(Self::on_mouse_move))
                 .child(alignment)
-                .when(self.show_overview(), |d| d.child(self.render_overview(window, cx)))
+                .when(self.show_overview(), |d| {
+                    d.child(self.render_overview(window, cx))
+                })
                 .into_any_element()
         } else {
             self.render_empty(window, cx).into_any_element()
@@ -1370,7 +1640,21 @@ impl Render for MsaScope {
             .size_full()
             .bg(t.bg)
             .text_color(t.fg)
-            .on_mouse_move(cx.listener(|v, ev: &MouseMoveEvent, _, _| v.last_pointer.set(ev.position)))
+            .on_mouse_move(
+                cx.listener(|v, ev: &MouseMoveEvent, _, _| v.last_pointer.set(ev.position)),
+            )
+            .on_action(cx.listener(|v, _: &menu::Open, _, cx| v.prompt_open(cx)))
+            .on_action(cx.listener(|v, _: &menu::OpenSample, _, cx| v.open_sample(cx)))
+            .on_action(cx.listener(|v, _: &menu::CloseFile, _, cx| v.close(cx)))
+            .on_action(cx.listener(|_, _: &menu::CloseWindow, window, _| window.remove_window()))
+            .on_action(cx.listener(|v, _: &menu::ExportSelection, _, cx| {
+                if v.data.is_some() {
+                    v.prompt_export(!v.sel.is_empty(), cx);
+                }
+            }))
+            .on_action(
+                cx.listener(|_, _: &menu::About, window, cx| super::menu::show_about(window, cx)),
+            )
             .on_key_down(cx.listener(|v, ev: &KeyDownEvent, window, cx| {
                 let k = &ev.keystroke;
                 let ctrl = k.modifiers.control || k.modifiers.platform;
@@ -1384,10 +1668,14 @@ impl Render for MsaScope {
                     // The same shortcuts as on the alignment, while a text box has the focus.
                     _ if v.data.is_none() => return,
                     "g" if ctrl => v.jump.update(cx, |s, cx| s.focus(window, cx)),
-                    "f" if ctrl && k.modifiers.shift => v.set_find_mode(FindMode::Motif, window, cx),
+                    "f" if ctrl && k.modifiers.shift => {
+                        v.set_find_mode(FindMode::Motif, window, cx)
+                    }
                     "f" if ctrl => v.search.update(cx, |s, cx| s.focus(window, cx)),
                     "l" if ctrl => v.toggle_filter_bar(window, cx),
-                    "f3" if v.motif.is_some() => v.next_hit(if k.modifiers.shift { -1 } else { 1 }, cx),
+                    "f3" if v.motif.is_some() => {
+                        v.next_hit(if k.modifiers.shift { -1 } else { 1 }, cx)
+                    }
                     _ => return,
                 }
                 cx.notify();
@@ -1399,7 +1687,12 @@ impl Render for MsaScope {
             }))
             .child(title)
             .child(tools)
-            .when(self.data.is_some() && self.loading().is_none() && (self.filter_bar || self.filter.is_active()), |d| d.child(self.render_filter_bar(cx)))
+            .when(
+                self.data.is_some()
+                    && self.loading().is_none()
+                    && (self.filter_bar || self.filter.is_active()),
+                |d| d.child(self.render_filter_bar(cx)),
+            )
             .child(main)
             .child(self.render_status_bar(cx))
             .when_some(self.render_hover_card(window, cx), |d, card| d.child(card))

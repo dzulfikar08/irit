@@ -35,7 +35,11 @@ pub struct FigOptions {
 
 impl Default for FigOptions {
     fn default() -> Self {
-        FigOptions { names: true, ruler: true, scale: 2 }
+        FigOptions {
+            names: true,
+            ruler: true,
+            scale: 2,
+        }
     }
 }
 
@@ -75,25 +79,58 @@ fn fonts(ui: &str, mono: &str) -> Arc<usvg::fontdb::Database> {
 }
 
 impl MsaScope {
-    pub(super) fn export_figure(&mut self, region: Region, kind: Kind, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn export_figure(
+        &mut self,
+        region: Region,
+        kind: Kind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(d) = self.data.clone() else { return };
         let layout = self.layout.clone();
         let map = layout.as_deref().and_then(|l| l.map.as_ref());
         let rview = layout.as_deref().and_then(|l| l.rows.as_ref());
         let (nrows, ncols) = self.dims();
         let opts = self.fig;
-        let names_w = if opts.names { self.settings.name_width as f64 } else { 0.0 };
+        let names_w = if opts.names {
+            self.settings.name_width as f64
+        } else {
+            0.0
+        };
         // The annotation tracks and the pinned row as shown in the window, with their labels.
-        let track_rows: Vec<(HeaderRow, String)> =
-            self.header_bands().into_iter().filter(|b| matches!(b.row, HeaderRow::Gc(_) | HeaderRow::Gr(_) | HeaderRow::Pinned)).map(|b| (b.row, self.band_label(b.row).to_string())).collect();
-        let tracks_h: f64 = track_rows.iter().map(|(r, _)| if *r == HeaderRow::Pinned { export::PIN_PX } else { export::TRACK_PX }).sum();
+        let track_rows: Vec<(HeaderRow, String)> = self
+            .header_bands()
+            .into_iter()
+            .filter(|b| {
+                matches!(
+                    b.row,
+                    HeaderRow::Gc(_) | HeaderRow::Gr(_) | HeaderRow::Pinned
+                )
+            })
+            .map(|b| (b.row, self.band_label(b.row).to_string()))
+            .collect();
+        let tracks_h: f64 = track_rows
+            .iter()
+            .map(|(r, _)| {
+                if *r == HeaderRow::Pinned {
+                    export::PIN_PX
+                } else {
+                    export::TRACK_PX
+                }
+            })
+            .sum();
         let ref_row = self.ref_row.clone();
         let ruler_ref = self.ref_opts.ruler;
         // Rows, alignment columns, view columns (View only) and the cell size.
         let (rows, cols, mut cw, mut ch): (Vec<RowRef>, Vec<usize>, f64, f64) = match region {
             Region::View => {
                 let (r, c) = self.vp.visible(nrows, ncols);
-                (r.map(RowRef::View).collect(), c.map(|v| aln_col(map, v)).collect(), self.vp.cw, self.vp.ch)
+                (
+                    r.map(RowRef::View).collect(),
+                    c.map(|v| aln_col(map, v)).collect(),
+                    self.vp.cw,
+                    self.vp.ch,
+                )
             }
             Region::Selection => {
                 if self.sel.is_empty() {
@@ -102,16 +139,36 @@ impl MsaScope {
                     return;
                 }
                 let sel = self.sel.clone();
-                let order: Vec<u32> = rview.map_or_else(|| (0..d.aln.rows() as u32).collect(), RowView::expanded);
-                let rows = order.into_iter().filter(|&r| sel.row_selected(r)).map(RowRef::Seq).collect();
+                let order: Vec<u32> =
+                    rview.map_or_else(|| (0..d.aln.rows() as u32).collect(), RowView::expanded);
+                let rows = order
+                    .into_iter()
+                    .filter(|&r| sel.row_selected(r))
+                    .map(RowRef::Seq)
+                    .collect();
                 let shown = |c: usize| map.is_none_or(|m| m.view_of(c).is_ok());
-                let cols = (0..d.aln.cols()).filter(|&c| sel.col_selected(c as u32) && shown(c)).collect();
-                (rows, cols, self.vp.cw.max(view::LETTERS_CW), self.vp.ch.max(view::LETTERS_CH))
+                let cols = (0..d.aln.cols())
+                    .filter(|&c| sel.col_selected(c as u32) && shown(c))
+                    .collect();
+                (
+                    rows,
+                    cols,
+                    self.vp.cw.max(view::LETTERS_CW),
+                    self.vp.ch.max(view::LETTERS_CH),
+                )
             }
         };
         let s = opts.scale.max(1) as f64;
         let check = |cw: f64, ch: f64| {
-            let (w, h) = export::size(names_w, opts.ruler, tracks_h, rows.len(), cols.len(), cw, ch);
+            let (w, h) = export::size(
+                names_w,
+                opts.ruler,
+                tracks_h,
+                rows.len(),
+                cols.len(),
+                cw,
+                ch,
+            );
             match kind {
                 Kind::Svg => export::check_svg(rows.len(), cols.len()),
                 Kind::Png => export::check_png((w * s).ceil() as usize, (h * s).ceil() as usize),
@@ -135,10 +192,17 @@ impl MsaScope {
                 RowRef::Seq(a) => d.aln.names[a as usize].clone(),
                 RowRef::View(v) => match rview.and_then(|m| m.clade_of(v).map(|k| (m, k))) {
                     Some((m, k)) => {
-                        let node = layout.as_deref().and_then(|l| l.tree.as_ref()).map(|t| t.collapsed[k]);
+                        let node = layout
+                            .as_deref()
+                            .and_then(|l| l.tree.as_ref())
+                            .map(|t| t.collapsed[k]);
                         match (node, &tree) {
                             (Some(n), Some(ix)) => clade_name(ix, n, &d.aln.names),
-                            _ => format!("{} … ({} sequences)", d.aln.names[m.members(k)[0] as usize], m.members(k).len()),
+                            _ => format!(
+                                "{} … ({} sequences)",
+                                d.aln.names[m.members(k)[0] as usize],
+                                m.members(k).len()
+                            ),
                         }
                     }
                     None => d.aln.names[rview.map_or(v, |m| m.rows[v] as usize)].clone(),
@@ -148,15 +212,36 @@ impl MsaScope {
         let labels: Vec<String> = rows.iter().map(|&r| label(r)).collect();
         let t = tokens(cx);
         let theme = cx.theme();
-        let (ui, mono) = (theme.font_family.to_string(), theme.mono_font_family.to_string());
+        let (ui, mono) = (
+            theme.font_family.to_string(),
+            theme.mono_font_family.to_string(),
+        );
         let (fg, muted) = (hsla_rgb(t.fg), hsla_rgb(t.fg_muted));
         let tile_theme = t.tile_theme();
         let mode = self.mode;
         let first_view_col = self.vp.visible(nrows, ncols).1.start;
-        let dir = self.path.as_deref().and_then(|p| p.parent()).map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        let stem = self.path.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).map_or("alignment", |n| n.split('.').next().unwrap_or(n)).to_string();
+        let dir = self
+            .path
+            .as_deref()
+            .and_then(|p| p.parent())
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let stem = self
+            .path
+            .as_deref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .map_or("alignment", |n| n.split('.').next().unwrap_or(n))
+            .to_string();
         let ext = if kind == Kind::Png { "png" } else { "svg" };
-        let name = format!("{stem}.{}.{ext}", if region == Region::View { "view" } else { "selection" });
+        let name = format!(
+            "{stem}.{}.{ext}",
+            if region == Region::View {
+                "view"
+            } else {
+                "selection"
+            }
+        );
         let rx = cx.prompt_for_new_path(&dir, Some(&name));
         let _ = window;
         cx.spawn(async move |this, cx| {
@@ -169,19 +254,36 @@ impl MsaScope {
                 let colors = Colors::new(d.aln.alphabet(), mode, tile_theme, letters);
                 let map = layout.as_deref().and_then(|l| l.map.as_ref());
                 let rview = layout.as_deref().and_then(|l| l.rows.as_ref());
-                let base = layout.as_deref().and_then(|l| l.base.as_deref()).map(|b| &b.codes[..]);
+                let base = layout
+                    .as_deref()
+                    .and_then(|l| l.base.as_deref())
+                    .map(|b| &b.codes[..]);
                 let fig_rows: Vec<FigRow> = rows
                     .iter()
                     .zip(labels)
-                    .map(|(&r, label)| FigRow { src: match r { RowRef::View(v) => row_src(rview, v), RowRef::Seq(a) => RowSrc::Seq(a as usize) }, label })
+                    .map(|(&r, label)| FigRow {
+                        src: match r {
+                            RowRef::View(v) => row_src(rview, v),
+                            RowRef::Seq(a) => RowSrc::Seq(a as usize),
+                        },
+                        label,
+                    })
                     .collect();
                 let tracks: Vec<FigTrack> = track_rows
                     .into_iter()
                     .filter_map(|(row, label)| {
                         let band = match row {
-                            HeaderRow::Gc(i) => TrackBand::Annot { data: &d.aln.gc[i].data, kind: d.aln.gc[i].kind() },
-                            HeaderRow::Gr(i) => TrackBand::Annot { data: &d.aln.gr[i].data, kind: TrackKind::of(&d.aln.gr[i].tag) },
-                            HeaderRow::Pinned => TrackBand::Pinned { codes: &ref_row.as_deref()?.codes },
+                            HeaderRow::Gc(i) => TrackBand::Annot {
+                                data: &d.aln.gc[i].data,
+                                kind: d.aln.gc[i].kind(),
+                            },
+                            HeaderRow::Gr(i) => TrackBand::Annot {
+                                data: &d.aln.gr[i].data,
+                                kind: TrackKind::of(&d.aln.gr[i].tag),
+                            },
+                            HeaderRow::Pinned => TrackBand::Pinned {
+                                codes: &ref_row.as_deref()?.codes,
+                            },
                             _ => return None,
                         };
                         Some(FigTrack { band, label })
@@ -214,32 +316,85 @@ impl MsaScope {
                     Kind::Png => {
                         let (w, h) = fig.size();
                         let (pw, ph) = ((w * s).ceil() as u32, (h * s).ceil() as u32);
-                        let mut pix = tiny_skia::Pixmap::new(pw, ph).ok_or_else(|| std::io::Error::other("image too large"))?;
+                        let mut pix = tiny_skia::Pixmap::new(pw, ph)
+                            .ok_or_else(|| std::io::Error::other("image too large"))?;
                         let bg = tile_theme.bg;
-                        pix.fill(tiny_skia::Color::from_rgba8((bg >> 16) as u8, (bg >> 8) as u8, bg as u8, 255));
+                        pix.fill(tiny_skia::Color::from_rgba8(
+                            (bg >> 16) as u8,
+                            (bg >> 8) as u8,
+                            bg as u8,
+                            255,
+                        ));
                         // Cells, drawn as the tiles are, under the ruler and the tracks.
-                        let (ox, oy) = ((names_w * s).round() as usize, ((fig.tracks_top() + fig.tracks_h()) * s).round() as usize);
+                        let (ox, oy) = (
+                            (names_w * s).round() as usize,
+                            ((fig.tracks_top() + fig.tracks_h()) * s).round() as usize,
+                        );
                         let (cwp, chp) = (cw * s, ch * s);
-                        let (cw_px, ch_px) = (((nc as f64) * cwp).round() as usize, ((nr as f64) * chp).round() as usize);
+                        let (cw_px, ch_px) = (
+                            ((nc as f64) * cwp).round() as usize,
+                            ((nr as f64) * chp).round() as usize,
+                        );
                         // The view's own layout, or one of just the selected rows and columns.
                         let (sub_rows, sub_map, own);
                         let (scene, x0, y0) = match rows.first() {
                             Some(RowRef::View(v0)) => {
-                                let scene = Scene { aln: &d.aln, stats: &d.stats, pyramid: layout.as_deref().map_or(&d.pyramid, |l| &l.pyramid), map, rows: rview, colors: &colors, base };
-                                (scene, (first_view_col as f64 * cwp).round() as i64, (*v0 as f64 * chp).round() as i64)
+                                let scene = Scene {
+                                    aln: &d.aln,
+                                    stats: &d.stats,
+                                    pyramid: layout.as_deref().map_or(&d.pyramid, |l| &l.pyramid),
+                                    map,
+                                    rows: rview,
+                                    colors: &colors,
+                                    base,
+                                };
+                                (
+                                    scene,
+                                    (first_view_col as f64 * cwp).round() as i64,
+                                    (*v0 as f64 * chp).round() as i64,
+                                )
                             }
                             _ => {
-                                let seqs: Vec<u32> = rows.iter().map(|r| if let RowRef::Seq(a) = r { *a } else { 0 }).collect();
+                                let seqs: Vec<u32> = rows
+                                    .iter()
+                                    .map(|r| if let RowRef::Seq(a) = r { *a } else { 0 })
+                                    .collect();
                                 let n = seqs.len() as u32;
-                                sub_rows = RowView::new(seqs, d.aln.rows(), n, Vec::new(), Vec::new(), Vec::new());
-                                sub_map = ColumnMap { visible: cols.iter().map(|&c| c as u32).collect() };
+                                sub_rows = RowView::new(
+                                    seqs,
+                                    d.aln.rows(),
+                                    n,
+                                    Vec::new(),
+                                    Vec::new(),
+                                    Vec::new(),
+                                );
+                                sub_map = ColumnMap {
+                                    visible: cols.iter().map(|&c| c as u32).collect(),
+                                };
                                 let pyramid = if cwp >= 1.0 && chp >= 1.0 {
                                     &d.pyramid
                                 } else {
-                                    own = Pyramid::build_mapped(&d.aln, base.unwrap_or(&d.stats.consensus), Some(&sub_map.visible), Some(&sub_rows));
+                                    own = Pyramid::build_mapped(
+                                        &d.aln,
+                                        base.unwrap_or(&d.stats.consensus),
+                                        Some(&sub_map.visible),
+                                        Some(&sub_rows),
+                                    );
                                     &own
                                 };
-                                (Scene { aln: &d.aln, stats: &d.stats, pyramid, map: Some(&sub_map), rows: Some(&sub_rows), colors: &colors, base }, 0, 0)
+                                (
+                                    Scene {
+                                        aln: &d.aln,
+                                        stats: &d.stats,
+                                        pyramid,
+                                        map: Some(&sub_map),
+                                        rows: Some(&sub_rows),
+                                        colors: &colors,
+                                        base,
+                                    },
+                                    0,
+                                    0,
+                                )
                             }
                         };
                         let data = pix.data_mut();
@@ -252,7 +407,12 @@ impl MsaScope {
                                         continue;
                                     }
                                     let o = ((y + j) * pw as usize + x + i) * 4;
-                                    data[o..o + 4].copy_from_slice(&[src[k + 2], src[k + 1], src[k], 255]);
+                                    data[o..o + 4].copy_from_slice(&[
+                                        src[k + 2],
+                                        src[k + 1],
+                                        src[k],
+                                        255,
+                                    ]);
                                 }
                             }
                         };
@@ -268,27 +428,54 @@ impl MsaScope {
                                 .iter()
                                 .map(|t| {
                                     let band = match t.band {
-                                        TrackBand::Annot { data, kind } => Band::Annot { data, kind },
+                                        TrackBand::Annot { data, kind } => {
+                                            Band::Annot { data, kind }
+                                        }
                                         TrackBand::Pinned { codes } => Band::Row { codes },
                                     };
-                                    let b = BandSpec { y, h: t.height() as f32, band };
+                                    let b = BandSpec {
+                                        y,
+                                        h: t.height() as f32,
+                                        band,
+                                    };
                                     y += t.height() as f32;
                                     b
                                 })
                                 .collect();
-                            let strip = Strip { scene: &scene, bands, identity_ref: None, bg: tile_theme.bg, annot: AnnotColors::new(&tile_theme), scale: s };
+                            let strip = Strip {
+                                scene: &scene,
+                                bands,
+                                identity_ref: None,
+                                bg: tile_theme.bg,
+                                annot: AnnotColors::new(&tile_theme),
+                                scale: s,
+                            };
                             let sh = strip.height_dev();
                             let mut sbuf = vec![0u8; cw_px * sh * 4];
                             strip.render(cwp, x0, cw_px, &mut sbuf);
-                            blit(&sbuf, cw_px, sh, ox, (fig.tracks_top() * s).round() as usize);
+                            blit(
+                                &sbuf,
+                                cw_px,
+                                sh,
+                                ox,
+                                (fig.tracks_top() * s).round() as usize,
+                            );
                         }
                         // Names, ruler and letters on top.
                         let mut svg = Vec::new();
                         fig.svg(false, &mut svg)?;
-                        let mut opt = usvg::Options { fontdb: fonts(&ui, &mono), ..Default::default() };
+                        let mut opt = usvg::Options {
+                            fontdb: fonts(&ui, &mono),
+                            ..Default::default()
+                        };
                         opt.font_family = ui.clone();
-                        let tree = usvg::Tree::from_data(&svg, &opt).map_err(std::io::Error::other)?;
-                        resvg::render(&tree, tiny_skia::Transform::from_scale(s as f32, s as f32), &mut pix.as_mut());
+                        let tree =
+                            usvg::Tree::from_data(&svg, &opt).map_err(std::io::Error::other)?;
+                        resvg::render(
+                            &tree,
+                            tiny_skia::Transform::from_scale(s as f32, s as f32),
+                            &mut pix.as_mut(),
+                        );
                         pix.encode_png().map_err(std::io::Error::other)?
                     }
                 };
@@ -304,8 +491,21 @@ impl MsaScope {
             this.update(cx, |v, cx| {
                 v.status = match result {
                     Ok((bytes, secs)) => {
-                        eprintln!("msascope: {} {} rows × {} columns, {} bytes, {secs:.3} s", path.display(), nr, nc, bytes);
-                        format!("Wrote {} ({} rows × {} columns, {:.1} MB, {secs:.2} s)", path.display(), view::group_digits(nr), view::group_digits(nc), bytes as f64 / 1e6).into()
+                        eprintln!(
+                            "msascope: {} {} rows × {} columns, {} bytes, {secs:.3} s",
+                            path.display(),
+                            nr,
+                            nc,
+                            bytes
+                        );
+                        format!(
+                            "Wrote {} ({} rows × {} columns, {:.1} MB, {secs:.2} s)",
+                            path.display(),
+                            view::group_digits(nr),
+                            view::group_digits(nc),
+                            bytes as f64 / 1e6
+                        )
+                        .into()
                     }
                     Err(e) => format!("Couldn't write {}: {e}", path.display()).into(),
                 };

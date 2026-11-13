@@ -55,7 +55,12 @@ impl ColumnStats {
                     }
                 }
                 for (i, h) in acc.as_chunks::<NCODES>().0.iter().enumerate() {
-                    let (best, &cnt) = h.iter().enumerate().skip(1).max_by_key(|&(i, &v)| (v, std::cmp::Reverse(i))).unwrap();
+                    let (best, &cnt) = h
+                        .iter()
+                        .enumerate()
+                        .skip(1)
+                        .max_by_key(|&(i, &v)| (v, std::cmp::Reverse(i)))
+                        .unwrap();
                     if cnt > 0 {
                         cons[i] = best as u8;
                     }
@@ -84,7 +89,10 @@ mod tests {
         assert_eq!(cons, b"AG-A"); // T/A tie in the last column goes to the lower code (A)
         assert_eq!(s.identity, [0.75, 0.75, 0.0, 0.5]);
         assert_eq!(s.gaps, [0.0, 0.0, 1.0, 0.0]);
-        assert_eq!(s.shares[0][a.alphabet().encode(b'A').unwrap() as usize], 191); // 3 of 4
+        assert_eq!(
+            s.shares[0][a.alphabet().encode(b'A').unwrap() as usize],
+            191
+        ); // 3 of 4
         assert_eq!(s.shares[2][GAP as usize], 255);
         assert!(s.clustal.iter().all(|&m| m == 0)); // DNA
     }
@@ -93,7 +101,11 @@ mod tests {
     fn spans_column_blocks() {
         // Columns on both sides of a block boundary, with a partial last block.
         let cols = COL_BLOCK + 3;
-        let row = |c: char| -> String { (0..cols).map(|i| if i == COL_BLOCK + 1 { c } else { 'A' }).collect() };
+        let row = |c: char| -> String {
+            (0..cols)
+                .map(|i| if i == COL_BLOCK + 1 { c } else { 'A' })
+                .collect()
+        };
         let text = format!(">a\n{}\n>b\n{}\n>c\n{}\n", row('G'), row('G'), row('-'));
         let a = parse_bytes(text.as_bytes()).unwrap();
         let s = ColumnStats::compute(&a);

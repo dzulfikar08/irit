@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use gpui_kit::*;
 
 use super::app::RefOpts;
-use super::metrics::{NAME_W_DEFAULT, NAME_W_MAX, NAME_W_MIN, TREE_W_DEFAULT, TREE_W_MAX, TREE_W_MIN};
+use super::metrics::{
+    NAME_W_DEFAULT, NAME_W_MAX, NAME_W_MIN, TREE_W_DEFAULT, TREE_W_MAX, TREE_W_MIN,
+};
 use super::palette::{DARK, LIGHT, Palette};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -93,8 +95,16 @@ pub struct FileStamp {
 impl FileStamp {
     pub fn of(path: &Path) -> Option<FileStamp> {
         let m = std::fs::metadata(path).ok()?;
-        let mtime = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-        Some(FileStamp { size: m.len(), mtime })
+        let mtime = m
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        Some(FileStamp {
+            size: m.len(),
+            mtime,
+        })
     }
 }
 
@@ -122,7 +132,16 @@ impl RefMemory {
         }
         let o = self.opts;
         let b = |x: bool| if x { '1' } else { '0' };
-        Some(format!("reference = \"{}\t{}\t{}\t{}{}{}\t{}\t{path}\"\n", self.stamp.size, self.stamp.mtime, self.row, b(o.pin), b(o.ruler), b(o.compare), self.name))
+        Some(format!(
+            "reference = \"{}\t{}\t{}\t{}{}{}\t{}\t{path}\"\n",
+            self.stamp.size,
+            self.stamp.mtime,
+            self.row,
+            b(o.pin),
+            b(o.ruler),
+            b(o.compare),
+            self.name
+        ))
     }
 
     fn parse(v: &str) -> Option<RefMemory> {
@@ -133,11 +152,25 @@ impl RefMemory {
         let flags = f.next()?.as_bytes();
         let name = f.next()?;
         let path = f.next()?;
-        if flags.len() != 3 || !flags.iter().all(|c| matches!(c, b'0' | b'1')) || name.is_empty() || path.is_empty() {
+        if flags.len() != 3
+            || !flags.iter().all(|c| matches!(c, b'0' | b'1'))
+            || name.is_empty()
+            || path.is_empty()
+        {
             return None;
         }
-        let opts = RefOpts { pin: flags[0] == b'1', ruler: flags[1] == b'1', compare: flags[2] == b'1' };
-        Some(RefMemory { path: PathBuf::from(path), stamp: FileStamp { size, mtime }, row, name: name.into(), opts })
+        let opts = RefOpts {
+            pin: flags[0] == b'1',
+            ruler: flags[1] == b'1',
+            compare: flags[2] == b'1',
+        };
+        Some(RefMemory {
+            path: PathBuf::from(path),
+            stamp: FileStamp { size, mtime },
+            row,
+            name: name.into(),
+            opts,
+        })
     }
 
     /// The row to restore in an alignment with these row names: the stored row if its name
@@ -155,7 +188,16 @@ pub const GAPPY_CHOICES: [u8; 5] = [25, 50, 75, 90, 100];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemeChoice::System, name_width: NAME_W_DEFAULT, overview: true, gappy_pct: 50, tree_width: TREE_W_DEFAULT, tree_panel: true, recent: Vec::new(), refs: Vec::new() }
+        Settings {
+            theme: ThemeChoice::System,
+            name_width: NAME_W_DEFAULT,
+            overview: true,
+            gappy_pct: 50,
+            tree_width: TREE_W_DEFAULT,
+            tree_panel: true,
+            recent: Vec::new(),
+            refs: Vec::new(),
+        }
     }
 }
 
@@ -163,12 +205,17 @@ impl Settings {
     pub fn parse(text: &str) -> Self {
         let mut s = Settings::default();
         for line in text.lines() {
-            let Some((k, v)) = line.split_once('=') else { continue };
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
             if k.trim() == "reference" {
                 // Taken as written (a name or path may start or end with spaces): one pair of
                 // quotes removed.
                 let raw = v.strip_prefix(' ').unwrap_or(v);
-                let raw = raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')).unwrap_or(raw);
+                let raw = raw
+                    .strip_prefix('"')
+                    .and_then(|r| r.strip_suffix('"'))
+                    .unwrap_or(raw);
                 if s.refs.len() < REFS_MAX
                     && let Some(m) = RefMemory::parse(raw)
                     && !s.refs.iter().any(|r| r.path == m.path)
@@ -179,7 +226,9 @@ impl Settings {
             }
             let v = v.trim().trim_matches('"');
             match k.trim() {
-                "recent" if !v.is_empty() && s.recent.len() < RECENT_MAX => s.recent.push(PathBuf::from(v)),
+                "recent" if !v.is_empty() && s.recent.len() < RECENT_MAX => {
+                    s.recent.push(PathBuf::from(v))
+                }
                 "theme" => {
                     if let Some(t) = ThemeChoice::ALL.into_iter().find(|t| t.key() == v) {
                         s.theme = t;
@@ -215,7 +264,12 @@ impl Settings {
     }
 
     pub fn to_text(&self) -> String {
-        let recent: String = self.recent.iter().filter_map(|p| p.to_str()).map(|p| format!("recent = \"{p}\"\n")).collect();
+        let recent: String = self
+            .recent
+            .iter()
+            .filter_map(|p| p.to_str())
+            .map(|p| format!("recent = \"{p}\"\n"))
+            .collect();
         let refs: String = self.refs.iter().filter_map(RefMemory::to_line).collect();
         format!(
             "# msascope settings\ntheme = \"{}\"\nname_width = {}\noverview = {}\ngappy_pct = {}\ntree_width = {}\ntree_panel = {}\n{recent}{refs}",
@@ -229,7 +283,11 @@ impl Settings {
     }
 
     fn path() -> Option<PathBuf> {
-        let env = |k: &str| std::env::var_os(k).map(PathBuf::from).filter(|p| p.is_absolute());
+        let env = |k: &str| {
+            std::env::var_os(k)
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+        };
         let base = if cfg!(target_os = "windows") {
             env("APPDATA")
         } else if cfg!(target_os = "macos") {
@@ -260,11 +318,22 @@ impl Settings {
 
     /// Remember `path`'s reference row (`Some((row, name, opts))`) first, or forget it (`None`).
     /// Any older entry for the path goes; at most [`REFS_MAX`] files are kept.
-    pub fn remember_ref(&mut self, path: &Path, stamp: FileStamp, reference: Option<(usize, String, RefOpts)>) {
+    pub fn remember_ref(
+        &mut self,
+        path: &Path,
+        stamp: FileStamp,
+        reference: Option<(usize, String, RefOpts)>,
+    ) {
         let p = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         self.refs.retain(|r| r.path != p);
         if let Some((row, name, opts)) = reference {
-            let m = RefMemory { path: p, stamp, row, name, opts };
+            let m = RefMemory {
+                path: p,
+                stamp,
+                row,
+                name,
+                opts,
+            };
             if m.to_line().is_some() {
                 self.refs.insert(0, m);
                 self.refs.truncate(REFS_MAX);
@@ -273,7 +342,9 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        Self::path().and_then(|p| std::fs::read_to_string(p).ok()).map_or_else(Settings::default, |t| Settings::parse(&t))
+        Self::path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map_or_else(Settings::default, |t| Settings::parse(&t))
     }
 
     /// Save, ignoring errors (a read-only home folder just means settings don't persist).
@@ -293,7 +364,16 @@ mod tests {
 
     #[std::prelude::v1::test]
     fn settings_round_trip_and_bad_values() {
-        let mut s = Settings { theme: ThemeChoice::Dark, name_width: 250.0, overview: false, gappy_pct: 90, tree_width: 200.0, tree_panel: false, recent: Vec::new(), refs: Vec::new() };
+        let mut s = Settings {
+            theme: ThemeChoice::Dark,
+            name_width: 250.0,
+            overview: false,
+            gappy_pct: 90,
+            tree_width: 200.0,
+            tree_panel: false,
+            recent: Vec::new(),
+            refs: Vec::new(),
+        };
         assert_eq!(Settings::parse(&s.to_text()), s);
         // Recent files: newest first, once each, at most RECENT_MAX, a path with '=' kept whole.
         for i in 0..12 {
@@ -304,47 +384,98 @@ mod tests {
         assert_eq!(s.recent[0], PathBuf::from("/data/a=b/f5.fa"));
         assert_eq!(s.recent[1], PathBuf::from("/data/a=b/f11.fa"));
         assert_eq!(Settings::parse(&s.to_text()), s);
-        let s = Settings::parse("theme = purple\nname_width = 9999\nother = 1\nno equals sign\ngappy_pct = 0\n");
-        assert_eq!(s, Settings { theme: ThemeChoice::System, name_width: NAME_W_MAX, ..Settings::default() });
+        let s = Settings::parse(
+            "theme = purple\nname_width = 9999\nother = 1\nno equals sign\ngappy_pct = 0\n",
+        );
+        assert_eq!(
+            s,
+            Settings {
+                theme: ThemeChoice::System,
+                name_width: NAME_W_MAX,
+                ..Settings::default()
+            }
+        );
         assert_eq!(Settings::parse("gappy_pct = 101").gappy_pct, 50);
-        assert_eq!(Settings::parse("name_width = nan").name_width, NAME_W_DEFAULT);
+        assert_eq!(
+            Settings::parse("name_width = nan").name_width,
+            NAME_W_DEFAULT
+        );
         assert_eq!(Settings::parse("tree_width = 5").tree_width, TREE_W_MIN);
     }
 
     #[std::prelude::v1::test]
     fn references_are_remembered_per_file_version() {
         let mut s = Settings::default();
-        let st = FileStamp { size: 1234, mtime: 1_731_400_000_123_456_789 };
-        let o = RefOpts { pin: false, ruler: true, compare: true };
+        let st = FileStamp {
+            size: 1234,
+            mtime: 1_731_400_000_123_456_789,
+        };
+        let o = RefOpts {
+            pin: false,
+            ruler: true,
+            compare: true,
+        };
         let a = Path::new("/data/x y/PF00042.sto");
         s.remember_ref(a, st, Some((3, " odd name/1-90".into(), o)));
         let t = s.to_text();
         // Paths are stored absolute (on Windows "/data/…" gains a drive).
         let abs = |p: &str| std::path::absolute(p).unwrap();
-        let line = format!("reference = \"1234\t1731400000123456789\t3\t011\t odd name/1-90\t{}\"\n", abs("/data/x y/PF00042.sto").display());
+        let line = format!(
+            "reference = \"1234\t1731400000123456789\t3\t011\t odd name/1-90\t{}\"\n",
+            abs("/data/x y/PF00042.sto").display()
+        );
         assert!(t.contains(&line), "{t}");
         let back = Settings::parse(&t);
         assert_eq!(back, s);
         let m = back.remembered_ref(a, st).unwrap();
         assert_eq!((m.row, m.name.as_str(), m.opts), (3, " odd name/1-90", o));
         // Another version of the file: not applied.
-        assert!(back.remembered_ref(a, FileStamp { size: 1234, mtime: 1 }).is_none());
-        assert!(back.remembered_ref(a, FileStamp { size: 99, ..st }).is_none());
-        assert!(back.remembered_ref(Path::new("/data/other.sto"), st).is_none());
+        assert!(
+            back.remembered_ref(
+                a,
+                FileStamp {
+                    size: 1234,
+                    mtime: 1
+                }
+            )
+            .is_none()
+        );
+        assert!(
+            back.remembered_ref(a, FileStamp { size: 99, ..st })
+                .is_none()
+        );
+        assert!(
+            back.remembered_ref(Path::new("/data/other.sto"), st)
+                .is_none()
+        );
         // The stored row if its name still matches, else a row of that name, else none.
         let names = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        assert_eq!(m.find_row(&names(&["a", "b", "c", " odd name/1-90"])), Some(3));
-        assert_eq!(m.find_row(&names(&[" odd name/1-90", "b", "c", "d"])), Some(0));
+        assert_eq!(
+            m.find_row(&names(&["a", "b", "c", " odd name/1-90"])),
+            Some(3)
+        );
+        assert_eq!(
+            m.find_row(&names(&[" odd name/1-90", "b", "c", "d"])),
+            Some(0)
+        );
         assert_eq!(m.find_row(&names(&["a", "b"])), None);
         // Setting again replaces the entry; forgetting removes it.
-        s.remember_ref(a, FileStamp { size: 1, mtime: 2 }, Some((0, "r".into(), RefOpts::default())));
+        s.remember_ref(
+            a,
+            FileStamp { size: 1, mtime: 2 },
+            Some((0, "r".into(), RefOpts::default())),
+        );
         assert_eq!(s.refs.len(), 1);
         assert!(s.remembered_ref(a, st).is_none());
         s.remember_ref(a, st, None);
         assert!(s.refs.is_empty());
         // Capped, newest first; names or paths a line can't hold are not stored.
         for i in 0..REFS_MAX + 7 {
-            s.remember_ref(Path::new(&format!("/d/f{i}.sto")), st, Some((i, format!("r{i}"), o)));
+            s.remember_ref(
+                Path::new(&format!("/d/f{i}.sto")),
+                st,
+                Some((i, format!("r{i}"), o)),
+            );
         }
         s.remember_ref(Path::new("/d/tab.sto"), st, Some((0, "a\tb".into(), o)));
         assert_eq!(s.refs.len(), REFS_MAX);
@@ -354,7 +485,17 @@ mod tests {
         let bad = "reference = \"x\t1\t0\t111\tn\t/p\"\nreference = \"1\t1\t0\t12\tn\t/p\"\nreference = \"1\t1\t0\t111\tn\"\nreference = \"5\t6\t7\t100\tn\t/ok\"\n";
         let p = Settings::parse(bad);
         assert_eq!(p.refs.len(), 1);
-        assert_eq!((p.refs[0].row, p.refs[0].opts), (7, RefOpts { pin: true, ruler: false, compare: false }));
+        assert_eq!(
+            (p.refs[0].row, p.refs[0].opts),
+            (
+                7,
+                RefOpts {
+                    pin: true,
+                    ruler: false,
+                    compare: false
+                }
+            )
+        );
     }
 
     #[std::prelude::v1::test]

@@ -19,23 +19,39 @@ pub struct CachedView<M: 'static> {
 
 impl<M: 'static> CachedView<M> {
     /// Create a view rendering `render(model)`; it re-renders whenever `model` notifies.
-    pub fn new(cx: &mut Context<M>, render: impl Fn(&mut M, &mut Window, &mut Context<M>) -> AnyElement + 'static) -> Entity<Self> {
+    pub fn new(
+        cx: &mut Context<M>,
+        render: impl Fn(&mut M, &mut Window, &mut Context<M>) -> AnyElement + 'static,
+    ) -> Entity<Self> {
         let model = cx.entity();
-        cx.new(|cx| Self { model: model.downgrade(), render: Box::new(render), _model_changes: Some(cx.observe(&model, |_, _, cx| cx.notify())) })
+        cx.new(|cx| Self {
+            model: model.downgrade(),
+            render: Box::new(render),
+            _model_changes: Some(cx.observe(&model, |_, _, cx| cx.notify())),
+        })
     }
 
     /// Like [`CachedView::new`], but it only re-renders when notified itself (or on a full
     /// redraw), not whenever `model` notifies. For a region that changes rarely while the rest of
     /// the model changes every frame.
-    pub fn manual(cx: &mut Context<M>, render: impl Fn(&mut M, &mut Window, &mut Context<M>) -> AnyElement + 'static) -> Entity<Self> {
+    pub fn manual(
+        cx: &mut Context<M>,
+        render: impl Fn(&mut M, &mut Window, &mut Context<M>) -> AnyElement + 'static,
+    ) -> Entity<Self> {
         let model = cx.entity();
-        cx.new(|_| Self { model: model.downgrade(), render: Box::new(render), _model_changes: None })
+        cx.new(|_| Self {
+            model: model.downgrade(),
+            render: Box::new(render),
+            _model_changes: None,
+        })
     }
 }
 
 impl<M: 'static> Render for CachedView<M> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render = &self.render;
-        self.model.update(cx, |model, cx| render(model, window, cx)).unwrap_or_else(|_| div().into_any_element())
+        self.model
+            .update(cx, |model, cx| render(model, window, cx))
+            .unwrap_or_else(|_| div().into_any_element())
     }
 }

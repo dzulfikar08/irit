@@ -87,7 +87,11 @@ const SAMPLES: usize = 16;
 impl Strip<'_> {
     /// Height of the strip in device pixels.
     pub fn height_dev(&self) -> usize {
-        self.bands.iter().map(|b| ((b.y + b.h) as f64 * self.scale).round() as usize).max().unwrap_or(0)
+        self.bands
+            .iter()
+            .map(|b| ((b.y + b.h) as f64 * self.scale).round() as usize)
+            .max()
+            .unwrap_or(0)
     }
 
     /// Rasterise the `w` pixels from device x `x0` of the strip at `cw` device pixels per column
@@ -98,9 +102,17 @@ impl Strip<'_> {
         let cols = s.view_cols();
         out.fill(0);
         let rect = |out: &mut [u8], i: usize, y0: f64, y1: f64, rgb: u32| {
-            let (a, b) = ((y0 * self.scale).round().max(0.0) as usize, ((y1 * self.scale).round() as usize).min(h));
+            let (a, b) = (
+                (y0 * self.scale).round().max(0.0) as usize,
+                ((y1 * self.scale).round() as usize).min(h),
+            );
             for j in a..b {
-                out[(j * w + i) * 4..][..4].copy_from_slice(&[rgb as u8, (rgb >> 8) as u8, (rgb >> 16) as u8, 255]);
+                out[(j * w + i) * 4..][..4].copy_from_slice(&[
+                    rgb as u8,
+                    (rgb >> 8) as u8,
+                    (rgb >> 16) as u8,
+                    255,
+                ]);
             }
         };
         // View columns sampled for each pixel; empty past the alignment.
@@ -137,9 +149,22 @@ impl Strip<'_> {
                         if cs.is_empty() {
                             continue;
                         }
-                        let id = cs.iter().map(|&c| self.identity_ref.map_or(s.stats.identity[c], |r| r.identity(s.stats, c))).sum::<f32>() / cs.len() as f32;
+                        let id = cs
+                            .iter()
+                            .map(|&c| {
+                                self.identity_ref
+                                    .map_or(s.stats.identity[c], |r| r.identity(s.stats, c))
+                            })
+                            .sum::<f32>()
+                            / cs.len() as f32;
                         let hq = (id as f64 * (bh - 6.0)).round();
-                        rect(out, i, y + bh - 2.0 - hq, y + bh - 2.0, if id >= 0.9 { hi } else { lo });
+                        rect(
+                            out,
+                            i,
+                            y + bh - 2.0 - hq,
+                            y + bh - 2.0,
+                            if id >= 0.9 { hi } else { lo },
+                        );
                     }
                 }
                 Band::Gaps { ink } => {
@@ -164,20 +189,35 @@ impl Strip<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn annot(&self, data: &[u8], kind: TrackKind, samples: &[Vec<usize>], y: f64, bh: f64, out: &mut [u8], rect: &Rect) {
+    fn annot(
+        &self,
+        data: &[u8],
+        kind: TrackKind,
+        samples: &[Vec<usize>],
+        y: f64,
+        bh: f64,
+        out: &mut [u8],
+        rect: &Rect,
+    ) {
         let a = &self.annot;
         let mid = y + bh / 2.0;
         match kind {
             TrackKind::Structure => {
                 // The most common class among a pixel's columns (unannotated ones only when
                 // nothing else is there).
-                let class: Vec<Ss> = samples.iter().map(|cs| majority_ss(cs.iter().map(|&c| ss_class(data[c])))).collect();
+                let class: Vec<Ss> = samples
+                    .iter()
+                    .map(|cs| majority_ss(cs.iter().map(|&c| ss_class(data[c]))))
+                    .collect();
                 // Strands end in an arrowhead this many device pixels long, when long enough.
                 let head = (5.0 * self.scale).round() as usize;
                 let mut i = 0;
                 while i < class.len() {
                     let k = class[i];
-                    let j = class[i..].iter().position(|&x| x != k).map_or(class.len(), |n| i + n);
+                    let j = class[i..]
+                        .iter()
+                        .position(|&x| x != k)
+                        .map_or(class.len(), |n| i + n);
                     for p in i..j {
                         match k {
                             Ss::Helix => rect(out, p, mid - 4.0, mid + 4.0, a.helix),
@@ -185,7 +225,13 @@ impl Strip<'_> {
                                 let d = j - 1 - p;
                                 if j - i > head && d < head {
                                     let half = (bh / 2.0 - 2.0) * (d as f64 + 0.5) / head as f64;
-                                    rect(out, p, mid - half.max(0.5), mid + half.max(0.5), a.strand);
+                                    rect(
+                                        out,
+                                        p,
+                                        mid - half.max(0.5),
+                                        mid + half.max(0.5),
+                                        a.strand,
+                                    );
                                 } else {
                                     rect(out, p, mid - 3.0, mid + 3.0, a.strand);
                                 }
@@ -201,13 +247,22 @@ impl Strip<'_> {
             }
             TrackKind::Probability => {
                 for (i, cs) in samples.iter().enumerate() {
-                    let (sum, n) = cs.iter().filter_map(|&c| pp_value(data[c])).fold((0.0f32, 0), |(s, n), v| (s + v, n + 1));
+                    let (sum, n) = cs
+                        .iter()
+                        .filter_map(|&c| pp_value(data[c]))
+                        .fold((0.0f32, 0), |(s, n), v| (s + v, n + 1));
                     if n == 0 {
                         continue;
                     }
                     let v = sum / n as f32;
                     let hq = (v as f64 * (bh - 4.0)).round().max(1.0);
-                    rect(out, i, y + bh - 2.0 - hq, y + bh - 2.0, if v >= 0.9 { a.pp_hi } else { a.pp_lo });
+                    rect(
+                        out,
+                        i,
+                        y + bh - 2.0 - hq,
+                        y + bh - 2.0,
+                        if v >= 0.9 { a.pp_hi } else { a.pp_lo },
+                    );
                 }
             }
             TrackKind::Text => {
@@ -234,7 +289,11 @@ fn majority_ss(it: impl Iterator<Item = Ss>) -> Ss {
             n[i] += 1;
         }
     }
-    let (i, &best) = n.iter().enumerate().max_by_key(|&(i, &v)| (v, std::cmp::Reverse(i))).unwrap();
+    let (i, &best) = n
+        .iter()
+        .enumerate()
+        .max_by_key(|&(i, &v)| (v, std::cmp::Reverse(i)))
+        .unwrap();
     if best == 0 { Ss::None } else { order[i] }
 }
 
@@ -267,7 +326,12 @@ pub struct TileStore<K, I, V> {
 
 impl<K, I, V> Default for TileStore<K, I, V> {
     fn default() -> Self {
-        TileStore { key: None, tiles: HashMap::new(), frame: 0, rendered: 0 }
+        TileStore {
+            key: None,
+            tiles: HashMap::new(),
+            frame: 0,
+            rendered: 0,
+        }
     }
 }
 
@@ -305,7 +369,11 @@ impl<K: PartialEq, I: Hash + Eq + Copy + Ord, V> TileStore<K, I, V> {
     where
         I: 'a,
     {
-        wanted.into_iter().filter(|i| !self.tiles.contains_key(i)).copied().collect()
+        wanted
+            .into_iter()
+            .filter(|i| !self.tiles.contains_key(i))
+            .copied()
+            .collect()
     }
 
     /// Keep the `keep` most recently used tiles; return the others (to be freed).
@@ -316,7 +384,11 @@ impl<K: PartialEq, I: Hash + Eq + Copy + Ord, V> TileStore<K, I, V> {
         let mut by_age: Vec<(u64, I)> = self.tiles.iter().map(|(k, (_, t))| (*t, *k)).collect();
         by_age.sort_unstable();
         let n = self.tiles.len() - keep;
-        by_age.into_iter().take(n).filter_map(|(_, k)| self.tiles.remove(&k).map(|e| e.0)).collect()
+        by_age
+            .into_iter()
+            .take(n)
+            .filter_map(|(_, k)| self.tiles.remove(&k).map(|e| e.0))
+            .collect()
     }
 }
 
@@ -349,14 +421,41 @@ mod tests {
         let map = ColumnMap::hiding(&a, &s, true, None).unwrap();
         assert_eq!(map.visible, [0, 1, 4, 5, 6, 7]);
         let pyr = Pyramid::build_mapped(&a, &s.consensus, Some(&map.visible), None);
-        let colors = Colors::new(a.alphabet(), ColorMode::new(Scheme::ClustalX), Theme::LIGHT, true);
-        let scene = Scene { aln: &a, stats: &s, pyramid: &pyr, map: Some(&map), rows: None, colors: &colors, base: None };
+        let colors = Colors::new(
+            a.alphabet(),
+            ColorMode::new(Scheme::ClustalX),
+            Theme::LIGHT,
+            true,
+        );
+        let scene = Scene {
+            aln: &a,
+            stats: &s,
+            pyramid: &pyr,
+            map: Some(&map),
+            rows: None,
+            colors: &colors,
+            base: None,
+        };
         let ac = AnnotColors::new(&Theme::LIGHT);
         let strip = Strip {
             scene: &scene,
             bands: vec![
-                BandSpec { y: 0.0, h: 14.0, band: Band::Annot { data: &a.gc[0].data, kind: TrackKind::Structure } },
-                BandSpec { y: 14.0, h: 14.0, band: Band::Annot { data: &a.gc[1].data, kind: TrackKind::Probability } },
+                BandSpec {
+                    y: 0.0,
+                    h: 14.0,
+                    band: Band::Annot {
+                        data: &a.gc[0].data,
+                        kind: TrackKind::Structure,
+                    },
+                },
+                BandSpec {
+                    y: 14.0,
+                    h: 14.0,
+                    band: Band::Annot {
+                        data: &a.gc[1].data,
+                        kind: TrackKind::Probability,
+                    },
+                },
             ],
             identity_ref: None,
             bg: 0x123456,
@@ -390,11 +489,35 @@ mod tests {
         let a = parse_bytes(b">r\nAAAC\n>x\nACAC\n>y\nCCAC\n").unwrap();
         let s = ColumnStats::compute(&a);
         let pyr = Pyramid::build(&a, &s.consensus);
-        let colors = Colors::new(a.alphabet(), ColorMode::new(Scheme::Nucleotide), Theme::LIGHT, true);
+        let colors = Colors::new(
+            a.alphabet(),
+            ColorMode::new(Scheme::Nucleotide),
+            Theme::LIGHT,
+            true,
+        );
         let r = Reference::new(&a, 0);
-        let scene = Scene { aln: &a, stats: &s, pyramid: &pyr, map: None, rows: None, colors: &colors, base: Some(&r.codes) };
+        let scene = Scene {
+            aln: &a,
+            stats: &s,
+            pyramid: &pyr,
+            map: None,
+            rows: None,
+            colors: &colors,
+            base: Some(&r.codes),
+        };
         let (hi, lo) = (0x00ff00, 0x0000ff);
-        let mut strip = Strip { scene: &scene, bands: vec![BandSpec { y: 0.0, h: 30.0, band: Band::Identity { hi, lo } }], identity_ref: None, bg: 0xffffff, annot: AnnotColors::new(&Theme::LIGHT), scale: 1.0 };
+        let mut strip = Strip {
+            scene: &scene,
+            bands: vec![BandSpec {
+                y: 0.0,
+                h: 30.0,
+                band: Band::Identity { hi, lo },
+            }],
+            identity_ref: None,
+            bg: 0xffffff,
+            annot: AnnotColors::new(&Theme::LIGHT),
+            scale: 1.0,
+        };
         let bar = |strip: &Strip, v: usize| {
             let mut out = vec![0u8; 4 * 30 * 4];
             strip.render(1.0, 0, 4, &mut out);

@@ -22,7 +22,13 @@ pub enum Scheme {
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 5] = [Scheme::ClustalX, Scheme::PercentIdentity, Scheme::Hydrophobicity, Scheme::Nucleotide, Scheme::Differences];
+    pub const ALL: [Scheme; 5] = [
+        Scheme::ClustalX,
+        Scheme::PercentIdentity,
+        Scheme::Hydrophobicity,
+        Scheme::Nucleotide,
+        Scheme::Differences,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -44,7 +50,11 @@ impl Scheme {
     }
 
     pub fn default_for(kind: Kind) -> Scheme {
-        if kind == Kind::Protein { Scheme::ClustalX } else { Scheme::Nucleotide }
+        if kind == Kind::Protein {
+            Scheme::ClustalX
+        } else {
+            Scheme::Nucleotide
+        }
     }
 
     /// The settings-file name.
@@ -73,7 +83,10 @@ pub struct ColorMode {
 
 impl ColorMode {
     pub fn new(scheme: Scheme) -> Self {
-        ColorMode { scheme, by_conservation: false }
+        ColorMode {
+            scheme,
+            by_conservation: false,
+        }
     }
 }
 
@@ -91,9 +104,19 @@ pub struct Theme {
 
 impl Theme {
     /// Catppuccin Latte with the magenta accent, as the GUI's light palette.
-    pub const LIGHT: Theme = Theme { dark: false, bg: 0xeff1f5, fg: 0x4c4f69, accent: 0x8839ef };
+    pub const LIGHT: Theme = Theme {
+        dark: false,
+        bg: 0xeff1f5,
+        fg: 0x4c4f69,
+        accent: 0x8839ef,
+    };
     /// Catppuccin Mocha with the magenta accent, as the GUI's dark palette.
-    pub const DARK: Theme = Theme { dark: true, bg: 0x1e1e2e, fg: 0xcdd6f4, accent: 0xcba6f7 };
+    pub const DARK: Theme = Theme {
+        dark: true,
+        bg: 0x1e1e2e,
+        fg: 0xcdd6f4,
+        accent: 0xcba6f7,
+    };
 
     /// Letter ink drawn on fills.
     pub fn ink(&self) -> u32 {
@@ -114,7 +137,11 @@ pub fn mix(a: u32, b: u32, t: f32) -> u32 {
 pub fn contrast(a: u32, b: u32) -> f32 {
     let lin = |c: u32, s: u32| {
         let v = ((c >> s) & 0xff) as f32 / 255.0;
-        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
     };
     let l = |c| 0.2126 * lin(c, 16) + 0.7152 * lin(c, 8) + 0.0722 * lin(c, 0);
     let (x, y) = (l(a), l(b));
@@ -239,7 +266,11 @@ fn hydro_anchors(theme: &Theme, letters: bool) -> (u32, u32, u32) {
 pub fn hydro_color(kd: f32, theme: &Theme, letters: bool) -> u32 {
     let (lo, mid, hi) = hydro_anchors(theme, letters);
     let t = (kd / 4.5).clamp(-1.0, 1.0);
-    if t < 0.0 { mix(mid, lo, -t) } else { mix(mid, hi, t) }
+    if t < 0.0 {
+        mix(mid, lo, -t)
+    } else {
+        mix(mid, hi, t)
+    }
 }
 
 /// Percent identity steps (more than 80, 60, 40% of the column), as mixes of the background
@@ -294,7 +325,11 @@ pub fn clustal_mask(alpha: &Alphabet, counts: &[u32; NCODES], n: u32) -> u32 {
     if alpha.kind != Kind::Protein || n == 0 {
         return 0;
     }
-    let count = |s: &[u8]| -> u64 { s.iter().map(|&b| alpha.encode(b).map_or(0, |c| counts[c as usize] as u64)).sum() };
+    let count = |s: &[u8]| -> u64 {
+        s.iter()
+            .map(|&b| alpha.encode(b).map_or(0, |c| counts[c as usize] as u64))
+            .sum()
+    };
     // share > pct%, in integers: count × 100 > pct × n
     let over = |s: &[u8], pct: u64| count(s) * 100 > pct * n as u64;
     let any85 = |s: &[u8]| s.iter().any(|&b| over(&[b], 85));
@@ -331,12 +366,17 @@ pub fn clustal_mask(alpha: &Alphabet, counts: &[u32; NCODES], n: u32) -> u32 {
 /// The legend of a scheme: swatches (letter fills of the theme) and their labels.
 pub fn legend(scheme: Scheme, kind: Kind, theme: &Theme) -> Vec<(u32, &'static str)> {
     match scheme {
-        Scheme::ClustalX if kind == Kind::Protein => {
-            Group::LEGEND.iter().map(|&(g, l)| (g.swatch(theme), l)).collect()
-        }
+        Scheme::ClustalX if kind == Kind::Protein => Group::LEGEND
+            .iter()
+            .map(|&(g, l)| (g.swatch(theme), l))
+            .collect(),
         Scheme::PercentIdentity => {
             let s = pid_steps(theme, true);
-            vec![(s[0], "More than 80%"), (s[1], "More than 60%"), (s[2], "More than 40%")]
+            vec![
+                (s[0], "More than 80%"),
+                (s[1], "More than 60%"),
+                (s[2], "More than 40%"),
+            ]
         }
         Scheme::Hydrophobicity => vec![
             (hydro_color(4.5, theme, true), "Hydrophobic"),
@@ -344,11 +384,21 @@ pub fn legend(scheme: Scheme, kind: Kind, theme: &Theme) -> Vec<(u32, &'static s
             (hydro_color(-4.5, theme, true), "Hydrophilic"),
         ],
         Scheme::Differences => {
-            let c = if kind == Kind::Protein { Group::Hydrophobic.swatch(theme) } else { nt_swatch(b'A', theme) };
-            vec![(c, "Differs from consensus"), (mix(c, theme.bg, 0.8), "Matches consensus")]
+            let c = if kind == Kind::Protein {
+                Group::Hydrophobic.swatch(theme)
+            } else {
+                nt_swatch(b'A', theme)
+            };
+            vec![
+                (c, "Differs from consensus"),
+                (mix(c, theme.bg, 0.8), "Matches consensus"),
+            ]
         }
         _ => {
-            let mut v: Vec<(u32, &'static str)> = NT_LEGEND.iter().map(|&(s, l)| (nt_swatch(s, theme), l)).collect();
+            let mut v: Vec<(u32, &'static str)> = NT_LEGEND
+                .iter()
+                .map(|&(s, l)| (nt_swatch(s, theme), l))
+                .collect();
             v.push((mix(theme.bg, theme.fg, 0.25), "Other"));
             v
         }
@@ -404,7 +454,9 @@ impl Colors {
                 let s = alpha.symbol(code as u8);
                 let c = match alpha.kind {
                     Kind::Nucleotide => nt_colors(s),
-                    Kind::Protein => Some(Group::of(s)).filter(|g| *g != Group::Other).map(Group::colors),
+                    Kind::Protein => Some(Group::of(s))
+                        .filter(|g| *g != Group::Other)
+                        .map(Group::colors),
                 };
                 if let Some(c) = c {
                     *slot = c[idx(strong)];
@@ -454,7 +506,13 @@ impl Colors {
                 if col.clustal & (1 << i) == 0 {
                     return None;
                 }
-                if Some(code) == self.cys && col.clustal & CYS_BLUE != 0 { self.hyd_blue } else if Some(code) == self.cys { self.cys_pink } else { self.base[i] }
+                if Some(code) == self.cys && col.clustal & CYS_BLUE != 0 {
+                    self.hyd_blue
+                } else if Some(code) == self.cys {
+                    self.cys_pink
+                } else {
+                    self.base[i]
+                }
             }
             Scheme::PercentIdentity => self.pid[pid_step(col.shares[i])?],
             Scheme::Hydrophobicity if self.kind == Kind::Protein => self.hydro[i],
@@ -467,7 +525,11 @@ impl Colors {
             }
             _ => self.base[i],
         };
-        Some(if self.mode.by_conservation { mix(c, self.theme.bg, (1.0 - col.identity).clamp(0.0, 1.0)) } else { c })
+        Some(if self.mode.by_conservation {
+            mix(c, self.theme.bg, (1.0 - col.identity).clamp(0.0, 1.0))
+        } else {
+            c
+        })
     }
 
     /// [`Colors::fill`], with the background where there is none.
@@ -497,14 +559,17 @@ impl Colors {
             Scheme::Differences => {
                 let base = mix(self.strong[i], bg, 0.8);
                 // sqrt so that a few differing cells in a large block are still visible.
-                let t = if diff == 0 { 0.0 } else { d.sqrt().clamp(0.25, 1.0) };
+                let t = if diff == 0 {
+                    0.0
+                } else {
+                    d.sqrt().clamp(0.25, 1.0)
+                };
                 return mix(base, self.theme.fg, t);
             }
             _ => self.strong[i],
         };
         mix(bg, hue, 0.08 + 0.72 * (1.0 - d))
     }
-
 }
 
 #[cfg(test)]
@@ -571,21 +636,42 @@ mod tests {
     /// token test).
     #[test]
     fn letters_readable_on_every_fill() {
-        let shares_all: Vec<[u8; NCODES]> = [255u8, 210, 160, 110, 0].iter().map(|&s| [s; NCODES]).collect();
+        let shares_all: Vec<[u8; NCODES]> = [255u8, 210, 160, 110, 0]
+            .iter()
+            .map(|&s| [s; NCODES])
+            .collect();
         for theme in [Theme::LIGHT, Theme::DARK] {
             let ink = theme.ink();
             for alpha in [&DNA, &RNA, &NT_MIXED, &PROTEIN] {
                 for scheme in Scheme::ALL {
                     for by_conservation in [false, true] {
-                        let colors = Colors::new(alpha, ColorMode { scheme, by_conservation }, theme, true);
+                        let colors = Colors::new(
+                            alpha,
+                            ColorMode {
+                                scheme,
+                                by_conservation,
+                            },
+                            theme,
+                            true,
+                        );
                         for shares in &shares_all {
                             for identity in [1.0, 0.6, 0.2, 0.0] {
                                 for (consensus, clustal) in [(1u8, u32::MAX), (2, !CYS_BLUE)] {
-                                    let col = Column { consensus, identity, shares, clustal };
+                                    let col = Column {
+                                        consensus,
+                                        identity,
+                                        shares,
+                                        clustal,
+                                    };
                                     for code in 1..alpha.len() as u8 {
                                         if let Some(f) = colors.fill(code, &col) {
                                             let c = contrast(f, ink);
-                                            assert!(c >= 4.5, "{scheme:?} cons={by_conservation} {alpha:?} {} dark={}: {f:06x} {c:.2}", alpha.symbol(code) as char, theme.dark);
+                                            assert!(
+                                                c >= 4.5,
+                                                "{scheme:?} cons={by_conservation} {alpha:?} {} dark={}: {f:06x} {c:.2}",
+                                                alpha.symbol(code) as char,
+                                                theme.dark
+                                            );
                                         }
                                     }
                                 }
@@ -602,9 +688,19 @@ mod tests {
     /// The spec's Clustal X fills (redesign spec §2.4) and the measured nucleotide ones.
     #[test]
     fn spec_fills() {
-        let c = Colors::new(&PROTEIN, ColorMode::new(Scheme::Hydrophobicity), Theme::LIGHT, true);
+        let c = Colors::new(
+            &PROTEIN,
+            ColorMode::new(Scheme::Hydrophobicity),
+            Theme::LIGHT,
+            true,
+        );
         let col_shares = [0u8; NCODES];
-        let col = Column { consensus: 0, identity: 1.0, shares: &col_shares, clustal: 0 };
+        let col = Column {
+            consensus: 0,
+            identity: 1.0,
+            shares: &col_shares,
+            clustal: 0,
+        };
         // the most hydrophobic residue is the orange end, the most hydrophilic the blue end
         assert_eq!(c.cell(PROTEIN.encode(b'I').unwrap(), &col), 0xF5C38A);
         assert_eq!(c.cell(PROTEIN.encode(b'R').unwrap(), &col), 0x9DBAF2);
@@ -623,7 +719,11 @@ mod tests {
                 let c = Colors::new(&PROTEIN, ColorMode::new(scheme), theme, false);
                 let code = PROTEIN.encode(b'L').unwrap();
                 let dist = |d: u8| contrast(c.density(code, d), theme.bg);
-                let mut last = if scheme == Scheme::Differences { 0.0 } else { f32::INFINITY };
+                let mut last = if scheme == Scheme::Differences {
+                    0.0
+                } else {
+                    f32::INFINITY
+                };
                 for d in (0..=255u8).step_by(15) {
                     let x = dist(d);
                     if scheme == Scheme::Differences {
@@ -643,7 +743,10 @@ mod tests {
     fn schemes_by_kind() {
         assert_eq!(Scheme::default_for(Kind::Protein), Scheme::ClustalX);
         assert_eq!(Scheme::default_for(Kind::Nucleotide), Scheme::Nucleotide);
-        assert!(!Scheme::ClustalX.applies(Kind::Nucleotide) && Scheme::Differences.applies(Kind::Nucleotide));
+        assert!(
+            !Scheme::ClustalX.applies(Kind::Nucleotide)
+                && Scheme::Differences.applies(Kind::Nucleotide)
+        );
         for s in Scheme::ALL {
             assert_eq!(Scheme::from_key(s.key()), Some(s));
         }

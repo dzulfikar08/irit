@@ -96,8 +96,19 @@ pub struct Figure<'a> {
 
 /// The size an export would have: (width, height) in px at scale 1, with `tracks_h` px of
 /// tracks under the ruler.
-pub fn size(names_w: f64, ruler: bool, tracks_h: f64, rows: usize, cols: usize, cw: f64, ch: f64) -> (f64, f64) {
-    (names_w + cols as f64 * cw, if ruler { RULER_PX } else { 0.0 } + tracks_h + rows as f64 * ch)
+pub fn size(
+    names_w: f64,
+    ruler: bool,
+    tracks_h: f64,
+    rows: usize,
+    cols: usize,
+    cw: f64,
+    ch: f64,
+) -> (f64, f64) {
+    (
+        names_w + cols as f64 * cw,
+        if ruler { RULER_PX } else { 0.0 } + tracks_h + rows as f64 * ch,
+    )
 }
 
 /// Whether an SVG of `rows` × `cols` cells may be written.
@@ -159,17 +170,34 @@ pub fn escape(s: &str) -> String {
 fn n(x: f64) -> String {
     let s = format!("{:.2}", x);
     let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s.is_empty() || s == "-0" { "0".into() } else { s.into() }
+    if s.is_empty() || s == "-0" {
+        "0".into()
+    } else {
+        s.into()
+    }
 }
 
 impl Figure<'_> {
     fn column(&self, c: usize) -> Column<'_> {
         let s = self.stats;
-        Column { consensus: self.base.map_or(s.consensus[c], |b| b[c]), identity: s.identity[c], shares: &s.shares[c], clustal: s.clustal[c] }
+        Column {
+            consensus: self.base.map_or(s.consensus[c], |b| b[c]),
+            identity: s.identity[c],
+            shares: &s.shares[c],
+            clustal: s.clustal[c],
+        }
     }
 
     pub fn size(&self) -> (f64, f64) {
-        size(self.names_w, self.ruler, self.tracks_h(), self.rows.len(), self.cols.len(), self.cw, self.ch)
+        size(
+            self.names_w,
+            self.ruler,
+            self.tracks_h(),
+            self.rows.len(),
+            self.cols.len(),
+            self.cw,
+            self.ch,
+        )
     }
 
     pub fn tracks_h(&self) -> f64 {
@@ -232,19 +260,62 @@ impl Figure<'_> {
         // Labels: track names right-aligned against the alignment; the pinned row's name on a
         // tinted strip with an accent mark and a "ref" tag.
         if self.names_w > 0.0 {
-            writeln!(out, r#"<g id="track-labels" font-family="{}" font-size="{}">"#, escape(&self.ui_font), RULER_FONT)?;
+            writeln!(
+                out,
+                r#"<g id="track-labels" font-family="{}" font-size="{}">"#,
+                escape(&self.ui_font),
+                RULER_FONT
+            )?;
             for (t, &top) in self.tracks.iter().zip(&tops) {
                 let base = top + t.height() / 2.0 + RULER_FONT * 0.35;
                 match t.band {
                     TrackBand::Annot { .. } => {
-                        writeln!(out, r#"<text x="{}" y="{}" fill="{}" text-anchor="end">{}</text>"#, n(self.names_w - 8.0), n(base), hex(self.muted), escape(&t.label))?;
+                        writeln!(
+                            out,
+                            r#"<text x="{}" y="{}" fill="{}" text-anchor="end">{}</text>"#,
+                            n(self.names_w - 8.0),
+                            n(base),
+                            hex(self.muted),
+                            escape(&t.label)
+                        )?;
                     }
                     TrackBand::Pinned { .. } => {
-                        writeln!(out, r#"<rect x="0" y="{}" width="{}" height="{}" fill="{}"/>"#, n(top), n(self.names_w), n(t.height()), hex(mix(theme.bg, theme.accent, 0.14)))?;
-                        writeln!(out, r#"<rect x="0" y="{}" width="2" height="{}" fill="{}"/>"#, n(top), n(t.height()), hex(theme.accent))?;
-                        writeln!(out, r#"<clipPath id="ref-clip"><rect x="0" y="{}" width="{}" height="{}"/></clipPath>"#, n(top), n((self.names_w - 34.0).max(0.0)), n(t.height()))?;
-                        writeln!(out, r#"<text x="8" y="{}" fill="{}" clip-path="url(#ref-clip)">{}</text>"#, n(base), hex(self.fg), escape(&t.label))?;
-                        writeln!(out, r#"<text x="{}" y="{}" fill="{}" text-anchor="end">ref</text>"#, n(self.names_w - 8.0), n(base), hex(theme.accent))?;
+                        writeln!(
+                            out,
+                            r#"<rect x="0" y="{}" width="{}" height="{}" fill="{}"/>"#,
+                            n(top),
+                            n(self.names_w),
+                            n(t.height()),
+                            hex(mix(theme.bg, theme.accent, 0.14))
+                        )?;
+                        writeln!(
+                            out,
+                            r#"<rect x="0" y="{}" width="2" height="{}" fill="{}"/>"#,
+                            n(top),
+                            n(t.height()),
+                            hex(theme.accent)
+                        )?;
+                        writeln!(
+                            out,
+                            r#"<clipPath id="ref-clip"><rect x="0" y="{}" width="{}" height="{}"/></clipPath>"#,
+                            n(top),
+                            n((self.names_w - 34.0).max(0.0)),
+                            n(t.height())
+                        )?;
+                        writeln!(
+                            out,
+                            r#"<text x="8" y="{}" fill="{}" clip-path="url(#ref-clip)">{}</text>"#,
+                            n(base),
+                            hex(self.fg),
+                            escape(&t.label)
+                        )?;
+                        writeln!(
+                            out,
+                            r#"<text x="{}" y="{}" fill="{}" text-anchor="end">ref</text>"#,
+                            n(self.names_w - 8.0),
+                            n(base),
+                            hex(theme.accent)
+                        )?;
                     }
                 }
             }
@@ -252,29 +323,59 @@ impl Figure<'_> {
         }
         if cells {
             writeln!(out, r#"<g id="track-bands" shape-rendering="crispEdges">"#)?;
-            writeln!(out, r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}"/>"#, n(x0), n(self.tracks_top()), n(width), n(self.tracks_h()), hex(theme.bg))?;
+            writeln!(
+                out,
+                r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}"/>"#,
+                n(x0),
+                n(self.tracks_top()),
+                n(width),
+                n(self.tracks_h()),
+                hex(theme.bg)
+            )?;
             for (t, &top) in self.tracks.iter().zip(&tops) {
                 self.svg_band(t, top, &ac, out)?;
             }
             writeln!(out, "</g>")?;
         }
         // The pinned row's accent line along its top.
-        if let Some((_, &top)) = self.tracks.iter().zip(&tops).find(|(t, _)| matches!(t.band, TrackBand::Pinned { .. })) {
-            writeln!(out, r#"<rect x="0" y="{}" width="{}" height="1" fill="{}"/>"#, n(top), n(x0 + width), hex(theme.accent))?;
+        if let Some((_, &top)) = self
+            .tracks
+            .iter()
+            .zip(&tops)
+            .find(|(t, _)| matches!(t.band, TrackBand::Pinned { .. }))
+        {
+            writeln!(
+                out,
+                r#"<rect x="0" y="{}" width="{}" height="1" fill="{}"/>"#,
+                n(top),
+                n(x0 + width),
+                hex(theme.accent)
+            )?;
         }
         // Characters: text tracks once columns are wide enough, the pinned row's residues at
         // letter size.
         if self.cw >= LETTER_MIN.0 {
             let small = (self.cw * 1.3).clamp(7.0, 10.5);
             let pin = (PIN_PX.min(self.cw * 1.4) * 0.75).clamp(7.0, 12.0);
-            writeln!(out, r#"<g id="track-text" font-family="{}" text-anchor="middle">"#, escape(&self.mono_font))?;
+            writeln!(
+                out,
+                r#"<g id="track-text" font-family="{}" text-anchor="middle">"#,
+                escape(&self.mono_font)
+            )?;
             for (t, &top) in self.tracks.iter().zip(&tops) {
                 let (mut on, mut off) = (String::new(), String::new());
                 let fs = match t.band {
-                    TrackBand::Annot { data, kind: TrackKind::Text } => {
+                    TrackBand::Annot {
+                        data,
+                        kind: TrackKind::Text,
+                    } => {
                         for (v, &c) in self.cols.iter().enumerate() {
                             if !is_blank(data[c]) {
-                                off += &format!(r#"<tspan x="{}">{}</tspan>"#, n(x0 + (v as f64 + 0.5) * self.cw), escape(&(data[c] as char).to_string()));
+                                off += &format!(
+                                    r#"<tspan x="{}">{}</tspan>"#,
+                                    n(x0 + (v as f64 + 0.5) * self.cw),
+                                    escape(&(data[c] as char).to_string())
+                                );
                             }
                         }
                         small
@@ -286,8 +387,16 @@ impl Figure<'_> {
                             if code == GAP {
                                 continue;
                             }
-                            let t = if self.colors.fill(code, &self.column(c)).is_some() { &mut on } else { &mut off };
-                            *t += &format!(r#"<tspan x="{}">{}</tspan>"#, n(x0 + (v as f64 + 0.5) * self.cw), escape(&(self.aln.symbol(code) as char).to_string()));
+                            let t = if self.colors.fill(code, &self.column(c)).is_some() {
+                                &mut on
+                            } else {
+                                &mut off
+                            };
+                            *t += &format!(
+                                r#"<tspan x="{}">{}</tspan>"#,
+                                n(x0 + (v as f64 + 0.5) * self.cw),
+                                escape(&(self.aln.symbol(code) as char).to_string())
+                            );
                         }
                         pin
                     }
@@ -295,7 +404,13 @@ impl Figure<'_> {
                 let y = top + t.height() / 2.0 + fs * 0.36;
                 for (spans, color) in [(on, theme.ink()), (off, self.muted)] {
                     if !spans.is_empty() {
-                        writeln!(out, r#"<text y="{}" font-size="{}" fill="{}">{spans}</text>"#, n(y), n(fs), hex(color))?;
+                        writeln!(
+                            out,
+                            r#"<text y="{}" font-size="{}" fill="{}">{spans}</text>"#,
+                            n(y),
+                            n(fs),
+                            hex(color)
+                        )?;
                     }
                 }
             }
@@ -305,11 +420,25 @@ impl Figure<'_> {
     }
 
     /// One track band's shapes, `top` px from the top: runs of equal value share a shape.
-    fn svg_band(&self, t: &FigTrack, top: f64, ac: &AnnotColors, out: &mut impl Write) -> io::Result<()> {
+    fn svg_band(
+        &self,
+        t: &FigTrack,
+        top: f64,
+        ac: &AnnotColors,
+        out: &mut impl Write,
+    ) -> io::Result<()> {
         let (x0, cw, h) = (self.names_w, self.cw, t.height());
         let mid = top + h / 2.0;
         let rect = |out: &mut dyn Write, v: usize, e: usize, y0: f64, y1: f64, rgb: u32| {
-            writeln!(out, r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}"/>"#, n(x0 + v as f64 * cw), n(y0), n((e - v) as f64 * cw), n(y1 - y0), hex(rgb))
+            writeln!(
+                out,
+                r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}"/>"#,
+                n(x0 + v as f64 * cw),
+                n(y0),
+                n((e - v) as f64 * cw),
+                n(y1 - y0),
+                hex(rgb)
+            )
         };
         // Runs of equal keys over the figure's columns.
         let runs = |key: &dyn Fn(usize) -> u32| {
@@ -332,24 +461,49 @@ impl Figure<'_> {
                     rect(out, v, e, top, top + h, rgb)?;
                 }
             }
-            TrackBand::Annot { data, kind: TrackKind::Text } => {
+            TrackBand::Annot {
+                data,
+                kind: TrackKind::Text,
+            } => {
                 for (v, e, k) in runs(&|c| !is_blank(data[c]) as u32) {
                     if k == 1 {
                         rect(out, v, e, top + 1.0, top + h - 1.0, ac.shade)?;
                     }
                 }
             }
-            TrackBand::Annot { data, kind: TrackKind::Probability } => {
+            TrackBand::Annot {
+                data,
+                kind: TrackKind::Probability,
+            } => {
                 for (v, e, k) in runs(&|c| data[c] as u32) {
                     let Some(p) = pp_value(k as u8) else { continue };
                     let hq = (p as f64 * (h - 4.0)).round().max(1.0);
-                    rect(out, v, e, top + h - 2.0 - hq, top + h - 2.0, if p >= 0.9 { ac.pp_hi } else { ac.pp_lo })?;
+                    rect(
+                        out,
+                        v,
+                        e,
+                        top + h - 2.0 - hq,
+                        top + h - 2.0,
+                        if p >= 0.9 { ac.pp_hi } else { ac.pp_lo },
+                    )?;
                 }
             }
-            TrackBand::Annot { data, kind: TrackKind::Structure } => {
+            TrackBand::Annot {
+                data,
+                kind: TrackKind::Structure,
+            } => {
                 let class = |c: usize| ss_class(data[c]);
-                let order = [Ss::None, Ss::Helix, Ss::Strand, Ss::PairOpen, Ss::PairClose, Ss::Coil];
-                for (v, e, k) in runs(&|c| order.iter().position(|&o| o == class(c)).unwrap() as u32) {
+                let order = [
+                    Ss::None,
+                    Ss::Helix,
+                    Ss::Strand,
+                    Ss::PairOpen,
+                    Ss::PairClose,
+                    Ss::Coil,
+                ];
+                for (v, e, k) in
+                    runs(&|c| order.iter().position(|&o| o == class(c)).unwrap() as u32)
+                {
                     match order[k as usize] {
                         Ss::Helix => rect(out, v, e, mid - 4.0, mid + 4.0, ac.helix)?,
                         Ss::Strand => {
@@ -357,8 +511,25 @@ impl Figure<'_> {
                             if xe - xa > ARROW_PX {
                                 let half = h / 2.0 - 2.0;
                                 let xh = xe - ARROW_PX;
-                                writeln!(out, r#"<rect x="{}" y="{}" width="{}" height="6" fill="{}"/>"#, n(xa), n(mid - 3.0), n(xh - xa), hex(ac.strand))?;
-                                writeln!(out, r#"<polygon points="{},{} {},{} {},{}" fill="{}"/>"#, n(xh), n(mid - half), n(xe), n(mid), n(xh), n(mid + half), hex(ac.strand))?;
+                                writeln!(
+                                    out,
+                                    r#"<rect x="{}" y="{}" width="{}" height="6" fill="{}"/>"#,
+                                    n(xa),
+                                    n(mid - 3.0),
+                                    n(xh - xa),
+                                    hex(ac.strand)
+                                )?;
+                                writeln!(
+                                    out,
+                                    r#"<polygon points="{},{} {},{} {},{}" fill="{}"/>"#,
+                                    n(xh),
+                                    n(mid - half),
+                                    n(xe),
+                                    n(mid),
+                                    n(xh),
+                                    n(mid + half),
+                                    hex(ac.strand)
+                                )?;
                             } else {
                                 rect(out, v, e, mid - 3.0, mid + 3.0, ac.strand)?;
                             }
@@ -392,14 +563,29 @@ impl Figure<'_> {
             n(w),
             n(h)
         )?;
-        writeln!(out, "<!-- msascope: {} rows × {} columns -->", self.rows.len(), self.cols.len())?;
+        writeln!(
+            out,
+            "<!-- msascope: {} rows × {} columns -->",
+            self.rows.len(),
+            self.cols.len()
+        )?;
         if cells {
-            writeln!(out, r#"<rect width="100%" height="100%" fill="{}"/>"#, hex(theme.bg))?;
+            writeln!(
+                out,
+                r#"<rect width="100%" height="100%" fill="{}"/>"#,
+                hex(theme.bg)
+            )?;
         }
         // Ruler: alignment column numbers on every multiple of the step, as in the window.
         if self.ruler && !self.cols.is_empty() {
             let step = tick_step(self.cw, 70.0);
-            writeln!(out, r#"<g id="ruler" font-family="{}" font-size="{}" fill="{}" text-anchor="middle">"#, escape(&self.ui_font), RULER_FONT, hex(self.muted))?;
+            writeln!(
+                out,
+                r#"<g id="ruler" font-family="{}" font-size="{}" fill="{}" text-anchor="middle">"#,
+                escape(&self.ui_font),
+                RULER_FONT,
+                hex(self.muted)
+            )?;
             let mut last = f64::NEG_INFINITY;
             for (v, num) in self.ruler_labels(step) {
                 let x = x0 + (v as f64 + 0.5) * self.cw;
@@ -409,9 +595,20 @@ impl Figure<'_> {
                     continue;
                 }
                 last = x + half;
-                writeln!(out, r#"<text x="{}" y="{}">{label}</text>"#, n(x), n(ruler_top - 8.0))?;
+                writeln!(
+                    out,
+                    r#"<text x="{}" y="{}">{label}</text>"#,
+                    n(x),
+                    n(ruler_top - 8.0)
+                )?;
                 if cells {
-                    writeln!(out, r#"<rect x="{}" y="{}" width="1" height="5" fill="{}"/>"#, n(x - 0.5), n(ruler_top - 5.0), hex(self.muted))?;
+                    writeln!(
+                        out,
+                        r#"<rect x="{}" y="{}" width="1" height="5" fill="{}"/>"#,
+                        n(x - 0.5),
+                        n(ruler_top - 5.0),
+                        hex(self.muted)
+                    )?;
                 }
             }
             writeln!(out, "</g>")?;
@@ -420,11 +617,28 @@ impl Figure<'_> {
         // Names, clipped to their column.
         if self.names_w > 0.0 && self.ch >= 4.0 {
             let fs = (self.ch * 0.75).min(12.0);
-            writeln!(out, r#"<clipPath id="names-clip"><rect x="0" y="{}" width="{}" height="{}"/></clipPath>"#, n(top), n(self.names_w - 4.0), n(h - top))?;
-            writeln!(out, r#"<g id="names" font-family="{}" font-size="{}" fill="{}" clip-path="url(#names-clip)">"#, escape(&self.ui_font), n(fs), hex(self.fg))?;
+            writeln!(
+                out,
+                r#"<clipPath id="names-clip"><rect x="0" y="{}" width="{}" height="{}"/></clipPath>"#,
+                n(top),
+                n(self.names_w - 4.0),
+                n(h - top)
+            )?;
+            writeln!(
+                out,
+                r#"<g id="names" font-family="{}" font-size="{}" fill="{}" clip-path="url(#names-clip)">"#,
+                escape(&self.ui_font),
+                n(fs),
+                hex(self.fg)
+            )?;
             for (i, r) in self.rows.iter().enumerate() {
                 let y = top + (i as f64 + 0.5) * self.ch + fs * 0.35;
-                writeln!(out, r#"<text x="4" y="{}">{}</text>"#, n(y), escape(&r.label))?;
+                writeln!(
+                    out,
+                    r#"<text x="4" y="{}">{}</text>"#,
+                    n(y),
+                    escape(&r.label)
+                )?;
             }
             writeln!(out, "</g>")?;
         }
@@ -441,7 +655,12 @@ impl Figure<'_> {
                     let c = self.cols[v];
                     let fill = self.colors.fill(buf[c], &self.column(c));
                     let mut e = v + 1;
-                    while e < self.cols.len() && self.colors.fill(buf[self.cols[e]], &self.column(self.cols[e])) == fill {
+                    while e < self.cols.len()
+                        && self
+                            .colors
+                            .fill(buf[self.cols[e]], &self.column(self.cols[e]))
+                            == fill
+                    {
                         e += 1;
                     }
                     if let Some(f) = fill {
@@ -465,7 +684,12 @@ impl Figure<'_> {
         // copies as its residues.
         if self.cw >= LETTER_MIN.0 && self.ch >= LETTER_MIN.1 {
             let fs = (self.ch.min(self.cw * 1.4) * 0.75).clamp(7.0, 16.0);
-            writeln!(out, r#"<g id="letters" font-family="{}" font-size="{}" text-anchor="middle">"#, escape(&self.mono_font), n(fs))?;
+            writeln!(
+                out,
+                r#"<g id="letters" font-family="{}" font-size="{}" text-anchor="middle">"#,
+                escape(&self.mono_font),
+                n(fs)
+            )?;
             for (i, r) in self.rows.iter().enumerate() {
                 decode(r.src, &mut buf);
                 let y = top + (i as f64 + 0.5) * self.ch + fs * 0.36;
@@ -475,13 +699,25 @@ impl Figure<'_> {
                     if code == GAP {
                         continue;
                     }
-                    let t = if self.colors.fill(code, &self.column(c)).is_some() { &mut on } else { &mut off };
+                    let t = if self.colors.fill(code, &self.column(c)).is_some() {
+                        &mut on
+                    } else {
+                        &mut off
+                    };
                     let ch = escape(&(self.aln.symbol(code) as char).to_string());
-                    *t += &format!(r#"<tspan x="{}">{ch}</tspan>"#, n(x0 + (v as f64 + 0.5) * self.cw));
+                    *t += &format!(
+                        r#"<tspan x="{}">{ch}</tspan>"#,
+                        n(x0 + (v as f64 + 0.5) * self.cw)
+                    );
                 }
                 for (spans, color) in [(on, theme.ink()), (off, self.muted)] {
                     if !spans.is_empty() {
-                        writeln!(out, r#"<text y="{}" fill="{}">{spans}</text>"#, n(y), hex(color))?;
+                        writeln!(
+                            out,
+                            r#"<text y="{}" fill="{}">{spans}</text>"#,
+                            n(y),
+                            hex(color)
+                        )?;
                     }
                 }
             }
@@ -497,12 +733,22 @@ mod tests {
     use crate::parse::parse_bytes;
     use crate::scheme::{ColorMode, Scheme, Theme};
 
-    fn fig<'a>(aln: &'a Alignment, stats: &'a ColumnStats, colors: &'a Colors, cw: f64) -> Figure<'a> {
+    fn fig<'a>(
+        aln: &'a Alignment,
+        stats: &'a ColumnStats,
+        colors: &'a Colors,
+        cw: f64,
+    ) -> Figure<'a> {
         Figure {
             aln,
             stats,
             colors,
-            rows: (0..aln.rows()).map(|r| FigRow { src: RowSrc::Seq(r), label: aln.names[r].clone() }).collect(),
+            rows: (0..aln.rows())
+                .map(|r| FigRow {
+                    src: RowSrc::Seq(r),
+                    label: aln.names[r].clone(),
+                })
+                .collect(),
             cols: vec![0, 1, 3],
             cw,
             ch: 16.0,
@@ -522,7 +768,12 @@ mod tests {
     fn svg_structure() {
         let a = parse_bytes(b">a<&b\nMK-V\n>c\nMKAV\n").unwrap();
         let s = ColumnStats::compute(&a);
-        let colors = Colors::new(a.alphabet(), ColorMode::new(Scheme::Hydrophobicity), Theme::LIGHT, true);
+        let colors = Colors::new(
+            a.alphabet(),
+            ColorMode::new(Scheme::Hydrophobicity),
+            Theme::LIGHT,
+            true,
+        );
         let f = fig(&a, &s, &colors, 12.0);
         let mut out = Vec::new();
         f.svg(true, &mut out).unwrap();
@@ -532,7 +783,8 @@ mod tests {
         assert!(svg.contains(r#"width="136" height="54""#), "{svg}");
         assert!(svg.contains("a&lt;&amp;b"));
         // Letters as text, columns 0, 1, 3 (the hidden column 2 is left out): M K V in each row.
-        let mkv = r#"<tspan x="106">M</tspan><tspan x="118">K</tspan><tspan x="130">V</tspan></text>"#;
+        let mkv =
+            r#"<tspan x="106">M</tspan><tspan x="118">K</tspan><tspan x="130">V</tspan></text>"#;
         assert_eq!(svg.matches(mkv).count(), 2, "{svg}");
         // The ruler labels column 1.
         assert!(svg.contains(">1</text>"));
@@ -545,7 +797,11 @@ mod tests {
         // Below letter size: no letters.
         let mut small = Vec::new();
         fig(&a, &s, &colors, 4.0).svg(true, &mut small).unwrap();
-        assert!(!String::from_utf8(small).unwrap().contains(r#"id="letters""#));
+        assert!(
+            !String::from_utf8(small)
+                .unwrap()
+                .contains(r#"id="letters""#)
+        );
     }
 
     #[test]
@@ -556,12 +812,29 @@ mod tests {
         .unwrap();
         assert_eq!(a.gc.len(), 3);
         let s = ColumnStats::compute(&a);
-        let colors = Colors::new(a.alphabet(), ColorMode::new(Scheme::Hydrophobicity), Theme::LIGHT, true);
+        let colors = Colors::new(
+            a.alphabet(),
+            ColorMode::new(Scheme::Hydrophobicity),
+            Theme::LIGHT,
+            true,
+        );
         let r = Reference::new(&a, 0);
         let mut f = fig(&a, &s, &colors, 12.0);
         f.cols = (0..6).collect();
-        f.tracks = a.gc.iter().map(|t| FigTrack { band: TrackBand::Annot { data: &t.data, kind: t.kind() }, label: t.tag.to_string() }).collect();
-        f.tracks.push(FigTrack { band: TrackBand::Pinned { codes: &r.codes }, label: a.names[0].clone() });
+        f.tracks =
+            a.gc.iter()
+                .map(|t| FigTrack {
+                    band: TrackBand::Annot {
+                        data: &t.data,
+                        kind: t.kind(),
+                    },
+                    label: t.tag.to_string(),
+                })
+                .collect();
+        f.tracks.push(FigTrack {
+            band: TrackBand::Pinned { codes: &r.codes },
+            label: a.names[0].clone(),
+        });
         f.ruler_ref = Some(&r);
         let svg = |f: &Figure, cells: bool| {
             let mut out = Vec::new();
@@ -573,27 +846,59 @@ mod tests {
         assert_eq!(f.tracks_h(), 58.0);
         assert!(full.contains(r#"width="172" height="112""#), "{full}");
         // Labels, as text.
-        for l in [">SS_cons</text>", ">PP_cons</text>", ">seq_cons</text>", ">ref</text>", ">s1/8-13</text>"] {
+        for l in [
+            ">SS_cons</text>",
+            ">PP_cons</text>",
+            ">seq_cons</text>",
+            ">ref</text>",
+            ">s1/8-13</text>",
+        ] {
             assert!(full.contains(l), "{l}\n{full}");
         }
         // SS_cons (top 22, middle 29): helix over columns 0–1, a strand over 2–4 ending in an
         // arrowhead 5 px long.
-        assert!(full.contains(r#"<rect x="100" y="25" width="24" height="8""#), "{full}");
-        assert!(full.contains(r#"<rect x="124" y="26" width="31" height="6""#), "{full}");
-        assert!(full.contains(r#"<polygon points="155,24 160,29 155,34""#), "{full}");
+        assert!(
+            full.contains(r#"<rect x="100" y="25" width="24" height="8""#),
+            "{full}"
+        );
+        assert!(
+            full.contains(r#"<rect x="124" y="26" width="31" height="6""#),
+            "{full}"
+        );
+        assert!(
+            full.contains(r#"<polygon points="155,24 160,29 155,34""#),
+            "{full}"
+        );
         // PP_cons (top 36): bars for 9, * and the run of two 5s; none for the dots.
         // 5 → half of the 10 px bar height, from the bottom 2 px up.
-        assert!(full.contains(r#"<rect x="124" y="43" width="24" height="5""#), "{full}");
-        assert!(full.contains(r#"<rect x="100" y="39" width="12" height="9""#), "{full}");
+        assert!(
+            full.contains(r#"<rect x="124" y="43" width="24" height="5""#),
+            "{full}"
+        );
+        assert!(
+            full.contains(r#"<rect x="100" y="39" width="12" height="9""#),
+            "{full}"
+        );
         // seq_cons (top 50): its characters as text, dots left out.
         assert!(full.contains(r#"<tspan x="106">A</tspan><tspan x="118">C</tspan><tspan x="130">x</tspan><tspan x="142">E</tspan><tspan x="154">F</tspan></text>"#), "{full}");
         // The pinned row (top 64): an accent line along its top, cells, and its residues.
-        assert!(full.contains(r#"<rect x="0" y="64" width="172" height="1""#), "{full}");
+        assert!(
+            full.contains(r#"<rect x="0" y="64" width="172" height="1""#),
+            "{full}"
+        );
         assert!(full.contains(r#"<tspan x="166">G</tspan>"#));
         // The ruler counts the reference's residues: its first (8) and 10.
-        assert!(full.contains(">8</text>") && full.contains(">10</text>") && !full.contains(">1</text>"), "{full}");
+        assert!(
+            full.contains(">8</text>")
+                && full.contains(">10</text>")
+                && !full.contains(">1</text>"),
+            "{full}"
+        );
         // Rows start under the tracks: first name at 80 + 8 + 12 × 0.35.
-        assert!(full.contains(r#"<text x="4" y="92.2">s1/8-13</text>"#), "{full}");
+        assert!(
+            full.contains(r#"<text x="4" y="92.2">s1/8-13</text>"#),
+            "{full}"
+        );
         // Text layer of a PNG: no band shapes, the same text and the pinned row's marks.
         let text = svg(&f, false);
         assert!(!text.contains("track-bands") && !text.contains("<polygon"));
@@ -603,7 +908,11 @@ mod tests {
         f.names_w = 0.0;
         f.cw = 4.0;
         let bare = svg(&f, true);
-        assert!(!bare.contains("track-labels") && !bare.contains("track-text") && bare.contains("track-bands"));
+        assert!(
+            !bare.contains("track-labels")
+                && !bare.contains("track-text")
+                && bare.contains("track-bands")
+        );
         // Without tracks nothing changes.
         f.tracks.clear();
         assert!(!svg(&f, true).contains(r#"id="tracks""#));
@@ -613,11 +922,18 @@ mod tests {
     fn limits() {
         assert!(check_svg(500, 400).is_ok());
         let e = check_svg(32_000, 700).unwrap_err();
-        assert!(e.contains("200,000 cells (this is 22,400,000") && e.contains("export a PNG"), "{e}");
+        assert!(
+            e.contains("200,000 cells (this is 22,400,000") && e.contains("export a PNG"),
+            "{e}"
+        );
         assert!(check_svg(0, 5).is_err());
         assert!(check_png(16_384, 6_000).is_ok());
         assert!(check_png(16_385, 10).is_err());
-        assert!(check_png(12_000, 12_000).unwrap_err().contains("100 megapixels"));
+        assert!(
+            check_png(12_000, 12_000)
+                .unwrap_err()
+                .contains("100 megapixels")
+        );
         assert_eq!(size(196.0, true, 0.0, 10, 20, 12.0, 16.0), (436.0, 182.0));
         assert_eq!(size(196.0, true, 30.0, 10, 20, 12.0, 16.0), (436.0, 212.0));
     }

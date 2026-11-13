@@ -30,14 +30,25 @@ fn main() -> Result<()> {
             _ => pos.push(a.as_str()),
         }
     }
-    let [rows, cols, out] = pos[..] else { bail!("{USAGE}") };
+    let [rows, cols, out] = pos[..] else {
+        bail!("{USAGE}")
+    };
     let count = |s: &str, what: &str| -> Result<usize> {
-        match s.parse::<usize>().with_context(|| format!("{what} must be a whole number"))? {
+        match s
+            .parse::<usize>()
+            .with_context(|| format!("{what} must be a whole number"))?
+        {
             0 => bail!("{what} must be at least 1"),
             n => Ok(n),
         }
     };
-    let spec = Spec { rows: count(rows, "ROWS")?, cols: count(cols, "COLS")?, kind, clades: 32, seed };
+    let spec = Spec {
+        rows: count(rows, "ROWS")?,
+        cols: count(cols, "COLS")?,
+        kind,
+        clades: 32,
+        seed,
+    };
     let write = |w: &mut dyn Write| -> Result<()> {
         let mut w = BufWriter::with_capacity(1 << 20, w);
         write_fasta(&spec, &mut w)?;

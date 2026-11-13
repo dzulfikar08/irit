@@ -70,7 +70,10 @@ pub(super) fn paint_tree(g: &TreeGeom, t: &Tokens, hits: &mut Vec<TreeHit>, wind
             }
             *c = (c.0.min(a), c.1.max(b));
         }
-        window.paint_quad(fill(Bounds::new(point(x0, y.floor()), size(x1 - x0, px(1.))), line));
+        window.paint_quad(fill(
+            Bounds::new(point(x0, y.floor()), size(x1 - x0, px(1.))),
+            line,
+        ));
     };
     let mut stack = vec![0u32];
     while let Some(n) = stack.pop() {
@@ -84,9 +87,16 @@ pub(super) fn paint_tree(g: &TreeGeom, t: &Tokens, hits: &mut Vec<TreeHit>, wind
         }
         let (xn, yn) = (g.x(n), g.y(y as f64));
         let parent = tree.nodes[n as usize].parent;
-        let xp = if parent == NONE { g.bounds.origin.x + px(TREE_PAD / 2.0) } else { g.x(parent) };
+        let xp = if parent == NONE {
+            g.bounds.origin.x + px(TREE_PAD / 2.0)
+        } else {
+            g.x(parent)
+        };
         // A collapsed clade: a triangle from the node to its deepest leaf.
-        let collapsed = b == a + 1 && g.rows.clade_of(a as usize).is_some_and(|k| g.tr.collapsed[k] == n);
+        let collapsed = b == a + 1
+            && g.rows
+                .clade_of(a as usize)
+                .is_some_and(|k| g.tr.collapsed[k] == n);
         if collapsed {
             hline(xp, xn, yn, window);
             let half = px(((g.ch * 0.42) as f32).clamp(1.5, 7.0));
@@ -107,8 +117,20 @@ pub(super) fn paint_tree(g: &TreeGeom, t: &Tokens, hits: &mut Vec<TreeHit>, wind
             if let Ok(p) = stroke.build() {
                 window.paint_path(p, t.accent);
             }
-            window.paint_quad(fill(Bounds::new(point(xn - px(2.5), yn - px(2.5)), size(px(5.), px(5.))), t.accent).corner_radii(px(2.5)));
-            hits.push(TreeHit { bounds: Bounds::new(point(xn - px(TREE_HIT), yn - half - px(2.)), size(x1 - xn + px(TREE_HIT), half * 2.0 + px(4.))), node: n });
+            window.paint_quad(
+                fill(
+                    Bounds::new(point(xn - px(2.5), yn - px(2.5)), size(px(5.), px(5.))),
+                    t.accent,
+                )
+                .corner_radii(px(2.5)),
+            );
+            hits.push(TreeHit {
+                bounds: Bounds::new(
+                    point(xn - px(TREE_HIT), yn - half - px(2.)),
+                    size(x1 - xn + px(TREE_HIT), half * 2.0 + px(4.)),
+                ),
+                node: n,
+            });
             continue;
         }
         if tree.is_leaf(n) {
@@ -120,8 +142,17 @@ pub(super) fn paint_tree(g: &TreeGeom, t: &Tokens, hits: &mut Vec<TreeHit>, wind
             // Too small to show inside: a wedge as tall as the rows it covers.
             hline(xp, xn, yn, window);
             let y0 = g.y(a as f64);
-            let wedge = Bounds::new(point(xn, y0), size((g.x_max(n) - xn).max(px(1.)), px((span as f32).max(1.))));
-            window.paint_quad(fill(wedge, Hsla { a: line.a * 0.5, ..line }));
+            let wedge = Bounds::new(
+                point(xn, y0),
+                size((g.x_max(n) - xn).max(px(1.)), px((span as f32).max(1.))),
+            );
+            window.paint_quad(fill(
+                wedge,
+                Hsla {
+                    a: line.a * 0.5,
+                    ..line
+                },
+            ));
             continue;
         }
         hline(xp, xn, yn, window);
@@ -137,8 +168,17 @@ pub(super) fn paint_tree(g: &TreeGeom, t: &Tokens, hits: &mut Vec<TreeHit>, wind
         }
         if lo.is_finite() {
             let (y0, y1) = (g.y(lo as f64).floor(), g.y(hi as f64).floor());
-            window.paint_quad(fill(Bounds::new(point(xn, y0), size(px(1.), (y1 - y0).max(px(1.)) + px(1.))), line));
-            hits.push(TreeHit { bounds: Bounds::new(point(xn - px(TREE_HIT), y0 - px(3.)), size(px(2. * TREE_HIT), y1 - y0 + px(6.))), node: n });
+            window.paint_quad(fill(
+                Bounds::new(point(xn, y0), size(px(1.), (y1 - y0).max(px(1.)) + px(1.))),
+                line,
+            ));
+            hits.push(TreeHit {
+                bounds: Bounds::new(
+                    point(xn - px(TREE_HIT), y0 - px(3.)),
+                    size(px(2. * TREE_HIT), y1 - y0 + px(6.)),
+                ),
+                node: n,
+            });
         }
     }
 }

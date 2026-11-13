@@ -1,0 +1,35 @@
+# Licence gate for msascope's dependencies (cargo deny --manifest-path msascope/Cargo.toml check licenses).
+# msascope is also sold as a Mac App Store edition under its own licence, which works because its
+# author holds all of its copyright and every dependency is permissive. A GPL or LGPL dependency
+# would end that, so anything outside this list fails CI. Adding a licence here is a decision,
+# not a fix: check what it requires for the App Store build first.
+
+[graph]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+all-features = true
+
+[licenses]
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "BSL-1.0",
+    "CC0-1.0",
+]
+exceptions = [
+    # msascope itself.
+    { allow = ["GPL-3.0-or-later"], crate = "msascope" },
+    # Pulled in by rust-embed's proc-macro (dirs-sys -> option-ext): runs at build time and isn't
+    # linked into the app. MPL-2.0 is file-level copyleft and would be fine even if it were.
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+    # GPUI's macOS build script generates C headers with it; it isn't linked into the app either.
+    { allow = ["MPL-2.0"], crate = "cbindgen" },
+]

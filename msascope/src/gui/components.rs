@@ -4,7 +4,9 @@
 #![allow(dead_code)]
 
 use gpui_kit::component::Sizable as _;
-use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariants as _};
+use gpui_kit::component::button::{
+    Button, ButtonCustomVariant, ButtonRounded, ButtonVariants as _,
+};
 use gpui_kit::*;
 
 use super::metrics::*;
@@ -29,7 +31,11 @@ pub fn kbd(keys: impl Into<SharedString>, cx: &App) -> Div {
 /// An uppercase caption used to label sections.
 pub fn section_label(text: impl Into<SharedString>, cx: &App) -> Div {
     let t = tokens(cx);
-    div().text_size(FONT_CAPTION).font_weight(FontWeight::SEMIBOLD).text_color(t.fg_dim).child(text.into().to_uppercase())
+    div()
+        .text_size(FONT_CAPTION)
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.fg_dim)
+        .child(text.into().to_uppercase())
 }
 
 /// A small round status dot.
@@ -41,10 +47,19 @@ pub fn dot(color: Hsla) -> Div {
 ///
 /// Built on GPUI Kit's `Button` so its tooltip goes through the window's tooltip overlay; give it
 /// one with [`IconButtonExt::tip`].
-pub fn icon_button(id: impl Into<ElementId>, icon: impl Into<gpui_kit::component::Icon>, active: bool, cx: &App) -> Button {
+pub fn icon_button(
+    id: impl Into<ElementId>,
+    icon: impl Into<gpui_kit::component::Icon>,
+    active: bool,
+    cx: &App,
+) -> Button {
     let t = tokens(cx);
     let colors = ButtonCustomVariant::new(cx)
-        .color(if active { t.selected } else { Hsla::transparent_black() })
+        .color(if active {
+            t.selected
+        } else {
+            Hsla::transparent_black()
+        })
         .foreground(if active { t.fg } else { t.fg_muted })
         .hover(if active { t.selected } else { t.hover })
         .active(t.selected);

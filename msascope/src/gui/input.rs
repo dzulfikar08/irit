@@ -29,20 +29,32 @@ impl MsaScope {
     pub(super) fn region(&self, pos: Point<Pixels>) -> Region {
         let area = self.area.get();
         let (rows, cols) = self.dims();
-        let (x, y) = (f64::from(pos.x - area.origin.x), f64::from(pos.y - area.origin.y));
+        let (x, y) = (
+            f64::from(pos.x - area.origin.x),
+            f64::from(pos.y - area.origin.y),
+        );
         let name_x = area.origin.x - px(self.settings.name_width);
         if pos.y >= area.origin.y {
             if pos.x >= area.origin.x {
-                return self.vp.hit(x, y, rows, cols).map_or(Region::Outside, |(r, c)| Region::Cell(r, c));
+                return self
+                    .vp
+                    .hit(x, y, rows, cols)
+                    .map_or(Region::Outside, |(r, c)| Region::Cell(r, c));
             }
             if pos.x >= name_x {
-                return self.vp.hit(0.0, y, rows, cols.max(1)).map_or(Region::Outside, |(r, _)| Region::Name(r));
+                return self
+                    .vp
+                    .hit(0.0, y, rows, cols.max(1))
+                    .map_or(Region::Outside, |(r, _)| Region::Name(r));
             }
             if pos.x >= area.origin.x - px(self.left_w()) {
                 return Region::Tree;
             }
         } else if pos.y >= area.origin.y - px(self.header_h()) && pos.x >= area.origin.x {
-            return self.vp.hit(x, 0.0, rows.max(1), cols).map_or(Region::Outside, |(_, c)| Region::Header(c));
+            return self
+                .vp
+                .hit(x, 0.0, rows.max(1), cols)
+                .map_or(Region::Outside, |(_, c)| Region::Header(c));
         }
         Region::Outside
     }
@@ -68,7 +80,10 @@ impl MsaScope {
     pub(super) fn cols_set(&self, a: usize, b: usize) -> RangeSet {
         let (a, b) = (a.min(b), a.max(b));
         let mut s = RangeSet::new();
-        s.add(view::aln_col(self.col_map(), a) as u32, view::aln_col(self.col_map(), b) as u32 + 1);
+        s.add(
+            view::aln_col(self.col_map(), a) as u32,
+            view::aln_col(self.col_map(), b) as u32 + 1,
+        );
         s
     }
 
@@ -138,11 +153,19 @@ impl MsaScope {
         let (rows, cols) = self.dims();
         self.cursor.unwrap_or_else(|| {
             let (r, c) = self.vp.visible(rows, cols);
-            (r.start.min(rows.saturating_sub(1)), c.start.min(cols.saturating_sub(1)))
+            (
+                r.start.min(rows.saturating_sub(1)),
+                c.start.min(cols.saturating_sub(1)),
+            )
         })
     }
 
-    pub(super) fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let k = &ev.keystroke;
         let (w, h) = (self.vp.width, self.vp.height);
         let ctrl = k.modifiers.control || k.modifiers.platform;
@@ -154,8 +177,30 @@ impl MsaScope {
         // Cursor moves: (rows, columns) by a step, or to a target.
         let target: Option<(usize, usize)> = match k.key.as_str() {
             _ if !has_data || alt => None,
-            "left" if ctrl => Some((cur.0, select::next_residue(&self.data.as_ref().unwrap().aln, self.row_view(), self.col_map(), cur.0, cur.1, -1, cols))),
-            "right" if ctrl => Some((cur.0, select::next_residue(&self.data.as_ref().unwrap().aln, self.row_view(), self.col_map(), cur.0, cur.1, 1, cols))),
+            "left" if ctrl => Some((
+                cur.0,
+                select::next_residue(
+                    &self.data.as_ref().unwrap().aln,
+                    self.row_view(),
+                    self.col_map(),
+                    cur.0,
+                    cur.1,
+                    -1,
+                    cols,
+                ),
+            )),
+            "right" if ctrl => Some((
+                cur.0,
+                select::next_residue(
+                    &self.data.as_ref().unwrap().aln,
+                    self.row_view(),
+                    self.col_map(),
+                    cur.0,
+                    cur.1,
+                    1,
+                    cols,
+                ),
+            )),
             "up" if ctrl => Some((0, cur.1)),
             "down" if ctrl => Some((rows - 1, cur.1)),
             "left" => Some(select::step(cur, (0, -1), rows, cols)),
@@ -172,7 +217,15 @@ impl MsaScope {
         };
         if let Some(to) = target {
             // The first arrow press without a cursor places it on the top-left cell in view.
-            let to = if self.cursor.is_none() && !shift && matches!(k.key.as_str(), "left" | "right" | "up" | "down") && !ctrl { cur } else { to };
+            let to = if self.cursor.is_none()
+                && !shift
+                && matches!(k.key.as_str(), "left" | "right" | "up" | "down")
+                && !ctrl
+            {
+                cur
+            } else {
+                to
+            };
             self.move_cursor(to, shift);
             cx.stop_propagation();
             cx.notify();
@@ -184,9 +237,8 @@ impl MsaScope {
             "up" if alt => self.pan(0.0, -h / 8.0),
             "down" if alt => self.pan(0.0, h / 8.0),
             "escape" => self.clear_selection(),
-            "a" if ctrl => self.select_all(),
-            "c" if ctrl => self.copy(!shift, window, cx),
-            "e" if ctrl => self.prompt_export(!self.sel.is_empty(), cx),
+            // Ctrl+A, Ctrl+C, Ctrl+E and Ctrl+O are key bindings (gui::menu), shown in the menu bar.
+            "c" if ctrl && shift => self.copy(false, window, cx),
             "+" | "=" => self.zoom_by(1, 1, None),
             "-" => self.zoom_by(-1, -1, None),
             "0" => self.request_fit(Fit::All),
@@ -203,7 +255,6 @@ impl MsaScope {
                 self.set_gappy(p, cx)
             }
             "t" if !ctrl && self.tree.is_some() => self.set_tree_order(!self.tree_order, cx),
-            "o" if ctrl => self.prompt_open(cx),
             "f" if ctrl && shift => self.set_find_mode(super::app::FindMode::Motif, window, cx),
             "f" if ctrl => self.search.update(cx, |s, cx| s.focus(window, cx)),
             "l" if ctrl => self.toggle_filter_bar(window, cx),
@@ -228,7 +279,10 @@ impl MsaScope {
         let d = ev.delta.pixel_delta(px(40.));
         let (dx, dy) = (f64::from(d.x), f64::from(d.y));
         let area = self.area.get();
-        let (x, y) = (f64::from(ev.position.x - area.origin.x), f64::from(ev.position.y - area.origin.y));
+        let (x, y) = (
+            f64::from(ev.position.x - area.origin.x),
+            f64::from(ev.position.y - area.origin.y),
+        );
         if ev.modifiers.control || ev.modifiers.platform {
             if dy.abs() < 0.5 {
                 return;
@@ -284,10 +338,17 @@ impl MsaScope {
         if self.card_cursor && self.cursor.is_some() {
             return true;
         }
-        !self.card_hidden && self.pointer.is_some() && (self.hover.is_some() || self.hover_track.is_some())
+        !self.card_hidden
+            && self.pointer.is_some()
+            && (self.hover.is_some() || self.hover_track.is_some())
     }
 
-    pub(super) fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_mouse_down(
+        &mut self,
+        ev: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.focus.focus(window, cx);
         self.update_hover(ev.position);
         self.card_cursor = false;
@@ -295,7 +356,13 @@ impl MsaScope {
         let shift = ev.modifiers.shift;
         match self.region(ev.position) {
             Region::Tree => {
-                let hit = self.tree_hits.borrow().iter().filter(|h| h.bounds.contains(&ev.position)).max_by(|a, b| a.bounds.origin.x.partial_cmp(&b.bounds.origin.x).unwrap()).map(|h| h.node);
+                let hit = self
+                    .tree_hits
+                    .borrow()
+                    .iter()
+                    .filter(|h| h.bounds.contains(&ev.position))
+                    .max_by(|a, b| a.bounds.origin.x.partial_cmp(&b.bounds.origin.x).unwrap())
+                    .map(|h| h.node);
                 if let Some(n) = hit {
                     self.toggle_clade(n, cx);
                 }
@@ -305,14 +372,25 @@ impl MsaScope {
                     Some((a, _)) if shift => a,
                     _ => r,
                 };
-                let mut base = if ctrl { self.sel.rows.clone() } else { RangeSet::new() };
+                let mut base = if ctrl {
+                    self.sel.rows.clone()
+                } else {
+                    RangeSet::new()
+                };
                 if ctrl && self.view_row_in_rows(&self.sel, r) {
                     // Ctrl+click on a selected row takes it out.
                     let take = self.rows_set(r..=r);
                     for &(a, b) in take.ranges() {
                         base.remove(a, b);
                     }
-                    self.sel = Rc::new(Selection { rows: base.clone(), cols: if ctrl { self.sel.cols.clone() } else { RangeSet::new() } });
+                    self.sel = Rc::new(Selection {
+                        rows: base.clone(),
+                        cols: if ctrl {
+                            self.sel.cols.clone()
+                        } else {
+                            RangeSet::new()
+                        },
+                    });
                     self.drag = Some(Drag::Rows { anchor: r, base });
                     self.anchor = Some((r, self.cursor.map_or(0, |c| c.1)));
                     cx.notify();
@@ -320,7 +398,11 @@ impl MsaScope {
                 }
                 let mut rows = base.clone();
                 rows.union(&self.rows_set(anchor.min(r)..=anchor.max(r)));
-                let cols = if ctrl { self.sel.cols.clone() } else { RangeSet::new() };
+                let cols = if ctrl {
+                    self.sel.cols.clone()
+                } else {
+                    RangeSet::new()
+                };
                 self.sel = Rc::new(Selection { rows, cols });
                 self.anchor = Some((anchor, self.cursor.map_or(0, |c| c.1)));
                 self.drag = Some(Drag::Rows { anchor, base });
@@ -330,15 +412,28 @@ impl MsaScope {
                     Some((_, a)) if shift => a,
                     _ => c,
                 };
-                let base = if ctrl { self.sel.cols.clone() } else { RangeSet::new() };
+                let base = if ctrl {
+                    self.sel.cols.clone()
+                } else {
+                    RangeSet::new()
+                };
                 let mut cols = base.clone();
-                if ctrl && self.sel.cols.contains(view::aln_col(self.col_map(), c) as u32) {
+                if ctrl
+                    && self
+                        .sel
+                        .cols
+                        .contains(view::aln_col(self.col_map(), c) as u32)
+                {
                     let a = view::aln_col(self.col_map(), c) as u32;
                     cols.remove(a, a + 1);
                 } else {
                     cols.union(&self.cols_set(anchor, c));
                 }
-                let rows = if ctrl { self.sel.rows.clone() } else { RangeSet::new() };
+                let rows = if ctrl {
+                    self.sel.rows.clone()
+                } else {
+                    RangeSet::new()
+                };
                 self.sel = Rc::new(Selection { rows, cols });
                 self.anchor = Some((self.cursor.map_or(0, |c| c.0), anchor));
                 self.drag = Some(Drag::Cols { anchor, base });
@@ -350,13 +445,30 @@ impl MsaScope {
                 self.cursor = Some((r, c));
                 self.drag = Some(Drag::Block { anchor });
             }
-            Region::Cell(r, c) => self.drag = Some(Drag::Pan { last: ev.position, cell: Some((r, c)), moved: false }),
-            Region::Outside => self.drag = Some(Drag::Pan { last: ev.position, cell: None, moved: false }),
+            Region::Cell(r, c) => {
+                self.drag = Some(Drag::Pan {
+                    last: ev.position,
+                    cell: Some((r, c)),
+                    moved: false,
+                })
+            }
+            Region::Outside => {
+                self.drag = Some(Drag::Pan {
+                    last: ev.position,
+                    cell: None,
+                    moved: false,
+                })
+            }
         }
         cx.notify();
     }
 
-    pub(super) fn on_mouse_move(&mut self, ev: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_mouse_move(
+        &mut self,
+        ev: &MouseMoveEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(mut drag) = self.drag.take().filter(|_| ev.dragging()) {
             match &mut drag {
                 Drag::Pan { last, moved, .. } => {
@@ -418,9 +530,16 @@ impl MsaScope {
             return None;
         }
         let area = self.area.get();
-        let (x, y) = (f64::from(pos.x - area.origin.x), f64::from(pos.y - area.origin.y));
-        let c = (self.vp.col0 + x.clamp(0.0, self.vp.width - 1.0) / self.vp.cw).floor().clamp(0.0, cols as f64 - 1.0) as usize;
-        let r = (self.vp.row0 + y.clamp(0.0, self.vp.height - 1.0) / self.vp.ch).floor().clamp(0.0, rows as f64 - 1.0) as usize;
+        let (x, y) = (
+            f64::from(pos.x - area.origin.x),
+            f64::from(pos.y - area.origin.y),
+        );
+        let c = (self.vp.col0 + x.clamp(0.0, self.vp.width - 1.0) / self.vp.cw)
+            .floor()
+            .clamp(0.0, cols as f64 - 1.0) as usize;
+        let r = (self.vp.row0 + y.clamp(0.0, self.vp.height - 1.0) / self.vp.ch)
+            .floor()
+            .clamp(0.0, rows as f64 - 1.0) as usize;
         Some((r, c))
     }
 
@@ -442,7 +561,11 @@ impl MsaScope {
         match self.drag.take() {
             Some(Drag::Splitter { .. } | Drag::TreeSplitter { .. }) => self.settings.save(),
             // A click on a cell: the cursor goes there, and the selection is cleared.
-            Some(Drag::Pan { cell: Some(cell), moved: false, .. }) => {
+            Some(Drag::Pan {
+                cell: Some(cell),
+                moved: false,
+                ..
+            }) => {
                 self.cursor = Some(cell);
                 self.anchor = Some(cell);
                 self.sel = Rc::default();
@@ -456,33 +579,52 @@ impl MsaScope {
     fn extract(&self, all: bool, include_hidden: bool) -> Option<Extract> {
         let d = self.data.as_ref()?;
         let sel = (!all).then_some(&*self.sel);
-        Some(Extract::new(&d.aln, sel, self.row_view(), self.col_map(), include_hidden))
+        Some(Extract::new(
+            &d.aln,
+            sel,
+            self.row_view(),
+            self.col_map(),
+            include_hidden,
+        ))
     }
 
     /// Ctrl+C: the selection as FASTA (or as plain text with Shift) to the clipboard; above
     /// [`select::CLIPBOARD_MAX`], to a file instead.
     pub(super) fn copy(&mut self, fasta: bool, _: &mut Window, cx: &mut Context<Self>) {
         if self.sel.is_empty() {
-            self.status = "Nothing selected: click names, drag on the ruler or Shift+drag over cells".into();
+            self.status =
+                "Nothing selected: click names, drag on the ruler or Shift+drag over cells".into();
             return;
         }
         let Some(d) = self.data.clone() else { return };
-        let opts = ExportOptions { fasta, ..self.export };
-        let Some(e) = self.extract(false, opts.include_hidden) else { return };
+        let opts = ExportOptions {
+            fasta,
+            ..self.export
+        };
+        let Some(e) = self.extract(false, opts.include_hidden) else {
+            return;
+        };
         if e.cols.is_empty() || e.rows.is_empty() {
-            self.status = "The selection has no shown columns (include hidden columns from the Export menu)".into();
+            self.status =
+                "The selection has no shown columns (include hidden columns from the Export menu)"
+                    .into();
             return;
         }
         let size = e.size(&d.aln, fasta);
         if size > select::CLIPBOARD_MAX {
-            self.status = format!("The selection is {} MiB, too much for the clipboard; choose a file", size >> 20).into();
+            self.status = format!(
+                "The selection is {} MiB, too much for the clipboard; choose a file",
+                size >> 20
+            )
+            .into();
             self.prompt_export(true, cx);
             return;
         }
         let (n, m) = (e.rows.len(), e.cols.len());
         let task = cx.background_executor().spawn(async move {
             let mut out = Vec::with_capacity(size);
-            e.write(&d.aln, opts, &mut out).map(|_| String::from_utf8_lossy(&out).into_owned())
+            e.write(&d.aln, opts, &mut out)
+                .map(|_| String::from_utf8_lossy(&out).into_owned())
         });
         cx.spawn(async move |this, cx| {
             let text = task.await;
@@ -491,7 +633,12 @@ impl MsaScope {
                     Ok(t) => {
                         cx.write_to_clipboard(ClipboardItem::new_string(t));
                         let what = if fasta { "FASTA" } else { "text" };
-                        v.status = format!("Copied {} sequences × {} columns as {what}", view::group_digits(n), view::group_digits(m)).into();
+                        v.status = format!(
+                            "Copied {} sequences × {} columns as {what}",
+                            view::group_digits(n),
+                            view::group_digits(m)
+                        )
+                        .into();
                     }
                     Err(e) => v.status = format!("Couldn't copy: {e}").into(),
                 }
@@ -511,10 +658,26 @@ impl MsaScope {
             cx.notify();
             return;
         }
-        let Some(e) = self.extract(!selection, self.export.include_hidden) else { return };
-        let opts = ExportOptions { fasta: true, ..self.export };
-        let dir = self.path.as_deref().and_then(|p| p.parent()).map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        let stem = self.path.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).map_or("alignment", |n| n.split('.').next().unwrap_or(n)).to_string();
+        let Some(e) = self.extract(!selection, self.export.include_hidden) else {
+            return;
+        };
+        let opts = ExportOptions {
+            fasta: true,
+            ..self.export
+        };
+        let dir = self
+            .path
+            .as_deref()
+            .and_then(|p| p.parent())
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let stem = self
+            .path
+            .as_deref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .map_or("alignment", |n| n.split('.').next().unwrap_or(n))
+            .to_string();
         let name = format!("{stem}{}.fa", if selection { ".selection" } else { "" });
         let rx = cx.prompt_for_new_path(&dir, Some(&name));
         cx.spawn(async move |this, cx| {
@@ -535,7 +698,13 @@ impl MsaScope {
             let result = write.await;
             this.update(cx, |v, cx| {
                 v.status = match result {
-                    Ok(()) => format!("Wrote {} sequences × {} columns to {}", view::group_digits(n), view::group_digits(m), path.display()).into(),
+                    Ok(()) => format!(
+                        "Wrote {} sequences × {} columns to {}",
+                        view::group_digits(n),
+                        view::group_digits(m),
+                        path.display()
+                    )
+                    .into(),
                     Err(e) => format!("Couldn't write {}: {e}", path.display()).into(),
                 };
                 cx.notify();

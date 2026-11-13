@@ -152,7 +152,6 @@ fn gr_key<'k>(key: &'k mut Vec<u8>, name: &[u8], tag: &[u8]) -> &'k [u8] {
     key
 }
 
-
 impl Collector {
     pub(crate) fn gc(&mut self, tag: &[u8], seg: &[u8]) {
         let i = match self.gc.iter().position(|(t, _)| t == tag) {
@@ -181,26 +180,49 @@ impl Collector {
     /// The `#=GC` tracks that cover exactly `cols` columns, the plan for reading the `#=GR`
     /// lines that do (within `budget` bytes), and a warning for each line left out: a different
     /// length, a `#=GR` line for a sequence that isn't in the alignment, lines over the budget.
-    pub(crate) fn finish(self, cols: usize, row_of: impl Fn(&[u8]) -> Option<usize>, budget: usize) -> (Vec<Track>, GrFill, Vec<String>) {
+    pub(crate) fn finish(
+        self,
+        cols: usize,
+        row_of: impl Fn(&[u8]) -> Option<usize>,
+        budget: usize,
+    ) -> (Vec<Track>, GrFill, Vec<String>) {
         let s = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
         let mut warnings = Vec::new();
         let mut gc = Vec::new();
         for (tag, data) in self.gc {
             if data.len() == cols {
-                gc.push(Track { tag: s(&tag).into(), data: data.into() });
+                gc.push(Track {
+                    tag: s(&tag).into(),
+                    data: data.into(),
+                });
             } else {
-                warnings.push(format!("#=GC {} has {} columns, the alignment {}; left out", s(&tag), data.len(), cols));
+                warnings.push(format!(
+                    "#=GC {} has {} columns, the alignment {}; left out",
+                    s(&tag),
+                    data.len(),
+                    cols
+                ));
             }
         }
         let mut fill = GrFill::default();
         let (mut used, mut over) = (0usize, 0usize);
         for (name, tag, len) in self.gr {
             let Some(row) = row_of(&name) else {
-                warnings.push(format!("#=GR {} {}: no sequence of that name; left out", s(&name), s(&tag)));
+                warnings.push(format!(
+                    "#=GR {} {}: no sequence of that name; left out",
+                    s(&name),
+                    s(&tag)
+                ));
                 continue;
             };
             if len != cols {
-                warnings.push(format!("#=GR {} {} has {} columns, the alignment {}; left out", s(&name), s(&tag), len, cols));
+                warnings.push(format!(
+                    "#=GR {} {} has {} columns, the alignment {}; left out",
+                    s(&name),
+                    s(&tag),
+                    len,
+                    cols
+                ));
                 continue;
             }
             if used + cols > budget {
@@ -210,10 +232,14 @@ impl Collector {
             used += cols;
             let k = gr_key(&mut fill.key, &name, &tag).to_vec();
             fill.index.insert(k, fill.lines.len());
-            fill.lines.push((row as u32, s(&tag).into(), Vec::with_capacity(cols)));
+            fill.lines
+                .push((row as u32, s(&tag).into(), Vec::with_capacity(cols)));
         }
         if over > 0 {
-            warnings.push(format!("#=GR: {over} lines left out, over the {} MiB kept for residue annotation", budget >> 20));
+            warnings.push(format!(
+                "#=GR: {over} lines left out, over the {} MiB kept for residue annotation",
+                budget >> 20
+            ));
         }
         (gc, fill, warnings)
     }
@@ -239,7 +265,16 @@ impl GrFill {
 
     /// The lines, sorted by row; a line whose length changed between the passes is left out.
     pub(crate) fn finish(self, cols: usize) -> Vec<RowAnnot> {
-        let mut gr: Vec<RowAnnot> = self.lines.into_iter().filter(|l| l.2.len() == cols).map(|(row, tag, data)| RowAnnot { row, tag, data: data.into() }).collect();
+        let mut gr: Vec<RowAnnot> = self
+            .lines
+            .into_iter()
+            .filter(|l| l.2.len() == cols)
+            .map(|(row, tag, data)| RowAnnot {
+                row,
+                tag,
+                data: data.into(),
+            })
+            .collect();
         gr.sort_by_key(|a| a.row);
         gr
     }
@@ -254,7 +289,10 @@ pub fn row_annots(gr: &[RowAnnot], row: usize) -> &[RowAnnot] {
 
 /// Bytes held by the annotation.
 pub fn bytes(gc: &[Track], gr: &[RowAnnot]) -> usize {
-    gc.iter().map(|t| t.data.len() + t.tag.len()).sum::<usize>() + gr.iter().map(|t| t.data.len() + t.tag.len() + 4).sum::<usize>()
+    gc.iter().map(|t| t.data.len() + t.tag.len()).sum::<usize>()
+        + gr.iter()
+            .map(|t| t.data.len() + t.tag.len() + 4)
+            .sum::<usize>()
 }
 
 #[cfg(test)]
@@ -268,7 +306,23 @@ mod tests {
         assert_eq!(TrackKind::of("seq_cons"), TrackKind::Text);
         let ss: Vec<Ss> = b"HGIEB<>().-T".iter().map(|&b| ss_class(b)).collect();
         use Ss::{Coil, Helix, PairClose, PairOpen, Strand};
-        assert_eq!(ss, [Helix, Helix, Helix, Strand, Strand, PairOpen, PairClose, PairOpen, PairClose, Ss::None, Coil, PairOpen]);
+        assert_eq!(
+            ss,
+            [
+                Helix,
+                Helix,
+                Helix,
+                Strand,
+                Strand,
+                PairOpen,
+                PairClose,
+                PairOpen,
+                PairClose,
+                Ss::None,
+                Coil,
+                PairOpen
+            ]
+        );
         // 'T' (turn) is a capital letter, but means a turn in protein SS lines
         assert_eq!(ss_words(b'T'), "turn");
         assert_eq!(pp_value(b'*'), Some(0.975));
@@ -281,7 +335,11 @@ mod tests {
     #[test]
     fn collector_joins_blocks_and_checks_lengths() {
         let mut c = Collector::default();
-        let first: [(&[u8], &[u8], &[u8]); 3] = [(b"a", b"PP", b"98"), (b"a", b"PP", b"7*."), (b"zz", b"SS", b"HHHHH")];
+        let first: [(&[u8], &[u8], &[u8]); 3] = [
+            (b"a", b"PP", b"98"),
+            (b"a", b"PP", b"7*."),
+            (b"zz", b"SS", b"HHHHH"),
+        ];
         c.gc(b"SS_cons", b"HHH");
         c.gc(b"seq_cons", b"ACD");
         c.gc(b"SS_cons", b"EE");
@@ -300,10 +358,16 @@ mod tests {
         assert_eq!(&*gc[0].data, b"HHHEE");
         assert_eq!(&*gc[1].data, b"ACDEF");
         assert_eq!(gr.len(), 1);
-        assert_eq!((gr[0].row, &*gr[0].tag, &*gr[0].data), (1, "PP", &b"987*."[..]));
+        assert_eq!(
+            (gr[0].row, &*gr[0].tag, &*gr[0].data),
+            (1, "PP", &b"987*."[..])
+        );
         assert_eq!(gr[0].data.len(), 5);
         assert_eq!(w.len(), 2);
-        assert!(w[0].contains("#=GC bad has 2 columns, the alignment 5"), "{w:?}");
+        assert!(
+            w[0].contains("#=GC bad has 2 columns, the alignment 5"),
+            "{w:?}"
+        );
         assert!(w[1].contains("#=GR zz SS"), "{w:?}");
         assert_eq!(row_annots(&gr, 1).len(), 1);
         assert!(row_annots(&gr, 0).is_empty());
@@ -322,6 +386,9 @@ mod tests {
         }
         let gr = fill.finish(4);
         assert_eq!(gr.iter().map(|g| g.row).collect::<Vec<_>>(), [0, 1]);
-        assert_eq!(w, ["#=GR: 1 lines left out, over the 0 MiB kept for residue annotation"]);
+        assert_eq!(
+            w,
+            ["#=GR: 1 lines left out, over the 0 MiB kept for residue annotation"]
+        );
     }
 }

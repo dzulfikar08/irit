@@ -91,7 +91,10 @@ impl MsaScope {
 
     /// The band at `y` logical px below the header's top.
     pub(super) fn header_row_at(&self, y: f32) -> Option<HeaderRow> {
-        self.header_bands().into_iter().find(|b| y >= b.y && y < b.y + b.h).map(|b| b.row)
+        self.header_bands()
+            .into_iter()
+            .find(|b| y >= b.y && y < b.y + b.h)
+            .map(|b| b.row)
     }
 
     /// The label at the left of a band.
@@ -99,14 +102,20 @@ impl MsaScope {
         let d = self.data.as_ref();
         let compare = self.compare_base().is_some();
         match row {
-            HeaderRow::Ruler if self.ref_opts.ruler && self.ref_row.is_some() => "Reference residue".into(),
+            HeaderRow::Ruler if self.ref_opts.ruler && self.ref_row.is_some() => {
+                "Reference residue".into()
+            }
             HeaderRow::Ruler => "Column".into(),
             HeaderRow::Consensus => "Consensus".into(),
             HeaderRow::Identity if compare => "Identity to ref. %".into(),
             HeaderRow::Identity => "Identity %".into(),
             HeaderRow::Gaps => "Gaps".into(),
-            HeaderRow::Gc(i) => d.map_or(SharedString::default(), |d| d.aln.gc[i].tag.to_string().into()),
-            HeaderRow::Gr(i) => d.map_or(SharedString::default(), |d| format!("{} (ref.)", d.aln.gr[i].tag).into()),
+            HeaderRow::Gc(i) => d.map_or(SharedString::default(), |d| {
+                d.aln.gc[i].tag.to_string().into()
+            }),
+            HeaderRow::Gr(i) => d.map_or(SharedString::default(), |d| {
+                format!("{} (ref.)", d.aln.gr[i].tag).into()
+            }),
             HeaderRow::Pinned => match (d, &self.ref_row) {
                 (Some(d), Some(r)) => d.aln.names[r.row].clone().into(),
                 _ => SharedString::default(),

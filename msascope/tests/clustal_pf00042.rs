@@ -7,7 +7,8 @@ use msascope::scheme::{ColorMode, Colors, Scheme, Theme};
 use msascope::stats::ColumnStats;
 
 fn load() -> (msascope::Alignment, ColumnStats) {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/pf00042_seed_40x20.sto");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/pf00042_seed_40x20.sto");
     let a = msascope::parse::load(&path).unwrap();
     let s = ColumnStats::compute(&a);
     (a, s)
@@ -48,9 +49,17 @@ fn clustal_x_on_pf00042_seed() {
     // background (no fill), in both themes.
     for theme in [Theme::LIGHT, Theme::DARK] {
         let c = Colors::new(a.alphabet(), ColorMode::new(Scheme::ClustalX), theme, true);
-        let col = |k: usize| msascope::scheme::Column { consensus: s.consensus[k], identity: s.identity[k], shares: &s.shares[k], clustal: s.clustal[k] };
+        let col = |k: usize| msascope::scheme::Column {
+            consensus: s.consensus[k],
+            identity: s.identity[k],
+            shares: &s.shares[k],
+            clustal: s.clustal[k],
+        };
         let code = |b| a.alphabet().encode(b).unwrap();
-        assert_eq!(c.fill(code(b'L'), &col(10)), Some(if theme.dark { 0x3A5590 } else { 0xA9C0F3 }));
+        assert_eq!(
+            c.fill(code(b'L'), &col(10)),
+            Some(if theme.dark { 0x3A5590 } else { 0xA9C0F3 })
+        );
         assert_eq!(c.fill(code(b'A'), &col(11)), None);
     }
 }
@@ -60,5 +69,10 @@ fn clustal_x_on_pf00042_seed() {
 #[test]
 fn seed_insert_columns() {
     let (a, _) = load();
-    assert_eq!((0..a.cols()).filter(|&c| a.is_insert(c)).collect::<Vec<_>>(), [19]);
+    assert_eq!(
+        (0..a.cols())
+            .filter(|&c| a.is_insert(c))
+            .collect::<Vec<_>>(),
+        [19]
+    );
 }

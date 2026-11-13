@@ -69,7 +69,11 @@ impl RangeSet {
         // Ranges that touch or overlap a..b merge with it.
         let i = self.r.partition_point(|r| r.1 < a);
         let j = self.r.partition_point(|r| r.0 <= b);
-        let (lo, hi) = if i < j { (self.r[i].0.min(a), self.r[j - 1].1.max(b)) } else { (a, b) };
+        let (lo, hi) = if i < j {
+            (self.r[i].0.min(a), self.r[j - 1].1.max(b))
+        } else {
+            (a, b)
+        };
         self.r.splice(i..j, [(lo, hi)]);
     }
 
@@ -96,7 +100,11 @@ impl RangeSet {
 
     /// Add `x` if absent, remove it if present.
     pub fn toggle(&mut self, x: u32) {
-        if self.contains(x) { self.remove(x, x + 1) } else { self.add(x, x + 1) }
+        if self.contains(x) {
+            self.remove(x, x + 1)
+        } else {
+            self.add(x, x + 1)
+        }
     }
 
     /// Add every value of another set.
@@ -145,13 +153,19 @@ impl Selection {
     /// "1 row", "3 rows × 12 columns", "12 columns": the size, given the alignment's.
     pub fn describe(&self, rows: usize, cols: usize) -> String {
         let g = crate::view::group_digits;
-        let n = |k: usize, one: &str, many: &str| format!("{} {}", g(k), if k == 1 { one } else { many });
+        let n = |k: usize, one: &str, many: &str| {
+            format!("{} {}", g(k), if k == 1 { one } else { many })
+        };
         match (self.rows.is_empty(), self.cols.is_empty()) {
             (true, true) => String::new(),
             (false, true) => n(self.rows.len(), "row", "rows"),
             (true, false) => n(self.cols.len(), "column", "columns"),
             (false, false) if self.rows.len() == rows && self.cols.len() == cols => "all".into(),
-            (false, false) => format!("{} × {}", n(self.rows.len(), "row", "rows"), n(self.cols.len(), "column", "columns")),
+            (false, false) => format!(
+                "{} × {}",
+                n(self.rows.len(), "row", "rows"),
+                n(self.cols.len(), "column", "columns")
+            ),
         }
     }
 }
@@ -175,21 +189,45 @@ pub struct Extract {
 impl Extract {
     /// The selected rows in the order shown (`rows` view, clades expanded; file order without a
     /// view) and the selected columns, minus hidden ones unless asked. `sel` `None`: everything.
-    pub fn new(aln: &Alignment, sel: Option<&Selection>, view: Option<&RowView>, map: Option<&ColumnMap>, include_hidden: bool) -> Extract {
-        let order: Vec<u32> = view.map_or_else(|| (0..aln.rows() as u32).collect(), RowView::expanded);
-        let rows = order.into_iter().filter(|&r| sel.is_none_or(|s| s.row_selected(r))).collect();
+    pub fn new(
+        aln: &Alignment,
+        sel: Option<&Selection>,
+        view: Option<&RowView>,
+        map: Option<&ColumnMap>,
+        include_hidden: bool,
+    ) -> Extract {
+        let order: Vec<u32> =
+            view.map_or_else(|| (0..aln.rows() as u32).collect(), RowView::expanded);
+        let rows = order
+            .into_iter()
+            .filter(|&r| sel.is_none_or(|s| s.row_selected(r)))
+            .collect();
         let shown = |c: u32| include_hidden || map.is_none_or(|m| m.view_of(c as usize).is_ok());
-        let cols = (0..aln.cols() as u32).filter(|&c| sel.is_none_or(|s| s.col_selected(c)) && shown(c)).collect();
+        let cols = (0..aln.cols() as u32)
+            .filter(|&c| sel.is_none_or(|s| s.col_selected(c)) && shown(c))
+            .collect();
         Extract { rows, cols }
     }
 
     /// Bytes [`Extract::write`] produces, at most (gaps not stripped).
     pub fn size(&self, aln: &Alignment, fasta: bool) -> usize {
-        let names: usize = if fasta { self.rows.iter().map(|&r| aln.names[r as usize].len() + 2).sum() } else { 0 };
+        let names: usize = if fasta {
+            self.rows
+                .iter()
+                .map(|&r| aln.names[r as usize].len() + 2)
+                .sum()
+        } else {
+            0
+        };
         names + self.rows.len() * (self.cols.len() + 1)
     }
 
-    pub fn write(&self, aln: &Alignment, opts: ExportOptions, out: &mut impl Write) -> io::Result<()> {
+    pub fn write(
+        &self,
+        aln: &Alignment,
+        opts: ExportOptions,
+        out: &mut impl Write,
+    ) -> io::Result<()> {
         let mut buf = vec![0u8; aln.cols()];
         let mut line = Vec::with_capacity(self.cols.len() + 1);
         for &r in &self.rows {
@@ -223,13 +261,23 @@ pub fn step(cur: (usize, usize), d: (isize, isize), rows: usize, cols: usize) ->
     if rows == 0 || cols == 0 {
         return (0, 0);
     }
-    let mv = |x: usize, dx: isize, n: usize| (x as isize).saturating_add(dx).clamp(0, n as isize - 1) as usize;
+    let mv = |x: usize, dx: isize, n: usize| {
+        (x as isize).saturating_add(dx).clamp(0, n as isize - 1) as usize
+    };
     (mv(cur.0, d.0, rows), mv(cur.1, d.1, cols))
 }
 
 /// From view column `v` of view row `row`, the next view column in direction `dir` (±1) that
 /// starts a run of residues, or the edge when there is none (Ctrl+arrow).
-pub fn next_residue(aln: &Alignment, view: Option<&RowView>, map: Option<&ColumnMap>, row: usize, v: usize, dir: isize, cols: usize) -> usize {
+pub fn next_residue(
+    aln: &Alignment,
+    view: Option<&RowView>,
+    map: Option<&ColumnMap>,
+    row: usize,
+    v: usize,
+    dir: isize,
+    cols: usize,
+) -> usize {
     if cols == 0 {
         return 0;
     }
@@ -276,7 +324,10 @@ mod tests {
         assert_eq!(s.ranges(), [(0, 3), (4, 9)]);
         assert_eq!(s.len(), 8);
         assert_eq!((s.first(), s.last()), (Some(0), Some(8)));
-        assert_eq!(RangeSet::from_sorted([1, 2, 2, 3, 7, 9, 10]).ranges(), [(1, 4), (7, 8), (9, 11)]);
+        assert_eq!(
+            RangeSet::from_sorted([1, 2, 2, 3, 7, 9, 10]).ranges(),
+            [(1, 4), (7, 8), (9, 11)]
+        );
         let mut u = RangeSet::from_sorted([20]);
         u.union(&s);
         assert_eq!(u.iter().count(), 9);
@@ -304,7 +355,9 @@ mod tests {
     /// rows in the order shown.
     #[test]
     fn export_respects_hidden_columns() {
-        let aln = parse_bytes(b"# STOCKHOLM 1.0\na/1-5 AC.gT-D\nb/2-4 -C..TGD\nc/1-3 MA..-KD\n//\n").unwrap();
+        let aln =
+            parse_bytes(b"# STOCKHOLM 1.0\na/1-5 AC.gT-D\nb/2-4 -C..TGD\nc/1-3 MA..-KD\n//\n")
+                .unwrap();
         let stats = ColumnStats::compute(&aln);
         // columns 2 and 3 are inserts; hide them
         let map = ColumnMap::hiding(&aln, &stats, true, None).unwrap();
@@ -319,17 +372,46 @@ mod tests {
             assert!(out.len() <= e.size(&aln, opts.fasta));
             String::from_utf8(out).unwrap()
         };
-        let fasta = ExportOptions { fasta: true, ..Default::default() };
+        let fasta = ExportOptions {
+            fasta: true,
+            ..Default::default()
+        };
         assert_eq!(text(Some(&sel), None, fasta), ">a/1-5\nCT-\n>b/2-4\nCTG\n");
-        assert_eq!(text(Some(&sel), None, ExportOptions { include_hidden: true, ..fasta }), ">a/1-5\nC-GT-\n>b/2-4\nC--TG\n");
-        assert_eq!(text(Some(&sel), None, ExportOptions { strip_gaps: true, ..Default::default() }), "CT\nCTG\n");
+        assert_eq!(
+            text(
+                Some(&sel),
+                None,
+                ExportOptions {
+                    include_hidden: true,
+                    ..fasta
+                }
+            ),
+            ">a/1-5\nC-GT-\n>b/2-4\nC--TG\n"
+        );
+        assert_eq!(
+            text(
+                Some(&sel),
+                None,
+                ExportOptions {
+                    strip_gaps: true,
+                    ..Default::default()
+                }
+            ),
+            "CT\nCTG\n"
+        );
         // everything, rows in a tree order (c, a, b)
         let view = RowView::new(vec![2, 0, 1], 3, 3, Vec::new(), Vec::new(), Vec::new());
-        assert_eq!(text(None, Some(&view), ExportOptions::default()), "MA-KD\nACT-D\n-CTGD\n");
+        assert_eq!(
+            text(None, Some(&view), ExportOptions::default()),
+            "MA-KD\nACT-D\n-CTGD\n"
+        );
         // columns only: every row
         let mut cols = Selection::default();
         cols.cols.add(6, 7);
-        assert_eq!(text(Some(&cols), None, ExportOptions::default()), "D\nD\nD\n");
+        assert_eq!(
+            text(Some(&cols), None, ExportOptions::default()),
+            "D\nD\nD\n"
+        );
     }
 
     #[test]

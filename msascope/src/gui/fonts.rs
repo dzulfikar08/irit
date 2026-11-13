@@ -16,10 +16,24 @@ use gpui_kit::*;
 use std::sync::OnceLock;
 
 /// Preferred UI fonts, best first.
-pub const UI_FONTS: &[&str] = &["SF Pro Text", "SF Pro", "Inter", "Inter Variable", "Adwaita Sans", "Noto Sans", "Cantarell"];
+pub const UI_FONTS: &[&str] = &[
+    "SF Pro Text",
+    "SF Pro",
+    "Inter",
+    "Inter Variable",
+    "Adwaita Sans",
+    "Noto Sans",
+    "Cantarell",
+];
 
 /// Preferred monospace fonts, best first.
-pub const MONO_FONTS: &[&str] = &["SF Mono", "JetBrainsMono Nerd Font", "JetBrains Mono", "Adwaita Mono", "Noto Sans Mono"];
+pub const MONO_FONTS: &[&str] = &[
+    "SF Mono",
+    "JetBrainsMono Nerd Font",
+    "JetBrains Mono",
+    "Adwaita Mono",
+    "Noto Sans Mono",
+];
 
 /// Installed font families. Read once per run: listing the system's fonts takes about 150 ms on
 /// macOS, too slow for a render path.
@@ -35,7 +49,10 @@ fn first_installed(installed: &[String], prefs: &[&str]) -> Option<String> {
 /// The first of `prefs` that is installed, preferring ones for which `real_bold` holds; if none
 /// does, the first installed.
 fn pick(installed: &[String], prefs: &[&str], real_bold: impl Fn(&str) -> bool) -> Option<String> {
-    let mut present = prefs.iter().copied().filter(|p| installed.iter().any(|f| f == p));
+    let mut present = prefs
+        .iter()
+        .copied()
+        .filter(|p| installed.iter().any(|f| f == p));
     let first = present.clone().next();
     present.find(|p| real_bold(p)).or(first).map(str::to_owned)
 }
@@ -49,7 +66,10 @@ pub fn has_real_bold(family: &str, cx: &App) -> bool {
 /// Whether `family`'s bold resolves to another face than its regular.
 fn bold_is_own_face(ts: &TextSystem, family: &str) -> bool {
     let regular = font(SharedString::from(family.to_owned()));
-    let bold = Font { weight: FontWeight::BOLD, ..regular.clone() };
+    let bold = Font {
+        weight: FontWeight::BOLD,
+        ..regular.clone()
+    };
     ts.resolve_font(&regular) != ts.resolve_font(&bold)
 }
 
@@ -61,7 +81,10 @@ pub fn automatic_ui_font(cx: &App) -> Option<String> {
 /// Apply `ui_font` (or the automatic choice) and the best monospace font to the theme.
 pub fn apply(ui_font: Option<&str>, cx: &mut App) {
     let fonts = installed(cx);
-    let ui = ui_font.filter(|f| fonts.iter().any(|i| i == f)).map(str::to_owned).or_else(|| automatic_ui_font(cx));
+    let ui = ui_font
+        .filter(|f| fonts.iter().any(|i| i == f))
+        .map(str::to_owned)
+        .or_else(|| automatic_ui_font(cx));
     let mono = first_installed(fonts, MONO_FONTS);
     Theme::update(cx, |theme| {
         if let Some(ui) = ui {
@@ -84,13 +107,28 @@ mod tests {
 
     #[std::prelude::v1::test]
     fn automatic_choice_prefers_a_real_bold() {
-        let installed: Vec<String> = ["Adwaita Sans", "Inter", "Noto Sans"].into_iter().map(String::from).collect();
+        let installed: Vec<String> = ["Adwaita Sans", "Inter", "Noto Sans"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         let variable = |f: &str| f == "Inter" || f == "Adwaita Sans";
-        assert_eq!(pick(&installed, UI_FONTS, |f| !variable(f)).as_deref(), Some("Noto Sans"));
+        assert_eq!(
+            pick(&installed, UI_FONTS, |f| !variable(f)).as_deref(),
+            Some("Noto Sans")
+        );
         // Every candidate variable: keep the first.
-        assert_eq!(pick(&installed, UI_FONTS, |_| false).as_deref(), Some("Inter"));
-        assert_eq!(pick(&installed, UI_FONTS, |_| true).as_deref(), Some("Inter"));
+        assert_eq!(
+            pick(&installed, UI_FONTS, |_| false).as_deref(),
+            Some("Inter")
+        );
+        assert_eq!(
+            pick(&installed, UI_FONTS, |_| true).as_deref(),
+            Some("Inter")
+        );
         assert_eq!(pick(&[], UI_FONTS, |_| true), None);
-        assert_eq!(first_installed(&["Noto Sans Mono".to_owned()], MONO_FONTS).as_deref(), Some("Noto Sans Mono"));
+        assert_eq!(
+            first_installed(&["Noto Sans Mono".to_owned()], MONO_FONTS).as_deref(),
+            Some("Noto Sans Mono")
+        );
     }
 }

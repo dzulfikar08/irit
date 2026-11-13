@@ -36,7 +36,12 @@ fn percent(text: &str) -> Result<Option<f32>, String> {
 
 impl MsaScope {
     /// Sort rows by `sort`; `None` returns to the tree's order (`tree_order`) or the file's.
-    pub(super) fn set_sort(&mut self, sort: Option<Sort>, tree_order: bool, cx: &mut Context<Self>) {
+    pub(super) fn set_sort(
+        &mut self,
+        sort: Option<Sort>,
+        tree_order: bool,
+        cx: &mut Context<Self>,
+    ) {
         if sort.is_some_and(|s| s.key == SortKey::Reference) && self.reference.is_none() {
             self.status = "Set a reference row first: put the cursor on it (or select its name), then Sort ▸ Set reference".into();
             cx.notify();
@@ -76,7 +81,8 @@ impl MsaScope {
         {
             return Some(self.aln_row(r));
         }
-        (self.sel.cols.is_empty() && self.sel.rows.len() == 1).then(|| self.sel.rows.first().unwrap() as usize)
+        (self.sel.cols.is_empty() && self.sel.rows.len() == 1)
+            .then(|| self.sel.rows.first().unwrap() as usize)
     }
 
     pub(super) fn set_reference(&mut self, r: Option<usize>, cx: &mut Context<Self>) {
@@ -95,7 +101,10 @@ impl MsaScope {
             _ => SharedString::default(),
         };
         // Rows sorted or filtered by identity to it, and the pyramid compared with it.
-        if self.sort.is_some_and(|s| s.key == SortKey::Reference) || self.filter.min_identity.is_some() || (self.ref_opts.compare && was != r) {
+        if self.sort.is_some_and(|s| s.key == SortKey::Reference)
+            || self.filter.min_identity.is_some()
+            || (self.ref_opts.compare && was != r)
+        {
             self.rebuild_layout(cx);
         }
         self.remember_reference();
@@ -105,9 +114,20 @@ impl MsaScope {
     /// Save the reference row and its options for this version of the open file (or forget
     /// them when there is no reference).
     pub(super) fn remember_reference(&mut self) {
-        let (Some(path), Some(stamp), Some(d)) = (self.path.as_deref(), self.file_stamp, self.data.as_ref()) else { return };
-        let entry = self.reference.map(|r| (r, d.aln.names[r].clone(), self.ref_opts));
-        if self.settings.remembered_ref(path, stamp).map(|m| (m.row, m.name.clone(), m.opts)) == entry {
+        let (Some(path), Some(stamp), Some(d)) =
+            (self.path.as_deref(), self.file_stamp, self.data.as_ref())
+        else {
+            return;
+        };
+        let entry = self
+            .reference
+            .map(|r| (r, d.aln.names[r].clone(), self.ref_opts));
+        if self
+            .settings
+            .remembered_ref(path, stamp)
+            .map(|m| (m.row, m.name.clone(), m.opts))
+            == entry
+        {
             return;
         }
         self.settings.remember_ref(path, stamp, entry);
@@ -117,9 +137,17 @@ impl MsaScope {
     /// Bring back the reference row saved for this version of the file just opened, when a row
     /// of that name is there. Sets the fields only: the layout built next compares with it.
     pub(super) fn restore_reference(&mut self) {
-        let (Some(path), Some(stamp), Some(d)) = (self.path.as_deref(), self.file_stamp, self.data.clone()) else { return };
-        let Some(m) = self.settings.remembered_ref(path, stamp) else { return };
-        let Some(r) = m.find_row(&d.aln.names) else { return };
+        let (Some(path), Some(stamp), Some(d)) =
+            (self.path.as_deref(), self.file_stamp, self.data.clone())
+        else {
+            return;
+        };
+        let Some(m) = self.settings.remembered_ref(path, stamp) else {
+            return;
+        };
+        let Some(r) = m.find_row(&d.aln.names) else {
+            return;
+        };
         self.ref_opts = m.opts;
         self.reference = Some(r);
         self.ref_row = Some(Arc::new(Reference::new(&d.aln, r)));
@@ -136,7 +164,8 @@ impl MsaScope {
             Some(r) => self.set_reference(Some(r), cx),
             None if self.reference.is_some() => self.set_reference(None, cx),
             None => {
-                self.status = "Put the cursor on a row (or select one name) to make it the reference".into();
+                self.status =
+                    "Put the cursor on a row (or select one name) to make it the reference".into();
                 cx.notify();
             }
         }
@@ -167,7 +196,11 @@ impl MsaScope {
     /// Read the filter bar's three boxes; rebuild the rows when the filter changed.
     pub(super) fn read_filter(&mut self, cx: &mut Context<Self>) {
         let text = |s: &Entity<InputState>, cx: &App| s.read(cx).value().to_string();
-        let (name, ident, gaps) = (text(&self.filter_name, cx), text(&self.filter_ident, cx), text(&self.filter_gaps, cx));
+        let (name, ident, gaps) = (
+            text(&self.filter_name, cx),
+            text(&self.filter_ident, cx),
+            text(&self.filter_gaps, cx),
+        );
         let mut errors = Vec::new();
         let name = NameQuery::parse(&name).unwrap_or_else(|e| {
             errors.push(e);
@@ -186,7 +219,9 @@ impl MsaScope {
             Some(NameQuery::Substring(s)) => format!("s{s}"),
             Some(NameQuery::Regex(r)) => format!("r{}", r.as_str()),
         };
-        let changed = name_key(&name) != name_key(&self.filter.name) || ident != self.filter.min_identity || gaps != self.filter.max_gaps;
+        let changed = name_key(&name) != name_key(&self.filter.name)
+            || ident != self.filter.min_identity
+            || gaps != self.filter.max_gaps;
         self.status = errors.join("; ").into();
         if changed {
             self.filter.name = name;
@@ -222,7 +257,14 @@ impl MsaScope {
     pub(super) fn show_clade(&mut self, n: u32, cx: &mut Context<Self>) {
         let Some(ix) = self.tree.clone() else { return };
         self.filter.clade = Some(Arc::new(ix.rows_sorted(n)));
-        self.clade_label = Some(clade_name(&ix, n, self.data.as_ref().map(|d| &d.aln.names[..]).unwrap_or(&[])).into());
+        self.clade_label = Some(
+            clade_name(
+                &ix,
+                n,
+                self.data.as_ref().map(|d| &d.aln.names[..]).unwrap_or(&[]),
+            )
+            .into(),
+        );
         self.filter_bar = true;
         self.scroll_top = true;
         self.rebuild_layout(cx);
@@ -252,11 +294,17 @@ impl MsaScope {
             Goto::Col(c) => (None, Some(c), None),
             Goto::RowCol(r, c) => {
                 if r >= rows {
-                    return err(self, format!("Out of range: {} rows shown", view::group_digits(rows)), cx);
+                    return err(
+                        self,
+                        format!("Out of range: {} rows shown", view::group_digits(rows)),
+                        cx,
+                    );
                 }
                 (Some(r), Some(c), None)
             }
-            Goto::Name(q) | Goto::NamePos(q, _) if d.aln.rows() == 0 => return err(self, format!("No sequence named '{q}'"), cx),
+            Goto::Name(q) | Goto::NamePos(q, _) if d.aln.rows() == 0 => {
+                return err(self, format!("No sequence named '{q}'"), cx);
+            }
             Goto::Name(q) => match goto::find_row(&d.aln, &q, None) {
                 Ok(r) => {
                     self.select_row(r);
@@ -278,21 +326,41 @@ impl MsaScope {
                     Err(e) => return err(self, e, cx),
                 };
                 let Some(vr) = self.view_row(r) else {
-                    return err(self, format!("{} is hidden by the row filter", d.aln.names[r]), cx);
+                    return err(
+                        self,
+                        format!("{} is hidden by the row filter", d.aln.names[r]),
+                        cx,
+                    );
                 };
-                let note = self.row_view().and_then(|m| m.clade_of(vr)).map(|_| format!("{} is in a collapsed clade", d.aln.names[r]));
-                let note = note.unwrap_or_else(|| format!("{} residue {pos}: column {}", d.aln.names[r], view::group_digits(c + 1)));
+                let note = self
+                    .row_view()
+                    .and_then(|m| m.clade_of(vr))
+                    .map(|_| format!("{} is in a collapsed clade", d.aln.names[r]));
+                let note = note.unwrap_or_else(|| {
+                    format!(
+                        "{} residue {pos}: column {}",
+                        d.aln.names[r],
+                        view::group_digits(c + 1)
+                    )
+                });
                 (Some(vr), Some(c), Some(note))
             }
         };
         if col.is_some_and(|c| c >= cols) {
-            return err(self, format!("Out of range: {} columns", view::group_digits(cols)), cx);
+            return err(
+                self,
+                format!("Out of range: {} columns", view::group_digits(cols)),
+                cx,
+            );
         }
         let vcol = col.map(|c| match self.col_map().map(|m| m.view_of(c)) {
             None => c,
             Some(Ok(v)) => v,
             Some(Err(v)) => {
-                note = Some(format!("Column {} is hidden; showing the next shown column", view::group_digits(c + 1)));
+                note = Some(format!(
+                    "Column {} is hidden; showing the next shown column",
+                    view::group_digits(c + 1)
+                ));
                 v.min(shown.saturating_sub(1))
             }
         });
@@ -311,14 +379,20 @@ impl MsaScope {
     }
 
     /// Switch the Find box between names and residues, and search again with its text.
-    pub(super) fn set_find_mode(&mut self, mode: FindMode, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn set_find_mode(
+        &mut self,
+        mode: FindMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.find_mode != mode {
             self.find_mode = mode;
             let ph = match mode {
                 FindMode::Names => "Find sequence",
                 FindMode::Motif => "Motif: HGK, C-x(2)-C, /re/",
             };
-            self.search.update(cx, |s, cx| s.set_placeholder(ph, window, cx));
+            self.search
+                .update(cx, |s, cx| s.set_placeholder(ph, window, cx));
             let q = self.search.read(cx).value().to_string();
             match mode {
                 FindMode::Names => {
@@ -366,13 +440,25 @@ impl MsaScope {
         let query = q.to_string();
         let task = cx.background_executor().spawn(async move {
             let t = Instant::now();
-            motif::search(&d.aln, &m, MOTIF_LIMIT, &cancel).map(|h| (h, t.elapsed().as_secs_f64(), m.pattern))
+            motif::search(&d.aln, &m, MOTIF_LIMIT, &cancel)
+                .map(|h| (h, t.elapsed().as_secs_f64(), m.pattern))
         });
         cx.spawn(async move |this, cx| {
-            let Some((hits, secs, pattern)) = task.await else { return };
+            let Some((hits, secs, pattern)) = task.await else {
+                return;
+            };
             this.update(cx, |v, cx| {
-                eprintln!("msascope: motif {query} ({pattern}): {} matches in {} sequences, {secs:.3} s", hits.total, hits.rows);
-                v.motif = Some(MotifState { hits: Arc::new(hits), nav: Vec::new(), nav_gen: u64::MAX, idx: None, secs });
+                eprintln!(
+                    "msascope: motif {query} ({pattern}): {} matches in {} sequences, {secs:.3} s",
+                    hits.total, hits.rows
+                );
+                v.motif = Some(MotifState {
+                    hits: Arc::new(hits),
+                    nav: Vec::new(),
+                    nav_gen: u64::MAX,
+                    idx: None,
+                    secs,
+                });
                 v.next_hit(1, cx);
             })
             .ok();
@@ -398,7 +484,9 @@ impl MsaScope {
                     None => h.row as usize,
                     Some(rv) => rv.shown(h.row as usize)?,
                 };
-                let c = map.map_or(h.start as usize, |m| m.view_of(h.start as usize).unwrap_or_else(|e| e));
+                let c = map.map_or(h.start as usize, |m| {
+                    m.view_of(h.start as usize).unwrap_or_else(|e| e)
+                });
                 Some((r, c, i as u32))
             })
             .collect();
@@ -423,7 +511,11 @@ impl MsaScope {
             if nrows == 1 { "sequence" } else { "sequences" }
         );
         if n == 0 {
-            let why = if total > 0 { " (none in the rows shown)" } else { "" };
+            let why = if total > 0 {
+                " (none in the rows shown)"
+            } else {
+                ""
+            };
             self.status = format!("{count}{why} · {secs:.2} s").into();
             cx.notify();
             return;
@@ -434,8 +526,15 @@ impl MsaScope {
         };
         let h = m.hits.hits[m.nav[i] as usize];
         self.motif.as_mut().unwrap().idx = Some(i);
-        let Some(r) = self.view_row(h.row as usize) else { return };
-        let c = self.col_map().map_or(h.start as usize, |m| m.view_of(h.start as usize).unwrap_or_else(|e| e)).min(self.dims().1.saturating_sub(1));
+        let Some(r) = self.view_row(h.row as usize) else {
+            return;
+        };
+        let c = self
+            .col_map()
+            .map_or(h.start as usize, |m| {
+                m.view_of(h.start as usize).unwrap_or_else(|e| e)
+            })
+            .min(self.dims().1.saturating_sub(1));
         if self.vp.cw < view::LETTERS_CW {
             self.fit = None;
             self.set_scale(view::LETTERS_CW, self.vp.ch.max(view::LETTERS_CH), None);
@@ -445,8 +544,18 @@ impl MsaScope {
         self.anchor = Some((r, c));
         let d = self.data.clone().unwrap();
         let first = goto::range(&d.aln, h.row as usize).0 + h.residue as usize;
-        let capped = if total > kept { format!(" (first {} kept)", view::group_digits(MOTIF_LIMIT)) } else { String::new() };
-        self.status = format!("match {} of {} shown · {count}{capped} · {} at {first} · {secs:.2} s", view::group_digits(i + 1), view::group_digits(n), d.aln.names[h.row as usize]).into();
+        let capped = if total > kept {
+            format!(" (first {} kept)", view::group_digits(MOTIF_LIMIT))
+        } else {
+            String::new()
+        };
+        self.status = format!(
+            "match {} of {} shown · {count}{capped} · {} at {first} · {secs:.2} s",
+            view::group_digits(i + 1),
+            view::group_digits(n),
+            d.aln.names[h.row as usize]
+        )
+        .into();
         cx.notify();
     }
 
@@ -467,14 +576,28 @@ impl MsaScope {
     pub(super) fn select_clade(&mut self, n: u32, cx: &mut Context<Self>) {
         let Some(ix) = self.tree.clone() else { return };
         let rows = RangeSet::from_sorted(ix.rows_sorted(n));
-        self.status = format!("Selected {} sequences of the clade", view::group_digits(rows.len())).into();
-        self.sel = Rc::new(Selection { rows, ..Default::default() });
+        self.status = format!(
+            "Selected {} sequences of the clade",
+            view::group_digits(rows.len())
+        )
+        .into();
+        self.sel = Rc::new(Selection {
+            rows,
+            ..Default::default()
+        });
         cx.notify();
     }
 
     /// Replace the tree with one made from it in the background (ladderized, rerooted).
-    fn replace_tree(&mut self, what: &'static str, f: impl FnOnce(&TreeIndex, &msascope::Alignment) -> (TreeIndex, bool) + Send + 'static, cx: &mut Context<Self>) {
-        let (Some(ix), Some(d)) = (self.tree.clone(), self.data.clone()) else { return };
+    fn replace_tree(
+        &mut self,
+        what: &'static str,
+        f: impl FnOnce(&TreeIndex, &msascope::Alignment) -> (TreeIndex, bool) + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(ix), Some(d)) = (self.tree.clone(), self.data.clone()) else {
+            return;
+        };
         self.tree_loading = true;
         cx.notify();
         let task = cx.background_executor().spawn(async move {
@@ -508,7 +631,16 @@ impl MsaScope {
     /// Reroot on the branch above node `n`; node numbers change, so collapsed clades and a clade
     /// filter are reset.
     pub(super) fn reroot(&mut self, n: u32, cx: &mut Context<Self>) {
-        self.replace_tree("rerooted", move |ix, aln| (TreeIndex::new(ix.tree.reroot(n), &aln.names, &aln.accessions), false), cx);
+        self.replace_tree(
+            "rerooted",
+            move |ix, aln| {
+                (
+                    TreeIndex::new(ix.tree.reroot(n), &aln.names, &aln.accessions),
+                    false,
+                )
+            },
+            cx,
+        );
     }
 }
 
@@ -520,6 +652,10 @@ pub(super) fn clade_name(ix: &TreeIndex, n: u32, names: &[String]) -> String {
     if !label.is_empty() && label.parse::<f64>().is_err() {
         return format!("{label} ({})", view::group_digits(size));
     }
-    let first = ix.rows(n).first().and_then(|&r| names.get(r as usize)).map_or("", |s| s.split('/').next().unwrap_or(s));
+    let first = ix
+        .rows(n)
+        .first()
+        .and_then(|&r| names.get(r as usize))
+        .map_or("", |s| s.split('/').next().unwrap_or(s));
     format!("{first} … ({} sequences)", view::group_digits(size))
 }
