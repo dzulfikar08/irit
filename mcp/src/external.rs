@@ -24,7 +24,8 @@ pub struct Pinned {
 pub const PINNED: [Pinned; 9] = [
     Pinned { tool: "fastp", version: "1.4.0", bioconda: "fastp=1.4.0", url: "https://github.com/OpenGene/fastp" },
     Pinned { tool: "shovill", version: "1.4.2", bioconda: "shovill=1.4.2", url: "https://github.com/tseemann/shovill" },
-    Pinned { tool: "flye", version: "2.9.6", bioconda: "flye=2.9.6", url: "https://github.com/mikolmogorov/Flye" },
+    // Flye's --version prints the build too: `2.9.6-b1802` for the 2.9.6 release (and Bioconda's).
+    Pinned { tool: "flye", version: "2.9.6-b1802", bioconda: "flye=2.9.6", url: "https://github.com/mikolmogorov/Flye" },
     // medaka_consensus (the polishing script) reports no version itself; the server asks `medaka`
     // beside it, which prints `medaka 2.2.2`.
     Pinned { tool: "medaka_consensus", version: "2.2.2", bioconda: "medaka=2.2.2", url: "https://github.com/nanoporetech/medaka" },
@@ -2635,6 +2636,12 @@ mod tests {
             j[invented] = json!("x");
             assert!(serde_json::from_value::<ShovillParams>(j).is_err(), "{invented}");
         }
+    }
+
+    #[test]
+    fn flye_version_with_build() {
+        assert_eq!(version_warning("flye", Some("2.9.6-b1802")), None);
+        assert!(version_warning("flye", Some("2.9.5-b1801")).is_some());
     }
 
     #[test]

@@ -89,6 +89,12 @@ What's done, what's next, and what's further out. Items move up as evidence come
       motif search, annotation tracks, reference row): remember the reference row between
       sessions, annotation tracks and the pinned row in figures, multi-threaded gzip, alignments
       larger than RAM.
+- [ ] **Nanopore isolates on a laptop**: `flye` and `medaka` tools in `irit-mcp` (unreleased). One
+      carbapenemase-producing *K. pneumoniae* gave the same ST, the same 49 AMRFinderPlus elements,
+      the same completeness and the same GTDB species from ONT reads alone as from Illumina, in an
+      8 GB cap ([write-up](research/nanopore-laptop.md)). Next: more isolates (plasmid-borne genes,
+      where Flye is weakest), a long-read read-QC row in isotable, recording Medaka's model file,
+      and Medaka's `batch_size` against peak memory.
 - [ ] **`dblock` additions**: GTDB-Tk split download, parallel downloads.
 - [ ] **`leanqc` additions**: long-read views (N50, quality by length).
 - [ ] **Check the `irit-mcp` wrappers on a large machine**: Bakta with the full database, SPAdes

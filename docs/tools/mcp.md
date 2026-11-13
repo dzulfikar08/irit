@@ -226,7 +226,7 @@ Nothing else is offered, so an agent can't pass a flag the program doesn't know.
 |---|---|---|---|---|
 | `fastp` | fastp | 1.4.0 | [`src/main.cpp`](https://github.com/OpenGene/fastp/blob/v1.4.0/src/main.cpp) | `fastp=1.4.0` |
 | `shovill` | Shovill | 1.4.2 | [`bin/shovill`](https://github.com/tseemann/shovill/blob/v1.4.2/bin/shovill) (`setOptions` and the checks after it) | `shovill=1.4.2` |
-| `flye` | Flye | 2.9.6 | [`flye/main.py`](https://github.com/mikolmogorov/Flye/blob/2.9.6/flye/main.py) (the argparse block and `_check_input`) | `flye=2.9.6` |
+| `flye` | Flye | 2.9.6 (`--version`: `2.9.6-b1802`) | [`flye/main.py`](https://github.com/mikolmogorov/Flye/blob/2.9.6/flye/main.py) (the argparse block and `_check_input`) | `flye=2.9.6` |
 | `medaka` | Medaka `medaka_consensus` | 2.2.2 | [`scripts/medaka_consensus`](https://github.com/nanoporetech/medaka/blob/v2.2.2/scripts/medaka_consensus) (its `getopts` string) | `medaka=2.2.2` |
 | `bakta` | Bakta | 1.12.2 | [`bakta/utils.py`](https://github.com/oschwengers/bakta/blob/v1.12.2/bakta/utils.py), DB check from [`bakta/db.py`](https://github.com/oschwengers/bakta/blob/v1.12.2/bakta/db.py) | `bakta=1.12.2` |
 | `checkm2` | CheckM2 `predict` | 1.1.0 | [`checkm2/main.py`](https://github.com/chklovski/CheckM2/blob/1.1.0/checkm2/main.py) | `checkm2=1.1.0` |
@@ -791,7 +791,7 @@ sh irit-runs/<run-id>/replay.sh                            # binaries from PATH
 IRIT_BIN_DIR=/opt/irit/bin sh irit-runs/<run-id>/replay.sh # or from a folder
 ```
 
-Third-party tools (fastp, shovill, bakta, checkm2, gtdbtk, mlst, amrfinder) are always taken from
+Third-party tools (fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder) are always taken from
 `PATH`, so activate their conda environment first. `IRIT_BIN_DIR` applies to the irit tools only.
 
 Some third-party outputs differ between two identical runs. They are recorded with

@@ -69,6 +69,20 @@ MRA e01270-25) through irit-mcp alone (#14-#19).
   for a file it may not read); `scripts/build-mas-pkg.sh` and the `msascope-mas.yml` workflow build,
   validate and upload it. CI checks that msascope's dependencies stay permissively licensed
   (`msascope/deny.toml`) and that a sandboxed copy starts and can't read a file nobody chose.
+### irit-mcp
+- **`flye` and `medaka` tools: nanopore (and PacBio) isolate assembly.** Flye 2.9.6 (`read_type`
+  `nano-hq` for R10.4.1 hac/sup reads, the default) and Medaka 2.2.2 (`medaka_consensus`), pinned
+  and checked like Shovill: flags read from the release sources, inputs and `outdir` validated,
+  `link_as` for CheckM2, GTDB-Tk and `gtdbprep_ani`, the assembly's contig count, length and N50
+  recorded for replay. `flye` also returns each contig's depth and circularity. On one
+  *K. pneumoniae* isolate, ONT reads alone gave the same ST, the same 49 AMRFinderPlus elements,
+  the same CheckM2 completeness and the same GTDB species as Illumina, in an 8 GB cap: Flye 22 min
+  (3.85 GiB), Medaka 9.4 min (7.36 GiB) ([write-up](docs/research/nanopore-laptop.md)).
+
+### isotable
+- Reads Flye's `assembly.fasta` (with `flye.log` beside it) and Medaka's `consensus.fasta` (with
+  `consensus_probs.hdf` beside it) for contigs, length, N50 and GC; when a sample has both, the
+  polished one counts and the draft is listed as skipped.
 
 ## 0.3.5 (2026-11-12)
 
