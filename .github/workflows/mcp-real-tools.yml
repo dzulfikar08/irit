@@ -61,7 +61,7 @@ jobs:
             printf '#!/bin/sh\nPATH=%s/envs/%s/bin:$PATH\nexport PATH\n%s\nexec %s/envs/%s/bin/%s "$@"\n' "$root" "$e" "$extra" "$root" "$e" "$t" > "$HOME/tool-bin/$t"
             chmod +x "$HOME/tool-bin/$t"
             # MetaBAT2 has no --version; the first line of its --help (on stderr) names it
-            if [ "$t" = metabat2 ]; then "$HOME/tool-bin/$t" --help 2>&1 >/dev/null | head -n 1; else "$HOME/tool-bin/$t" --version | head -n 1; fi
+            if [ "$t" = metabat2 ]; then "$HOME/tool-bin/$t" --help 2>&1 >/dev/null | sed -n '/./{p;q;}'; else "$HOME/tool-bin/$t" --version | head -n 1; fi
           done
           # Bakta 1.12.2 calls its own environment's amrfinder; it must read the 4.2 database format.
           "$root/envs/bakta/bin/amrfinder" --version

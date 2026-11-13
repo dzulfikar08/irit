@@ -282,7 +282,7 @@ echo "[2026-11-13T05:10:00Z INFO  coverm] In sample 'final.contigs.fa/s1_R1.fast
 
 const METABAT2: &str = r#"
 case "${1:-}" in
-  --help) echo "MetaBAT: Metagenome Binning based on Abundance and Tetranucleotide frequency (version 2:2.18; 20260506_185317)" >&2; exit 0 ;;
+  --help) { echo; echo "MetaBAT: Metagenome Binning based on Abundance and Tetranucleotide frequency (version 2:2.18; 20260506_185317)"; } >&2; exit 0 ;;
   --version) echo "unrecognised option '--version'" >&2; exit 1 ;;
 esac
 in= ; out=
