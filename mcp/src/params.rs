@@ -299,6 +299,10 @@ pub struct SeqplanParams {
     /// Barcode-imbalance margin (1-10). Default 1.3.
     #[serde(default)]
     pub imbalance: Option<f64>,
+    /// Barcodes the library kit offers (e.g. 24 or 96 for ONT Rapid Barcoding, 96 or 384 Illumina
+    /// indexes): caps isolates per run. Ask the user which kit they use rather than guessing.
+    #[serde(default)]
+    pub barcodes: Option<u64>,
     /// Number of isolates to sequence: also returns runs needed and cost per isolate for them.
     #[serde(default)]
     pub samples: Option<u64>,
@@ -345,6 +349,12 @@ pub fn seqplan(_ctx: &Ctx, p: &SeqplanParams) -> Check<Invocation> {
             }
             inv.opt(flag, x);
         }
+    }
+    if let Some(n) = p.barcodes {
+        if n == 0 {
+            return v::invalid("barcodes", "must be at least 1");
+        }
+        inv.opt("barcodes", n);
     }
     if let Some(n) = p.samples {
         if n == 0 {
@@ -742,6 +752,8 @@ mod tests {
             ["--kit=miseq-v3", "--genome-size=5.5M", "--coverage=50", "--run-price=1500", "--samples=96", "--currency=USD", "--format=json"]
         );
         assert!(inv.outputs.is_empty() && inv.inputs.is_empty());
+        let p: SeqplanParams = parse(json!({"kit": "minion-r10.4.1", "organism": "klebsiella-pneumoniae", "barcodes": 24}));
+        assert_eq!(seqplan(&cx, &p).unwrap().args, ["--kit=minion-r10.4.1", "--organism=klebsiella-pneumoniae", "--barcodes=24", "--format=json"]);
         let p: SeqplanParams = parse(json!({"kit": "nextseq-p1", "reads": "2x150", "organism": "klebsiella-pneumoniae"}));
         assert_eq!(seqplan(&cx, &p).unwrap().args, ["--kit=nextseq-p1", "--reads=2x150", "--organism=klebsiella-pneumoniae", "--format=json"]);
 

@@ -32,6 +32,7 @@ seqplan -k nextseq-p2 -s 5M --format json
 | `-c, --coverage X` | Target mean coverage. Default 50. |
 | `--usable F` | Fraction of the run's output that ends up in sample reads. Default 0.8 for Illumina, 1.0 for nanopore (below). |
 | `--imbalance M` | Barcode-imbalance margin. Default 1.3 (below). |
+| `--barcodes B` | Barcodes your library kit offers (e.g. 24 or 96 for ONT Rapid Barcoding, 96 or 384 Illumina index pairs). Caps isolates per run, and the output says when it did. |
 | `-n, --samples N` | Isolates to sequence: adds runs needed and cost per isolate for them. |
 | `--run-price P`, `--currency C` | Price of one run in your currency. seqplan has no built-in prices. |
 | `-f, --format text\|json` | Output format. |
@@ -57,9 +58,9 @@ The two defaults are assumptions, not measurements. Change them to match your la
   nanopore barcoding can be much more uneven: in the study the MinION figures come from, one
   *K. pneumoniae* library got only 10.8 Mb and was rerun on its own flow cell.
 
-Not modelled: barcode set size (e.g. 96 or 384 index pairs), library prep cost, and the reads
-needed for anything other than coverage. A run that fits more isolates than you have barcodes is
-limited by the barcodes.
+Not modelled: library prep cost and the reads needed for anything other than coverage. Barcode
+set size is modelled only when you give `--barcodes`: a run that fits more isolates than you have
+barcodes is limited by the barcodes.
 
 ## Example
 

@@ -46,6 +46,11 @@ struct Cli {
     #[arg(long, default_value_t = 1.3)]
     imbalance: f64,
 
+    /// Barcodes (index combinations) the library kit offers: caps isolates per run whatever the
+    /// output, e.g. 24 or 96 for ONT's Rapid Barcoding kits, 96 or 384 for Illumina index sets.
+    #[arg(long)]
+    barcodes: Option<u64>,
+
     /// Number of isolates to sequence: also report runs needed and cost per isolate for them.
     #[arg(short = 'n', long)]
     samples: Option<u64>,
@@ -193,6 +198,7 @@ struct Plan {
     coverage: f64,
     usable: f64,
     imbalance: f64,
+    barcodes: Option<u64>,
     samples: Option<u64>,
     run_price: Option<f64>,
     currency: String,
@@ -203,6 +209,8 @@ struct Side {
     run_gb: f64,
     usable_gb: f64,
     isolates: u64,
+    /// The barcode count, not the output, set `isolates`.
+    barcode_limited: bool,
     runs_for_samples: Option<u64>,
     cost_full_run: Option<f64>,
     cost_for_samples: Option<f64>,
@@ -219,7 +227,9 @@ impl Plan {
 
     fn side(&self, run_gb: f64) -> Side {
         let usable_bases = run_gb * 1e9 * self.usable;
-        let isolates = (usable_bases / self.padded_bases()).floor() as u64;
+        let by_output = (usable_bases / self.padded_bases()).floor() as u64;
+        let isolates = self.barcodes.map_or(by_output, |b| by_output.min(b));
+        let barcode_limited = isolates < by_output;
         let runs_for_samples = self.samples.map(|n| {
             if isolates > 0 {
                 n.div_ceil(isolates)
@@ -233,13 +243,14 @@ impl Plan {
             (Some(p), Some(r), Some(n)) if n > 0 => Some(p * r as f64 / n as f64),
             _ => None,
         };
-        Side { run_gb, usable_gb: usable_bases / 1e9, isolates, runs_for_samples, cost_full_run, cost_for_samples }
+        Side { run_gb, usable_gb: usable_bases / 1e9, isolates, barcode_limited, runs_for_samples, cost_full_run, cost_for_samples }
     }
 
     fn json(&self) -> Value {
         let side = |s: Side| {
             json!({
                 "run_gb": s.run_gb, "usable_gb": round(s.usable_gb, 3), "isolates_per_run": s.isolates,
+                "limited_by_barcodes": s.barcode_limited,
                 "runs_for_samples": s.runs_for_samples, "cost_per_isolate_full_run": s.cost_full_run.map(|c| round(c, 2)),
                 "cost_per_isolate_for_samples": s.cost_for_samples.map(|c| round(c, 2)),
             })
@@ -250,7 +261,7 @@ impl Plan {
             "kit": {"id": self.kit.id, "name": self.kit.name, "platform": self.kit.platform, "reads": self.kit.reads,
                     "gb_low": self.kit.gb_low, "gb_high": self.kit.gb_high, "basis": self.kit.basis,
                     "source": self.kit.source, "note": self.kit.note},
-            "usable_fraction": self.usable, "imbalance_margin": self.imbalance,
+            "usable_fraction": self.usable, "imbalance_margin": self.imbalance, "barcodes": self.barcodes,
             "bases_per_isolate": self.bases_per_isolate().round() as u64,
             "bases_per_isolate_with_margin": self.padded_bases().round() as u64,
             "reads_per_isolate_with_margin": pairs,
@@ -285,7 +296,11 @@ impl Plan {
             let per = self.padded_bases() / (k.gb_high * 1e9 * self.usable);
             o += &format!("Isolates/run    0: one isolate needs {} runs' worth of this kit\n", trim(round(per, 2)));
         } else {
-            o += &format!("Isolates/run    {}\n", range(lo.isolates.to_string(), hi.isolates.to_string()));
+            o += &format!("Isolates/run    {}", range(lo.isolates.to_string(), hi.isolates.to_string()));
+            if hi.barcode_limited {
+                o += &format!(" (capped by {} barcodes)", self.barcodes.unwrap_or_default());
+            }
+            o += "\n";
         }
         let cur = if self.currency.is_empty() { String::new() } else { format!(" {}", self.currency) };
         if let (Some(a), Some(b)) = (lo.cost_full_run.or(hi.cost_full_run), hi.cost_full_run) {
@@ -359,6 +374,9 @@ fn plan(cli: &Cli) -> Result<Plan> {
     {
         bail!("--run-price must be a non-negative number");
     }
+    if cli.barcodes == Some(0) {
+        bail!("--barcodes must be at least 1");
+    }
     if cli.samples == Some(0) {
         bail!("--samples must be at least 1");
     }
@@ -369,6 +387,7 @@ fn plan(cli: &Cli) -> Result<Plan> {
         coverage: cli.coverage,
         usable,
         imbalance: cli.imbalance,
+        barcodes: cli.barcodes,
         samples: cli.samples,
         run_price: cli.run_price,
         currency: cli.currency.clone(),
@@ -502,6 +521,21 @@ mod tests {
         assert!(p.json()["reads_per_isolate_with_margin"].is_null());
         assert!(plan(&cli(&["-k", "miseq-v3", "-g", "Klebsiella pneumoniae"])).is_ok());
         assert!(plan(&cli(&["-k", "miseq-v3", "-g", "unicorn"])).unwrap_err().to_string().contains("--genome-size"));
+    }
+
+    #[test]
+    fn barcodes_cap_isolates_per_run() {
+        // 5.6 Mb × 25 × 1.3 = 182 Mb; 7.0 Gb → 38 by output, but the 24-barcode kit caps it.
+        let p = plan(&cli(&["-k", "minion-r10.4.1", "-g", "klebsiella-pneumoniae", "-c", "25", "--barcodes", "24", "-n", "48"])).unwrap();
+        let (lo, hi) = (p.side(5.2), p.side(7.0));
+        assert_eq!((lo.isolates, lo.barcode_limited), (24, true)); // 28 by output
+        assert_eq!((hi.isolates, hi.barcode_limited), (24, true));
+        assert_eq!(hi.runs_for_samples, Some(2));
+        assert!(p.text().contains("capped by 24 barcodes"), "{}", p.text());
+        assert_eq!(p.json()["high"]["limited_by_barcodes"], true);
+        let q = plan(&cli(&["-k", "miseq-v3", "-s", "5.5M", "--barcodes", "96"])).unwrap();
+        assert!(!q.side(15.0).barcode_limited);
+        assert!(plan(&cli(&["-k", "miseq-v3", "-s", "5.5M", "--barcodes", "0"])).is_err());
     }
 
     #[test]
