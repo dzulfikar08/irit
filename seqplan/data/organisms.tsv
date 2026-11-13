@@ -1,0 +1,20 @@
+# Genome sizes from NCBI's expected-genome-size service (the sizes NCBI checks assemblies
+# against), fetched 2026-11-13. Columns: id, taxid, organism, expected, minimum, maximum (bp),
+# source. Any other organism: give --genome-size.
+id	taxid	organism	expected	minimum	maximum	source
+klebsiella-pneumoniae	573	Klebsiella pneumoniae	5600000	4500000	6700000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=573
+escherichia-coli	562	Escherichia coli	5150000	4000000	6300000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=562
+salmonella-enterica	28901	Salmonella enterica	5050000	4100000	6000000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=28901
+staphylococcus-aureus	1280	Staphylococcus aureus	2800000	2200000	3400000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=1280
+pseudomonas-aeruginosa	287	Pseudomonas aeruginosa	6475000	5000000	7950000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=287
+acinetobacter-baumannii	470	Acinetobacter baumannii	3950000	3200000	4700000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=470
+enterococcus-faecium	1352	Enterococcus faecium	2950000	2000000	3900000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=1352
+enterococcus-faecalis	1351	Enterococcus faecalis	2950000	2000000	3900000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=1351
+streptococcus-pneumoniae	1313	Streptococcus pneumoniae	2095000	1570000	2620000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=1313
+mycobacterium-tuberculosis	1773	Mycobacterium tuberculosis	4075000	3150000	5000000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=1773
+vibrio-cholerae	666	Vibrio cholerae	4225000	3600000	4850000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=666
+neisseria-gonorrhoeae	485	Neisseria gonorrhoeae	2225000	1950000	2500000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=485
+helicobacter-pylori	210	Helicobacter pylori	1619121	1294000	1942000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=210
+campylobacter-jejuni	197	Campylobacter jejuni	1985000	1370000	2600000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=197
+listeria-monocytogenes	1639	Listeria monocytogenes	3050000	2500000	3600000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=1639
+bacillus-subtilis	1423	Bacillus subtilis	4118952	3299000	4949000	https://api.ncbi.nlm.nih.gov/genome/v0/expected_genome_size?species_taxid=1423

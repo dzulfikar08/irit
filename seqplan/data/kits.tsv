@@ -1,0 +1,46 @@
+# Sequencing output per run (one flow cell), checked 2026-11-13. Columns:
+# id, platform, name, reads (read configuration), gb_low, gb_high (output per run, Gb),
+# basis (spec: vendor specification; max: vendor theoretical maximum; typical: reported in use),
+# source (URL), note. Illumina specs are for a PhiX control library at supported cluster
+# densities. One row per read configuration; the first row of a kit is its default.
+id	platform	name	reads	gb_low	gb_high	basis	source	note
+miseq-v3	illumina	MiSeq Reagent Kit v3	2x300	13.2	15	spec	https://www.illumina.com/systems/sequencing-platforms/miseq/specifications.html	22-25 M reads passing filter
+miseq-v3	illumina	MiSeq Reagent Kit v3	2x75	3.3	3.8	spec	https://www.illumina.com/systems/sequencing-platforms/miseq/specifications.html	22-25 M reads passing filter
+miseq-v2	illumina	MiSeq Reagent Kit v2	2x150	4.5	5.1	spec	https://www.illumina.com/systems/sequencing-platforms/miseq/specifications.html	12-15 M reads passing filter
+miseq-v2	illumina	MiSeq Reagent Kit v2	2x250	7.5	8.5	spec	https://www.illumina.com/systems/sequencing-platforms/miseq/specifications.html	12-15 M reads passing filter
+miseq-v2	illumina	MiSeq Reagent Kit v2	2x25	0.75	0.85	spec	https://www.illumina.com/systems/sequencing-platforms/miseq/specifications.html	12-15 M reads passing filter
+miseq-v2-micro	illumina	MiSeq Reagent Micro Kit v2	2x150	1.2	1.2	spec	https://www.illumina.com/systems/sequencing-platforms/miseq/specifications.html	4 M reads passing filter
+miseq-v2-nano	illumina	MiSeq Reagent Nano Kit v2	2x150	0.3	0.3	spec	https://www.illumina.com/systems/sequencing-platforms/miseq/specifications.html	1 M reads passing filter
+miseq-v2-nano	illumina	MiSeq Reagent Nano Kit v2	2x250	0.5	0.5	spec	https://www.illumina.com/systems/sequencing-platforms/miseq/specifications.html	1 M reads passing filter
+iseq-100	illumina	iSeq 100 i1 Reagent v2	2x150	1.2	1.2	spec	https://www.illumina.com/systems/sequencing-platforms/iseq/specifications.html	4 M reads passing filter
+iseq-100	illumina	iSeq 100 i1 Reagent v2	2x75	0.6	0.6	spec	https://www.illumina.com/systems/sequencing-platforms/iseq/specifications.html	4 M reads passing filter
+nextseq-550-mid	illumina	NextSeq 500/550 Mid Output Kit v2.5	2x150	32.5	39	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq/specifications.html	up to 130 M reads passing filter; NextSeq 550 specification page
+nextseq-550-mid	illumina	NextSeq 500/550 Mid Output Kit v2.5	2x75	16.25	19.5	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq/specifications.html	up to 130 M reads passing filter; NextSeq 550 specification page
+nextseq-550-high	illumina	NextSeq 500/550 High Output Kit v2.5	2x150	100	120	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq/specifications.html	up to 400 M reads passing filter; NextSeq 550 specification page
+nextseq-550-high	illumina	NextSeq 500/550 High Output Kit v2.5	2x75	50	60	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq/specifications.html	up to 400 M reads passing filter; NextSeq 550 specification page
+nextseq-p1	illumina	NextSeq 1000/2000 P1 (XLEAP-SBS)	2x150	30	30	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	100 M reads passing filter
+nextseq-p1	illumina	NextSeq 1000/2000 P1 (XLEAP-SBS)	2x300	60	60	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	100 M reads passing filter
+nextseq-p1	illumina	NextSeq 1000/2000 P1 (XLEAP-SBS)	2x50	10	10	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	100 M reads passing filter
+nextseq-p2	illumina	NextSeq 1000/2000 P2 (XLEAP-SBS)	2x150	120	120	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	400 M reads passing filter
+nextseq-p2	illumina	NextSeq 1000/2000 P2 (XLEAP-SBS)	2x300	240	240	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	400 M reads passing filter
+nextseq-p2	illumina	NextSeq 1000/2000 P2 (XLEAP-SBS)	2x100	80	80	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	400 M reads passing filter
+nextseq-p2	illumina	NextSeq 1000/2000 P2 (XLEAP-SBS)	2x50	40	40	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	400 M reads passing filter
+nextseq-p3	illumina	NextSeq 2000 P3 (XLEAP-SBS)	2x150	360	360	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	1.2 B reads passing filter; NextSeq 2000 only
+nextseq-p3	illumina	NextSeq 2000 P3 (XLEAP-SBS)	2x100	240	240	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	1.2 B reads passing filter; NextSeq 2000 only
+nextseq-p3	illumina	NextSeq 2000 P3 (XLEAP-SBS)	2x50	120	120	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	1.2 B reads passing filter; NextSeq 2000 only
+nextseq-p4	illumina	NextSeq 2000 P4 (XLEAP-SBS)	2x150	540	540	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	1.8 B reads passing filter; NextSeq 2000 only
+nextseq-p4	illumina	NextSeq 2000 P4 (XLEAP-SBS)	2x100	360	360	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	1.8 B reads passing filter; NextSeq 2000 only
+nextseq-p4	illumina	NextSeq 2000 P4 (XLEAP-SBS)	2x50	180	180	spec	https://www.illumina.com/systems/sequencing-platforms/nextseq-1000-2000/specifications.html	1.8 B reads passing filter; NextSeq 2000 only
+novaseq-x-1.5b	illumina	NovaSeq X 1.5B flow cell	2x150	500	716	spec	https://www.illumina.com/systems/sequencing-platforms/novaseq-x-plus/specifications.html	~1.6-2.4 B reads passing filter; Illumina does not guarantee the upper end
+novaseq-x-1.5b	illumina	NovaSeq X 1.5B flow cell	2x300	1000	1400	spec	https://www.illumina.com/systems/sequencing-platforms/novaseq-x-plus/specifications.html	~1.6-2.4 B reads passing filter; Illumina does not guarantee the upper end
+novaseq-x-1.5b	illumina	NovaSeq X 1.5B flow cell	2x100	330	476	spec	https://www.illumina.com/systems/sequencing-platforms/novaseq-x-plus/specifications.html	~1.6-2.4 B reads passing filter; Illumina does not guarantee the upper end
+novaseq-x-1.5b	illumina	NovaSeq X 1.5B flow cell	2x50	165	238	spec	https://www.illumina.com/systems/sequencing-platforms/novaseq-x-plus/specifications.html	~1.6-2.4 B reads passing filter; Illumina does not guarantee the upper end
+novaseq-x-10b	illumina	NovaSeq X 10B flow cell	2x150	3000	4000	spec	https://www.illumina.com/systems/sequencing-platforms/novaseq-x-plus/specifications.html	~10-13 B reads passing filter; Illumina does not guarantee the upper end
+novaseq-x-10b	illumina	NovaSeq X 10B flow cell	2x100	2000	2700	spec	https://www.illumina.com/systems/sequencing-platforms/novaseq-x-plus/specifications.html	~10-13 B reads passing filter; Illumina does not guarantee the upper end
+novaseq-x-10b	illumina	NovaSeq X 10B flow cell	2x50	1000	1300	spec	https://www.illumina.com/systems/sequencing-platforms/novaseq-x-plus/specifications.html	~10-13 B reads passing filter; Illumina does not guarantee the upper end
+novaseq-x-25b	illumina	NovaSeq X 25B flow cell	2x150	8000	10500	spec	https://www.illumina.com/systems/sequencing-platforms/novaseq-x-plus/specifications.html	26-35 B reads passing filter; Illumina does not guarantee the upper end
+novaseq-x-25b	illumina	NovaSeq X 25B flow cell	2x100	5300	7000	spec	https://www.illumina.com/systems/sequencing-platforms/novaseq-x-plus/specifications.html	26-35 B reads passing filter; Illumina does not guarantee the upper end
+novaseq-x-25b	illumina	NovaSeq X 25B flow cell	2x50	2600	3500	spec	https://www.illumina.com/systems/sequencing-platforms/novaseq-x-plus/specifications.html	26-35 B reads passing filter; Illumina does not guarantee the upper end
+minion-r10.4.1	nanopore	MinION flow cell R10.4.1 (FLO-MIN114), rapid barcoding	long	5.2	7.0	typical	https://pmc.ncbi.nlm.nih.gov/articles/PMC11170131/	bacterial isolates, Rapid Barcoding Kit, 72 h runs (Microbial Genomics 2024); ONT's theoretical maximum is 50 Gb per 72 h (https://store.nanoporetech.com/priceList.html)
+minion-r10.4.1-core	nanopore	MinION flow cell R10.4.1 (FLO-MIN114), core facility	long	10	30	typical	https://dna.uga.edu/oxford-nanopore	a sequencing core's stated expectation for DNA (UGA Georgia Genomics and Bioinformatics Core); ONT's theoretical maximum is 50 Gb per 72 h
+flongle-r10.4.1	nanopore	Flongle flow cell R10.4.1 (FLO-FLG114)	long	1.8	2.6	typical	https://humangenetics.medicine.uiowa.edu/node/86	a sequencing core's stated yield (University of Iowa); ONT's theoretical maximum is 2.8 Gb (https://nanoporetech.com/document/requirements/flongle-spec)

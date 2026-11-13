@@ -6203,6 +6203,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "seqplan"
+version = "0.3.5"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
