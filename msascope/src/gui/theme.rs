@@ -75,12 +75,17 @@ pub struct Settings {
     pub recent: Vec<PathBuf>,
     /// The reference row chosen in each file, most recent first (at most [`REFS_MAX`]).
     pub refs: Vec<RefMemory>,
+    /// App Sandbox only: security-scoped bookmarks (base64) of recent files and allowed folders,
+    /// most recent first (at most [`BOOKMARKS_MAX`]). See `gui::sandbox`.
+    pub bookmarks: Vec<(PathBuf, String)>,
 }
 
 /// Recent files kept in the settings.
 pub const RECENT_MAX: usize = 10;
 /// Files whose reference row is remembered.
 pub const REFS_MAX: usize = 50;
+/// Bookmarks kept (App Sandbox): the recent files plus allowed folders.
+pub const BOOKMARKS_MAX: usize = 30;
 
 /// Which version of a file a remembered reference belongs to: its size and modification time.
 /// Taken from the file's metadata when it is opened (no extra reading); a file rewritten since
@@ -197,6 +202,7 @@ impl Default for Settings {
             tree_panel: true,
             recent: Vec::new(),
             refs: Vec::new(),
+            bookmarks: Vec::new(),
         }
     }
 }
@@ -226,6 +232,14 @@ impl Settings {
             }
             let v = v.trim().trim_matches('"');
             match k.trim() {
+                "bookmark" if s.bookmarks.len() < BOOKMARKS_MAX => {
+                    if let Some((b, p)) = v.split_once(' ')
+                        && !b.is_empty()
+                        && !p.is_empty()
+                    {
+                        s.bookmarks.push((PathBuf::from(p), b.to_string()));
+                    }
+                }
                 "recent" if !v.is_empty() && s.recent.len() < RECENT_MAX => {
                     s.recent.push(PathBuf::from(v))
                 }
@@ -271,8 +285,13 @@ impl Settings {
             .map(|p| format!("recent = \"{p}\"\n"))
             .collect();
         let refs: String = self.refs.iter().filter_map(RefMemory::to_line).collect();
+        let bookmarks: String = self
+            .bookmarks
+            .iter()
+            .filter_map(|(p, b)| Some(format!("bookmark = \"{b} {}\"\n", p.to_str()?)))
+            .collect();
         format!(
-            "# msascope settings\ntheme = \"{}\"\nname_width = {}\noverview = {}\ngappy_pct = {}\ntree_width = {}\ntree_panel = {}\n{recent}{refs}",
+            "# msascope settings\ntheme = \"{}\"\nname_width = {}\noverview = {}\ngappy_pct = {}\ntree_width = {}\ntree_panel = {}\n{recent}{refs}{bookmarks}",
             self.theme.key(),
             self.name_width.round(),
             self.overview,
@@ -299,6 +318,39 @@ impl Settings {
     }
 
     /// Put `path` first in the recent files (made absolute; once only; non-UTF-8 paths skipped).
+    /// Keep a sandbox bookmark for `path` (a file or folder), most recent first.
+    pub fn add_bookmark(&mut self, path: &std::path::Path, bookmark: String) {
+        self.bookmarks.retain(|(p, _)| p != path);
+        self.bookmarks.insert(0, (path.to_path_buf(), bookmark));
+        self.bookmarks.truncate(BOOKMARKS_MAX);
+    }
+
+    /// Resolve the stored bookmarks (App Sandbox), so recent files and allowed folders can be
+    /// read again; files that moved are followed, and bookmarks that no longer resolve dropped.
+    pub fn restore_bookmarks(&mut self) {
+        if !super::sandbox::active() || self.bookmarks.is_empty() {
+            return;
+        }
+        let resolved = super::sandbox::restore(&self.bookmarks);
+        let mut kept = Vec::new();
+        for (old, new, fresh) in resolved {
+            let b = fresh.unwrap_or_else(|| {
+                self.bookmarks
+                    .iter()
+                    .find(|(p, _)| *p == old)
+                    .map(|(_, b)| b.clone())
+                    .unwrap_or_default()
+            });
+            if new != old {
+                for r in self.recent.iter_mut().filter(|r| **r == old) {
+                    *r = new.clone();
+                }
+            }
+            kept.push((new, b));
+        }
+        self.bookmarks = kept;
+    }
+
     pub fn add_recent(&mut self, path: &std::path::Path) {
         let p = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         if p.to_str().is_none() {
@@ -363,6 +415,28 @@ mod tests {
     use super::*;
 
     #[std::prelude::v1::test]
+    fn sandbox_bookmarks_round_trip() {
+        let mut s = Settings::default();
+        s.add_bookmark(Path::new("/Users/a/data folder"), "AAAB/+==".into());
+        s.add_bookmark(Path::new("/Users/a/x.sto"), "QUJD".into());
+        s.add_bookmark(Path::new("/Users/a/data folder"), "REVG".into());
+        let back = Settings::parse(&s.to_text());
+        assert_eq!(
+            back.bookmarks,
+            vec![
+                (PathBuf::from("/Users/a/data folder"), "REVG".to_string()),
+                (PathBuf::from("/Users/a/x.sto"), "QUJD".to_string())
+            ]
+        );
+        // Malformed lines are skipped.
+        assert!(
+            Settings::parse("bookmark = \"nospace\"\nbookmark = \" /x\"\n")
+                .bookmarks
+                .is_empty()
+        );
+    }
+
+    #[std::prelude::v1::test]
     fn settings_round_trip_and_bad_values() {
         let mut s = Settings {
             theme: ThemeChoice::Dark,
@@ -373,6 +447,7 @@ mod tests {
             tree_panel: false,
             recent: Vec::new(),
             refs: Vec::new(),
+            bookmarks: Vec::new(),
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         // Recent files: newest first, once each, at most RECENT_MAX, a path with '=' kept whole.

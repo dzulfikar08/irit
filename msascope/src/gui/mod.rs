@@ -19,6 +19,7 @@ pub mod metrics;
 pub mod name_menu;
 pub mod overview;
 pub mod palette;
+pub mod sandbox;
 pub mod theme;
 pub mod tokens;
 pub mod tree_menu;

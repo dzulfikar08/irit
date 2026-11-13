@@ -9,7 +9,7 @@ repository = "https://github.com/dzulfikar08/irit"
 [features]
 default = ["gui"]
 # The viewer itself; without it only the core library and `msagen` build (no GPU/system libs needed).
-gui = ["dep:gpui-kit", "dep:image", "dep:resvg"]
+gui = ["dep:gpui-kit", "dep:image", "dep:resvg", "dep:objc2", "dep:objc2-foundation", "dep:base64"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -22,6 +22,12 @@ gpui-kit = { version = "=0.9.1", optional = true }
 image = { version = "0.25", default-features = false, optional = true }
 # Draws the text layer of PNG exports (already in the build through GPUI, same version and features).
 resvg = { version = "0.46.0", default-features = false, features = ["text", "system-fonts", "memmap-fonts"], optional = true }
+
+# Security-scoped bookmarks for the App Sandbox (gui/sandbox.rs); all already in GPUI's tree.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSURL", "NSData", "NSString", "NSError", "NSArray"] }
+base64 = { version = "0.22", optional = true }
 
 [[bin]]
 name = "msascope"
