@@ -5,10 +5,11 @@ agents (Claude Code, Claude Desktop and other MCP clients) the irit tools as typ
 runs the real `sheetgen`, `leanqc`, `isotable`, `seqplan` or `dblock` binary, and is written to a run record
 with a `replay.sh` that repeats the same commands without any AI.
 
-It also wraps seven third-party tools for the microbial isolate path, so a whole run (trim,
-assemble, annotate, check quality, classify, type, find resistance genes) is recorded and
-replayable the same way: fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus. See
-[Third-party tools](#third-party-tools).
+It also wraps twelve third-party tools, so a whole run is recorded and replayable the same way.
+For the microbial isolate path (trim, assemble, annotate, check quality, classify, type, find
+resistance genes): fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus.
+For metagenomes, from reads to metagenome-assembled genomes (MAGs): MEGAHIT, CoverM and MetaBAT2,
+then CheckM2 and GTDB-Tk on the bins. See [Third-party tools](#third-party-tools).
 
 ## Why
 
@@ -63,7 +64,7 @@ Any client that takes a JSON config (Claude Desktop's `claude_desktop_config.jso
 | Option | Effect |
 |---|---|
 | `--bin-dir DIR` | Folder holding the irit binaries (env `IRIT_BIN_DIR`). Default: search `PATH`. |
-| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `flye`, `medaka_consensus`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`). Repeatable. Default: search `PATH`. |
+| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `flye`, `medaka_consensus`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`, `megahit`, `coverm`, `metabat2`). Repeatable. Default: search `PATH`. |
 | `--runs-dir DIR` | Where run records go (env `IRIT_RUNS_DIR`). Default `./irit-runs`. |
 | `--run-id ID` | Name of this session's run folder. Default `<UTC time>-<pid>`. The server refuses to start when that folder already holds a record, so a second session can't overwrite the first one's. |
 | `--root DIR` | Folder the tools may write in. Default: the server's working folder. |
@@ -217,7 +218,7 @@ and `catalog` (extra catalog JSON).
 
 ### Third-party tools
 
-Nine tools wrap programs irit doesn't ship. Each one is pinned to an upstream version: its
+Twelve tools wrap programs irit doesn't ship. Each one is pinned to an upstream version: its
 parameters are exactly the flags that version has, read from its source at that release tag (for
 Shovill, mlst and AMRFinderPlus also compared with `--help` of the Bioconda package).
 Nothing else is offered, so an agent can't pass a flag the program doesn't know.
@@ -233,6 +234,9 @@ Nothing else is offered, so an agent can't pass a flag the program doesn't know.
 | `gtdbtk_classify_wf` | GTDB-Tk `classify_wf` | 2.8.0 | [`gtdbtk/cli.py`](https://github.com/Ecogenomics/GTDBTk/blob/2.8.0/gtdbtk/cli.py), data folders from [`config/common.py`](https://github.com/Ecogenomics/GTDBTk/blob/2.8.0/gtdbtk/config/common.py) | `gtdbtk=2.8.0` |
 | `mlst` | mlst | 2.35.0 | [`bin/mlst`](https://github.com/tseemann/mlst/blob/v2.35.0/bin/mlst) (`setOptions` and the main block) | `mlst=2.35.0` |
 | `amrfinder` | AMRFinderPlus `amrfinder` | 4.2.7 | [`amrfinder.cpp`](https://github.com/ncbi/amr/blob/amrfinder_v4.2.7/amrfinder.cpp), DB files from [`amrfinder_update.cpp`](https://github.com/ncbi/amr/blob/amrfinder_v4.2.7/amrfinder_update.cpp) and [`amrfinder_index.cpp`](https://github.com/ncbi/amr/blob/amrfinder_v4.2.7/amrfinder_index.cpp) | `ncbi-amrfinderplus=4.2.7` |
+| `megahit` | MEGAHIT | 1.2.9 | [`src/megahit`](https://github.com/voutcn/megahit/blob/v1.2.9/src/megahit) (`parse_option`) | `megahit=1.2.9` |
+| `coverm_contig` | CoverM `contig` | 0.8.0 | [`src/cli.rs`](https://github.com/wwood/CoverM/blob/v0.8.0/src/cli.rs) and `coverm contig --full-help` | `coverm=0.8.0` |
+| `metabat2` | MetaBAT 2 | 2.18 | `metabat2 --help` of the Bioconda package ([MetaBAT](https://bitbucket.org/berkeleylab/metabat)) | `metabat2=2.18` |
 
 Bioconda's current Shovill is 1.4.2, not the older 1.1.0: 1.4.x added `--plasmid`, changed
 `--mincov`'s default to 2 and needs at least 8 GB for `--ram`.
@@ -637,6 +641,74 @@ a pinned one with dblock instead), `--blast_bin`, `--hmmer_bin`, `--pgap`, `--gp
 (NCBI's testing options), `--debug`, `--log`, `--quiet`, `--list_organisms`, `--database_version`
 and `--nucleotide_flank5_output` / `_size`.
 
+#### `megahit`
+
+Assembles a metagenome (one sample, or several as a co-assembly) for binning. Writes
+`<outdir>/final.contigs.fa`.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `r1`, `r2` | lists of files | Paired reads (FASTQ, plain or gzip), paired in order. Several runs of one sample go in one call. |
+| `single` | list of files | Single-end or merged reads. |
+| `outdir` | folder (required) | Output folder; an existing one with files needs `overwrite`. |
+| `memory_gb` | number, 0.5-4096 | Memory for building the de Bruijn graph. Default **4**: MEGAHIT's own default is 90% of the machine's RAM, which ignores a memory cap (cgroup, container) and gets the process killed under one. Keep it below the cap. Passed in bytes, since a value below 1 would be read as a fraction. |
+| `threads` | integer | MEGAHIT's default is every logical CPU. |
+| `presets` | `meta-sensitive` or `meta-large` | MEGAHIT's presets (more k-mers for low-coverage members; or large, complex samples such as soil). |
+| `k_list` | text | Ascending odd k-mer sizes in 15-255, steps of at most 28, e.g. `21,29,39,59,79,99,119,141`. |
+| `min_contig_len`, `min_count` | integers | Shortest contig written (default 200); minimum (k+1)-mer multiplicity (default 2). |
+
+The server always sends `--force` (MEGAHIT refuses any existing folder without it, even an empty
+one; it only skips that check) and refuses a read file with a comma in its name (MEGAHIT splits
+the lists on commas). Every output is volatile, as with Shovill: the log has times, and the
+contigs aren't known to be byte-identical between runs. The contig count, length and N50 are
+recorded instead, and replay prints them beside the replayed assembly's. Not offered:
+`--continue`, `--tmp-dir` (MEGAHIT writes under `outdir`), `--keep-tmp-files`, `--no-hw-accel`,
+`--mem-flag` and the graph-cleaning options.
+
+#### `coverm_contig`
+
+Maps each sample's reads to the contigs and writes a per-contig coverage table. With `methods:
+["metabat"]` the table is MetaBAT2's depth input (`contigName`, `contigLen`, `totalAvgDepth`, then
+depth and variance per sample). CoverM then counts only reads of at least 97% identity, as
+MetaBAT's own `jgi_summarize_bam_contig_depths` does.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `reference` | file (required) | Contigs, FASTA: MEGAHIT's `final.contigs.fa`. |
+| `r1`, `r2` | lists of files (required) | One read pair per sample. Each pair is a column; more samples help binning (differential coverage). |
+| `output` | file (required) | The table (TSV). |
+| `mapper` | `strobealign` (default), `minimap2-sr`, `bwa-mem` | The aligner CoverM runs. |
+| `methods` | list | `mean` (CoverM's default), `trimmed_mean`, `covered_fraction`, `covered_bases`, `variance`, `length`, `count`, `reads_per_base`, `rpkm`, `tpm`, or `metabat` on its own. |
+| `min_read_percent_identity`, `min_read_aligned_percent` | percentages | Read filters. |
+| `threads` | integer | CoverM's default is 1. |
+
+Returns the number of contigs in the table and, per sample, the reads mapped and their percentage
+from CoverM's log. Not offered: BAM input or caching (`--bam-files`, `--cache-unfiltered-bam-*`),
+the `--*-params` options (free text passed to the aligner), sharding and pre-built indexes.
+
+#### `metabat2`
+
+Bins the contigs into genomes by depth and tetranucleotide frequency. Writes
+`<outdir>/<prefix>.<n>.fa`, one FASTA per bin, ready for `checkm2` (`genome_dir` the outdir,
+`extension` `fa`), `gtdbprep_ani` and `gtdbtk_classify_wf`, and then `isotable` with `mode: mag`.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `contigs` | file (required) | The assembly, FASTA. |
+| `depth` | file | `coverm_contig`'s metabat table (its header is checked). Without it MetaBAT2 bins on tetranucleotide frequency alone, which works poorly. |
+| `outdir` | folder (required) | Folder for the bins; created by the server. |
+| `prefix` | text | Bin name prefix, default `bin`. |
+| `min_contig` | integer, at least 1500 | Shortest contig binned (default 2500). |
+| `min_bin_size` | integer | Smallest bin written, in bp (default 200000). |
+| `seed` | integer, 1 or more | Default **1** here: MetaBAT2's own default (0) draws a random seed, so its bins would differ between runs. |
+| `threads` | integer | MetaBAT2's default is every core. |
+| `unbinned`, `no_sample_depths` | booleans | Also write `<prefix>.unbinned.fa`; leave per-sample depths out of the bin headers. |
+
+Returns each bin's contigs, length, N50 and GC, the bin count and the binned length. MetaBAT2 has
+no `--version`, so the version is the first line of its `--help` (on stderr), in the record and in
+`replay.sh`'s version check. It fails (exit 1, "no large target contigs") when no contig reaches
+`min_contig`.
+
 #### Example: an isolate from reads to resistance genes
 
 A session an agent might run (paths shortened):
@@ -677,6 +749,27 @@ cd /data/demo || exit 1
 GTDBTK_DATA_PATH=/home/u/.local/share/dblock/gtdbtk-r232/release232; export GTDBTK_DATA_PATH
 step 005 0 ext gtdbtk classify_wf --genome_dir=asm --out_dir=gtdbtk --pplacer_cpus=1 --scratch_dir=scratch
 ```
+
+#### Example: a metagenome to MAGs
+
+```json
+{"name": "fastp", "arguments": {"in1": "reads/m1_1.fastq.gz", "in2": "reads/m1_2.fastq.gz",
+  "out1": "trim/m1_1.fastq.gz", "out2": "trim/m1_2.fastq.gz", "json": "trim/m1.fastp.json"}}
+{"name": "megahit", "arguments": {"r1": ["trim/m1_1.fastq.gz"], "r2": ["trim/m1_2.fastq.gz"],
+  "outdir": "asm/m1", "memory_gb": 6, "threads": 6}}
+{"name": "coverm_contig", "arguments": {"reference": "asm/m1/final.contigs.fa", "r1": ["trim/m1_1.fastq.gz"],
+  "r2": ["trim/m1_2.fastq.gz"], "output": "depth/m1.depth.tsv", "methods": ["metabat"], "threads": 6}}
+{"name": "metabat2", "arguments": {"contigs": "asm/m1/final.contigs.fa", "depth": "depth/m1.depth.tsv",
+  "outdir": "bins/m1", "threads": 6}}
+{"name": "checkm2", "arguments": {"genome_dir": "bins/m1", "extension": "fa", "outdir": "checkm2", "threads": 6}}
+{"name": "gtdbprep_ani", "arguments": {"genome_dir": "bins/m1", "extension": "fa", "work": "ani", "species_only": true}}
+{"name": "gtdbtk_classify_wf", "arguments": {"genome_dir": "bins/m1", "extension": "fa", "data_path": "ani/gtdbtk_data",
+  "out_dir": "gtdbtk", "pplacer_cpus": 1}}
+{"name": "isotable", "arguments": {"dirs": ["checkm2", "gtdbtk"], "mode": "mag"}}
+```
+
+isotable's MAG mode gives each bin a MIMAG tier from CheckM2's completeness and contamination.
+[The laptop test](../research/mag-laptop.md) ran this on a groundwater metagenome inside 8 GB.
 
 ### `describe_run`, `list_runs`
 
@@ -791,7 +884,7 @@ sh irit-runs/<run-id>/replay.sh                            # binaries from PATH
 IRIT_BIN_DIR=/opt/irit/bin sh irit-runs/<run-id>/replay.sh # or from a folder
 ```
 
-Third-party tools (fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder) are always taken from
+Third-party tools (fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder, megahit, coverm, metabat2) are always taken from
 `PATH`, so activate their conda environment first. `IRIT_BIN_DIR` applies to the irit tools only.
 
 Some third-party outputs differ between two identical runs. They are recorded with

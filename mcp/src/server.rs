@@ -20,7 +20,8 @@ isotable (one graded QC row per sample from tool outputs), seqplan (isolates per
 dblock_* (reference databases); \
 plus the microbial isolate path with third-party tools: fastp (trimming), shovill (Illumina assembly), flye and \
 medaka (nanopore/PacBio long-read assembly and polishing), bakta (annotation), checkm2 (completeness/contamination), gtdbprep_ani and gtdbtk_classify_wf (taxonomy), mlst (sequence type) and \
-amrfinder (AMRFinderPlus resistance genes). Those need the program installed (Bioconda) and, for bakta, \
+amrfinder (AMRFinderPlus resistance genes); and metagenomes to MAGs: megahit (assembly), coverm_contig (depth) and \
+metabat2 (bins), then checkm2, gtdbprep_ani/gtdbtk_classify_wf and isotable mode mag on the bins. Those need the program installed (Bioconda) and, for bakta, \
 checkm2, gtdbtk_classify_wf and amrfinder, a database (dblock_env shows dblock-managed paths); they can run for \
 hours. Their results list `warnings` when the installed version isn't the one irit-mcp was checked against, and for warnings the tool printed that matter (read them). \
 Parameters are checked before anything runs; unknown parameters are refused, so read each tool's schema \
