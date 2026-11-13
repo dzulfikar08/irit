@@ -17,6 +17,7 @@ anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 isotable = { path = "../isotable" }
+toml = "1.2.1"
 
 [dev-dependencies]
 tempfile = "3"

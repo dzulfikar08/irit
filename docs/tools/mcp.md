@@ -231,7 +231,9 @@ How they work:
   refused, and so is an empty file). Databases are checked for the files the program itself needs
   (below), so a wrong path fails in a second instead of after an hour.
 - **Databases.** Pass the path, or leave it out to use the variable the program reads (`BAKTA_DB`,
-  `CHECKM2DB`, `GTDBTK_DATA_PATH`, `AMRFINDER_DB`, as set when the server started). The server
+  `CHECKM2DB`, `GTDBTK_DATA_PATH`, `AMRFINDER_DB`, as set when the server started). With the
+  variable unset too, the server uses the one database of that kind locked in `dblock.lock` in its
+  working folder, and the result's `warnings` names it; two candidates are refused. The server
   resolves it before running and records it. `dblock_env` shows the paths of databases that dblock
   manages. mlst's PubMLST schemes come with the installed mlst (or `$MLST_DBDIR`): the server finds
   them from the program's own path and hashes them into the record (below).
@@ -434,7 +436,7 @@ and the placement-lite data, not the 85 GB skani database. This is an irit binar
 |---|---|---|
 | `genome_dir` | folder (required) | One genome per file; the file name is the genome's name. |
 | `extension` | text | Default `fna`. |
-| `index` | folder (required) | Screen index: `meta.json`, `refs.bin`, `markers.idx` (dblock `gtdbtk-r232-ani-screen`). |
+| `index` | folder | Screen index: `meta.json`, `refs.bin`, `markers.idx` (dblock `gtdbtk-r232-ani-screen`). Default: the ANI-screen index locked in `./dblock.lock`. |
 | `data_path` | folder | GTDB-Tk data with `taxonomy/`, `radii/`, `metadata/` (dblock `gtdbtk-r232-placement-lite`). Default `$GTDBTK_DATA_PATH`; sent as `--data`. |
 | `work` | folder (required) | Work folder inside the root. |
 | `overwrite` | boolean | Allow a `work` folder that has files. |
@@ -680,7 +682,7 @@ the record and the run agree, and `replay.sh` exports them before the call:
 |---|---|---|
 | `dblock_*` (except catalog) | `DBLOCK_STORE` | `$DBLOCK_STORE`, else `$XDG_DATA_HOME/dblock`, else `$HOME/.local/share/dblock` |
 | `sheetgen` with `pipeline` | `NXF_HOME` | `$NXF_HOME`, else `$HOME/.nextflow` |
-| `gtdbtk_classify_wf` | `GTDBTK_DATA_PATH` | `data_path`, else `$GTDBTK_DATA_PATH` |
+| `gtdbtk_classify_wf` | `GTDBTK_DATA_PATH` | `data_path`, else `$GTDBTK_DATA_PATH`, else the one locked in `./dblock.lock` |
 
 Bakta, CheckM2 and AMRFinderPlus get their database as a flag (`--db`, `--database_path`,
 `--database`), resolved the same way from `BAKTA_DB`, `CHECKM2DB` and `AMRFINDER_DB`, so it is in
