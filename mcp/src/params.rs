@@ -612,6 +612,14 @@ pub struct DescribeRunParams {
     /// Run id from list_runs. Default: the current session's run.
     #[serde(default)]
     pub run_id: Option<String>,
+    /// Return every call's full record (command, environment, every input and output with SHA-256).
+    /// Large: tens of kB per call. Default: a summary of each call (tool, status, version, error,
+    /// warnings, output paths).
+    #[serde(default)]
+    pub detail: bool,
+    /// Return this one call's full record only.
+    #[serde(default)]
+    pub call_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

@@ -795,19 +795,42 @@ GTDB's server: ask the user). Returns per genome: whether the screen assigned it
         Ok(CallToolResult::structured(v))
     }
 
-    #[tool(description = "Show a run record: every call with its exact command, tool version, working directory, input and output \
-files with SHA-256, times and exit status, plus the paths of replay.sh (re-runs the commands without an AI) and the RO-Crate.")]
+    #[tool(description = "Show a run record: by default a summary of every call (tool, status, version, error, warnings, \
+output paths); with detail, every call's exact command, working directory, input and output files with SHA-256, times \
+and exit status; with call_id, that one call in full. Also the paths of replay.sh (re-runs the commands without an AI) \
+and the RO-Crate.")]
     async fn describe_run(&self, Parameters(params): Parameters<p::DescribeRunParams>) -> Result<CallToolResult, ErrorData> {
         match self.read_log(params.run_id.as_deref()) {
             Ok(log) => {
                 let dir = self.cfg.runs_root.join(&log.run_id);
-                Ok(CallToolResult::structured(json!({
+                let mut v = json!({
                     "run_dir": dir,
                     "replay_script": dir.join("replay.sh"),
                     "ro_crate": dir.join("ro-crate-metadata.json"),
                     "current": log.run_id == self.cfg.run_id,
-                    "run": log,
-                })))
+                });
+                if let Some(id) = params.call_id {
+                    let Some(call) = log.calls.iter().find(|c| c.id == id) else {
+                        return Ok(CallToolResult::structured_error(json!({
+                            "error": "call_not_found",
+                            "message": format!("run {} has no call {id} (it has {})", log.run_id, log.calls.len()),
+                        })));
+                    };
+                    v["run_id"] = json!(log.run_id);
+                    v["call"] = json!(call);
+                } else if params.detail {
+                    v["run"] = json!(log);
+                } else {
+                    v["run"] = json!({
+                        "run_id": log.run_id,
+                        "created": log.created,
+                        "irit_mcp_version": log.irit_mcp_version,
+                        "license": log.license,
+                        "calls": log.calls.iter().map(record::call_summary).collect::<Vec<_>>(),
+                    });
+                    v["note"] = json!("summary; pass detail: true for every call's full record, or call_id for one");
+                }
+                Ok(CallToolResult::structured(v))
             }
             Err(e) => Ok(CallToolResult::structured_error(json!({"error": "run_not_found", "message": e}))),
         }

@@ -1846,6 +1846,17 @@ fn amrfinder_db(field: &str, shown: &str, dir: &Path, organism: Option<&str>, nu
     };
     let missing: Vec<&str> = AMRFINDER_DB_FILES.iter().copied().filter(|f| !dir.join(f).is_file()).collect();
     if !missing.is_empty() {
+        // Bakta's database bundles a trimmed copy (amrfinderplus-db/): the BLAST and HMMER indexes
+        // without the sequence files, which serves Bakta's own protein search but not amrfinder.
+        if dir.join("AMRProt.fa.phr").is_file() && !dir.join("AMRProt.fa").is_file() {
+            return v::invalid(
+                field,
+                format!(
+                    "{shown} has the indexes but not the files they were built from ({}): the trimmed copy Bakta's database ships for Bakta's own use, not a full AMRFinderPlus database. Fetch one with dblock (amrfinderplus-db-4.2-2026-10-29.1)",
+                    missing.join(", ")
+                ),
+            );
+        }
         return v::invalid(field, format!("{shown} is missing {} (incomplete download?)", missing.join(", ")));
     }
     if let Some(idx) = AMRFINDER_INDEX_FILES.iter().find(|f| !dir.join(f).is_file()) {
@@ -2523,6 +2534,13 @@ mod tests {
         // the database is checked the way amrfinder 4.2.7 does
         fake_amrfinder_db(&d.path().join("raw"), "2026-10-29.1", "4.2.0", false);
         assert!(bad(json!({"database": "raw"})).message.contains("not indexed"));
+        // Bakta's trimmed copy: indexes without the files they came from
+        fake_amrfinder_db(&d.path().join("bakta-amr"), "2026-10-29.1", "4.2.0", true);
+        for f in ["AMRProt.fa", "AMR.LIB", "AMR_CDS.fa"] {
+            std::fs::remove_file(d.path().join("bakta-amr").join(f)).unwrap();
+        }
+        let e = bad(json!({"database": "bakta-amr"}));
+        assert!(e.message.contains("Bakta's database ships") && e.message.contains("amrfinderplus-db-4.2"), "{}", e.message);
         fake_amrfinder_db(&d.path().join("old"), "2025-07-16.1", "4.0.0", true);
         assert!(bad(json!({"database": "old"})).message.contains("2025-09-22.2"));
         fake_amrfinder_db(&d.path().join("new"), "2027-01-01.1", "4.4.0", true);

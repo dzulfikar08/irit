@@ -140,6 +140,32 @@ pub fn new_run_id() -> String {
     format!("{}-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ"), std::process::id())
 }
 
+/// One call in a few hundred bytes: what describe_run shows by default (the full record, with
+/// every input's SHA-256, can be tens of kB).
+pub fn call_summary(c: &CallRecord) -> Value {
+    let mut v = json!({
+        "id": c.id,
+        "mcp_tool": c.mcp_tool,
+        "status": c.status,
+        "started": c.started,
+        "ended": c.ended,
+        "outputs": c.outputs.iter().map(|o| o.path.as_str()).collect::<Vec<_>>(),
+    });
+    if let Some(x) = &c.version {
+        v["version"] = json!(x);
+    }
+    if let Some(x) = c.exit_status {
+        v["exit_status"] = json!(x);
+    }
+    if let Some(x) = &c.error {
+        v["error"] = json!(x);
+    }
+    if !c.warnings.is_empty() {
+        v["warnings"] = json!(c.warnings);
+    }
+    v
+}
+
 /// Refuse a run folder that already holds a record: a new session would restart call numbering
 /// and overwrite `run.json`, `replay.sh` and the call outputs, losing the earlier run's provenance.
 /// An empty folder (made by hand, say) is fine.
@@ -457,6 +483,23 @@ fn env_name_ok(k: &str) -> bool {
     !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// What a `gtdbprep ani` call needs from outside the run folder: its reference sketches come from
+/// a per-user cache, and those not cached on the replaying machine are fetched from `--source`.
+fn sketch_cache_note(c: &CallRecord) -> Option<String> {
+    if c.argv.first().map(String::as_str) != Some("gtdbprep") || c.argv.get(1).map(String::as_str) != Some("ani") {
+        return None;
+    }
+    let flag = |name: &str| c.argv.iter().find_map(|a| a.strip_prefix(&format!("--{name}=")));
+    let cache = flag("cache").unwrap_or("the default cache");
+    Some(match flag("source") {
+        Some("gtdb") => format!(
+            "reads reference sketches from {cache}; any not cached on this machine are range-read from GTDB's server again (--source=gtdb)"
+        ),
+        Some(src) => format!("reads reference sketches from {cache}; any not cached on this machine are read from {src}"),
+        None => format!("reads reference sketches from {cache}; with no --source it fails if any are not cached on this machine"),
+    })
+}
+
 pub fn replay_script(log: &RunLog) -> String {
     let mut s = String::new();
     s += "#!/bin/sh\n";
@@ -532,6 +575,9 @@ pub fn replay_script(log: &RunLog) -> String {
                     }
                 }
                 let step = format!("step {n} {} {} {cmd}\n", c.exit_status.unwrap_or(0), runner(c));
+                if let Some(note) = sketch_cache_note(c) {
+                    s += &sh_comment(&note);
+                }
                 if fetch {
                     s += &sh_comment(&format!("downloads databases again: {}", step.trim_end()));
                     s += &format!(
@@ -1214,5 +1260,19 @@ mod tests {
         assert!(e.contains("already holds a run record") && e.contains("--run-id"), "{e}");
         assert_eq!(fs::read(d.path().join("agent-1/run.json")).unwrap(), before);
         assert!(check_run_dir_unused(d.path(), "agent-2").is_ok());
+    }
+
+    #[test]
+    fn replay_says_where_gtdbprep_sketches_come_from() {
+        let mut c = call(1, Status::Ok);
+        c.mcp_tool = "gtdbprep_ani".into();
+        c.argv = ["gtdbprep", "ani", "--genomes=g", "--cache=/home/u/.cache/irit/gtdbprep-ani", "--source=gtdb"].map(String::from).to_vec();
+        let mut log = RunLog { run_id: "r".into(), license: default_license(), irit_mcp_version: "0".into(), created: now(), calls: vec![c] };
+        let s = replay_script(&log);
+        assert!(s.contains("# reads reference sketches from /home/u/.cache/irit/gtdbprep-ani; any not cached on this machine are range-read from GTDB's server again"), "{s}");
+        log.calls[0].argv.pop();
+        assert!(replay_script(&log).contains("with no --source it fails if any are not cached"));
+        log.calls[0].argv = ["leanqc", "--outdir=qc"].map(String::from).to_vec();
+        assert!(!replay_script(&log).contains("reference sketches"));
     }
 }

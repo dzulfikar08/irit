@@ -81,8 +81,21 @@ fn leanqc_over_stdio_is_recorded_and_replayable() {
     let r = c.call("dblock_fetch", json!({"confirm": false}));
     assert_eq!(r["structuredContent"]["field"], "confirm");
 
+    // a summary by default: no argv, inputs or hashes
     let d = c.call("describe_run", json!({}));
-    assert_eq!(d["structuredContent"]["run"]["calls"].as_array().unwrap().len(), 3);
+    let calls = d["structuredContent"]["run"]["calls"].as_array().unwrap().clone();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0]["mcp_tool"], "leanqc");
+    assert!(calls[0].get("argv").is_none() && calls[0].get("inputs").is_none(), "{}", calls[0]);
+    assert!(calls[0]["outputs"].as_array().unwrap().iter().any(|o| o.as_str().unwrap().ends_with(".json")), "{}", calls[0]);
+    // the full record on request, or one call
+    let full = c.call("describe_run", json!({"detail": true}));
+    assert!(full["structuredContent"]["run"]["calls"][0]["argv"].is_array());
+    let one = c.call("describe_run", json!({"call_id": 2}));
+    assert_eq!(one["structuredContent"]["call"]["id"], 2);
+    assert!(one["structuredContent"]["call"]["argv"].is_array());
+    let none = c.call("describe_run", json!({"call_id": 9}));
+    assert_eq!(none["isError"], true);
     let runs = c.call("list_runs", json!({}));
     assert_eq!(runs["structuredContent"]["runs"][0]["run_id"], "test-run");
     c.close();
