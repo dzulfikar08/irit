@@ -322,42 +322,60 @@ fn quast(path: &Path) -> Result<Vec<Record>> {
         .collect())
 }
 
-/// QUAST's default `--min-contig`: its `# contigs`, `Total length` and `N50` count only contigs
-/// at least this long.
+/// QUAST's default `--min-contig`: its `# contigs`, `Total length`, `N50` and `GC (%)` count only
+/// contigs at least this long.
 const QUAST_MIN_CONTIG: u64 = 500;
 
 /// Shovill's `<outdir>/contigs.fa` (recognised by the `shovill.log` beside it), named after its
-/// folder as Shovill always names the file contigs.fa. Contigs, length and N50 are counted the way
-/// QUAST reports them (contigs of 500 bp or more), so a QUAST report on the same assembly agrees.
+/// folder as Shovill always names the file contigs.fa. Contigs, length, N50 and GC are counted the
+/// way QUAST reports them (contigs of 500 bp or more; GC over A, C, G and T), so a QUAST report on
+/// the same assembly agrees.
 fn shovill(path: &Path) -> Result<Vec<Record>> {
     let name = path
         .parent()
         .and_then(Path::file_name)
         .map(|n| n.to_string_lossy().into_owned())
         .context("contigs.fa has no folder to name the sample")?;
-    let mut lens = Vec::new();
-    let mut cur: Option<u64> = None;
+    // (length, G+C, A+C+G+T) per contig
+    let mut contigs: Vec<(u64, u64, u64)> = Vec::new();
+    let mut cur: Option<(u64, u64, u64)> = None;
     for line in std::io::BufReader::new(std::fs::File::open(path)?).lines() {
         let line = line?;
         if line.starts_with('>') {
-            lens.extend(cur.replace(0));
-        } else if let Some(n) = cur.as_mut() {
-            *n += line.trim_end().len() as u64;
+            contigs.extend(cur.replace((0, 0, 0)));
+        } else if let Some((len, gc, acgt)) = cur.as_mut() {
+            let seq = line.trim_end().as_bytes();
+            *len += seq.len() as u64;
+            for b in seq {
+                match b.to_ascii_uppercase() {
+                    b'G' | b'C' => {
+                        *gc += 1;
+                        *acgt += 1;
+                    }
+                    b'A' | b'T' => *acgt += 1,
+                    _ => {}
+                }
+            }
         } else if !line.trim().is_empty() {
             bail!("not FASTA: sequence before the first > line");
         }
     }
-    lens.extend(cur);
-    lens.retain(|&l| l >= QUAST_MIN_CONTIG);
-    lens.sort_unstable_by(|a, b| b.cmp(a));
-    let total: u64 = lens.iter().sum();
+    contigs.extend(cur);
+    contigs.retain(|c| c.0 >= QUAST_MIN_CONTIG);
+    contigs.sort_unstable_by_key(|a| std::cmp::Reverse(a.0));
+    let total: u64 = contigs.iter().map(|c| c.0).sum();
     let mut acc = 0;
-    let n50 = lens.iter().find(|&&l| {
-        acc += l;
+    let n50 = contigs.iter().find(|c| {
+        acc += c.0;
         acc * 2 >= total
     });
-    let mut fields = vec![("contigs", Value::Int(lens.len() as u64)), ("length", Value::Int(total))];
-    fields.extend(n50.map(|&n| ("n50", Value::Int(n))));
+    let mut fields = vec![("contigs", Value::Int(contigs.len() as u64)), ("length", Value::Int(total))];
+    fields.extend(n50.map(|c| ("n50", Value::Int(c.0))));
+    let (gc, acgt) = contigs.iter().fold((0, 0), |(g, a), c| (g + c.1, a + c.2));
+    if acgt > 0 {
+        // two decimals, as QUAST prints it
+        fields.push(("gc", Value::Num((gc as f64 * 10000.0 / acgt as f64).round() / 100.0)));
+    }
     Ok(vec![rec(name, Kind::Genome, fields)])
 }
 
@@ -391,11 +409,16 @@ pub fn checkm2(path: &Path) -> Result<Vec<Record>> {
         .collect())
 }
 
+/// GTDB-Tk's `<prefix>.<marker>.summary.tsv` (`classification`), or the ANI screen's
+/// `classify/ani_screen/<prefix>.<marker>.ani_summary.tsv` (`reference_taxonomy`), which is all
+/// there is when the screen assigned every genome (gtdbprep ani, or classify_wf with nothing left
+/// to place). For a screened genome GTDB-Tk's summary gives the same taxonomy, so the two agree.
 pub fn gtdbtk(path: &Path) -> Result<Vec<Record>> {
     Ok(tsv(path)?
         .into_iter()
         .filter_map(|r| {
-            Some(rec(r.get("user_genome")?.clone(), Kind::Genome, vec![("gtdb", Value::Text(r.get("classification")?.clone()))]))
+            let tax = r.get("classification").or_else(|| r.get("reference_taxonomy"))?;
+            Some(rec(r.get("user_genome")?.clone(), Kind::Genome, vec![("gtdb", Value::Text(tax.clone()))]))
         })
         .collect())
 }
@@ -698,7 +721,8 @@ mod tests {
         let (records, seen, _) = scan(&[t.path().to_path_buf()]).unwrap();
         assert_eq!(seen["Shovill"], 1);
         assert_eq!(records[0].raw_name, "s1");
-        assert_eq!(records[0].fields, [("contigs", Value::Int(2)), ("length", Value::Int(1600)), ("n50", Value::Int(1000))]);
+        // GC over the two counted contigs: 400 C + 600 G of 1600
+        assert_eq!(records[0].fields, [("contigs", Value::Int(2)), ("length", Value::Int(1600)), ("n50", Value::Int(1000)), ("gc", Value::Num(62.5))]);
         std::fs::write(dir.join("contigs.fa"), "ACGT\n").unwrap();
         assert!(scan(&[t.path().to_path_buf()]).is_err());
     }
@@ -717,5 +741,27 @@ mod tests {
         std::fs::write(&reads, "C\tread1\t562\t150\t562:116\nU\tread2\t0\t150\t0:116\n").unwrap();
         assert!(kraken(&reads, "s1.kraken2.classifiedreads.txt").unwrap().is_none());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn gtdb_ani_screen_summary_gives_the_classification() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("classify/ani_screen");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tax = "d__Bacteria;p__Pseudomonadota;c__Gammaproteobacteria;o__Enterobacterales;f__Enterobacteriaceae;g__Klebsiella;s__Klebsiella pneumoniae";
+        // as GTDB-Tk 2.8 writes it (other_related_references shortened)
+        std::fs::write(
+            dir.join("gtdbtk.bac120.ani_summary.tsv"),
+            format!("user_genome\treference_genome\tskani_ani\tskani_af\treference_taxonomy\tother_related_references(genome_id,species_name,radius,ANI,AF)\ns1\tGCF_000742135.1\t99.14\t0.8736\t{tax}\tGCF_020526085.1, s__Klebsiella africana, 95.17, 95.18, 0.826\n"),
+        )
+        .unwrap();
+        let (records, seen, _) = scan(&[t.path().to_path_buf()]).unwrap();
+        assert_eq!(seen["GTDB-Tk"], 1);
+        assert_eq!(records[0].raw_name, "s1");
+        assert_eq!(records[0].fields, [("gtdb", Value::Text(tax.into()))]);
+        // classify_wf's summary for the same genome says the same, so the two don't conflict
+        std::fs::write(t.path().join("classify/gtdbtk.bac120.summary.tsv"), format!("user_genome\tclassification\ns1\t{tax}\n")).unwrap();
+        let (records, _, _) = scan(&[t.path().to_path_buf()]).unwrap();
+        assert!(records.iter().all(|r| r.fields == [("gtdb", Value::Text(tax.into()))]));
     }
 }

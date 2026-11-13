@@ -39,10 +39,10 @@ Found anywhere under the given folders, by file name:
 | FastQC, [FastQC-Rust](https://github.com/ewels/FastQC-Rust) | `*_fastqc.zip`, or an extracted `*_fastqc/` folder (`fastqc_data.txt` and `summary.txt`), one per read file | sequences, %GC, failed and warned modules (R1 and R2 merged) |
 | Kraken 2 | `*kraken2*.txt`, `*.kreport`, `*.report` whose content is a Kraken 2 report | top species and its % |
 | QUAST | `transposed_report.tsv` | contigs, length, N50, GC |
-| Shovill | `contigs.fa` with `shovill.log` beside it; the sample is the folder's name | contigs, length, N50, counted as QUAST does (contigs of 500 bp or more), so the two agree |
+| Shovill | `contigs.fa` with `shovill.log` beside it; the sample is the folder's name | contigs, length, N50 and GC, counted as QUAST does (contigs of 500 bp or more), so the two agree |
 | BUSCO | `short_summary.*.json` | complete %, lineage |
 | CheckM2 | `quality_report.tsv` | completeness, contamination |
-| GTDB-Tk | `*summary.tsv` | classification |
+| GTDB-Tk | `*summary.tsv`, or the ANI screen's `classify/ani_screen/*.ani_summary.tsv` (from `gtdbprep ani`, or classify_wf when the screen assigned every genome) | classification |
 | mlst | `*mlst*.tsv` | scheme, sequence type |
 | AMRFinderPlus | `*amrfinder*.tsv` | AMR genes |
 
