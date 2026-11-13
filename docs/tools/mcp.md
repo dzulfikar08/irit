@@ -665,6 +665,13 @@ recorded instead, and replay prints them beside the replayed assembly's. Not off
 `--continue`, `--tmp-dir` (MEGAHIT writes under `outdir`), `--keep-tmp-files`, `--no-hw-accel`,
 `--mem-flag` and the graph-cleaning options.
 
+The bins' taxonomy: `gtdbprep_ani` assigns bins of known species. GTDB-Tk's `classify_wf` can't
+place the rest on dblock's `gtdbtk-r232-placement-lite` data: it always aligns against GTDB's
+reference MSA, which placement-lite leaves out, and fails with `msa/gtdb_r232_bac120.faa does not
+exist`. Until that is solved, place them with the full GTDB-Tk data, or outside irit-mcp with
+`gtdbtk identify`, `gtdbtk align --skip_gtdb_refs` and `classify` with the ANI screen skipped (see
+[the MAG laptop test](../research/mag-laptop.md)).
+
 #### `coverm_contig`
 
 Maps each sample's reads to the contigs and writes a per-contig coverage table. With `methods:
@@ -761,7 +768,7 @@ step 005 0 ext gtdbtk classify_wf --genome_dir=asm --out_dir=gtdbtk --pplacer_cp
   "r2": ["trim/m1_2.fastq.gz"], "output": "depth/m1.depth.tsv", "methods": ["metabat"], "threads": 6}}
 {"name": "metabat2", "arguments": {"contigs": "asm/m1/final.contigs.fa", "depth": "depth/m1.depth.tsv",
   "outdir": "bins/m1", "threads": 6}}
-{"name": "checkm2", "arguments": {"genome_dir": "bins/m1", "extension": "fa", "outdir": "checkm2", "threads": 6}}
+{"name": "checkm2", "arguments": {"genome_dir": "bins/m1", "extension": "fa", "outdir": "checkm2", "lowmem": true, "threads": 6}}
 {"name": "gtdbprep_ani", "arguments": {"genome_dir": "bins/m1", "extension": "fa", "work": "ani", "species_only": true}}
 {"name": "gtdbtk_classify_wf", "arguments": {"genome_dir": "bins/m1", "extension": "fa", "data_path": "ani/gtdbtk_data",
   "out_dir": "gtdbtk", "pplacer_cpus": 1}}
@@ -769,6 +776,8 @@ step 005 0 ext gtdbtk classify_wf --genome_dir=asm --out_dir=gtdbtk --pplacer_cp
 ```
 
 isotable's MAG mode gives each bin a MIMAG tier from CheckM2's completeness and contamination.
+Use CheckM2's `lowmem` for more than a few bins under 8 GB: at its default DIAMOND block size it
+was killed at an 8 GB cap on 23 MAGs, and with `lowmem` it peaked at 5.6 GiB.
 [The laptop test](../research/mag-laptop.md) ran this on a groundwater metagenome inside 8 GB.
 
 ### `describe_run`, `list_runs`
@@ -901,6 +910,9 @@ inputs and paths in the real-tools workflow (below) and comparing every file:
 | bakta | `.log`, `.gbff`, `.embl`, `.json`, `.svg` | Run times and dates (GenBank `LOCUS` date; in the JSON only `run.start` and `run.end`). |
 | checkm2 | `checkm2.log` | Timestamps. |
 | gtdbtk | `.log`, `gtdbtk.json`, `.gz` | Timestamps (in `gtdbtk.json` only each step's start and end); gzip headers carry a time. |
+| megahit | everything | The log has times; `final.contigs.fa` differed between two identical runs in the real-tools workflow (same 92 contigs, 3,384,504 bp and N50 both times), and so did the intermediate contigs. Replay compares the assembly's contig count, length and N50, as for Shovill. |
+| coverm_contig | none | Three runs on the same assembly and reads gave identical depth tables ([MAG laptop test](../research/mag-laptop.md)); it differs on replay only when the assembly it reads did. |
+| metabat2 | none | With the seed irit-mcp passes (1 unless set), a second run gave identical bins and `bin.BinMembers.txt`; `bin.BinInfo.txt` names the output folder. MetaBAT2's own default seed is random. |
 
 The script warns when a tool's `--version` (its first line) differs from the recorded one (a tool whose version
 couldn't be read in the run gets one "version unknown" line instead), exports each call's recorded

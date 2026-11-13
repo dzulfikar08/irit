@@ -53,6 +53,20 @@ MRA e01270-25) through irit-mcp alone (#14-#19).
 - **`seqplan` tool**: the same plan as JSON, so an agent answers from cited kit figures; it is told
   never to invent a run price.
 
+### irit-mcp: metagenomes to MAGs
+- **`megahit`, `coverm_contig` and `metabat2`**: MEGAHIT 1.2.9 assembly, CoverM 0.8.0 per-contig
+  depth (`methods: ["metabat"]` writes MetaBAT2's depth table) and MetaBAT 2.18 binning, pinned and
+  replayable like the isolate tools. Then `checkm2` on the bins, `gtdbprep_ani` and isotable's MAG
+  mode. Measured on the laptop in [Metagenome to MAGs in 8 GB](docs/research/mag-laptop.md): a
+  Crystal Geyser groundwater sample gave 23 bins (4 `high*`, 13 medium, 8 of them
+  Patescibacteria), every step within an 8 GB cap.
+- MEGAHIT's memory defaults to 4 GB (MEGAHIT's own default, 90% of the machine, ignores memory
+  caps); MetaBAT2's seed defaults to 1, so bins repeat. MetaBAT2's version comes from `--help`,
+  in the record and in `replay.sh`.
+- A failed tool gets a `hint` when it ran out of memory: CheckM2's SIGKILLed DIAMOND step (use
+  `lowmem`), or any tool killed by a signal.
+- The real-tools workflow runs the three on a two-genome mock metagenome, twice, and replays them.
+
 ### msascope
 - **Menu bar** (macOS) with About, Acknowledgements, Hide, Quit, Open, Open Sample Alignment,
   Export, Close File, Close Window, Copy Selection and Select All. Quit, Open, Close Window, Export,

@@ -124,11 +124,17 @@ What's done, what's next, and what's further out. Items move up as evidence come
       ([write-up](research/paper-redo-kpn.md)). Still to do: more papers and lineages, and the
       hand-built comparison.
 - [ ] **Gaps the paper redo showed**: QUAST-style assembly stats, coverage by read mapping, and
-      virulence/typing (Kleborate, VirulenceFinder/VFDB); then a MAG route for metagenomes
-      (assembly, binning, abundance, dereplication) on 8 GB.
+      virulence/typing (Kleborate, VirulenceFinder/VFDB).
 - [x] **How much depth is enough** ([write-up](research/coverage-depth.md)): on the paper's three
       *K. pneumoniae*, every Table 1 call held down to 15× (20× is a practical target, 2.5 times as
       many isolates per run as 50×); below that Shovill needs `gsize` (#22).
+- [x] **A MAG route for metagenomes on 8 GB** ([laptop test](research/mag-laptop.md)): MEGAHIT,
+      CoverM and MetaBAT2 in irit-mcp, then CheckM2 (`lowmem`), the GTDB ANI screen and isotable's
+      MAG mode. A CPR-rich groundwater sample gave 23 bins (4 `high*`, 13 medium), 8 of them
+      Patescibacteria, every step within 8 GB.
+- [ ] **Next for MAGs**: tree placement of unassigned bins on placement-lite (`classify_wf` needs
+      GTDB's reference MSA, which placement-lite leaves out); SemiBin2's pretrained models;
+      co-assembly within 8 GB for diverse, shallow samples; dereplication (galah) across samples.
 - [ ] **Instrument connection**: lab instruments run vendor software on dedicated (often older Windows)
       PCs, and labs usually connect them through a LIMS, which parses instrument exports or uses vendor
       drivers. So the practical route is the LIMS or the files instruments drop for it. Open standards exist (SiLA 2; LADS, an OPC UA companion specification for lab devices).
