@@ -186,9 +186,13 @@ jobs:
           set -euo pipefail
           file target/release/msascope
           target/release/msascope --help
+      - name: Acknowledgements (licences of msascope's dependencies)
+        run: |
+          cargo install cargo-about --locked --features cli
+          ./scripts/acknowledgements.sh dist/Acknowledgements.html
       - name: Package
         run: |
-          ./scripts/package.sh "dist/${NAME}" target/release/msascope
+          ./scripts/package.sh "dist/${NAME}" target/release/msascope dist/Acknowledgements.html
           tar -tzf "dist/${NAME}.tar.gz"
       - uses: actions/upload-artifact@v4
         with:
@@ -284,10 +288,15 @@ jobs:
           set -euo pipefail
           bins=(); for b in $CLI_BINS; do bins+=("dist/universal/$b"); done
           ./scripts/sign-macos.sh --notarize "${bins[@]}"
+      - name: Acknowledgements (licences of msascope's dependencies)
+        run: |
+          cargo install cargo-about --locked --features cli
+          ./scripts/acknowledgements.sh dist/Acknowledgements.html
       - name: Build, sign, notarise, staple (msascope.app + DMG)
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          MSASCOPE_ACKNOWLEDGEMENTS: dist/Acknowledgements.html
         run: ./scripts/build-dmg.sh --notarize --name "msascope-${VERSION}" dist/universal/msascope dist
       - name: Smoke test
         run: |

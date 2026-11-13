@@ -37,6 +37,23 @@ MRA e01270-25) through irit-mcp alone (#14-#19).
 ### gtdbprep
 - The missing-sketch error says how much would be fetched and suggests `--species-only` (#19).
 
+### msascope
+- **Menu bar** (macOS) with About, Acknowledgements, Hide, Quit, Open, Open Sample Alignment,
+  Export, Close File, Close Window, Copy Selection and Select All. Quit, Open, Close Window, Export,
+  Copy and Select All are key bindings (⌘ on macOS, Ctrl elsewhere), so the menus show them.
+- **Closing the window**: on macOS msascope keeps running and a click on its Dock icon opens a new
+  window; elsewhere closing the last window quits. Before, it kept running without a window.
+- **Finder opens files with msascope** (Open With, a drop on the Dock icon): alignments and trees,
+  registered as an alternative app, not the default one.
+- **Acknowledgements**: the licences of every dependency compiled into msascope, plus the Lucide
+  icons and Catppuccin palettes, generated with cargo-about and shipped as `Acknowledgements.html`
+  in msascope.app and the Linux archives. Neither shipped them before.
+- **Mac App Store edition, prepared**: it runs in the App Sandbox (security-scoped bookmarks for
+  recent files, **File ▸ Allow Access to Folder…** for a tree next to the alignment, a clear message
+  for a file it may not read); `scripts/build-mas-pkg.sh` and the `msascope-mas.yml` workflow build,
+  validate and upload it. CI checks that msascope's dependencies stay permissively licensed
+  (`msascope/deny.toml`) and that a sandboxed copy starts and can't read a file nobody chose.
+
 ## 0.3.5 (2026-11-12)
 
 ### irit-mcp
