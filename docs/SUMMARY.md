@@ -28,6 +28,7 @@
 - [gPlace vs pplacer, and memory caps](research/gplace-checks.md)
 - [The ANI species check on a laptop](research/ani-laptop.md)
 - [Reads to GTDB species on a laptop, through irit-mcp](research/e2e-laptop.md)
+- [An AI agent redoes a 2025 paper](research/paper-redo-kpn.md)
 - [Problems reported upstream](research/upstream-reports.md)
 
 # Plans
