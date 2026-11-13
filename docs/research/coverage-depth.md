@@ -64,15 +64,19 @@ more than 10 times. At 5–10× that estimate fell to 0.01–0.11 Mb for a 5.5 M
 subsampled the already thin reads to that tiny size and assembled only 0.4–112 kb. irit-mcp
 reported `ok`. Given `gsize`, the same reads assembled to 5.35–5.46 Mb. At 15× the estimate was
 already wrong (0.5–0.7 Mb) without yet triggering the subsampling. **Below 30×, pass `gsize`.**
-irit should warn about this ([#22](https://github.com/dzulfikar08/irit/issues/22)).
+irit-mcp now warns when Shovill's log shows this ([#22](https://github.com/dzulfikar08/irit/issues/22)). It also
+gives the real depth over the assembly when Shovill's own figure is inflated: at 20× without
+`gsize`, Shovill estimated 1.5–1.9 Mb and reported 58–67×.
 
-Other irit problems found on the way:
-- [#23](https://github.com/dzulfikar08/irit/issues/23): one unsketchable genome aborts a whole
-  `gtdbprep ani` batch.
+Other irit problems found on the way, all fixed since:
+- [#23](https://github.com/dzulfikar08/irit/issues/23): one unsketchable genome aborted a whole
+  `gtdbprep ani` batch. Now it is listed as not screened, and the rest are screened.
 - [#24](https://github.com/dzulfikar08/irit/issues/24): mlst once picked an *E. coli* scheme for a
-  fragmented 10× *K. pneumoniae* assembly, with status OK.
+  fragmented 10× *K. pneumoniae* assembly, with status OK. irit-mcp now warns when mlst chose the
+  scheme itself and found no ST.
 - [#25](https://github.com/dzulfikar08/irit/issues/25): CheckM2 on 48 genomes in one call peaked at
-  7.7 GiB, near the 8 GB cap.
+  7.7 GiB, near the 8 GB cap. irit-mcp now warns above 20 genomes per call: on 8–16 GB machines,
+  run batches of 10–20 with `lowmem`.
 
 Time on the laptop, under heavy load from other work, so these are upper bounds:
 - Shovill: 3–7.5 minutes per isolate, peak 3.8 GiB.

@@ -92,9 +92,9 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [ ] **Nanopore isolates on a laptop**: `flye` and `medaka` tools in `irit-mcp` (unreleased). One
       carbapenemase-producing *K. pneumoniae* gave the same ST, the same 49 AMRFinderPlus elements,
       the same completeness and the same GTDB species from ONT reads alone as from Illumina, in an
-      8 GB cap ([write-up](research/nanopore-laptop.md)). Next: more isolates (plasmid-borne genes,
-      where Flye is weakest), a long-read read-QC row in isotable, recording Medaka's model file,
-      and Medaka's `batch_size` against peak memory.
+      8 GB cap ([write-up](research/nanopore-laptop.md)). isotable reads long-read QC, the record
+      hashes Medaka's model file, and Medaka `batch_size` 50 or 25 keeps it under 5 GiB with the
+      same consensus (#21). Next: more isolates (plasmid-borne genes, where Flye is weakest).
 - [ ] **`dblock` additions**: GTDB-Tk split download, parallel downloads.
 - [ ] **`leanqc` additions**: long-read views (N50, quality by length).
 - [ ] **Check the `irit-mcp` wrappers on a large machine**: Bakta with the full database, SPAdes
@@ -127,7 +127,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
       virulence/typing (Kleborate, VirulenceFinder/VFDB).
 - [x] **How much depth is enough** ([write-up](research/coverage-depth.md)): on the paper's three
       *K. pneumoniae*, every Table 1 call held down to 15× (20× is a practical target, 2.5 times as
-      many isolates per run as 50×); below that Shovill needs `gsize` (#22).
+      many isolates per run as 50×); below that Shovill needs `gsize`, and irit-mcp warns when it didn't get one (#22).
 - [x] **A MAG route for metagenomes on 8 GB** ([laptop test](research/mag-laptop.md)): MEGAHIT,
       CoverM and MetaBAT2 in irit-mcp, then CheckM2 (`lowmem`), the GTDB ANI screen and isotable's
       MAG mode. A CPR-rich groundwater sample gave 23 bins (4 `high*`, 13 medium), 8 of them

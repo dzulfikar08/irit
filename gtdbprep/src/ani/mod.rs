@@ -75,6 +75,9 @@ pub struct AniReport {
     pub fetched_bytes: u64,
     pub requests: u64,
     pub assigned: BTreeSet<String>,
+    /// Genomes skani made no sketch of (too short, e.g. a 407 bp assembly): left out of the
+    /// screen instead of failing the whole batch (issue #23).
+    pub unscreened: Vec<String>,
     pub out_dir: PathBuf,
     pub seconds_screen: f64,
     pub seconds_fetch: f64,
@@ -343,7 +346,7 @@ pub fn run(opts: &AniOptions, tools_: &crate::pipeline::Tools) -> Result<AniRepo
         ],
         &bin_dir,
     )?;
-    let genomes = read_genome_list(&list_json)?;
+    let mut genomes = read_genome_list(&list_json)?;
     ensure!(!genomes.is_empty(), "no genomes found");
 
     let mut report = AniReport::default();
@@ -381,10 +384,29 @@ pub fn run(opts: &AniOptions, tools_: &crate::pipeline::Tools) -> Result<AniRepo
         }
         let mut queries = Vec::new();
         for (id, p) in &genomes {
-            let m = by_path
-                .remove(&*p.to_string_lossy())
-                .with_context(|| format!("skani did not sketch {}", p.display()))?;
-            queries.push((id.clone(), m));
+            match by_path.remove(&*p.to_string_lossy()) {
+                Some(m) => queries.push((id.clone(), m)),
+                None => {
+                    eprintln!(
+                        "gtdbprep: warning: skani made no sketch of {} (genome {id}), usually because it is too short; it is not screened",
+                        p.display()
+                    );
+                    report.unscreened.push(id.clone());
+                }
+            }
+        }
+        if !report.unscreened.is_empty() {
+            ensure!(
+                !queries.is_empty(),
+                "skani made no sketch of any genome (too short?); nothing to screen"
+            );
+            // GTDB-Tk's screen reads the same list.
+            genomes.retain(|id, _| !report.unscreened.contains(id));
+            let list: BTreeMap<&String, String> = genomes
+                .iter()
+                .map(|(k, v)| (k, v.to_string_lossy().into_owned()))
+                .collect();
+            fs::write(&list_json, serde_json::to_string(&list)?)?;
         }
         let sets: Vec<Vec<u64>> = queries.iter().map(|(_, m)| m.clone()).collect();
         let hits = ix.screen(&sets)?;
@@ -662,6 +684,13 @@ impl AniReport {
             }
             s.push('\n');
         }
+        for id in &self.unscreened {
+            s += &format!("{id}\t-\t-\tfalse");
+            if self.species_only {
+                s += "\t-";
+            }
+            s.push('\n');
+        }
         s
     }
 }
@@ -808,6 +837,21 @@ mod tests {
             "GCF_000009045.1"
         );
         assert_eq!(accession("GCA_1.1"), "GCA_1.1");
+    }
+
+    #[test]
+    fn unscreened_genomes_are_listed_not_fatal() {
+        let mut r = AniReport {
+            genomes: vec![GenomeReport { id: "a".into(), markers: 4089, candidates: 21, used: 14 }],
+            species_only: true,
+            unscreened: vec!["tiny".into()],
+            ..Default::default()
+        };
+        r.assigned.insert("a".into());
+        assert_eq!(
+            r.to_tsv(),
+            "genome\tmarkers\tcandidates\tassigned_by_ani\tused\na\t4089\t21\ttrue\t14\ntiny\t-\t-\tfalse\t-\n"
+        );
     }
 
     #[test]

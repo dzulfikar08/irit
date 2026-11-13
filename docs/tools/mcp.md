@@ -252,9 +252,24 @@ How they work:
 - **Warnings on stderr.** Some warnings a tool prints still matter after a zero exit; they go into
   `warnings` (result and record): CheckM2's scikit-learn `InconsistentVersionWarning` (models saved
   with another scikit-learn, which "might lead to … invalid results") and AMRFinderPlus's `WARNING:`
-  lines. AMRFinderPlus from a conda environment that isn't activated gets `CONDA_PREFIX` set to that
+  lines, and gtdbprep's `warning:` lines (a genome left out of the ANI screen). AMRFinderPlus from a conda environment that isn't activated gets `CONDA_PREFIX` set to that
   environment (found from the program's path), as activation would; the database is always passed
   with `--database`, so that doesn't change which one is used.
+- **Warnings from the outputs.** Some results look fine by exit status but aren't; these also go
+  into `warnings`. All of them were seen in the [depth experiment](../research/coverage-depth.md):
+  - **Shovill.** Its genome-size estimate collapses at low depth (0.01–0.11 Mb for a 5.5 Mb
+    genome at 5–10×). Shovill then subsamples the reads to that size and assembles a fragment,
+    with exit 0. The server reads `shovill.log` and warns in three cases:
+    - Shovill subsampled to a size under 1 Mb, or to more than twice the assembly.
+    - The assembly is over twice the estimate. Shovill's depth figure is then too high; the
+      warning gives the real depth over the assembly.
+    - `gsize` was given and the assembly is under 70% of it.
+
+    A separate warning comes when the depth over the assembly is under 15×.
+  - **mlst.** With no `scheme`, mlst picks one by best allele matches. When it then assigns no
+    ST, the scheme may be another species' (a fragmented *K. pneumoniae* got `ecoli_achtman_4`).
+  - **CheckM2.** A call with more than 20 genomes warns before running. 48 genomes peaked at
+    7.7 GiB on an 8 GB laptop.
 - **Checks before running.** Inputs must exist and look right: FASTQ for fastp and Shovill, FASTA
   for Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus (plain or gzip; bzip2, xz and zstd are
   refused, and so is an empty file). Databases are checked for the files the program itself needs
@@ -399,11 +414,14 @@ Polishes a long-read draft (Flye's `assembly.fasta`) with the same reads, using 
 | `link_as`, `overwrite` | file, boolean | As Flye's; `overwrite` only replaces the link. |
 | `model` | text | A medaka model, e.g. `r1041_e82_400bps_bacterial_methylation`. Needed when the read headers don't name the basecalling model, which is the case for many archive downloads. |
 | `bacteria` | boolean | `--bacteria`: pick the bacterial model from the read headers. |
-| `threads`, `batch_size` | integers | As `-t` and `-b`. Lower `batch_size` to use less memory. |
+| `threads`, `batch_size` | integers | As `-t` and `-b`. `batch_size` sets memory use (Medaka's default 100 peaked at 7.36 GiB on a 6 Mb genome; 50 at 4.78 GiB and 25 at 3.66 GiB, with the same consensus and no slower). Use 50 or 25 on 8 GB machines. |
 
 `medaka_consensus` is a bash script with short options only, so its arguments are separate words
 (`-i reads.fq`), and a path starting with `-` gets `./` in front. Its version comes from `medaka
---version` beside it. Returns `assembly_file` and `assembly` for `consensus.fasta`. isotable reads
+--version` beside it. Returns `assembly_file` and `assembly` for `consensus.fasta`, and
+`model_file`. Medaka downloads a named model the first time it is used (into its package's
+`data/` folder), so the server reads the model file Medaka logged ("Using model: …"). It adds that
+file to the call's inputs with its SHA-256, and `replay.sh` notes it. isotable reads
 `consensus.fasta` when `consensus_probs.hdf` is beside it, and then leaves out the Flye draft of
 the same sample.
 
@@ -542,7 +560,8 @@ call in `replay.sh` says which. When sketches are missing and no `source` is giv
 how many and how many MB, so the network use can be weighed before allowing it.
 
 Returns `genomes` (per genome: `assigned_by_ani`, `species`, `taxonomy`, `reference`, `ani`, `af`,
-`markers`, `candidates`, and `used` with `species_only`), `stdout` (gtdbprep's own lines: sketches
+`markers`, `candidates`, and `used` with `species_only`; a genome skani could not sketch has
+`screened: false` and a note), `warnings`, `stdout` (gtdbprep's own lines: sketches
 cached and fetched, times) and `data_path_for_classify`. That folder, `<work>/gtdbtk_data`, is a
 complete GTDB-Tk data folder: links to the placement-lite data plus the small skani database.
 Passed as `gtdbtk_classify_wf`'s `data_path`, it gives GTDB-Tk's usual summary files, and since

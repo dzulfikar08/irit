@@ -94,6 +94,7 @@ pub fn version_warning(tool: &str, reported: Option<&str>) -> Option<String> {
 /// - CheckM2: scikit-learn's `InconsistentVersionWarning`, when its bundled models were saved with
 ///   another scikit-learn than the one installed ("might lead to breaking code or invalid results").
 /// - AMRFinderPlus: its own `WARNING:` lines.
+/// - gtdbprep: its `gtdbprep: warning:` lines (a genome left out of the ANI screen).
 pub fn stderr_warnings(tool: &str, stderr: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut add = |w: String| {
@@ -118,10 +119,104 @@ pub fn stderr_warnings(tool: &str, stderr: &str) -> Vec<String> {
                     add(format!("AMRFinderPlus: {}", w.trim()));
                 }
             }
+            "gtdbprep" => {
+                if let Some(w) = line.strip_prefix("gtdbprep: warning: ") {
+                    add(format!("gtdbprep: {w}"));
+                }
+            }
             _ => {}
         }
     }
     out
+}
+
+/// Warnings read from a successful call's own outputs: results that look fine by exit status but
+/// aren't (issues #22, #24).
+pub fn result_warnings(inv: &Invocation) -> Vec<String> {
+    let given = |flag: &str| inv.args.iter().any(|a| a == flag);
+    match inv.tool {
+        "shovill" => inv
+            .outputs
+            .first()
+            .and_then(|d| std::fs::read_to_string(d.join("shovill.log")).ok())
+            .map(|log| shovill_log_warnings(&log, given("--gsize")))
+            .unwrap_or_default(),
+        "mlst" if !given("--scheme") => inv
+            .outputs
+            .first()
+            .and_then(|o| crate::results::mlst_summary(o).ok())
+            .map(|rows| mlst_scheme_warnings(&rows))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Shovill 1.4.2 estimates the genome size from 21-mers seen more than 10 times. At 5-10x depth
+/// that gave 0.01-0.11 Mb for a 5.5 Mb K. pneumoniae; Shovill then subsampled the reads to 150x of
+/// that size and assembled 0.4-112 kb, with exit 0. At 15x the estimate was 0.5-0.7 Mb (the
+/// assembly was fine, 8x bigger than the estimate). Shovill logs the size it used, its depth and
+/// `Assembly is <bp>, estimated genome size was <bp> (<pct>%)`.
+pub fn shovill_log_warnings(log: &str, gsize_given: bool) -> Vec<String> {
+    let num_after = |prefix: &str| -> Option<f64> {
+        log.lines().find_map(|l| l.trim().strip_prefix(prefix)).and_then(|r| r.split_whitespace().next()).and_then(|n| n.trim_end_matches(',').parse().ok())
+    };
+    let size = num_after("[shovill] Using genome size ");
+    let depth = num_after("[shovill] Estimated sequencing depth: ");
+    let assembly = num_after("[shovill] Assembly is ");
+    let subsampled = log.contains("[shovill] Subsampling reads by factor");
+    let mb = |x: f64| format!("{:.2} Mb", x / 1e6);
+    let mut out = Vec::new();
+    let (Some(s), Some(a)) = (size, assembly) else { return out };
+    // Shovill's depth is read bases over the size it used; over the assembly length it is the real
+    // depth, unless Shovill subsampled (then the reads it kept were scaled to its estimate).
+    let real_depth = depth.filter(|_| !subsampled).map(|d| d * s / a);
+    if gsize_given {
+        if a < 0.7 * s {
+            out.push(format!(
+                "the assembly is {} for a given genome size of {} ({:.0}%): too little sequence for a whole genome, probably too few reads",
+                mb(a),
+                mb(s),
+                100.0 * a / s
+            ));
+        }
+    } else if subsampled && (a < 0.5 * s || s < 1e6) {
+        out.push(format!(
+            "Shovill estimated the genome size from the reads as only {} and subsampled the reads to it, then assembled {}: likely a fragment of the genome, which happens at low depth. Rerun with gsize set to the species' genome size (e.g. 5.5M)",
+            mb(s),
+            mb(a)
+        ));
+    } else if a > 2.0 * s {
+        out.push(format!(
+            "Shovill estimated the genome size as {} but assembled {}, so its depth figure is too high: the real depth is about {:.0}x. A low estimate is a sign of low depth; give gsize to be safe",
+            mb(s),
+            mb(a),
+            real_depth.unwrap_or(0.0)
+        ));
+    }
+    if let Some(d) = real_depth
+        && d < 15.0
+        && a >= 0.7 * s
+    {
+        out.push(format!(
+            "about {d:.0}x depth over the assembly; in irit's depth experiment (docs/research/coverage-depth.md) resistance genes started to drop out below 15x"
+        ));
+    }
+    out
+}
+
+/// mlst picks the scheme with the best allele matches unless `scheme` is set. On a fragmented 10x
+/// K. pneumoniae assembly mlst 2.35.0 picked ecoli_achtman_4 (status OK, ST `-`), issue #24.
+pub fn mlst_scheme_warnings(rows: &[serde_json::Value]) -> Vec<String> {
+    rows.iter()
+        .filter(|r| r["st"] == "-" && r["scheme"].as_str().is_some_and(|s| s != "-"))
+        .map(|r| {
+            format!(
+                "{}: mlst chose scheme {} by itself but found no ST; on fragmented assemblies it can choose another species' scheme. Check the species (gtdbprep_ani) and rerun with scheme set",
+                r["sample"].as_str().unwrap_or(""),
+                r["scheme"].as_str().unwrap_or("")
+            )
+        })
+        .collect()
 }
 
 /// What to try after a failure whose cause is clear from the exit and stderr: running out of
@@ -916,9 +1011,21 @@ pub struct MedakaParams {
     /// Threads for feature creation (medaka's default is 1). medaka recommends no more than 2 for its inference step; this sets the alignment and feature threads.
     #[serde(default)]
     pub threads: Option<u32>,
-    /// Batch size, which controls memory use (medaka's default 100). Lower it if medaka runs out of memory.
+    /// Batch size, which controls memory use (medaka's default 100: 7.4 GiB peak on a 6 Mb genome). 50 (4.8 GiB) or 25 (3.7 GiB) gave the same consensus, no slower; use one of them on 8 GB machines.
     #[serde(default)]
     pub batch_size: Option<u32>,
+}
+
+/// The model file Medaka 2.2.2 loaded, from its log line `[hh:mm:ss - Predict] Using model:
+/// <path>.` A named model is downloaded at run time into medaka's package `data/` folder (or
+/// `~/.medaka/data`) when it isn't there, so the record hashes the file it used (issue #21).
+pub fn medaka_model_file(stderr: &str) -> Option<PathBuf> {
+    stderr.lines().find_map(|l| l.split_once("Using model: ")).map(|(_, p)| PathBuf::from(p.trim().trim_end_matches('.')))
+}
+
+/// A Medaka model file's name (`<model>_model_pt.tar.gz`, or an older `<model>_model.tar.gz` or `.hdf5`).
+pub fn is_medaka_model(path: &str) -> bool {
+    path.ends_with("_model_pt.tar.gz") || path.ends_with("_model.tar.gz") || path.ends_with(".hdf5")
 }
 
 pub fn medaka(ctx: &Ctx, p: &MedakaParams) -> Check<Invocation> {
@@ -1326,6 +1433,9 @@ fn checkm2_db(field: &str, shown: &str, path: &Path) -> Check<PathBuf> {
     }
 }
 
+/// Genomes per CheckM2 call that stayed well under 8 GB on the laptop.
+const CHECKM2_BATCH: usize = 20;
+
 pub fn checkm2(ctx: &Ctx, p: &Checkm2Params) -> Check<Invocation> {
     let cwd = ctx.cwd.as_path();
     let mut inv = external("checkm2");
@@ -1389,6 +1499,14 @@ pub fn checkm2(ctx: &Ctx, p: &Checkm2Params) -> Check<Invocation> {
         Some(Checkm2Model::Auto) | None => {}
     }
     inv.flag("lowmem", p.lowmem);
+    // Issue #25: CheckM2 1.1.0 on 48 genomes in one call peaked at 7.7 GiB under an 8 GB cap.
+    if inv.inputs.len() > CHECKM2_BATCH {
+        inv.warnings.push(format!(
+            "{} genomes in one call: CheckM2 1.1.0 on 48 genomes peaked at 7.7 GiB on an 8 GB laptop. On 8-16 GB machines run batches of 10-{CHECKM2_BATCH}{}",
+            inv.inputs.len(),
+            if p.lowmem { "" } else { " and set lowmem" }
+        ));
+    }
     if let Some(t) = p.ttable {
         if !CHECKM2_TTABLES.contains(&t) {
             return v::invalid("ttable", format!("{t} is not a translation table CheckM2 accepts"));
@@ -3636,6 +3754,56 @@ mod tests {
         assert!(e.message.contains("gtdbtk-r232-placement-lite, gtdbtk-r226-placement-lite"), "{}", e.message);
     }
 
+    fn shovill_log(size: u64, depth: u64, subsample: bool, assembly: u64) -> String {
+        let sub = if subsample { "[shovill] Subsampling reads by factor 0.2412 to get from 622x to 150x" } else { "[shovill] No read depth reduction requested or necessary." };
+        format!(
+            "[shovill] Using genome size {size} bp\n[shovill] Estimated sequencing depth: {depth} x\n{sub}\n[shovill] Assembly is {assembly}, estimated genome size was {size} (-29.09%)\n"
+        )
+    }
+
+    /// Lines from the depth experiment's logs (K. pneumoniae, 5.5 Mb), issue #22.
+    #[test]
+    fn shovill_low_depth_warnings() {
+        // 10x, no gsize: estimate 87 kb, subsampled, 62 kb assembled.
+        let w = shovill_log_warnings(&shovill_log(87239, 622, true, 61861), false);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("only 0.09 Mb") && w[0].contains("gsize"), "{w:?}");
+        // 15x, no gsize: estimate 0.62 Mb, not subsampled, full assembly; real depth under 15x.
+        let w = shovill_log_warnings(&shovill_log(624291, 130, false, 5496787), false);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[0].contains("about 15x") && w[1].contains("about 15x depth"), "{w:?}");
+        // 20x, no gsize: estimate 1.8 Mb; a note with the real depth, no depth warning.
+        let w = shovill_log_warnings(&shovill_log(1794857, 60, false, 5458361), false);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("about 20x"), "{w:?}");
+        // 40x, no gsize: a good estimate, nothing to say.
+        assert!(shovill_log_warnings(&shovill_log(5088033, 42, false, 5465887), false).is_empty());
+        // 5x with gsize: 1.6 Mb of 5.5 Mb.
+        let w = shovill_log_warnings(&shovill_log(5500000, 4, false, 1616790), true);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("(29%)"), "{w:?}");
+        // 10x with gsize: a full assembly at low depth.
+        let w = shovill_log_warnings(&shovill_log(5500000, 9, false, 5361487), true);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("about 9x depth"), "{w:?}");
+        // 20x with gsize: fine.
+        assert!(shovill_log_warnings(&shovill_log(5500000, 19, false, 5458422), true).is_empty());
+        // A log without the lines (a failed or other version's run) gives nothing.
+        assert!(shovill_log_warnings("", false).is_empty());
+    }
+
+    #[test]
+    fn mlst_auto_scheme_without_st_is_flagged() {
+        let rows = [
+            json!({"sample": "a", "scheme": "ecoli_achtman_4", "st": "-"}),
+            json!({"sample": "b", "scheme": "-", "st": "-"}),
+            json!({"sample": "c", "scheme": "klebsiella", "st": "101"}),
+        ];
+        let w = mlst_scheme_warnings(&rows);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].starts_with("a: mlst chose scheme ecoli_achtman_4"), "{w:?}");
+    }
+
     #[test]
     fn known_stderr_warnings_are_surfaced() {
         let checkm2 = "[12:00] INFO: Running\n/env/lib/python3.12/site-packages/checkm2/../sklearn/base.py:525: InconsistentVersionWarning: Trying to unpickle estimator MinMaxScaler from version 1.6.1 when using version 1.9.1. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:\n  warnings.warn(\n/env/.../base.py:525: InconsistentVersionWarning: Trying to unpickle estimator DecisionTreeRegressor from version 1.6.1 when using version 1.9.1. This might lead to breaking code\n";
@@ -3646,6 +3814,13 @@ mod tests {
         assert_eq!(stderr_warnings("amrfinder", amr), ["AMRFinderPlus: This was compiled for running under bioconda, but $CONDA_PREFIX was not found"]);
         assert!(stderr_warnings("checkm2", amr).is_empty());
         assert!(stderr_warnings("shovill", checkm2).is_empty());
+        let medaka = "[11:53:12 - Predict] Processing region(s)\n[11:53:12 - Predict] Using model: /env/lib/python3.12/site-packages/medaka/data/r1041_e82_400bps_sup_v5.0.0_model_pt.tar.gz.\n";
+        let m = medaka_model_file(medaka).unwrap();
+        assert_eq!(m, Path::new("/env/lib/python3.12/site-packages/medaka/data/r1041_e82_400bps_sup_v5.0.0_model_pt.tar.gz"));
+        assert!(is_medaka_model(&m.to_string_lossy()));
+        assert!(medaka_model_file("nothing").is_none());
+        let g = "gtdbprep: running skani sketch\ngtdbprep: warning: skani made no sketch of g/a.fna (genome a), usually because it is too short; it is not screened\n";
+        assert_eq!(stderr_warnings("gtdbprep", g), ["gtdbprep: skani made no sketch of g/a.fna (genome a), usually because it is too short; it is not screened"]);
     }
 
     #[cfg(unix)]

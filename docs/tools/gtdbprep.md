@@ -358,6 +358,11 @@ Options:
 - `--species-only` fetches only the references that could give the species call. See below.
 - `--full-db <skani/database>` is for testing: it runs the same GTDB-Tk call on a full database.
 
+A genome skani makes no sketch of is left out of the screen, not fatal. skani skips assemblies
+too short to sketch, such as a 407 bp assembly from 5× reads. gtdbprep prints
+`gtdbprep: warning: … it is not screened`, screens the rest, and lists that genome with `-` for
+its markers. If no genome can be sketched, the run fails.
+
 `<work>/screen.tsv` lists every reference the screen kept for each genome: its shared marker
 count, both marker counts, the count `--species-only` requires, and whether it was used.
 

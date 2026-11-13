@@ -383,6 +383,11 @@ pub fn gtdbprep_ani_summary(stdout: &str, work: &Path) -> Result<Vec<Value>, Str
             }
         }
         g["assigned_by_ani"] = json!(g["assigned_by_ani"] == "true");
+        // gtdbprep writes `-` for a genome skani could not sketch (too short): not screened.
+        if g["markers"] == "-" {
+            g["screened"] = json!(false);
+            g["note"] = json!("not screened: skani made no sketch of it, usually because the assembly is too short");
+        }
     }
     let dir = work.join("out/classify/ani_screen");
     for marker in ["bac120", "ar53"] {
@@ -529,13 +534,15 @@ mod tests {
              b168\tGCF_000009045.1\t100.0\t1.0\td__Bacteria;g__Bacillus;s__Bacillus subtilis\tGCA_1, s__X, 95.0, 94.8, 0.886\n",
         )
         .unwrap();
-        let stdout = "genome\tmarkers\tcandidates\tassigned_by_ani\tused\nb168\t4089\t21\ttrue\t14\nfrag\t12\t0\tfalse\t0\n\
+        let stdout = "genome\tmarkers\tcandidates\tassigned_by_ani\tused\nb168\t4089\t21\ttrue\t14\nfrag\t12\t0\tfalse\t0\ntiny\t-\t-\tfalse\t-\n\
                       21 reference(s) screened in, 14 could give the species call (--species-only)\n";
         let g = gtdbprep_ani_summary(stdout, d.path()).unwrap();
         assert_eq!(g[0]["species"], "s__Bacillus subtilis");
         assert_eq!((&g[0]["ani"], &g[0]["af"], &g[0]["used"], &g[0]["assigned_by_ani"]), (&json!(100.0), &json!(1.0), &json!(14), &json!(true)));
         assert_eq!(g[1]["assigned_by_ani"], false);
         assert!(g[1].get("species").is_none());
+        assert!(g[1].get("screened").is_none());
+        assert_eq!((&g[2]["screened"], &g[2]["assigned_by_ani"]), (&json!(false), &json!(false)));
         assert!(gtdbprep_ani_summary("nothing\n", d.path()).is_err());
     }
 }

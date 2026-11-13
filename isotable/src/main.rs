@@ -70,6 +70,10 @@ struct Limits {
     /// Warn below this percentage of Q30 bases after trimming.
     #[arg(long, default_value_t = 80.0)]
     min_q30: f64,
+    /// Long reads: warn below this median read quality (leanqc). Q10 is the usual basecaller pass
+    /// threshold; R10.4.1 hac/sup reads are typically Q15-25.
+    #[arg(long, default_value_t = 10.0)]
+    min_read_q: f64,
     /// Warn above this many contigs; fail above twice it.
     #[arg(long, default_value_t = 300)]
     max_contigs: u64,
@@ -111,8 +115,8 @@ impl Status {
 
 /// Requirement tokens and the fields that satisfy them.
 const REQUIREMENTS: &[(&str, &[&str], &str)] = &[
-    ("reads", &["reads_trimmed", "reads_raw"], "read count (fastp)"),
-    ("q30", &["q30_trimmed"], "Q30 (fastp)"),
+    ("reads", &["reads_trimmed", "reads_raw", "long_reads"], "read count (fastp, or leanqc for long reads)"),
+    ("q30", &["q30_trimmed", "read_q"], "Q30 (fastp), or median read quality (leanqc, long reads)"),
     ("contigs", &["contigs"], "contig count, contigs of 500 bp or more (QUAST, or a Shovill, Flye or Medaka assembly)"),
     ("n50", &["n50"], "N50 of contigs of 500 bp or more (QUAST, or a Shovill, Flye or Medaka assembly)"),
     ("completeness", &["completeness", "busco_complete"], "completeness (CheckM2 or BUSCO)"),
@@ -217,6 +221,8 @@ struct Row {
     fastp: Vec<Record>,
     /// leanqc failed checks per read file; `[raw reads, trimmed reads]`.
     leanqc: [BTreeMap<String, String>; 2],
+    /// leanqc's long-read numbers per read file; `[raw reads, trimmed reads]`.
+    long: [BTreeMap<String, Vec<(&'static str, Value)>>; 2],
     /// FastQC reports per report (a zip and its sibling extracted folder are one key);
     /// `[raw reads, trimmed reads]`.
     fastqc: [BTreeMap<String, Vec<Record>>; 2],
@@ -229,6 +235,10 @@ const COLUMNS: &[(&str, &str)] = &[
     ("reads_trimmed", "reads_trimmed"),
     ("q30_trimmed", "q30_trimmed"),
     ("duplication", "duplication"),
+    ("long_reads", "long_reads"),
+    ("long_bases", "long_read_bases"),
+    ("read_n50", "read_n50"),
+    ("read_q", "read_q_median"),
     ("leanqc_fails", "leanqc_fails"),
     ("leanqc_trimmed_fails", "leanqc_trimmed_fails"),
     ("fastqc_sequences", "fastqc_sequences"),
@@ -388,8 +398,17 @@ fn join(records: Vec<Record>, sheet: &[String]) -> Joined {
             "fastp" => row.fastp.push(r),
             "FastQC" => row.fastqc[t].entry(report_key(&r.source)).or_default().push(r),
             "leanqc" => {
-                for (_, v) in r.fields {
-                    row.leanqc[t].insert(r.raw_name.clone(), v.show());
+                let mut long = Vec::new();
+                for (k, v) in r.fields {
+                    match k {
+                        "leanqc_fails" => {
+                            row.leanqc[t].insert(r.raw_name.clone(), v.show());
+                        }
+                        _ => long.push((k, v)),
+                    }
+                }
+                if !long.is_empty() {
+                    row.long[t].insert(r.raw_name.clone(), long);
                 }
             }
             _ => {
@@ -434,6 +453,7 @@ fn put(cells: &mut BTreeMap<&'static str, Cell>, k: &'static str, v: Value, sour
 fn finish(mut rows: BTreeMap<String, Row>, mode: Mode) -> BTreeMap<String, Row> {
     for row in rows.values_mut() {
         pool_fastp(row);
+        long_reads(row);
         for (t, key) in ["leanqc_fails", "leanqc_trimmed_fails"].into_iter().enumerate() {
             let files = &row.leanqc[t];
             if !files.is_empty() {
@@ -452,6 +472,61 @@ fn finish(mut rows: BTreeMap<String, Row>, mode: Mode) -> BTreeMap<String, Row> 
         }
     }
     rows
+}
+
+/// A sample's long reads (leanqc): reads and bases add up over files; the read N50 is given for one
+/// file only (it can't be pooled from per-file N50s); the median read quality of several files is
+/// their reads-weighted mean, noted. Trimmed reads' numbers win, as for fastp. leanqc's short-read
+/// checks are taken out of a long-read file's fails, with a note.
+fn long_reads(row: &mut Row) {
+    for t in 0..2 {
+        for file in row.long[t].keys() {
+            let Some(f) = row.leanqc[t].get_mut(file) else { continue };
+            let (short, keep): (Vec<&str>, Vec<&str>) =
+                f.split(',').filter(|c| !c.is_empty()).partition(|c| parse::SHORT_READ_CHECKS.contains(c));
+            if !short.is_empty() {
+                row.notes.push(format!("{file}: long reads, so leanqc's short-read checks are not graded (failed: {})", short.join(", ")));
+                *f = keep.join(",");
+            }
+        }
+    }
+    let t = if row.long[1].is_empty() { 0 } else { 1 };
+    let files = &row.long[t];
+    if files.is_empty() {
+        return;
+    }
+    let get = |fields: &[(&str, Value)], k: &str| fields.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
+    let int = |v: Option<Value>| match v {
+        Some(Value::Int(n)) => n,
+        _ => 0,
+    };
+    let sources: Vec<String> = files.keys().cloned().collect();
+    let one = |value: Value| Cell::One { value, sources: sources.clone() };
+    let reads: u64 = files.values().map(|f| int(get(f, "long_reads"))).sum();
+    let bases: u64 = files.values().map(|f| int(get(f, "long_bases"))).sum();
+    let mut cells = vec![("long_reads", one(Value::Int(reads))), ("long_bases", one(Value::Int(bases)))];
+    if files.len() == 1 {
+        let f = files.values().next().unwrap();
+        cells.extend(get(f, "read_n50").map(|v| ("read_n50", one(v))));
+        cells.extend(get(f, "read_q").map(|v| ("read_q", one(v))));
+    } else {
+        let qs: Vec<(f64, f64)> = files
+            .values()
+            .filter_map(|f| match get(f, "read_q") {
+                Some(Value::Num(q)) => Some((q, int(get(f, "long_reads")) as f64)),
+                _ => None,
+            })
+            .collect();
+        let n: f64 = qs.iter().map(|(_, r)| r).sum();
+        if qs.len() == files.len() && n > 0.0 {
+            let q = (qs.iter().map(|(q, r)| q * r).sum::<f64>() / n * 10.0).round() / 10.0;
+            cells.push(("read_q", one(Value::Num(q))));
+            row.notes.push(format!("{} long-read files: read_q_median is the reads-weighted mean of their medians; no pooled read N50", files.len()));
+        }
+    }
+    for (k, c) in cells {
+        row.cells.insert(k, c);
+    }
 }
 
 /// The column a FastQC field goes to, for raw or trimmed reads.
@@ -751,6 +826,9 @@ fn grade(row: &Row, l: &Limits, mode: Mode, required: &[&str], graded: &Graded) 
     if let Some(q) = num(row, "q30_trimmed").filter(|q| *q < l.min_q30) {
         flag(Status::Warn, format!("Q30 {q:.1}% < {:.0}%", l.min_q30));
     }
+    if let Some(q) = num(row, "read_q").filter(|q| *q < l.min_read_q) {
+        flag(Status::Warn, format!("median read quality Q{q:.1} < Q{:.0}", l.min_read_q));
+    }
     // Read QC: only the graded modules count, from the trimmed reads' reports when there are
     // any (those reads went on to assembly), else from the raw reads'. FastQC is separate evidence
     // from leanqc, shown as its own reason; the status is the worst either way, so a problem both
@@ -842,6 +920,7 @@ mod tests {
         Limits {
             min_reads: 100_000,
             min_q30: 80.0,
+            min_read_q: 10.0,
             max_contigs: 300,
             min_n50: 10_000,
             min_busco: 95.0,
@@ -1104,6 +1183,48 @@ mod tests {
         let rows = table(t.path(), &[], Mode::Isolate, None);
         assert_eq!(rows["x"].0, Status::Incomplete);
         assert_eq!(table(t.path(), &[], Mode::Isolate, Some(&["reads", "q30"]))["x"].0, Status::Pass);
+    }
+
+    fn long_lq(file: &str, reads: u64, q: f64, fails: &[&str]) -> String {
+        let checks: Vec<String> = fails.iter().map(|c| format!(r#"{{"name":"{c}","status":"fail"}}"#)).collect();
+        format!(
+            r#"{{"file":"{file}","checks":[{}],"long_reads":{{"reads":{reads},"bases":{},"n50":7826,"read_quality":{{"median":{q}}}}}}}"#,
+            checks.join(","),
+            reads * 4000
+        )
+    }
+
+    /// Issue #21: a nanopore-only isolate has leanqc's long-read numbers instead of fastp's.
+    #[test]
+    fn long_reads_stand_in_for_fastp() {
+        let t = tempfile::tempdir().unwrap();
+        // The nanopore run's sample: clean reads that fail three short-read checks.
+        let fails = ["Per-position quality", "Per-position base content", "Per-read GC", "Adapter content"];
+        write(t.path(), "ont_leanqc.json", &long_lq("ont.fastq.gz", 84759, 22.3, &fails));
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["reads", "q30"]));
+        let (status, why, row) = &rows["ont"];
+        assert_eq!(*status, Status::Warn, "{why:?}");
+        // Only the check that fits long reads is graded; the others are in a note.
+        assert_eq!(why, &["warn: leanqc failed Adapter content"]);
+        assert_eq!(cell(row, "leanqc_fails"), "Adapter content");
+        assert!(row.notes.iter().any(|n| n.contains("not graded (failed: Per-position quality, Per-position base content, Per-read GC)")), "{:?}", row.notes);
+        assert_eq!((cell(row, "long_reads"), cell(row, "read_n50"), cell(row, "read_q")), ("84759".into(), "7826".into(), "22.3".into()));
+
+        // Low read quality warns; the fastp read minimum doesn't apply to long reads.
+        let t = tempfile::tempdir().unwrap();
+        write(t.path(), "ont_leanqc.json", &long_lq("ont.fastq.gz", 5000, 8.4, &[]));
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["reads", "q30"]));
+        assert_eq!(rows["ont"].1, ["warn: median read quality Q8.4 < Q10"]);
+
+        // Two runs: reads add up, quality is weighted by reads, no pooled N50.
+        let t = tempfile::tempdir().unwrap();
+        write(t.path(), "ont_1_leanqc.json", &long_lq("ont_1.fastq.gz", 3000, 20.0, &[]));
+        write(t.path(), "ont_2_leanqc.json", &long_lq("ont_2.fastq.gz", 1000, 12.0, &[]));
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["reads", "q30"]));
+        let (status, why, row) = &rows["ont"];
+        assert_eq!(*status, Status::Pass, "{why:?}");
+        assert_eq!((cell(row, "long_reads"), cell(row, "read_q")), ("4000".into(), "18".into()));
+        assert!(!row.cells.contains_key("read_n50"));
     }
 
     #[test]

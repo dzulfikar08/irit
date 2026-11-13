@@ -344,6 +344,17 @@ impl Irit {
                 n50: v["n50"].as_u64().unwrap_or(0),
             });
         }
+        if out.status.success() {
+            // Small files (a log, a table), read like the result summaries are.
+            rec.warnings.extend(x::result_warnings(&inv));
+            if inv.tool == "medaka_consensus"
+                && let Some(model) = x::medaka_model_file(&String::from_utf8_lossy(&out.stderr)).filter(|m| m.is_file())
+                && !rec.inputs.iter().any(|i| Path::new(&i.path) == model)
+            {
+                // About 1.5 MB: hashed here, after Medaka downloaded or found it.
+                rec.inputs.extend(record::input_records(&[model]));
+            }
+        }
         if !out.status.success() {
             rec.error = Some(match out.status.code() {
                 Some(c) => format!("exit status {c}"),
@@ -719,11 +730,16 @@ Next: coverm_contig (depth) and metabat2 (bins).")]
     #[tool(description = "Medaka 2.2.2 (medaka_consensus): polish a long-read draft assembly (e.g. Flye's assembly.fasta) with the \
 same reads. Writes `<outdir>/consensus.fasta`; outdir must be empty. Give `model` (e.g. r1041_e82_400bps_bacterial_methylation; \
 `medaka tools list_models` lists them) unless the read headers name the basecalling model, which many archive downloads don't. \
-Runs on the CPU here: expect tens of minutes for a 5 Mb genome. Returns the polished assembly's contig count, total length, N50 and GC %.")]
+Runs on the CPU here: expect tens of minutes for a 5 Mb genome. On 8 GB machines set batch_size 50 (4.8 GiB) or 25 (3.7 GiB); \
+Medaka's default 100 peaked at 7.4 GiB, with the same consensus. \
+Returns the polished assembly's contig count, total length, N50 and GC %, and the model file Medaka used (path and SHA-256, also in the \
+run record: Medaka downloads named models at run time).")]
     async fn medaka(&self, Parameters(params): Parameters<x::MedakaParams>) -> Result<CallToolResult, ErrorData> {
         let d = self.execute("medaka", &params, x::medaka(&self.cfg.ctx, &params)).await;
         let consensus = self.cfg.ctx.cwd.join(&params.outdir).join("consensus.fasta");
+        let model = d.record.inputs.iter().find(|i| x::is_medaka_model(&i.path)).map(|i| json!({"path": i.path, "sha256": i.sha256}));
         self.external_reply(d, |v| {
+            v["model_file"] = json!(model);
             v["assembly_file"] = json!(consensus);
             v["assembly"] = results::assembly_stats(&consensus)?;
             Ok(())
@@ -890,6 +906,7 @@ GTDB's server: ask the user). Returns per genome: whether the screen assigned it
         };
         let stdout = d.stdout_text();
         v["stdout"] = json!(tail(&stdout, STDERR_LIMIT));
+        v["warnings"] = json!(d.record.warnings);
         match results::gtdbprep_ani_summary(&stdout, &work) {
             Ok(g) => v["genomes"] = json!(g),
             Err(e) => {

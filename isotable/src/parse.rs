@@ -226,6 +226,13 @@ fn fastp_inputs(cmd: &str) -> Vec<String> {
     out
 }
 
+/// leanqc's checks made for short reads (FastQC's per-position and per-read modules). leanqc runs
+/// them on long reads too and says in its report that they don't fit: on the nanopore run
+/// (docs/research/nanopore-laptop.md) a clean R10.4.1 sample failed per-position quality, per-position
+/// base content and per-read GC. isotable doesn't grade them for long reads.
+pub const SHORT_READ_CHECKS: &[&str] =
+    &["Per-position quality", "Per-tile quality", "Per-read quality", "Per-position base content", "Per-read GC", "Read length"];
+
 fn leanqc(path: &Path) -> Result<Vec<Record>> {
     let j = json(path)?;
     let file = j["file"].as_str().unwrap_or_default().to_string();
@@ -233,7 +240,21 @@ fn leanqc(path: &Path) -> Result<Vec<Record>> {
         .as_array()
         .map(|a| a.iter().filter(|c| c["status"] == "fail").filter_map(|c| c["name"].as_str()).collect())
         .unwrap_or_default();
-    Ok(vec![rec(file, Kind::ReadFile, vec![("leanqc_fails", Value::Text(fails.join(",")))])])
+    let mut fields = vec![("leanqc_fails", Value::Text(fails.join(",")))];
+    // Long reads (median length above 1,000 bp, or leanqc --long): read count, bases, read N50
+    // and the median read quality, the evidence fastp gives for short reads.
+    let l = &j["long_reads"];
+    if let (Some(reads), Some(bases)) = (l["reads"].as_u64(), l["bases"].as_u64()) {
+        fields.push(("long_reads", Value::Int(reads)));
+        fields.push(("long_bases", Value::Int(bases)));
+        if let Some(n) = l["n50"].as_u64() {
+            fields.push(("read_n50", Value::Int(n)));
+        }
+        if let Some(q) = l["read_quality"]["median"].as_f64() {
+            fields.push(("read_q", Value::Num(q)));
+        }
+    }
+    Ok(vec![rec(file, Kind::ReadFile, fields)])
 }
 
 /// FastQC (0.12.x, 0.13, FastQC-Rust): `<name>_fastqc.zip`, read without extracting.

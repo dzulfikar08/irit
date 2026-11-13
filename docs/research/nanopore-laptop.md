@@ -99,7 +99,9 @@ model is the alternative.
 |---|---|---|
 | leanqc, ONT reads | 2.7 min | 0.31 |
 | **flye** (`nano-hq`, `genome_size` 5.5m) | **22.2 min** | **3.85** |
-| **medaka** (`r1041_e82_400bps_sup_v5.0.0`) | **9.4 min** | **7.36** |
+| **medaka** (`r1041_e82_400bps_sup_v5.0.0`, default `batch_size` 100) | **9.4 min** | **7.36** |
+| medaka, `batch_size` 50 (a later run) | 4.8 min | 4.78 |
+| medaka, `batch_size` 25 (a later run) | 4.9 min | 3.66 |
 | fastp, Illumina | 2.4 min | 2.77 |
 | shovill, Illumina (SPAdes, 100×) | 16.8 min | 3.77 |
 | mlst (ONT + Illumina; Flye draft) | 13 s; 9 s | 0.33 |
@@ -109,8 +111,14 @@ model is the alternative.
 | isotable | 31 s | 1.12 |
 
 The whole unit peaked at 7.3 GiB with no OOM events.
-- **Medaka's 7.36 GiB** is most of the cap. On a machine with 8 GB in total, lower its
-  `batch_size` (default 100).
+- **Medaka's 7.36 GiB** at the default `batch_size` is most of the cap. A smaller batch fixes it
+  at no cost here:
+  - **50:** peaked at 4.78 GiB.
+  - **25:** peaked at 3.66 GiB.
+
+  Both gave the same consensus sequence as the default run (11 contigs, every base equal) and
+  weren't slower. The default run's 9.4 minutes was probably slowed by memory pressure near the
+  cap. **On 8 GB machines, use `batch_size` 50, or 25 for more headroom.**
 - **AMRFinderPlus took 7× longer** on the long-read assemblies than on the Illumina one. Both are
   about 6 Mb.
 
@@ -166,11 +174,12 @@ the laptop didn't do it.
 - **One isolate.** AF47 is hard: its chromosome didn't close, and neither did the study's. Easier
   genomes, and isolates whose resistance genes sit on small plasmids, need testing next. Small
   plasmids are where Flye is weakest.
-- **isotable has no long-read read-QC row yet.** It marks the ONT sample `incomplete` for "no read
-  count / no Q30 (fastp)", and leanqc's FastQC thresholds fail long reads on per-position
-  quality. A long-read mode should take reads and quality from leanqc's long-read numbers.
+- **isotable needed a long-read read-QC row** (fixed, [#21](https://github.com/dzulfikar08/irit/issues/21)).
+  It marked the ONT sample `incomplete` for "no read count / no Q30 (fastp)", and leanqc's FastQC
+  thresholds failed long reads on per-position quality. isotable now takes reads, read N50 and
+  median read quality from leanqc's long-read numbers, and leaves the short-read checks ungraded.
+  The ONT sample passes.
 - **The Medaka model is downloaded on first use.** `r1041_e82_400bps_sup_v5.0.0` is not in the
-  Bioconda package; Medaka fetched it into the environment during the call. The run record has
-  the model name, but not the model file's hash.
-- **Not measured:** Autocycler on a laptop, Medaka's `batch_size` against peak memory, and Medaka
-  on GPU or Apple silicon.
+  Bioconda package; Medaka fetched it into the environment during the call. irit-mcp now hashes
+  the model file Medaka logged into the run record (#21).
+- **Not measured:** Autocycler on a laptop, and Medaka on GPU or Apple silicon.

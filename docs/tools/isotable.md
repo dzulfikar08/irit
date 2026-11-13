@@ -26,7 +26,7 @@ isotable results/ --require reads,q30,contigs,n50,completeness,kraken
 | `--mqc FILE` | Also write a MultiQC custom-content table. |
 | `--require LIST` | Measurements a sample needs before it can pass (below). `--require none` turns this off. |
 | `--fastqc-grade LIST` | Failed FastQC modules (and the matching leanqc checks) that make a sample `warn`, by FastQC or leanqc name, or `all` / `none`. Default: Per base sequence quality, Per sequence quality scores, Per base N content, Adapter Content (below). |
-| `--min-reads`, `--min-q30`, `--max-contigs`, `--min-n50`, `--min-busco`, `--min-completeness`, `--max-contamination` | Thresholds. |
+| `--min-reads`, `--min-q30`, `--min-read-q`, `--max-contigs`, `--min-n50`, `--min-busco`, `--min-completeness`, `--max-contamination` | Thresholds. `--min-read-q` is for long reads (median read quality, default Q10: basecallers' usual pass threshold). |
 
 ## Outputs it reads
 
@@ -140,12 +140,17 @@ missing), `warn`, `pass`. A sample never passes on partial evidence.
 `--require` replaces the list with any of `reads`, `q30`, `contigs`, `n50`, `completeness`,
 `contamination`, `kraken`, `gtdb`, `mlst`, `amr`; `--require none` turns the check off.
 
-Long-read-only isolates (Nanopore assembled without short reads) have no fastp report, so under the
-isolate defaults every sample is `incomplete`. Ask for what such a run does produce, e.g.:
+**Long reads.** A long-read-only isolate (Nanopore assembled without short reads) has no fastp
+report. Its leanqc report has the long-read numbers instead (leanqc adds them when the median read is
+over 1,000 bp, or with `--long`). isotable takes the read count (`long_reads`, with `long_read_bases`)
+for `reads`, and the median read quality (`read_q_median`) for `q30`. It also shows the read N50.
+Several long-read files of one sample add up their reads. Their median qualities are averaged,
+weighted by reads, and noted, and there is no pooled N50.
 
-```sh
-isotable results/ --require contigs,n50,completeness
-```
+leanqc's FastQC-style checks are made for short reads: per-position quality and base content,
+per-tile quality, per-read quality and GC, and read length. On a long-read file they are not
+graded, and a note lists the ones that failed. On the nanopore laptop run, a clean R10.4.1 sample
+failed three of them.
 
 **Isolate mode**:
 
@@ -153,6 +158,7 @@ isotable results/ --require contigs,n50,completeness
 |---|---|---|
 | Reads after trimming (all runs) | | < 100,000 |
 | Q30 after trimming | < 80% | |
+| Median read quality (long reads) | < Q10 | |
 | leanqc | a failed graded check | |
 | FastQC | a failed graded module | |
 | Contigs | > 300 | > 600 |

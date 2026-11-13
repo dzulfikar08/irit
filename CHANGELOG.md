@@ -36,6 +36,36 @@ MRA e01270-25) through irit-mcp alone (#14-#19).
 
 ### gtdbprep
 - The missing-sketch error says how much would be fetched and suggests `--species-only` (#19).
+### Fixes from the depth experiment and the nanopore run (#21-#25)
+- **irit-mcp warns when Shovill's genome-size estimate collapses** (#22). At 5-10× Shovill
+  estimated 0.01-0.11 Mb for a 5.5 Mb genome, subsampled to it and assembled a fragment with
+  exit 0. The server reads `shovill.log` and warns in three cases:
+  - Shovill subsampled to a tiny size.
+  - The assembly is over twice the estimate. The warning gives the real depth over the assembly,
+    since Shovill's own figure is then too high (60× reported at 20×).
+  - `gsize` was given and the assembly is under 70% of it.
+
+  A separate warning comes when the depth over the assembly is under 15×.
+- **`gtdbprep ani` screens the rest when skani can't sketch a genome** (#23). Such a genome, e.g. a
+  407 bp assembly, is listed as not screened (`-` markers; `screened: false` in irit-mcp) with a
+  warning. Before, it failed the whole batch.
+- **mlst: a warning when it chose the scheme itself and found no ST** (#24). A fragmented
+  *K. pneumoniae* got `ecoli_achtman_4`.
+- **CheckM2: a warning above 20 genomes per call** (#25). 48 peaked at 7.7 GiB on an 8 GB laptop.
+- **Medaka's model file is recorded** (#21). Medaka downloads a named model at run time, so the
+  server hashes the file Medaka logged into the call's inputs, returns it as `model_file`, and
+  `replay.sh` notes it.
+  `batch_size` 50 peaked at 4.78 GiB and 25 at 3.66 GiB on the 6 Mb nanopore genome, against 7.36 GiB
+  at Medaka's default 100. All three gave the same consensus and the smaller sizes were no slower,
+  so the docs and the tool description recommend 50 or 25 on 8 GB machines.
+- **isotable reads long-read QC** (#21). For a nanopore-only isolate, leanqc's long-read numbers
+  stand in for fastp:
+  - `long_reads` and `long_read_bases` count as reads, and `read_q_median` counts as quality
+    (warn below `--min-read-q`, default Q10). `read_n50` is shown.
+  - leanqc's short-read checks (per-position, per-tile, per-read quality and GC, read length) are
+    not graded for long-read files, and a note lists them.
+  - The nanopore run's ONT sample now passes instead of being `incomplete`.
+
 ### seqplan (new)
 - **Plan a sequencing run before sequencing**: bases and read pairs per isolate at a target
   coverage, isolates per run, runs for N samples, and cost per isolate from a run price you give

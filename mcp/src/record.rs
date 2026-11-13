@@ -490,6 +490,15 @@ fn env_name_ok(k: &str) -> bool {
 /// What a `gtdbprep ani` call needs from outside the run folder: its reference sketches come from
 /// a per-user cache, and those not cached on the replaying machine are fetched from `--source`.
 fn sketch_cache_note(c: &CallRecord) -> Option<String> {
+    if c.argv.first().map(String::as_str) == Some("medaka_consensus") {
+        // irit-mcp adds the model file Medaka logged to the call's inputs (issue #21).
+        let m = c.inputs.iter().find(|i| crate::external::is_medaka_model(&i.path))?;
+        return Some(format!(
+            "Medaka used the model file {} (SHA-256 {}); if it is missing here, Medaka downloads it from GitHub again",
+            m.path,
+            m.sha256.as_deref().unwrap_or("not recorded")
+        ));
+    }
     if c.argv.first().map(String::as_str) != Some("gtdbprep") || c.argv.get(1).map(String::as_str) != Some("ani") {
         return None;
     }
