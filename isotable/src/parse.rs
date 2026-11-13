@@ -760,7 +760,8 @@ mod tests {
         let (records, seen, _) = scan(&[t.path().to_path_buf()]).unwrap();
         assert_eq!((seen["Flye"], records.len()), (1, 1));
         assert_eq!(records[0].raw_name, "s1");
-        assert_eq!(records[0].fields, [("contigs", Value::Int(2)), ("length", Value::Int(5800)), ("n50", Value::Int(5000))]);
+        // GC as for Shovill: 800 C of 5800 counted bases
+        assert_eq!(records[0].fields, [("contigs", Value::Int(2)), ("length", Value::Int(5800)), ("n50", Value::Int(5000)), ("gc", Value::Num(13.79))]);
         // The Medaka consensus of the same sample replaces the draft (a few bases differ).
         std::fs::write(medaka.join("consensus.fasta"), format!(">contig_1\n{}\n>contig_2\n{}\n", "A".repeat(5001), "C".repeat(800))).unwrap();
         std::fs::write(medaka.join("consensus_probs.hdf"), "").unwrap();
