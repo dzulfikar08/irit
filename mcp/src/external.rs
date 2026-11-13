@@ -124,6 +124,20 @@ pub fn stderr_warnings(tool: &str, stderr: &str) -> Vec<String> {
     out
 }
 
+/// What to try after a failure whose cause is clear from the exit and stderr: running out of
+/// memory, mostly. CheckM2 reports a DIAMOND child killed by SIGKILL (the out-of-memory killer)
+/// and exits 1; on the laptop its default DIAMOND block size went over an 8 GB cap on 23 MAGs,
+/// and `lowmem` (block size 0.5) peaked at 5.6 GiB.
+pub fn failure_hint(tool: &str, exit_status: Option<i32>, stderr: &str) -> Option<String> {
+    if tool == "checkm2" && stderr.contains("died with <Signals.SIGKILL") {
+        return Some("CheckM2's DIAMOND step was killed (SIGKILL), which usually means it ran out of memory; rerun with lowmem: true (DIAMOND block size 0.5) and/or fewer threads".into());
+    }
+    if exit_status.is_none() || exit_status == Some(137) {
+        return Some(format!("{tool} was killed by a signal, often the out-of-memory killer under a memory cap; check the cap, give the tool less memory or fewer threads, or use its low-memory option"));
+    }
+    None
+}
+
 /// The conda environment a program lives in (`<prefix>/bin/<program>`, symlinks followed, with
 /// `<prefix>/conda-meta`). AMRFinderPlus from Bioconda looks for `$CONDA_PREFIX` and warns when it
 /// is unset (an environment used without being activated).
@@ -3110,6 +3124,16 @@ mod tests {
         let names: Vec<String> =
             metabat2_bins(&d.path().join("out"), "bin").iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["bin.1.fa", "bin.2.fa", "bin.10.fa"]);
+    }
+
+    #[test]
+    fn out_of_memory_failures_get_a_hint() {
+        // as CheckM2 1.1.0 printed it when DIAMOND hit an 8 GB cap
+        let checkm2 = "[05:35:04 PM] ERROR: An error occured while running DIAMOND: Command 'diamond blastp --outfmt 6 --threads 6 --block-size 2.0 --quiet ' died with <Signals.SIGKILL: 9>.\n";
+        assert!(failure_hint("checkm2", Some(1), checkm2).unwrap().contains("lowmem: true"));
+        assert!(failure_hint("megahit", None, "").unwrap().contains("killed by a signal"));
+        assert!(failure_hint("megahit", Some(137), "").is_some());
+        assert!(failure_hint("checkm2", Some(1), "ERROR: no genomes").is_none());
     }
 
     #[test]

@@ -419,6 +419,9 @@ impl Irit {
                 v["exit_status"] = json!(r.exit_status);
                 v["stderr"] = json!(tail(&d.stderr, STDERR_LIMIT));
                 v["stdout"] = json!(tail(&d.stdout_text(), STDERR_LIMIT));
+                if let Some(h) = x::failure_hint(r.argv.first().map(String::as_str).unwrap_or(""), r.exit_status, &d.stderr) {
+                    v["hint"] = json!(h);
+                }
                 v["note"] = json!("the tool refused or failed; its outputs must not be used");
                 Err(CallToolResult::structured_error(v))
             }
