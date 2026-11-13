@@ -40,7 +40,8 @@ MRA e01270-25) through irit-mcp alone (#14-#19).
 - **Plan a sequencing run before sequencing**: bases and read pairs per isolate at a target
   coverage, isolates per run, runs for N samples, and cost per isolate from a run price you give
   (no built-in prices). It pads each isolate by a barcode-imbalance margin (default 1.3) and counts
-  only the usable part of a run (default 0.8 for Illumina). Kits: MiSeq v2/v3/Micro/Nano, iSeq 100,
+  only the usable part of a run (default 0.8 for Illumina). `--barcodes` caps isolates per run at
+  the library kit's barcode count. Kits: MiSeq v2/v3/Micro/Nano, iSeq 100,
   NextSeq 500/550 mid/high, NextSeq 1000/2000 P1-P4, NovaSeq X 1.5B/10B/25B (Illumina
   specifications), plus MinION and Flongle R10.4.1 (reported typical yields, marked as such). There
   are 16 organism presets with NCBI's expected genome size. Every figure carries its source URL
