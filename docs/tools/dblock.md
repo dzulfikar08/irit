@@ -72,6 +72,9 @@ it prints what it would delete and stops unless `--force` is given.
 If neither fits, it stops before downloading and says how much space is needed. A 2 GB reserve is
 always kept free.
 
+`plan` also notes a database whose tool isn't installed here (the version command in its catalog
+entry isn't found), since that download would be of no use outside a container.
+
 Either way, files are unpacked into a uniquely named temporary folder under `<store>/.tmp/<id>/`
 (one folder per database, so cleaning up after a crashed `gtdbtk-r232` fetch never touches an
 unpack of `gtdbtk-r232-mockup` running at the same time). Once the checksum matches,
@@ -168,7 +171,8 @@ does after downloading. It builds the BLAST and HMMER indexes (`hmmpress` on `AM
 `makeblastdb` on `AMRProt.fa`, `AMR_CDS.fa` and each `AMR_DNA-*.fa`). The file list and SHA-256
 sums then cover the indexes too, so `verify` and `verify --deep` check them, and the lock entry
 records the program and its version (`prepared = "amrfinder_index 4.2.7"`). If the program is
-missing or fails, nothing is kept.
+not on `PATH`, `fetch` refuses before downloading anything and `plan` says it won't fetch; if it
+fails, nothing is kept.
 
 The indexes record when they were built (`makeblastdb` writes the time into `.pin`/`.nin` and
 `.pjs`/`.njs`), so two fetches of the same entry give the same downloaded files but different

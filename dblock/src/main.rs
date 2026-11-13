@@ -232,6 +232,12 @@ fn cmd_plan(dir: &Path, entries: &[Entry]) -> Result<()> {
     let mut total = 0;
     for id in &p.databases {
         let e = catalog::find(entries, id)?;
+        // Whether the tool that reads it is here: a database for a missing tool is a wasted download.
+        if let Some(c) = &e.compat
+            && matches!(check::check(c), check::Verdict::NotInstalled)
+        {
+            println!("  {id}: note: `{}` ({}) is not installed here (fine if it runs in a container)", c.command[0], e.tool);
+        }
         match fetch::existing(&store, e) {
             fetch::Stored::Ready(_) => {
                 println!("  {id}: already in the store");
@@ -242,6 +248,10 @@ fn cmd_plan(dir: &Path, entries: &[Entry]) -> Result<()> {
                 continue;
             }
             fetch::Stored::Absent => {}
+        }
+        if let Some(prog) = fetch::missing_prepare(e) {
+            println!("  {id}: WON'T FETCH. `{prog}` prepares it after the download and is not on PATH (install {} first)", e.tool);
+            continue;
         }
         match fetch::plan(&store, e, &opts) {
             Ok(plan) => {

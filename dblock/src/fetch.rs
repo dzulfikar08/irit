@@ -204,6 +204,14 @@ pub fn obtain(store: &Path, e: &Entry, opts: &Opts) -> Result<(Locked, bool)> {
         Stored::Bad(why) => bail!(why),
         Stored::Absent => {}
     }
+    // Fail before downloading, not after: the prepare step runs only once every file is in.
+    if let Some(prog) = missing_prepare(e) {
+        bail!(
+            "{prog} is needed to prepare {} and is not on PATH, so nothing was downloaded. Install AMRFinderPlus in the \
+             environment dblock runs from (e.g. `conda install -c conda-forge -c bioconda ncbi-amrfinderplus`), then fetch again",
+            e.id
+        );
+    }
     // Temporary folders left by a crashed run (nobody else can be using them: we hold the lock).
     clean_tmp(store, &e.id)?;
     let fetched = plan(store, e, opts).and_then(|plan| fetch(store, e, &plan, opts));
@@ -439,6 +447,21 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
         return Err(err).with_context(|| format!("moving into {}", target.display()));
     }
     Ok(locked)
+}
+
+/// A program on PATH, as `Command` would find it (a name with a folder in it is taken as a path).
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    let p = Path::new(name);
+    if p.components().count() > 1 {
+        return p.is_file().then(|| p.to_path_buf());
+    }
+    let exe = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(&exe)).find(|c| c.is_file())
+}
+
+/// The catalog's `prepare` program for this entry, when it is not on PATH.
+pub fn missing_prepare(e: &Entry) -> Option<&'static str> {
+    e.prepare.map(|p| p.program()).filter(|p| find_program(p).is_none())
 }
 
 /// Run a catalog's `prepare` program on the fetched folder: `<program> <dir>`. Returns
@@ -2285,20 +2308,32 @@ mod tests {
         assert!(err.contains("could not be run") && err.contains("ncbi-amrfinderplus"), "{err}");
     }
 
-    /// Without amrfinder_index on PATH, a database that needs it is not kept half-prepared.
+    /// Without amrfinder_index on PATH, a database that needs it is refused before anything is
+    /// downloaded (it used to be downloaded, verified, then thrown away).
     #[test]
-    fn failed_prepare_keeps_nothing() {
-        if std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("amrfinder_index").is_file())) {
+    fn missing_prepare_program_is_refused_before_downloading() {
+        if find_program("amrfinder_index").is_some() {
             return; // AMRFinderPlus is installed here; the error can't be provoked.
         }
         let files: Vec<(String, Vec<u8>)> = vec![("AMRProt.fa".into(), b">p1\nMKV\n".to_vec())];
-        let (base, _) = serve_files(files.clone());
         let dir = tempfile::tempdir().unwrap();
-        let e = loose_entry(dir.path(), &base, &files, Some("amrfinder_index"));
+        // nothing listens on port 1: a download attempt would fail with a connection error instead
+        let e = loose_entry(dir.path(), "http://127.0.0.1:1", &files, Some("amrfinder_index"));
+        assert_eq!(missing_prepare(&e), Some("amrfinder_index"));
         let store = dir.path().join("store");
         let err = format!("{:#}", obtain(&store, &e, &opts()).unwrap_err());
-        assert!(err.contains("preparing loose; nothing was kept") && err.contains("amrfinder_index"), "{err}");
+        assert!(err.contains("amrfinder_index is needed to prepare loose") && err.contains("nothing was downloaded"), "{err}");
         assert!(!target_dir(&store, &e).exists());
         assert!(!store.join(".tmp").exists(), "temporary folder left behind");
+    }
+
+    #[test]
+    fn programs_are_found_on_path_or_by_path() {
+        assert!(find_program("no-such-program-dblock-test").is_none());
+        let dir = tempfile::tempdir().unwrap();
+        let prog = dir.path().join("tool");
+        fs::write(&prog, "").unwrap();
+        assert_eq!(find_program(prog.to_str().unwrap()), Some(prog));
+        assert!(find_program(dir.path().join("absent").to_str().unwrap()).is_none());
     }
 }
