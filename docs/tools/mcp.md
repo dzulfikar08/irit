@@ -65,7 +65,7 @@ Any client that takes a JSON config (Claude Desktop's `claude_desktop_config.jso
 | `--bin-dir DIR` | Folder holding the irit binaries (env `IRIT_BIN_DIR`). Default: search `PATH`. |
 | `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`). Repeatable. Default: search `PATH`. |
 | `--runs-dir DIR` | Where run records go (env `IRIT_RUNS_DIR`). Default `./irit-runs`. |
-| `--run-id ID` | Name of this session's run folder. Default `<UTC time>-<pid>`. |
+| `--run-id ID` | Name of this session's run folder. Default `<UTC time>-<pid>`. The server refuses to start when that folder already holds a record, so a second session can't overwrite the first one's. |
 | `--root DIR` | Folder the tools may write in. Default: the server's working folder. |
 | `--allow-outside-root` | Turn the root check off, so tools can write anywhere the server's user can. Not recommended. |
 
