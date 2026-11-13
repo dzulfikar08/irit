@@ -64,7 +64,9 @@ impl Global for Tokens {}
 
 /// The active tokens (light ones until [`apply_palette`] runs).
 pub fn tokens(cx: &App) -> Tokens {
-    cx.try_global::<Tokens>().copied().unwrap_or_else(|| Tokens::from_palette(&LIGHT))
+    cx.try_global::<Tokens>()
+        .copied()
+        .unwrap_or_else(|| Tokens::from_palette(&LIGHT))
 }
 
 fn c(rgb: Rgb) -> Hsla {
@@ -94,11 +96,27 @@ impl Tokens {
     pub fn from_palette(p: &Palette) -> Self {
         let on_bg = |a: f32| c(mix(p.background, p.foreground, a));
         // Headers sit between chrome and surface, a step above the cells.
-        let header = mix(p.background, p.foreground, if p.dark { 0.06 } else { 0.045 });
+        let header = mix(
+            p.background,
+            p.foreground,
+            if p.dark { 0.06 } else { 0.045 },
+        );
         let (chrome, surface, elevated, border, border_strong) = if p.dark {
-            (on_bg(0.03), on_bg(0.05), on_bg(0.07), on_bg(0.10), on_bg(0.18))
+            (
+                on_bg(0.03),
+                on_bg(0.05),
+                on_bg(0.07),
+                on_bg(0.10),
+                on_bg(0.18),
+            )
         } else {
-            (on_bg(0.025), on_bg(0.035), c(0xffffff), on_bg(0.11), on_bg(0.20))
+            (
+                on_bg(0.025),
+                on_bg(0.035),
+                c(0xffffff),
+                on_bg(0.11),
+                on_bg(0.20),
+            )
         };
         Self {
             dark: p.dark,
@@ -116,7 +134,11 @@ impl Tokens {
             selected: alpha(p.accent, if p.dark { 0.16 } else { 0.12 }),
             accent: c(p.accent),
             accent_soft: alpha(p.accent, 0.12),
-            accent_fg: if luminance(p.accent) > 0.6 { c(0x000000) } else { c(0xffffff) },
+            accent_fg: if luminance(p.accent) > 0.6 {
+                c(0x000000)
+            } else {
+                c(0xffffff)
+            },
             success: c(p.green),
             warning: c(p.yellow),
             danger: c(p.red),
@@ -128,7 +150,11 @@ impl Tokens {
             res_ink: if p.dark { c(0xeef1fb) } else { c(0x2a2c3c) },
             gap_ink: on_bg(0.35),
             track_hi: c(p.accent),
-            track_lo: c(mix(p.background, p.accent, if p.dark { 0.45 } else { 0.35 })),
+            track_lo: c(mix(
+                p.background,
+                p.accent,
+                if p.dark { 0.45 } else { 0.35 },
+            )),
             bg_rgb: p.background,
             fg_rgb: p.foreground,
             accent_rgb: p.accent,
@@ -137,14 +163,24 @@ impl Tokens {
 
     /// The colours tiles are drawn with.
     pub fn tile_theme(&self) -> msascope::scheme::Theme {
-        msascope::scheme::Theme { dark: self.dark, bg: self.bg_rgb, fg: self.fg_rgb, accent: self.accent_rgb }
+        msascope::scheme::Theme {
+            dark: self.dark,
+            bg: self.bg_rgb,
+            fg: self.fg_rgb,
+            accent: self.accent_rgb,
+        }
     }
 
     /// Shadow stack for an elevation (lighter in light mode).
     pub fn shadow(&self, elevation: Elevation) -> Vec<BoxShadow> {
         let k = if self.dark { 1.0 } else { 0.55 };
         let s = |y: f32, blur: f32, a: f32| BoxShadow {
-            color: Hsla { h: 0., s: 0., l: 0., a: a * k },
+            color: Hsla {
+                h: 0.,
+                s: 0.,
+                l: 0.,
+                a: a * k,
+            },
             offset: point(px(0.), px(y)),
             blur_radius: px(blur),
             spread_radius: px(0.),
@@ -163,7 +199,11 @@ pub fn apply_palette(p: &Palette, cx: &mut App) {
     let t = Tokens::from_palette(p);
     cx.set_global(t);
 
-    let mode = if p.dark { ThemeMode::Dark } else { ThemeMode::Light };
+    let mode = if p.dark {
+        ThemeMode::Dark
+    } else {
+        ThemeMode::Light
+    };
     // Load the matching base theme first, then override colours in a second update
     // (a mode switch replaces colours; see `Theme::update`).
     Theme::change(mode, None, cx);
@@ -252,8 +292,16 @@ mod tests {
         for p in [DARK, LIGHT] {
             let t = Tokens::from_palette(&p);
             let l = |h: Hsla| h.l;
-            assert!((l(t.grid_line) - l(t.bg)).abs() > 0.05, "grid line, dark={}", p.dark);
-            assert!((l(t.grid_header) - l(t.bg)).abs() > 0.02, "header, dark={}", p.dark);
+            assert!(
+                (l(t.grid_line) - l(t.bg)).abs() > 0.05,
+                "grid line, dark={}",
+                p.dark
+            );
+            assert!(
+                (l(t.grid_header) - l(t.bg)).abs() > 0.02,
+                "header, dark={}",
+                p.dark
+            );
             assert_ne!(t.grid_header_active, t.grid_header);
             assert_eq!(t.grid_header_active.a, 1.0);
         }
@@ -264,12 +312,19 @@ mod tests {
     fn tokens_match_the_spec() {
         let hex = |h: Hsla| {
             let r = Rgba::from(h);
-            ((r.r * 255.0).round() as u32) << 16 | ((r.g * 255.0).round() as u32) << 8 | (r.b * 255.0).round() as u32
+            ((r.r * 255.0).round() as u32) << 16
+                | ((r.g * 255.0).round() as u32) << 8
+                | (r.b * 255.0).round() as u32
         };
         // Within 1 per channel: Hsla stores the mixed colour as floats.
         let near = |h: Hsla, want: Rgb| {
             let got = hex(h);
-            assert!([16, 8, 0].iter().all(|s| ((got >> s) & 255).abs_diff((want >> s) & 255) <= 1), "{got:06x} vs {want:06x}");
+            assert!(
+                [16, 8, 0]
+                    .iter()
+                    .all(|s| ((got >> s) & 255).abs_diff((want >> s) & 255) <= 1),
+                "{got:06x} vs {want:06x}"
+            );
         };
         let l = Tokens::from_palette(&LIGHT);
         near(l.chrome, 0xebedf2);
@@ -284,11 +339,22 @@ mod tests {
     /// The core's theme presets (used by its colour tests) are the GUI's palettes.
     #[std::prelude::v1::test]
     fn tile_themes_match_core_presets() {
-        assert_eq!(Tokens::from_palette(&LIGHT).tile_theme(), msascope::scheme::Theme::LIGHT);
-        assert_eq!(Tokens::from_palette(&DARK).tile_theme(), msascope::scheme::Theme::DARK);
+        assert_eq!(
+            Tokens::from_palette(&LIGHT).tile_theme(),
+            msascope::scheme::Theme::LIGHT
+        );
+        assert_eq!(
+            Tokens::from_palette(&DARK).tile_theme(),
+            msascope::scheme::Theme::DARK
+        );
         // and the letter ink is the same
         let l = Rgba::from(Tokens::from_palette(&LIGHT).res_ink);
-        assert_eq!(((l.r * 255.0).round() as u32) << 16 | ((l.g * 255.0).round() as u32) << 8 | (l.b * 255.0).round() as u32, msascope::scheme::Theme::LIGHT.ink());
+        assert_eq!(
+            ((l.r * 255.0).round() as u32) << 16
+                | ((l.g * 255.0).round() as u32) << 8
+                | (l.b * 255.0).round() as u32,
+            msascope::scheme::Theme::LIGHT.ink()
+        );
     }
 
     /// Text tokens on the surfaces they are drawn on are at least 4.5:1 (WCAG AA) in both palettes:
@@ -301,13 +367,23 @@ mod tests {
             // Translucent tokens composited over their surface, as the GPU draws them.
             let over = |fg: Hsla, bg: Hsla| -> Rgb {
                 let (f, b) = (Rgba::from(fg), Rgba::from(bg));
-                let ch = |x: f32, y: f32| (((x * f.a + y * (1.0 - f.a)) * 255.0).round() as u32).min(255);
+                let ch = |x: f32, y: f32| {
+                    (((x * f.a + y * (1.0 - f.a)) * 255.0).round() as u32).min(255)
+                };
                 ch(f.r, b.r) << 16 | ch(f.g, b.g) << 8 | ch(f.b, b.b)
             };
-            let pairs = [("bg", t.bg, true), ("chrome", t.chrome, true), ("header", t.grid_header, true), ("selected row", t.grid_header_active, false)];
+            let pairs = [
+                ("bg", t.bg, true),
+                ("chrome", t.chrome, true),
+                ("header", t.grid_header, true),
+                ("selected row", t.grid_header_active, false),
+            ];
             for (name, surface, muted_too) in pairs {
                 let s = over(surface, surface);
-                for (tn, text) in [("fg", t.fg), ("fg_muted", t.fg_muted)].into_iter().take(if muted_too { 2 } else { 1 }) {
+                for (tn, text) in [("fg", t.fg), ("fg_muted", t.fg_muted)]
+                    .into_iter()
+                    .take(if muted_too { 2 } else { 1 })
+                {
                     let ratio = contrast(over(text, surface), s);
                     assert!(ratio >= 4.5, "{tn} on {name}, dark={}: {ratio:.2}", p.dark);
                 }

@@ -32,9 +32,17 @@ pub fn parse(text: &str) -> Result<Goto, String> {
     if t.is_empty() {
         return Err("Type a column, row:column or name:position".into());
     }
-    let one = |n: usize, what: &str| if n == 0 { Err(format!("{what} numbers start at 1")) } else { Ok(n - 1) };
+    let one = |n: usize, what: &str| {
+        if n == 0 {
+            Err(format!("{what} numbers start at 1"))
+        } else {
+            Ok(n - 1)
+        }
+    };
     if let Some((l, r)) = t.rsplit_once(':') {
-        let Some(n) = number(r) else { return Err(format!("Expected a number after ':', not '{}'", r.trim())) };
+        let Some(n) = number(r) else {
+            return Err(format!("Expected a number after ':', not '{}'", r.trim()));
+        };
         if let Some(row) = number(l) {
             return Ok(Goto::RowCol(one(row, "Row")?, one(n, "Column")?));
         }
@@ -59,7 +67,9 @@ fn stem(name: &str) -> &str {
 
 /// An accession without its version (`Q9XYZ1` of `Q9XYZ1.2`).
 fn unversioned(a: &str) -> &str {
-    a.rsplit_once('.').filter(|(_, v)| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())).map_or(a, |(s, _)| s)
+    a.rsplit_once('.')
+        .filter(|(_, v)| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+        .map_or(a, |(s, _)| s)
 }
 
 /// The residue numbers row `r` covers: its `/start-end` range, else 1 to its length.
@@ -81,7 +91,10 @@ pub fn find_row(aln: &Alignment, query: &str, pos: Option<usize>) -> Result<usiz
         &|r| aln.names[r] == q,
         &|r| acc(r).is_some_and(|a| a == q || unversioned(a) == unversioned(q)),
         &|r| stem(&aln.names[r]) == q,
-        &|r| aln.names[r].to_lowercase().starts_with(&lower) || acc(r).is_some_and(|a| a.to_lowercase().starts_with(&lower)),
+        &|r| {
+            aln.names[r].to_lowercase().starts_with(&lower)
+                || acc(r).is_some_and(|a| a.to_lowercase().starts_with(&lower))
+        },
     ];
     for rule in rules {
         let mut hits: Vec<usize> = (0..aln.rows()).filter(|&r| rule(r)).collect();
@@ -91,7 +104,11 @@ pub fn find_row(aln: &Alignment, query: &str, pos: Option<usize>) -> Result<usiz
         if hits.len() > 1
             && let Some(p) = pos
         {
-            let inside: Vec<usize> = hits.iter().copied().filter(|&r| (range(aln, r).0..=range(aln, r).1).contains(&p)).collect();
+            let inside: Vec<usize> = hits
+                .iter()
+                .copied()
+                .filter(|&r| (range(aln, r).0..=range(aln, r).1).contains(&p))
+                .collect();
             if !inside.is_empty() {
                 hits = inside;
             }
@@ -99,9 +116,21 @@ pub fn find_row(aln: &Alignment, query: &str, pos: Option<usize>) -> Result<usiz
         if hits.len() == 1 {
             return Ok(hits[0]);
         }
-        let some: Vec<&str> = hits.iter().take(3).map(|&r| aln.names[r].as_str()).collect();
-        let more = if hits.len() > 3 { format!(" and {} more", hits.len() - 3) } else { String::new() };
-        return Err(format!("'{q}' matches {} sequences: {}{more}", hits.len(), some.join(", ")));
+        let some: Vec<&str> = hits
+            .iter()
+            .take(3)
+            .map(|&r| aln.names[r].as_str())
+            .collect();
+        let more = if hits.len() > 3 {
+            format!(" and {} more", hits.len() - 3)
+        } else {
+            String::new()
+        };
+        return Err(format!(
+            "'{q}' matches {} sequences: {}{more}",
+            hits.len(),
+            some.join(", ")
+        ));
     }
     Err(format!("No sequence named '{q}'"))
 }
@@ -110,7 +139,10 @@ pub fn find_row(aln: &Alignment, query: &str, pos: Option<usize>) -> Result<usiz
 pub fn column_of(aln: &Alignment, r: usize, pos: usize) -> Result<usize, String> {
     let (start, end) = range(aln, r);
     if pos < start || pos > end {
-        return Err(format!("{} has residues {start}–{end}; {pos} is outside", aln.names[r]));
+        return Err(format!(
+            "{} has residues {start}–{end}; {pos} is outside",
+            aln.names[r]
+        ));
     }
     let mut k = pos - start;
     let mut buf = vec![0u8; aln.cols()];
@@ -123,7 +155,10 @@ pub fn column_of(aln: &Alignment, r: usize, pos: usize) -> Result<usize, String>
             k -= 1;
         }
     }
-    Err(format!("{} has fewer residues than its range says", aln.names[r]))
+    Err(format!(
+        "{} has fewer residues than its range says",
+        aln.names[r]
+    ))
 }
 
 #[cfg(test)]
@@ -135,7 +170,10 @@ mod tests {
     fn parses_the_forms() {
         assert_eq!(parse("1,200"), Ok(Goto::Col(1199)));
         assert_eq!(parse(" 3:40 "), Ok(Goto::RowCol(2, 39)));
-        assert_eq!(parse("GLB2_TYLHE/32-143:50"), Ok(Goto::NamePos("GLB2_TYLHE/32-143".into(), 50)));
+        assert_eq!(
+            parse("GLB2_TYLHE/32-143:50"),
+            Ok(Goto::NamePos("GLB2_TYLHE/32-143".into(), 50))
+        );
         assert_eq!(parse("P02240:7"), Ok(Goto::NamePos("P02240".into(), 7)));
         assert_eq!(parse("hbb_human"), Ok(Goto::Name("hbb_human".into())));
         assert!(parse("0").is_err());
@@ -159,12 +197,23 @@ mod tests {
         assert_eq!(find_row(&a, "P68871", None), Ok(2));
         assert_eq!(find_row(&a, "P68871.2", None), Ok(2));
         assert_eq!(find_row(&a, "hbb", None), Ok(2)); // unique prefix
-        assert!(find_row(&a, "hb", None).unwrap_err().contains("matches 2 sequences"));
-        assert!(find_row(&a, "GLB2_TYLHE", None).unwrap_err().contains("matches 2"));
+        assert!(
+            find_row(&a, "hb", None)
+                .unwrap_err()
+                .contains("matches 2 sequences")
+        );
+        assert!(
+            find_row(&a, "GLB2_TYLHE", None)
+                .unwrap_err()
+                .contains("matches 2")
+        );
         // The position picks the domain.
         assert_eq!(find_row(&a, "GLB2_TYLHE", Some(92)), Ok(1));
         assert_eq!(find_row(&a, "GLB2_TYLHE", Some(33)), Ok(0));
-        assert_eq!(find_row(&a, "nope", None), Err("No sequence named 'nope'".into()));
+        assert_eq!(
+            find_row(&a, "nope", None),
+            Err("No sequence named 'nope'".into())
+        );
     }
 
     #[test]

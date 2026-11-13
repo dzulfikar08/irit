@@ -54,7 +54,12 @@ impl Pyramid {
     /// The pyramid of the alignment with only the columns in `map` (ascending alignment columns),
     /// as if the others had been removed, and the rows of `rows` in its order (clades as their
     /// consensus rows); `None` keeps every column / the file's rows.
-    pub fn build_mapped(aln: &Alignment, consensus: &[u8], map: Option<&[u32]>, rows: Option<&RowView>) -> Self {
+    pub fn build_mapped(
+        aln: &Alignment,
+        consensus: &[u8],
+        map: Option<&[u32]>,
+        rows: Option<&RowView>,
+    ) -> Self {
         let cols = map.map_or(aln.cols(), <[u32]>::len);
         let nrows = view_rows(rows, aln.rows());
         let mut levels = vec![base_level(aln, consensus, map, rows)];
@@ -77,7 +82,12 @@ impl Pyramid {
     }
 }
 
-fn base_level(aln: &Alignment, consensus: &[u8], map: Option<&[u32]>, view: Option<&RowView>) -> Level {
+fn base_level(
+    aln: &Alignment,
+    consensus: &[u8],
+    map: Option<&[u32]>,
+    view: Option<&RowView>,
+) -> Level {
     let b = 1usize << BASE_SHIFT;
     let rows = view_rows(view, aln.rows());
     let cols = map.map_or(aln.cols(), <[u32]>::len);
@@ -101,8 +111,14 @@ fn base_level(aln: &Alignment, consensus: &[u8], map: Option<&[u32]>, view: Opti
             for r in br * b..r1 {
                 row_src(view, r).decode(aln, &mut buf);
                 match map {
-                    None => buf.iter().enumerate().for_each(|(c, &code)| count(c, code, consensus[c])),
-                    Some(m) => m.iter().enumerate().for_each(|(v, &c)| count(v, buf[c as usize], consensus[c as usize])),
+                    None => buf
+                        .iter()
+                        .enumerate()
+                        .for_each(|(c, &code)| count(c, code, consensus[c])),
+                    Some(m) => m
+                        .iter()
+                        .enumerate()
+                        .for_each(|(v, &c)| count(v, buf[c as usize], consensus[c as usize])),
                 }
             }
             let h = r1 - br * b;
@@ -112,7 +128,13 @@ fn base_level(aln: &Alignment, consensus: &[u8], map: Option<&[u32]>, view: Opti
                 dif[bc] = (ndiff[bc] as usize * 255 / (w * h)) as u8;
             }
         });
-    Level { shift: BASE_SHIFT, rows: brows, cols: bcols, majority, diff }
+    Level {
+        shift: BASE_SHIFT,
+        rows: brows,
+        cols: bcols,
+        majority,
+        diff,
+    }
 }
 
 /// Most common code; ties go to a residue over the gap, then to the lower code.
@@ -158,11 +180,21 @@ fn halve(l: &Level, rows_total: usize, cols_total: usize) -> Level {
                         }
                     }
                 }
-                maj[c] = votes[..n].iter().max_by_key(|&&(k, w)| (w, k != GAP, std::cmp::Reverse(k))).unwrap().0;
+                maj[c] = votes[..n]
+                    .iter()
+                    .max_by_key(|&&(k, w)| (w, k != GAP, std::cmp::Reverse(k)))
+                    .unwrap()
+                    .0;
                 dif[c] = ((dsum + area / 2) / area) as u8;
             }
         });
-    Level { shift: l.shift + 1, rows, cols, majority, diff }
+    Level {
+        shift: l.shift + 1,
+        rows,
+        cols,
+        majority,
+        diff,
+    }
 }
 
 #[cfg(test)]
@@ -172,14 +204,29 @@ mod tests {
     use crate::stats::ColumnStats;
 
     fn fasta(rows: &[String]) -> Vec<u8> {
-        rows.iter().enumerate().flat_map(|(i, s)| format!(">s{i}\n{s}\n").into_bytes()).collect()
+        rows.iter()
+            .enumerate()
+            .flat_map(|(i, s)| format!(">s{i}\n{s}\n").into_bytes())
+            .collect()
     }
 
     #[test]
     fn blocks_and_levels() {
         // 20 x 20: left 8 columns all A, rest C; row 0 has a T at column 9.
         let rows: Vec<String> = (0..20)
-            .map(|r| (0..20).map(|c| if c < 8 { 'A' } else if r == 0 && c == 9 { 'T' } else { 'C' }).collect())
+            .map(|r| {
+                (0..20)
+                    .map(|c| {
+                        if c < 8 {
+                            'A'
+                        } else if r == 0 && c == 9 {
+                            'T'
+                        } else {
+                            'C'
+                        }
+                    })
+                    .collect()
+            })
             .collect();
         let a = parse_bytes(&fasta(&rows)).unwrap();
         let s = ColumnStats::compute(&a);
@@ -204,18 +251,34 @@ mod tests {
     /// A mapped pyramid equals the pyramid of the alignment with the hidden columns removed.
     #[test]
     fn mapped_equals_removed() {
-        let rows: Vec<String> = (0..37).map(|r| (0..53).map(|c| b"ACGT-"[(r * 7 + c * 3 + r * c) % 5] as char).collect()).collect();
+        let rows: Vec<String> = (0..37)
+            .map(|r| {
+                (0..53)
+                    .map(|c| b"ACGT-"[(r * 7 + c * 3 + r * c) % 5] as char)
+                    .collect()
+            })
+            .collect();
         let a = parse_bytes(&fasta(&rows)).unwrap();
         let s = ColumnStats::compute(&a);
         let map: Vec<u32> = (0..53u32).filter(|c| c % 3 != 1).collect();
         let p = Pyramid::build_mapped(&a, &s.consensus, Some(&map), None);
-        let kept: Vec<String> = rows.iter().map(|r| map.iter().map(|&c| r.as_bytes()[c as usize] as char).collect()).collect();
+        let kept: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                map.iter()
+                    .map(|&c| r.as_bytes()[c as usize] as char)
+                    .collect()
+            })
+            .collect();
         let b = parse_bytes(&fasta(&kept)).unwrap();
         let cons: Vec<u8> = map.iter().map(|&c| s.consensus[c as usize]).collect();
         let q = Pyramid::build(&b, &cons);
         assert_eq!(p.levels.len(), q.levels.len());
         for (x, y) in p.levels.iter().zip(&q.levels) {
-            assert_eq!((x.rows, x.cols, &x.majority, &x.diff), (y.rows, y.cols, &y.majority, &y.diff));
+            assert_eq!(
+                (x.rows, x.cols, &x.majority, &x.diff),
+                (y.rows, y.cols, &y.majority, &y.diff)
+            );
         }
     }
 
@@ -235,7 +298,9 @@ mod tests {
     fn upper_levels_weight_by_area() {
         // 8 rows × 9 columns: level 0 is a full 8×8 block and an 8×1 edge block.
         // The full block is all gaps; the edge column is A with one T.
-        let rows: Vec<String> = (0..8).map(|r| format!("--------{}", if r == 0 { 'T' } else { 'A' })).collect();
+        let rows: Vec<String> = (0..8)
+            .map(|r| format!("--------{}", if r == 0 { 'T' } else { 'A' }))
+            .collect();
         let a = parse_bytes(&fasta(&rows)).unwrap();
         let s = ColumnStats::compute(&a);
         let p = Pyramid::build(&a, &s.consensus);
@@ -246,7 +311,9 @@ mod tests {
         // Gap block weighs 64 cells against 8: gap wins on weight.
         assert_eq!(l1.at(0, 0).0, GAP);
         // Equal weights (8 × 16: half gap, half A): the residue wins the tie.
-        let rows: Vec<String> = (0..8).map(|_| format!("{}{}", "-".repeat(8), "A".repeat(8))).collect();
+        let rows: Vec<String> = (0..8)
+            .map(|_| format!("{}{}", "-".repeat(8), "A".repeat(8)))
+            .collect();
         let a = parse_bytes(&fasta(&rows)).unwrap();
         let s = ColumnStats::compute(&a);
         let p = Pyramid::build(&a, &s.consensus);

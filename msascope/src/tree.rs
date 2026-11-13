@@ -48,7 +48,13 @@ impl Tree {
         let mut last: Vec<u32> = Vec::new(); // last child of each node, to append siblings
         let new_node = |t: &mut Tree, last: &mut Vec<u32>, parent: u32| -> u32 {
             let id = t.nodes.len() as u32;
-            t.nodes.push(Node { parent, first_child: NONE, next_sibling: NONE, len: 0.0, label: (0, 0) });
+            t.nodes.push(Node {
+                parent,
+                first_child: NONE,
+                next_sibling: NONE,
+                len: 0.0,
+                label: (0, 0),
+            });
             last.push(NONE);
             if parent != NONE {
                 let p = parent as usize;
@@ -107,7 +113,11 @@ impl Tree {
                     i += 1;
                 }
                 b',' => {
-                    let parent = if cur == NONE { NONE } else { t.nodes[cur as usize].parent };
+                    let parent = if cur == NONE {
+                        NONE
+                    } else {
+                        t.nodes[cur as usize].parent
+                    };
                     if parent == NONE {
                         bail!("byte {i}: ',' outside parentheses");
                     }
@@ -116,7 +126,11 @@ impl Tree {
                     i += 1;
                 }
                 b')' => {
-                    let parent = if cur == NONE { NONE } else { t.nodes[cur as usize].parent };
+                    let parent = if cur == NONE {
+                        NONE
+                    } else {
+                        t.nodes[cur as usize].parent
+                    };
                     if parent == NONE {
                         bail!("byte {i}: ')' without a matching '('");
                     }
@@ -133,10 +147,15 @@ impl Tree {
                         i += 1;
                     }
                     let s = i;
-                    while i < b.len() && matches!(b[i], b'0'..=b'9' | b'.' | b'-' | b'+' | b'e' | b'E') {
+                    while i < b.len()
+                        && matches!(b[i], b'0'..=b'9' | b'.' | b'-' | b'+' | b'e' | b'E')
+                    {
                         i += 1;
                     }
-                    let v: f32 = std::str::from_utf8(&b[s..i]).ok().and_then(|x| x.parse().ok()).ok_or_else(|| anyhow::anyhow!("byte {s}: bad branch length"))?;
+                    let v: f32 = std::str::from_utf8(&b[s..i])
+                        .ok()
+                        .and_then(|x| x.parse().ok())
+                        .ok_or_else(|| anyhow::anyhow!("byte {s}: bad branch length"))?;
                     t.nodes[cur as usize].len = if v.is_finite() { v.max(0.0) } else { 0.0 };
                     t.has_lengths = true;
                 }
@@ -169,12 +188,27 @@ impl Tree {
                             }
                             // Copy one UTF-8 character.
                             let n = utf8_len(b[i]);
-                            t.labels.push_str(std::str::from_utf8(&b[i..(i + n).min(b.len())]).unwrap_or("?"));
+                            t.labels.push_str(
+                                std::str::from_utf8(&b[i..(i + n).min(b.len())]).unwrap_or("?"),
+                            );
                             i += n;
                         }
                     } else {
                         let s = i;
-                        while i < b.len() && !matches!(b[i], b'(' | b')' | b',' | b':' | b';' | b'[' | b' ' | b'\t' | b'\r' | b'\n') {
+                        while i < b.len()
+                            && !matches!(
+                                b[i],
+                                b'(' | b')'
+                                    | b','
+                                    | b':'
+                                    | b';'
+                                    | b'['
+                                    | b' '
+                                    | b'\t'
+                                    | b'\r'
+                                    | b'\n'
+                            )
+                        {
                             i += 1;
                         }
                         t.labels.push_str(&text[s..i]);
@@ -260,8 +294,14 @@ fn utf8_len(b: u8) -> usize {
 /// Whether a file looks like a Newick tree: by extension, or by its first non-space character
 /// being `(` (an alignment never starts with one).
 pub fn looks_like_tree(path: &std::path::Path, head: &[u8]) -> bool {
-    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if matches!(ext.as_deref(), Some("nwk" | "newick" | "tree" | "treefile" | "tre" | "nhx" | "dnd" | "ph")) {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    if matches!(
+        ext.as_deref(),
+        Some("nwk" | "newick" | "tree" | "treefile" | "tre" | "nhx" | "dnd" | "ph")
+    ) {
         return true;
     }
     let head = head.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(head);
@@ -271,7 +311,9 @@ pub fn looks_like_tree(path: &std::path::Path, head: &[u8]) -> bool {
 /// Tree files next to an alignment with the same stem (`PF00042.sto` → `PF00042.nwk`), in the
 /// order they are tried. `x.fa.gz` also tries `x.nwk`.
 pub fn sibling_candidates(aln: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let Some(name) = aln.file_name().and_then(|n| n.to_str()) else { return Vec::new() };
+    let Some(name) = aln.file_name().and_then(|n| n.to_str()) else {
+        return Vec::new();
+    };
     let dir = aln.parent().unwrap_or(std::path::Path::new(""));
     let mut stems = Vec::new();
     let mut s = name;
@@ -310,14 +352,34 @@ impl Matching {
     /// "73 of 75 leaves matched; 2 leaves not in the alignment (a, b); 3 sequences not in the tree".
     pub fn report(&self) -> String {
         let g = crate::view::group_digits;
-        let mut s = format!("{} of {} tree leaves matched", g(self.matched), g(self.leaves));
+        let mut s = format!(
+            "{} of {} tree leaves matched",
+            g(self.matched),
+            g(self.leaves)
+        );
         if !self.unmatched_leaves.is_empty() {
-            let shown: Vec<&str> = self.unmatched_leaves.iter().take(3).map(String::as_str).collect();
-            let more = if self.unmatched_leaves.len() > 3 { ", …" } else { "" };
-            s += &format!("; {} not in the alignment ({}{more})", g(self.unmatched_leaves.len()), shown.join(", "));
+            let shown: Vec<&str> = self
+                .unmatched_leaves
+                .iter()
+                .take(3)
+                .map(String::as_str)
+                .collect();
+            let more = if self.unmatched_leaves.len() > 3 {
+                ", …"
+            } else {
+                ""
+            };
+            s += &format!(
+                "; {} not in the alignment ({}{more})",
+                g(self.unmatched_leaves.len()),
+                shown.join(", ")
+            );
         }
         if !self.rows_not_in_tree.is_empty() {
-            s += &format!("; {} sequences not in the tree, shown at the end", g(self.rows_not_in_tree.len()));
+            s += &format!(
+                "; {} sequences not in the tree, shown at the end",
+                g(self.rows_not_in_tree.len())
+            );
         }
         s
     }
@@ -345,16 +407,34 @@ pub fn match_rows(tree: &Tree, names: &[String], accessions: &[Option<Box<str>>]
         }
         m
     }
-    let full: HashMap<&str, u32> = names.iter().enumerate().rev().map(|(r, n)| (n.as_str(), r as u32)).collect();
-    let word = unique(names.iter().enumerate().filter_map(|(r, n)| n.split_whitespace().next().filter(|w| w.len() < n.len()).map(|w| (w, r as u32))));
-    let stem = unique(names.iter().enumerate().filter_map(|(r, n)| n.rsplit_once('/').map(|(a, _)| (a, r as u32))));
+    let full: HashMap<&str, u32> = names
+        .iter()
+        .enumerate()
+        .rev()
+        .map(|(r, n)| (n.as_str(), r as u32))
+        .collect();
+    let word = unique(names.iter().enumerate().filter_map(|(r, n)| {
+        n.split_whitespace()
+            .next()
+            .filter(|w| w.len() < n.len())
+            .map(|w| (w, r as u32))
+    }));
+    let stem = unique(
+        names
+            .iter()
+            .enumerate()
+            .filter_map(|(r, n)| n.rsplit_once('/').map(|(a, _)| (a, r as u32))),
+    );
     let acc = unique(accessions.iter().enumerate().flat_map(|(r, a)| {
         let a = a.as_deref();
         let base = a.and_then(|a| a.rsplit_once('.').map(|(b, _)| b));
         a.into_iter().chain(base).map(move |k| (k, r as u32))
     }));
     let mut used = vec![false; names.len()];
-    let mut m = Matching { row: vec![NONE; tree.len()], ..Default::default() };
+    let mut m = Matching {
+        row: vec![NONE; tree.len()],
+        ..Default::default()
+    };
     for n in tree.preorder() {
         if !tree.is_leaf(n) {
             continue;
@@ -362,11 +442,17 @@ pub fn match_rows(tree: &Tree, names: &[String], accessions: &[Option<Box<str>>]
         m.leaves += 1;
         let l = tree.label(n);
         let spaced = l.contains('_').then(|| l.replace('_', " "));
-        let found = [full.get(l), spaced.as_deref().and_then(|s| full.get(s)), word.get(l), stem.get(l), acc.get(l)]
-            .into_iter()
-            .flatten()
-            .copied()
-            .find(|&r| !used[r as usize]);
+        let found = [
+            full.get(l),
+            spaced.as_deref().and_then(|s| full.get(s)),
+            word.get(l),
+            stem.get(l),
+            acc.get(l),
+        ]
+        .into_iter()
+        .flatten()
+        .copied()
+        .find(|&r| !used[r as usize]);
         match found {
             Some(r) => {
                 used[r as usize] = true;
@@ -376,7 +462,9 @@ pub fn match_rows(tree: &Tree, names: &[String], accessions: &[Option<Box<str>>]
             None => m.unmatched_leaves.push(l.to_string()),
         }
     }
-    m.rows_not_in_tree = (0..names.len() as u32).filter(|&r| !used[r as usize]).collect();
+    m.rows_not_in_tree = (0..names.len() as u32)
+        .filter(|&r| !used[r as usize])
+        .collect();
     m
 }
 
@@ -446,7 +534,15 @@ impl TreeIndex {
             }
         }
         let depth = x_max[0].max(0.0);
-        TreeIndex { tree, matching, order, span, x, x_max, depth }
+        TreeIndex {
+            tree,
+            matching,
+            order,
+            span,
+            x,
+            x_max,
+            depth,
+        }
     }
 
     /// Matched leaves under node `n`.
@@ -462,7 +558,11 @@ impl TreeIndex {
     }
 
     pub fn bytes(&self) -> usize {
-        self.tree.bytes() + self.matching.row.len() * 4 + self.order.len() * 4 + self.span.len() * 8 + self.x.len() * 8
+        self.tree.bytes()
+            + self.matching.row.len() * 4
+            + self.order.len() * 4
+            + self.span.len() * 8
+            + self.x.len() * 8
     }
 }
 
@@ -483,7 +583,12 @@ pub struct TreeRows {
 ///
 /// `collapsed[n]` marks nodes the user collapsed; a collapsed node inside another collapsed one is
 /// hidden with it. Clade consensus rows are computed here ([`clade_consensus`]).
-pub fn row_view(aln: &Alignment, ix: &TreeIndex, collapsed: &[bool], tree_order: bool) -> (RowView, Option<TreeRows>) {
+pub fn row_view(
+    aln: &Alignment,
+    ix: &TreeIndex,
+    collapsed: &[bool],
+    tree_order: bool,
+) -> (RowView, Option<TreeRows>) {
     if !tree_order {
         return (RowView::identity(aln.rows()), None);
     }
@@ -505,10 +610,19 @@ fn kept_counts(ix: &TreeIndex, keep: &[bool]) -> Vec<u32> {
 
 /// [`row_view`] in tree order with only the rows `keep` marks (all when `None`): subtrees with no
 /// row left are left out, and collapsed clades stand for their remaining members.
-pub fn row_view_kept(aln: &Alignment, ix: &TreeIndex, collapsed: &[bool], keep: Option<&[bool]>) -> (RowView, Option<TreeRows>) {
+pub fn row_view_kept(
+    aln: &Alignment,
+    ix: &TreeIndex,
+    collapsed: &[bool],
+    keep: Option<&[bool]>,
+) -> (RowView, Option<TreeRows>) {
     let rows = aln.rows();
     let counts = keep.map(|k| kept_counts(ix, k));
-    let size = |n: u32| counts.as_ref().map_or(ix.size(n), |c| c[n as usize] as usize);
+    let size = |n: u32| {
+        counts
+            .as_ref()
+            .map_or(ix.size(n), |c| c[n as usize] as usize)
+    };
     let t = &ix.tree;
     let mut view: Vec<u32> = Vec::with_capacity(rows);
     let mut clade_nodes: Vec<u32> = Vec::new();
@@ -567,10 +681,21 @@ pub fn row_view_kept(aln: &Alignment, ix: &TreeIndex, collapsed: &[bool], keep: 
     let (members, order): (Vec<Range<u32>>, Vec<u32>) = match keep {
         None => {
             view.extend_from_slice(&ix.matching.rows_not_in_tree);
-            (clade_nodes.iter().map(|&n| ix.span[n as usize].0..ix.span[n as usize].1).collect(), ix.order.clone())
+            (
+                clade_nodes
+                    .iter()
+                    .map(|&n| ix.span[n as usize].0..ix.span[n as usize].1)
+                    .collect(),
+                ix.order.clone(),
+            )
         }
         Some(k) => {
-            view.extend(ix.matching.rows_not_in_tree.iter().filter(|&&r| k[r as usize]));
+            view.extend(
+                ix.matching
+                    .rows_not_in_tree
+                    .iter()
+                    .filter(|&&r| k[r as usize]),
+            );
             let mut order = Vec::new();
             let members = clade_nodes
                 .iter()
@@ -583,9 +708,19 @@ pub fn row_view_kept(aln: &Alignment, ix: &TreeIndex, collapsed: &[bool], keep: 
             (members, order)
         }
     };
-    let consensus: Vec<Vec<u8>> = members.iter().map(|m| clade_consensus(aln, &order[m.start as usize..m.end as usize])).collect();
+    let consensus: Vec<Vec<u8>> = members
+        .iter()
+        .map(|m| clade_consensus(aln, &order[m.start as usize..m.end as usize]))
+        .collect();
     let rv = RowView::new(view, rows, tree_end, members, order, consensus);
-    (rv, Some(TreeRows { y, rows: span, collapsed: clade_nodes }))
+    (
+        rv,
+        Some(TreeRows {
+            y,
+            rows: span,
+            collapsed: clade_nodes,
+        }),
+    )
 }
 
 /// The consensus of a set of rows, per column: a gap where more than half of them are gaps,
@@ -594,26 +729,33 @@ pub fn clade_consensus(aln: &Alignment, rows: &[u32]) -> Vec<u8> {
     const BLOCK: usize = 1024;
     let cols = aln.cols();
     let mut out = vec![GAP; cols];
-    out.par_chunks_mut(BLOCK).enumerate().for_each(|(blk, out)| {
-        let (c0, w) = (blk * BLOCK, out.len());
-        let mut acc = vec![0u32; w * NCODES];
-        let mut buf = vec![0u8; w];
-        for &r in rows {
-            aln.matrix.decode_row(r as usize, c0, &mut buf);
-            for (i, &code) in buf.iter().enumerate() {
-                acc[i * NCODES + code as usize] += 1;
+    out.par_chunks_mut(BLOCK)
+        .enumerate()
+        .for_each(|(blk, out)| {
+            let (c0, w) = (blk * BLOCK, out.len());
+            let mut acc = vec![0u32; w * NCODES];
+            let mut buf = vec![0u8; w];
+            for &r in rows {
+                aln.matrix.decode_row(r as usize, c0, &mut buf);
+                for (i, &code) in buf.iter().enumerate() {
+                    acc[i * NCODES + code as usize] += 1;
+                }
             }
-        }
-        for (i, h) in acc.as_chunks::<NCODES>().0.iter().enumerate() {
-            if h[GAP as usize] as usize * 2 > rows.len() {
-                continue;
+            for (i, h) in acc.as_chunks::<NCODES>().0.iter().enumerate() {
+                if h[GAP as usize] as usize * 2 > rows.len() {
+                    continue;
+                }
+                let (best, &n) = h
+                    .iter()
+                    .enumerate()
+                    .skip(1)
+                    .max_by_key(|&(i, &v)| (v, std::cmp::Reverse(i)))
+                    .unwrap();
+                if n > 0 {
+                    out[i] = best as u8;
+                }
             }
-            let (best, &n) = h.iter().enumerate().skip(1).max_by_key(|&(i, &v)| (v, std::cmp::Reverse(i))).unwrap();
-            if n > 0 {
-                out[i] = best as u8;
-            }
-        }
-    });
+        });
     out
 }
 
@@ -697,13 +839,27 @@ impl Tree {
         }
         let p = self.nodes[x as usize].parent;
         let half = self.nodes[x as usize].len / 2.0;
-        let mut out = Tree { nodes: Vec::with_capacity(n + 1), labels: self.labels.clone(), has_lengths: self.has_lengths };
-        out.nodes.push(Node { parent: NONE, first_child: NONE, next_sibling: NONE, len: 0.0, label: (0, 0) });
+        let mut out = Tree {
+            nodes: Vec::with_capacity(n + 1),
+            labels: self.labels.clone(),
+            has_lengths: self.has_lengths,
+        };
+        out.nodes.push(Node {
+            parent: NONE,
+            first_child: NONE,
+            next_sibling: NONE,
+            len: 0.0,
+            label: (0, 0),
+        });
         let mut last = vec![NONE];
         // (old node, the neighbour it is entered from, new parent, branch length)
         let mut stack = vec![(p, x, 0u32, half), (x, p, 0u32, half)];
         while let Some((v, from, np, len)) = stack.pop() {
-            let others: Vec<(u32, f32)> = adj[v as usize].iter().copied().filter(|&(u, _)| u != from).collect();
+            let others: Vec<(u32, f32)> = adj[v as usize]
+                .iter()
+                .copied()
+                .filter(|&(u, _)| u != from)
+                .collect();
             if v == 0 && others.len() == 1 {
                 // The old root with one branch left: join it to the branch it was entered by.
                 let (u, l) = others[0];
@@ -711,7 +867,13 @@ impl Tree {
                 continue;
             }
             let id = out.nodes.len() as u32;
-            out.nodes.push(Node { parent: np, first_child: NONE, next_sibling: NONE, len, label: self.nodes[v as usize].label });
+            out.nodes.push(Node {
+                parent: np,
+                first_child: NONE,
+                next_sibling: NONE,
+                len,
+                label: self.nodes[v as usize].label,
+            });
             last.push(NONE);
             match last[np as usize] {
                 NONE => out.nodes[np as usize].first_child = id,
@@ -733,7 +895,12 @@ impl Tree {
             .iter()
             .map(|&o| {
                 let nd = out.nodes[o as usize];
-                Node { parent: map(nd.parent), first_child: map(nd.first_child), next_sibling: map(nd.next_sibling), ..nd }
+                Node {
+                    parent: map(nd.parent),
+                    first_child: map(nd.first_child),
+                    next_sibling: map(nd.next_sibling),
+                    ..nd
+                }
             })
             .collect();
         out.nodes = nodes;
@@ -786,7 +953,11 @@ mod tests {
     use crate::parse::parse_bytes;
 
     fn leaves(t: &Tree) -> Vec<&str> {
-        t.preorder().into_iter().filter(|&n| t.is_leaf(n)).map(|n| t.label(n)).collect()
+        t.preorder()
+            .into_iter()
+            .filter(|&n| t.is_leaf(n))
+            .map(|n| t.label(n))
+            .collect()
     }
 
     #[test]
@@ -802,7 +973,8 @@ mod tests {
         assert_eq!(t.children(kids[2]).count(), 3); // multifurcation
         assert!((t.nodes[kids[1] as usize].len - 0.01).abs() < 1e-7);
         // comments, NHX, whitespace and line breaks, no final ';'
-        let t = Tree::parse(" [a comment [nested]]\n( A[&&NHX:S=human] : 1 ,\n\tB:2 [x] )").unwrap();
+        let t =
+            Tree::parse(" [a comment [nested]]\n( A[&&NHX:S=human] : 1 ,\n\tB:2 [x] )").unwrap();
         assert_eq!(leaves(&t), ["A", "B"]);
         assert_eq!(t.nodes[1].len, 1.0);
         // no lengths, single leaf, unicode in quotes, text after ';' ignored
@@ -813,7 +985,16 @@ mod tests {
         assert_eq!(leaves(&Tree::parse("('α β',\"q\")").unwrap()), ["α β", "q"]);
         // empty labels are leaves too
         assert_eq!(Tree::parse("(,);").unwrap().leaf_count(), 2);
-        for bad in ["", "((a,b);", "(a,b));", "(a,b)c d;", "(a:x,b);", "a,b;", "('a,b);", "(a,b)[x"] {
+        for bad in [
+            "",
+            "((a,b);",
+            "(a,b));",
+            "(a,b)c d;",
+            "(a:x,b);",
+            "a,b;",
+            "('a,b);",
+            "(a,b)[x",
+        ] {
             assert!(Tree::parse(bad).is_err(), "{bad:?} should fail");
         }
     }
@@ -843,9 +1024,15 @@ mod tests {
             b"# STOCKHOLM 1.0\n#=GS P1/1-3 AC Q9XYZ1.2\nGLB2_TYLHE/32-34 ACD\nGLB2_TYLHE/40-42 ACD\nP1/1-3 ACD\nfull_name ACD\nalone ACD\n//\n",
         )
         .unwrap();
-        let t = Tree::parse("(GLB2_TYLHE,full_name,Q9XYZ1,'GLB2_TYLHE/40-42',ghost,full_name);").unwrap();
+        let t = Tree::parse("(GLB2_TYLHE,full_name,Q9XYZ1,'GLB2_TYLHE/40-42',ghost,full_name);")
+            .unwrap();
         let m = match_rows(&t, &aln.names, &aln.accessions);
-        let row = |l: &str| t.preorder().into_iter().find(|&n| t.is_leaf(n) && t.label(n) == l).map(|n| m.row[n as usize]);
+        let row = |l: &str| {
+            t.preorder()
+                .into_iter()
+                .find(|&n| t.is_leaf(n) && t.label(n) == l)
+                .map(|n| m.row[n as usize])
+        };
         // "GLB2_TYLHE" is the stem of two rows: ambiguous, no match by stem
         assert_eq!(row("GLB2_TYLHE"), Some(NONE));
         assert_eq!(row("GLB2_TYLHE/40-42"), Some(1));
@@ -909,18 +1096,41 @@ mod tests {
     fn consensus_gap_majority() {
         let aln = parse_bytes(b">a\nA-C\n>b\n--C\n>c\n-GA\n").unwrap();
         // column 1 is 2 gaps of 3: a gap, though G is the only residue
-        let cons: Vec<u8> = clade_consensus(&aln, &[0, 1, 2]).iter().map(|&x| aln.symbol(x)).collect();
+        let cons: Vec<u8> = clade_consensus(&aln, &[0, 1, 2])
+            .iter()
+            .map(|&x| aln.symbol(x))
+            .collect();
         assert_eq!(cons, b"--C");
-        assert_eq!(clade_consensus(&aln, &[1, 2]).iter().map(|&x| aln.symbol(x)).collect::<Vec<_>>(), b"-GA");
-        assert_eq!(clade_consensus(&aln, &[0]).iter().map(|&x| aln.symbol(x)).collect::<Vec<_>>(), b"A-C");
+        assert_eq!(
+            clade_consensus(&aln, &[1, 2])
+                .iter()
+                .map(|&x| aln.symbol(x))
+                .collect::<Vec<_>>(),
+            b"-GA"
+        );
+        assert_eq!(
+            clade_consensus(&aln, &[0])
+                .iter()
+                .map(|&x| aln.symbol(x))
+                .collect::<Vec<_>>(),
+            b"A-C"
+        );
     }
 
     #[test]
     fn stockholm_nh_tree() {
-        let aln = parse_bytes(b"# STOCKHOLM 1.0\n#=GF ID x\n#=GF NH (a:0.1,\n#=GF NH  b:0.2);\na AC\nb AG\n//\n").unwrap();
+        let aln = parse_bytes(
+            b"# STOCKHOLM 1.0\n#=GF ID x\n#=GF NH (a:0.1,\n#=GF NH  b:0.2);\na AC\nb AG\n//\n",
+        )
+        .unwrap();
         let t = Tree::parse(aln.newick.as_deref().unwrap()).unwrap();
         assert_eq!(leaves(&t), ["a", "b"]);
-        assert!(parse_bytes(b"# STOCKHOLM 1.0\na AC\n//\n").unwrap().newick.is_none());
+        assert!(
+            parse_bytes(b"# STOCKHOLM 1.0\na AC\n//\n")
+                .unwrap()
+                .newick
+                .is_none()
+        );
     }
 
     #[test]
@@ -951,7 +1161,12 @@ mod tests {
         let t1 = std::time::Instant::now();
         let ix = TreeIndex::new(t, &names, &[]);
         assert_eq!(ix.matching.matched, n);
-        eprintln!("230k leaves: {} nodes, parse {parse:?}, match + index {:?}, {} MiB", ix.tree.len(), t1.elapsed(), ix.bytes() >> 20);
+        eprintln!(
+            "230k leaves: {} nodes, parse {parse:?}, match + index {:?}, {} MiB",
+            ix.tree.len(),
+            t1.elapsed(),
+            ix.bytes() >> 20
+        );
     }
 
     /// Newick of a tree with its lengths, for comparing shapes.
@@ -988,15 +1203,26 @@ mod tests {
         assert_eq!(newick(&l.tree), "((d:0)W:0,e:0,(c:0,(a:0,b:0)X:0)Y:0)");
         assert_eq!(l.order, [3, 4, 2, 0, 1]);
         // Only below Y: the root keeps its order.
-        let y = (0..ix.tree.len() as u32).find(|&n| ix.tree.label(n) == "Y").unwrap();
-        assert_eq!(newick(&ix.ladderized(y).tree), "((c:0,(a:0,b:0)X:0)Y:0,(d:0)W:0,e:0)");
+        let y = (0..ix.tree.len() as u32)
+            .find(|&n| ix.tree.label(n) == "Y")
+            .unwrap();
+        assert_eq!(
+            newick(&ix.ladderized(y).tree),
+            "((c:0,(a:0,b:0)X:0)Y:0,(d:0)W:0,e:0)"
+        );
         // Depth 1 from the root collapses Y and W; depth 2 collapses X and expands Y.
         let mut c = vec![false; ix.tree.len()];
         ix.collapse_to_depth(&mut c, 0, 1);
-        let on: Vec<&str> = (0..ix.tree.len() as u32).filter(|&n| c[n as usize]).map(|n| ix.tree.label(n)).collect();
+        let on: Vec<&str> = (0..ix.tree.len() as u32)
+            .filter(|&n| c[n as usize])
+            .map(|n| ix.tree.label(n))
+            .collect();
         assert_eq!(on, ["Y", "W"]);
         ix.collapse_to_depth(&mut c, 0, 2);
-        let on: Vec<&str> = (0..ix.tree.len() as u32).filter(|&n| c[n as usize]).map(|n| ix.tree.label(n)).collect();
+        let on: Vec<&str> = (0..ix.tree.len() as u32)
+            .filter(|&n| c[n as usize])
+            .map(|n| ix.tree.label(n))
+            .collect();
         assert_eq!(on, ["X"]);
         ix.expand_all(&mut c, y);
         assert!(c.iter().all(|&f| !f));
@@ -1013,7 +1239,11 @@ mod tests {
         assert_eq!(rv.expanded(), [3, 2]);
         assert_eq!(rv.shown(0), None);
         let tr = tr.unwrap();
-        let leaf = |l: &str| (0..ix.tree.len() as u32).find(|&n| ix.tree.label(n) == l).unwrap() as usize;
+        let leaf = |l: &str| {
+            (0..ix.tree.len() as u32)
+                .find(|&n| ix.tree.label(n) == l)
+                .unwrap() as usize
+        };
         assert!(tr.y[leaf("a1")].is_nan() && !tr.y[leaf("a2")].is_nan());
         // A collapsed clade stands for its remaining members only.
         let mut c = none.clone();
@@ -1036,7 +1266,13 @@ mod tests {
         // The old root had two children: it is removed and X–Y joined (4 + 2).
         assert_eq!(newick(&r), "(a:0.5,(b:2,(c:1,d:1)Y:6)X:0.5)");
         assert_eq!(r.leaf_count(), 4);
-        assert!(r.nodes.iter().enumerate().skip(1).all(|(i, n)| r.children(n.parent).any(|c| c as usize == i)));
+        assert!(
+            r.nodes
+                .iter()
+                .enumerate()
+                .skip(1)
+                .all(|(i, n)| r.children(n.parent).any(|c| c as usize == i))
+        );
         // Multifurcating root: kept as an internal node.
         let t = Tree::parse("(a:1,b:1,c:1);").unwrap();
         assert_eq!(newick(&t.reroot(1)), "(a:0.5,(b:1,c:1):0.5)");

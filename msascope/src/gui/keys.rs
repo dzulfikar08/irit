@@ -10,7 +10,11 @@
 /// A binding written with `ctrl-` for this platform: `cmd-` on macOS.
 /// Ctrl+Tab / Ctrl+Shift+Tab stay Ctrl (Cmd+Tab is the macOS app switcher).
 pub fn primary(keys: &'static str) -> &'static str {
-    if cfg!(target_os = "macos") { to_mac(keys).map_or(keys, |s| Box::leak(s.into_boxed_str())) } else { keys }
+    if cfg!(target_os = "macos") {
+        to_mac(keys).map_or(keys, |s| Box::leak(s.into_boxed_str()))
+    } else {
+        keys
+    }
 }
 
 fn to_mac(keys: &str) -> Option<String> {
@@ -23,7 +27,11 @@ fn to_mac(keys: &str) -> Option<String> {
 /// A shortcut label written for Linux ("Ctrl+Shift+B", "Ctrl K") as shown on this platform:
 /// "⌘⇧B", "⌘K" on macOS.
 pub fn label(keys: &str) -> String {
-    if cfg!(target_os = "macos") { mac_label(keys) } else { keys.to_owned() }
+    if cfg!(target_os = "macos") {
+        mac_label(keys)
+    } else {
+        keys.to_owned()
+    }
 }
 
 fn mac_label(keys: &str) -> String {

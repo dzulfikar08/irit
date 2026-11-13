@@ -14,6 +14,7 @@ pub mod fonts;
 pub mod hover;
 pub mod input;
 pub mod keys;
+pub mod menu;
 pub mod metrics;
 pub mod name_menu;
 pub mod overview;

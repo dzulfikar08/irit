@@ -44,7 +44,11 @@ pub fn zoom_step(s: f64, steps: i32) -> f64 {
         return s;
     }
     let z = 2.0 * s.log2();
-    let base = if steps > 0 { (z + 1e-6).floor() } else { (z - 1e-6).ceil() };
+    let base = if steps > 0 {
+        (z + 1e-6).floor()
+    } else {
+        (z - 1e-6).ceil()
+    };
     zoom_px((base as i32 + steps).clamp(ZOOM_MIN, ZOOM_MAX))
 }
 
@@ -56,10 +60,20 @@ pub fn zoom_step(s: f64, steps: i32) -> f64 {
 ///   7 px at which letters are drawn.)
 pub fn initial_view(rows: usize, cols: usize, w: f64, h: f64) -> (f64, f64) {
     if cols as f64 * LETTERS_CW <= w && rows as f64 * LETTERS_CH <= h {
-        return (fit_scale(cols, w, LETTERS_CW), fit_scale(rows, h, LETTERS_CH));
+        return (
+            fit_scale(cols, w, LETTERS_CW),
+            fit_scale(rows, h, LETTERS_CH),
+        );
     }
     let fit_w = fit_scale(cols, w, LETTERS_CW);
-    (if fit_w >= MIN_FIT_CW { fit_w } else { LETTERS_CW }, LETTERS_CH)
+    (
+        if fit_w >= MIN_FIT_CW {
+            fit_w
+        } else {
+            LETTERS_CW
+        },
+        LETTERS_CH,
+    )
 }
 
 /// `n` with thousands separators: 32112 -> "32,112".
@@ -81,7 +95,11 @@ pub fn zoom_label(cw: f64, ch: f64) -> String {
     let per_px = |s: f64| group_digits((1.0 / s).round().max(1.0) as usize);
     // One decimal below 10 px (an exact fit is rarely a whole number), none above.
     let size = |s: f64| {
-        let t = if s >= 10.0 { format!("{s:.0}") } else { format!("{s:.1}") };
+        let t = if s >= 10.0 {
+            format!("{s:.0}")
+        } else {
+            format!("{s:.1}")
+        };
         t.strip_suffix(".0").map(str::to_owned).unwrap_or(t)
     };
     match (cw >= 1.0, ch >= 1.0) {
@@ -113,7 +131,8 @@ impl Viewport {
         }
         let c = (self.col0 + x / self.cw).floor();
         let r = (self.row0 + y / self.ch).floor();
-        (c >= 0.0 && r >= 0.0 && (c as usize) < cols && (r as usize) < rows).then_some((r as usize, c as usize))
+        (c >= 0.0 && r >= 0.0 && (c as usize) < cols && (r as usize) < rows)
+            .then_some((r as usize, c as usize))
     }
 
     /// Keep the view inside the alignment (or at the origin when the alignment is smaller).
@@ -134,7 +153,11 @@ impl Viewport {
     }
 
     /// Visible cell ranges (half-open), clipped to the alignment.
-    pub fn visible(&self, rows: usize, cols: usize) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
+    pub fn visible(
+        &self,
+        rows: usize,
+        cols: usize,
+    ) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
         let r0 = self.row0.max(0.0).floor() as usize;
         let c0 = self.col0.max(0.0).floor() as usize;
         let r1 = ((self.row0 + self.height / self.ch).ceil().max(0.0) as usize).min(rows);
@@ -154,7 +177,10 @@ impl Viewport {
 
     /// Top-left of a tile relative to the alignment area.
     pub fn tile_origin(&self, tx: i64, ty: i64) -> (f64, f64) {
-        (tx as f64 * TILE as f64 - self.col0 * self.cw, ty as f64 * TILE as f64 - self.row0 * self.ch)
+        (
+            tx as f64 * TILE as f64 - self.col0 * self.cw,
+            ty as f64 * TILE as f64 - self.row0 * self.ch,
+        )
     }
 }
 
@@ -174,9 +200,16 @@ impl ColumnMap {
 
     /// Columns hidden by insert state and gap share: inserts when `inserts`, and columns where at
     /// least `gappy` of the rows are gaps (0–1) when given.
-    pub fn hiding(aln: &Alignment, stats: &ColumnStats, inserts: bool, gappy: Option<f32>) -> Option<ColumnMap> {
+    pub fn hiding(
+        aln: &Alignment,
+        stats: &ColumnStats,
+        inserts: bool,
+        gappy: Option<f32>,
+    ) -> Option<ColumnMap> {
         let gappy = gappy.map(|g| g - 1e-6);
-        Self::build(aln.cols(), |c| (inserts && aln.is_insert(c)) || gappy.is_some_and(|g| stats.gaps[c] >= g))
+        Self::build(aln.cols(), |c| {
+            (inserts && aln.is_insert(c)) || gappy.is_some_and(|g| stats.gaps[c] >= g)
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -199,7 +232,11 @@ impl ColumnMap {
     pub fn hidden_runs(&self, total: usize, range: std::ops::Range<usize>) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
         for v in range.start..=range.end.min(self.len()) {
-            let prev = if v == 0 { -1 } else { self.visible[v - 1] as i64 };
+            let prev = if v == 0 {
+                -1
+            } else {
+                self.visible[v - 1] as i64
+            };
             let next = self.visible.get(v).map_or(total as i64, |&c| c as i64);
             if next - prev > 1 {
                 out.push((v, (next - prev - 1) as usize));
@@ -232,11 +269,23 @@ impl RowView {
     /// Every row in file order.
     pub fn identity(rows: usize) -> RowView {
         let rows: Vec<u32> = (0..rows as u32).collect();
-        RowView { pos: rows.clone(), tree_end: rows.len() as u32, rows, ..Default::default() }
+        RowView {
+            pos: rows.clone(),
+            tree_end: rows.len() as u32,
+            rows,
+            ..Default::default()
+        }
     }
 
     /// `view` lists entries; clade `k`'s members are `order[members[k]]`.
-    pub fn new(view: Vec<u32>, nrows: usize, tree_end: u32, members: Vec<std::ops::Range<u32>>, order: Vec<u32>, consensus: Vec<Vec<u8>>) -> RowView {
+    pub fn new(
+        view: Vec<u32>,
+        nrows: usize,
+        tree_end: u32,
+        members: Vec<std::ops::Range<u32>>,
+        order: Vec<u32>,
+        consensus: Vec<Vec<u8>>,
+    ) -> RowView {
         let mut pos = vec![u32::MAX; nrows];
         for (v, &e) in view.iter().enumerate() {
             if e & Self::CLADE == 0 {
@@ -248,7 +297,14 @@ impl RowView {
                 }
             }
         }
-        RowView { rows: view, pos, tree_end, members, order, consensus }
+        RowView {
+            rows: view,
+            pos,
+            tree_end,
+            members,
+            order,
+            consensus,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -294,7 +350,11 @@ impl RowView {
 
     /// The view row showing alignment row `r`, `None` when it is filtered out.
     pub fn shown(&self, r: usize) -> Option<usize> {
-        self.pos.get(r).copied().filter(|&p| p != u32::MAX).map(|p| p as usize)
+        self.pos
+            .get(r)
+            .copied()
+            .filter(|&p| p != u32::MAX)
+            .map(|p| p as usize)
     }
 
     /// Sequences shown (a collapsed clade counts its members).
@@ -323,7 +383,8 @@ impl RowView {
     }
 
     pub fn bytes(&self) -> usize {
-        (self.rows.len() + self.pos.len() + self.order.len()) * 4 + self.consensus.iter().map(Vec::len).sum::<usize>()
+        (self.rows.len() + self.pos.len() + self.order.len()) * 4
+            + self.consensus.iter().map(Vec::len).sum::<usize>()
     }
 }
 
@@ -414,7 +475,12 @@ impl Scene<'_> {
     #[inline]
     pub fn column(&self, c: usize) -> Column<'_> {
         let s = self.stats;
-        Column { consensus: self.base_code(c), identity: s.identity[c], shares: &s.shares[c], clustal: s.clustal[c] }
+        Column {
+            consensus: self.base_code(c),
+            identity: s.identity[c],
+            shares: &s.shares[c],
+            clustal: s.clustal[c],
+        }
     }
 
     /// The code column `c` is compared with: the reference's, else the consensus.
@@ -454,17 +520,26 @@ impl Scene<'_> {
         let cols = self.view_cols();
         out.fill(0);
         let put = |out: &mut [u8], i: usize, j: usize, rgb: u32| {
-            out[(j * w + i) * 4..][..4].copy_from_slice(&[rgb as u8, (rgb >> 8) as u8, (rgb >> 16) as u8, 255]);
+            out[(j * w + i) * 4..][..4].copy_from_slice(&[
+                rgb as u8,
+                (rgb >> 8) as u8,
+                (rgb >> 16) as u8,
+                255,
+            ]);
         };
         if cw >= 1.0 && ch >= 1.0 {
             // Sample at pixel centres.
             let px_cols: Vec<Option<(usize, usize)>> = (0..w)
                 .map(|i| {
                     let v = ((x0 + i as i64) as f64 + 0.5) / cw;
-                    (v >= 0.0 && (v as usize) < cols).then(|| (v as usize, aln_col(self.map, v as usize)))
+                    (v >= 0.0 && (v as usize) < cols)
+                        .then(|| (v as usize, aln_col(self.map, v as usize)))
                 })
                 .collect();
-            let columns: Vec<Option<Column>> = px_cols.iter().map(|p| p.map(|(_, c)| self.column(c))).collect();
+            let columns: Vec<Option<Column>> = px_cols
+                .iter()
+                .map(|p| p.map(|(_, c)| self.column(c)))
+                .collect();
             for j in 0..h {
                 let r = ((y0 + j as i64) as f64 + 0.5) / ch;
                 if r < 0.0 || r as usize >= rows {
@@ -477,7 +552,9 @@ impl Scene<'_> {
                     let rgb = match last {
                         Some((k, rgb)) if k == v => rgb,
                         _ => {
-                            let rgb = self.colors.cell(src.get(self.aln, c), columns[i].as_ref().unwrap());
+                            let rgb = self
+                                .colors
+                                .cell(src.get(self.aln, c), columns[i].as_ref().unwrap());
                             last = Some((v, rgb));
                             rgb
                         }
@@ -494,7 +571,13 @@ impl Scene<'_> {
         let (units_x, units_y) = level.map_or((cols, rows), |l| (l.cols, l.rows));
         let unit = (1u64 << shift) as f64;
         // Unit indices sampled in one pixel's span [a, b) of cells, at most `n` spread evenly.
-        let spans = |p0: i64, n_px: usize, per_px: f64, total: usize, units: usize, n: usize| -> Vec<Vec<u32>> {
+        let spans = |p0: i64,
+                     n_px: usize,
+                     per_px: f64,
+                     total: usize,
+                     units: usize,
+                     n: usize|
+         -> Vec<Vec<u32>> {
             (0..n_px)
                 .map(|i| {
                     let a = (p0 + i as i64) as f64 * per_px;
@@ -503,9 +586,17 @@ impl Scene<'_> {
                         return Vec::new();
                     }
                     let (a, b) = (a.max(0.0), b.min(total as f64));
-                    let (ua, ub) = ((a / unit).floor() as usize, ((b / unit).ceil() as usize).min(units).max((a / unit).floor() as usize + 1));
+                    let (ua, ub) = (
+                        (a / unit).floor() as usize,
+                        ((b / unit).ceil() as usize)
+                            .min(units)
+                            .max((a / unit).floor() as usize + 1),
+                    );
                     let k = (ub - ua).min(n).max(1);
-                    (0..k).map(|t| (ua + (t * (ub - ua) + (ub - ua) / 2) / k) as u32).filter(|&u| (u as usize) < units).collect()
+                    (0..k)
+                        .map(|t| (ua + (t * (ub - ua) + (ub - ua) / 2) / k) as u32)
+                        .filter(|&u| (u as usize) < units)
+                        .collect()
                 })
                 .collect()
         };
@@ -519,7 +610,16 @@ impl Scene<'_> {
         // Alignment columns and consensus of the sampled cells (cells mode only).
         let missing = missing_code(self.aln.kind());
         let acols: Vec<Vec<(usize, u8)>> = if level.is_none() {
-            xs.iter().map(|u| u.iter().map(|&v| { let c = aln_col(self.map, v as usize); (c, self.base_code(c)) }).collect()).collect()
+            xs.iter()
+                .map(|u| {
+                    u.iter()
+                        .map(|&v| {
+                            let c = aln_col(self.map, v as usize);
+                            (c, self.base_code(c))
+                        })
+                        .collect()
+                })
+                .collect()
         } else {
             Vec::new()
         };
@@ -557,7 +657,11 @@ impl Scene<'_> {
                             for &(c, cons) in &acols[i] {
                                 let code = src.get(self.aln, c);
                                 votes[code as usize & (NCODES - 1)] += 1;
-                                dsum += if code != GAP && code != missing && code != cons { 255 } else { 0 };
+                                dsum += if code != GAP && code != missing && code != cons {
+                                    255
+                                } else {
+                                    0
+                                };
                                 n += 1;
                             }
                         }
@@ -595,7 +699,13 @@ pub struct TrackPx {
 
 /// Per-pixel summary of the column tracks for a strip of `npx` pixels starting at view column
 /// `col0`, sampling at most 16 columns per pixel.
-pub fn column_track(stats: &ColumnStats, map: Option<&ColumnMap>, col0: f64, cw: f64, npx: usize) -> Vec<Option<TrackPx>> {
+pub fn column_track(
+    stats: &ColumnStats,
+    map: Option<&ColumnMap>,
+    col0: f64,
+    cw: f64,
+    npx: usize,
+) -> Vec<Option<TrackPx>> {
     let cols = view_cols(map, stats.consensus.len());
     (0..npx)
         .map(|i| {
@@ -614,7 +724,12 @@ pub fn column_track(stats: &ColumnStats, map: Option<&ColumnMap>, col0: f64, cw:
                 n += 1;
             }
             let c = aln_col(map, a);
-            Some(TrackPx { code: stats.consensus[c], col: c, identity: ident / n as f32, gaps: gaps / n as f32 })
+            Some(TrackPx {
+                code: stats.consensus[c],
+                col: c,
+                identity: ident / n as f32,
+                gaps: gaps / n as f32,
+            })
         })
         .collect()
 }
@@ -638,7 +753,12 @@ pub fn search_names(names: &[String], query: &str) -> Vec<usize> {
     if q.is_empty() {
         return Vec::new();
     }
-    names.iter().enumerate().filter(|(_, n)| n.to_lowercase().contains(&q)).map(|(i, _)| i).collect()
+    names
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.to_lowercase().contains(&q))
+        .map(|(i, _)| i)
+        .collect()
 }
 
 #[cfg(test)]
@@ -648,7 +768,14 @@ mod tests {
     use crate::scheme::{self, ColorMode, Scheme, Theme};
 
     fn vp() -> Viewport {
-        Viewport { col0: 10.0, row0: 5.0, cw: 4.0, ch: 2.0, width: 100.0, height: 50.0 }
+        Viewport {
+            col0: 10.0,
+            row0: 5.0,
+            cw: 4.0,
+            ch: 2.0,
+            width: 100.0,
+            height: 50.0,
+        }
     }
 
     #[test]
@@ -682,7 +809,14 @@ mod tests {
 
     #[test]
     fn tiles_cover_view() {
-        let v = Viewport { col0: 100.0, row0: 0.0, cw: 3.0, ch: 3.0, width: 600.0, height: 100.0 };
+        let v = Viewport {
+            col0: 100.0,
+            row0: 0.0,
+            cw: 3.0,
+            ch: 3.0,
+            width: 600.0,
+            height: 100.0,
+        };
         let t: Vec<_> = v.tiles().collect();
         // x pixels 300..900 -> tiles 1..=3
         assert_eq!(t, [(1, 0), (2, 0), (3, 0)]);
@@ -708,9 +842,18 @@ mod tests {
     #[test]
     fn fit_is_exact() {
         // No more than 1 px empty, for awkward sizes in both axes.
-        for (cells, px) in [(698usize, 838.0f64), (32_112, 600.0), (30_000, 1083.0), (100_000, 517.0), (7, 913.0)] {
+        for (cells, px) in [
+            (698usize, 838.0f64),
+            (32_112, 600.0),
+            (30_000, 1083.0),
+            (100_000, 517.0),
+            (7, 913.0),
+        ] {
             let s = fit_scale(cells, px, f64::INFINITY);
-            assert!((px - cells as f64 * s).abs() <= 1.0, "{cells} cells in {px} px");
+            assert!(
+                (px - cells as f64 * s).abs() <= 1.0,
+                "{cells} cells in {px} px"
+            );
         }
         // Capped at letters zoom: a tiny alignment sits at the top-left instead of being blown up.
         assert_eq!(fit_scale(5, 1000.0, LETTERS_CW), LETTERS_CW);
@@ -724,15 +867,24 @@ mod tests {
         let (cw, ch) = initial_view(32_112, 698, 838.0, 600.0);
         assert!(cw >= MIN_FIT_CW && ch == LETTERS_CH, "{cw} × {ch}");
         // 50 × 100 fits at letters zoom in 1200 × 900: the whole alignment.
-        assert_eq!(initial_view(50, 100, 1200.0, 900.0), (LETTERS_CW, LETTERS_CH));
+        assert_eq!(
+            initial_view(50, 100, 1200.0, 900.0),
+            (LETTERS_CW, LETTERS_CH)
+        );
         // 500 × 100 in 838 × 600: columns fit the width (8.4 px), rows at letters zoom.
         let (cw, ch) = initial_view(500, 100, 838.0, 600.0);
         assert!((cw - 8.38).abs() < 1e-9 && ch == LETTERS_CH);
         // PF00042 seed, 73 × 141, in the 952 px left next to the overview panel: fit width would
         // be 6.75 px, too narrow for letters, so letters zoom.
-        assert_eq!(initial_view(73, 141, 952.0, 680.0), (LETTERS_CW, LETTERS_CH));
+        assert_eq!(
+            initial_view(73, 141, 952.0, 680.0),
+            (LETTERS_CW, LETTERS_CH)
+        );
         // 100,000 × 30,000: letters zoom.
-        assert_eq!(initial_view(100_000, 30_000, 1083.0, 600.0), (LETTERS_CW, LETTERS_CH));
+        assert_eq!(
+            initial_view(100_000, 30_000, 1083.0, 600.0),
+            (LETTERS_CW, LETTERS_CH)
+        );
     }
 
     #[test]
@@ -742,9 +894,15 @@ mod tests {
         assert_eq!(group_digits(32_112), "32,112");
         assert_eq!(group_digits(1_234_567), "1,234,567");
         assert_eq!(zoom_label(LETTERS_CW, 16.0), "11 × 16 px");
-        assert_eq!(zoom_label(1.0 / 43.0, 1.0 / 64.0), "1 px = 43 columns × 64 rows");
+        assert_eq!(
+            zoom_label(1.0 / 43.0, 1.0 / 64.0),
+            "1 px = 43 columns × 64 rows"
+        );
         assert_eq!(zoom_label(8.0, 0.5), "8 px wide, 1 px = 2 rows");
-        assert_eq!(zoom_label(1084.0 / 698.0, 600.0 / 32_112.0), "1.6 px wide, 1 px = 54 rows");
+        assert_eq!(
+            zoom_label(1084.0 / 698.0, 600.0 / 32_112.0),
+            "1.6 px wide, 1 px = 54 rows"
+        );
         assert_eq!(zoom_label(7.69, 8.56), "7.7 × 8.6 px");
         assert_eq!(zoom_label(0.001, 16.0), "1 px = 1,000 columns, 16 px tall");
     }
@@ -757,7 +915,10 @@ mod tests {
     }
 
     fn fasta(rows: &[String]) -> Vec<u8> {
-        rows.iter().enumerate().flat_map(|(i, s)| format!(">s{i}\n{s}\n").into_bytes()).collect()
+        rows.iter()
+            .enumerate()
+            .flat_map(|(i, s)| format!(">s{i}\n{s}\n").into_bytes())
+            .collect()
     }
 
     fn px(out: &[u8], w: usize, i: usize, j: usize) -> u32 {
@@ -767,11 +928,28 @@ mod tests {
 
     #[test]
     fn tile_pixels() {
-        let rows: Vec<String> = (0..40).map(|r| if r == 3 { "T".repeat(64) } else { "A".repeat(64) }).collect();
+        let rows: Vec<String> = (0..40)
+            .map(|r| {
+                if r == 3 {
+                    "T".repeat(64)
+                } else {
+                    "A".repeat(64)
+                }
+            })
+            .collect();
         let (aln, stats, pyramid) = scene_parts(&fasta(&rows));
-        let colors = |scheme, theme| Colors::new(aln.alphabet(), ColorMode::new(scheme), theme, false);
+        let colors =
+            |scheme, theme| Colors::new(aln.alphabet(), ColorMode::new(scheme), theme, false);
         let nt = colors(Scheme::Nucleotide, Theme::LIGHT);
-        let mut scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &nt, base: None };
+        let mut scene = Scene {
+            aln: &aln,
+            stats: &stats,
+            pyramid: &pyramid,
+            map: None,
+            rows: None,
+            colors: &nt,
+            base: None,
+        };
         let mut out = vec![0u8; TILE * TILE * 4];
         // 2 px per cell: row 3 is pixel rows 6-7.
         scene.render_tile(2.0, 2.0, 0, 0, &mut out);
@@ -801,11 +979,32 @@ mod tests {
     /// built against the reference makes the blocks without the reference's residue strong.
     #[test]
     fn differences_against_a_reference() {
-        let rows: Vec<String> = (0..40).map(|r| if r == 3 { "T".repeat(64) } else { "A".repeat(64) }).collect();
+        let rows: Vec<String> = (0..40)
+            .map(|r| {
+                if r == 3 {
+                    "T".repeat(64)
+                } else {
+                    "A".repeat(64)
+                }
+            })
+            .collect();
         let (aln, stats, pyramid) = scene_parts(&fasta(&rows));
-        let diff = Colors::new(aln.alphabet(), ColorMode::new(Scheme::Differences), Theme::LIGHT, false);
+        let diff = Colors::new(
+            aln.alphabet(),
+            ColorMode::new(Scheme::Differences),
+            Theme::LIGHT,
+            false,
+        );
         let r = crate::reference::Reference::new(&aln, 3);
-        let mut scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &diff, base: None };
+        let mut scene = Scene {
+            aln: &aln,
+            stats: &stats,
+            pyramid: &pyramid,
+            map: None,
+            rows: None,
+            colors: &diff,
+            base: None,
+        };
         let mut out = vec![0u8; TILE * TILE * 4];
         scene.render_tile(2.0, 2.0, 0, 0, &mut out);
         let (a_cons, t_cons) = (px(&out, TILE, 0, 0), px(&out, TILE, 0, 7));
@@ -816,11 +1015,23 @@ mod tests {
         // the A rows now differ (full colour, as the T row did), the T row matches (faded)
         assert_ne!(px(&out, TILE, 0, 0), a_cons);
         assert_ne!(px(&out, TILE, 0, 7), t_cons);
-        let (a, t) = (aln.alphabet().encode(b'A').unwrap(), aln.alphabet().encode(b'T').unwrap());
+        let (a, t) = (
+            aln.alphabet().encode(b'A').unwrap(),
+            aln.alphabet().encode(b'T').unwrap(),
+        );
         let col = scene.column(0);
         assert_eq!(col.consensus, t);
         assert_eq!(px(&out, TILE, 0, 0), diff.cell(a, &col));
-        assert_eq!(diff.cell(a, &col), diff.cell(a, &crate::scheme::Column { consensus: GAP, ..col }));
+        assert_eq!(
+            diff.cell(a, &col),
+            diff.cell(
+                a,
+                &crate::scheme::Column {
+                    consensus: GAP,
+                    ..col
+                }
+            )
+        );
         // density: with the reference, 39 of 40 rows differ, so a block is far from the faded base
         scene.render_tile(0.125, 0.125, 0, 0, &mut out);
         let with_ref = px(&out, TILE, 0, 1);
@@ -837,8 +1048,21 @@ mod tests {
     fn gaps_are_background() {
         let (aln, stats, pyramid) = scene_parts(b">a\nA--A\n>b\nA--A\n");
         for theme in [Theme::LIGHT, Theme::DARK] {
-            let c = Colors::new(aln.alphabet(), ColorMode::new(Scheme::Nucleotide), theme, true);
-            let scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &c, base: None };
+            let c = Colors::new(
+                aln.alphabet(),
+                ColorMode::new(Scheme::Nucleotide),
+                theme,
+                true,
+            );
+            let scene = Scene {
+                aln: &aln,
+                stats: &stats,
+                pyramid: &pyramid,
+                map: None,
+                rows: None,
+                colors: &c,
+                base: None,
+            };
             let mut out = vec![0u8; 16 * 4 * 4];
             scene.render(4.0, 4.0, 0, 0, 16, 4, &mut out);
             assert_eq!(px(&out, 16, 6, 1), theme.bg);
@@ -860,17 +1084,45 @@ mod tests {
             b"ACGT"[(x % 4) as usize] as char
         };
         let rows: Vec<String> = (0..400)
-            .map(|r| (0..400).map(|c| if (r < 200) == (c < 200) { if r < 200 { 'A' } else { 'C' } } else { rnd() }).collect())
+            .map(|r| {
+                (0..400)
+                    .map(|c| {
+                        if (r < 200) == (c < 200) {
+                            if r < 200 { 'A' } else { 'C' }
+                        } else {
+                            rnd()
+                        }
+                    })
+                    .collect()
+            })
             .collect();
         let (aln, stats, pyramid) = scene_parts(&fasta(&rows));
-        let c = Colors::new(aln.alphabet(), ColorMode::new(Scheme::Nucleotide), Theme::LIGHT, false);
-        let scene = Scene { aln: &aln, stats: &stats, pyramid: &pyramid, map: None, rows: None, colors: &c, base: None };
+        let c = Colors::new(
+            aln.alphabet(),
+            ColorMode::new(Scheme::Nucleotide),
+            Theme::LIGHT,
+            false,
+        );
+        let scene = Scene {
+            aln: &aln,
+            stats: &stats,
+            pyramid: &pyramid,
+            map: None,
+            rows: None,
+            colors: &c,
+            base: None,
+        };
         // 400 cells in 40 px: 10 cells per pixel.
         let mut out = vec![0u8; 40 * 40 * 4];
         scene.render(0.1, 0.1, 0, 0, 40, 40, &mut out);
         let strength = |i, j| scheme::contrast(px(&out, 40, i, j), Theme::LIGHT.bg);
         // clade 1's conserved block (top-left) vs its variable part (top-right)
-        assert!(strength(5, 5) > strength(35, 5) + 0.3, "{} {}", strength(5, 5), strength(35, 5));
+        assert!(
+            strength(5, 5) > strength(35, 5) + 0.3,
+            "{} {}",
+            strength(5, 5),
+            strength(35, 5)
+        );
         assert!(strength(35, 35) > strength(5, 35) + 0.3);
         // uniform within a band
         assert_eq!(px(&out, 40, 2, 3), px(&out, 40, 15, 12));
@@ -886,27 +1138,78 @@ mod tests {
     /// at letter scale and in the density view.
     #[test]
     fn hidden_columns_equal_removed() {
-        let rows: Vec<String> = (0..48).map(|r| (0..90).map(|c| b"ACGT--"[(r * 5 + c * 7 + (r * c) % 11) % 6] as char).collect()).collect();
+        let rows: Vec<String> = (0..48)
+            .map(|r| {
+                (0..90)
+                    .map(|c| b"ACGT--"[(r * 5 + c * 7 + (r * c) % 11) % 6] as char)
+                    .collect()
+            })
+            .collect();
         let (aln, stats, _) = scene_parts(&fasta(&rows));
         let map = ColumnMap::build(aln.cols(), |c| c % 4 == 1 || (30..41).contains(&c)).unwrap();
         let mapped = Pyramid::build_mapped(&aln, &stats.consensus, Some(&map.visible), None);
-        let kept: Vec<String> = rows.iter().map(|r| map.visible.iter().map(|&c| r.as_bytes()[c as usize] as char).collect()).collect();
+        let kept: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                map.visible
+                    .iter()
+                    .map(|&c| r.as_bytes()[c as usize] as char)
+                    .collect()
+            })
+            .collect();
         let (b, _, _) = scene_parts(&fasta(&kept));
         // The removed alignment's column stats differ only in which columns exist: build its
         // stats from the original ones so the consensus is the same.
-        let pick = |v: &Vec<f32>| map.visible.iter().map(|&c| v[c as usize]).collect::<Vec<_>>();
+        let pick = |v: &Vec<f32>| {
+            map.visible
+                .iter()
+                .map(|&c| v[c as usize])
+                .collect::<Vec<_>>()
+        };
         let bstats = ColumnStats {
-            consensus: map.visible.iter().map(|&c| stats.consensus[c as usize]).collect(),
+            consensus: map
+                .visible
+                .iter()
+                .map(|&c| stats.consensus[c as usize])
+                .collect(),
             identity: pick(&stats.identity),
             gaps: pick(&stats.gaps),
-            shares: map.visible.iter().map(|&c| stats.shares[c as usize]).collect(),
-            clustal: map.visible.iter().map(|&c| stats.clustal[c as usize]).collect(),
+            shares: map
+                .visible
+                .iter()
+                .map(|&c| stats.shares[c as usize])
+                .collect(),
+            clustal: map
+                .visible
+                .iter()
+                .map(|&c| stats.clustal[c as usize])
+                .collect(),
         };
         let bpyr = Pyramid::build(&b, &bstats.consensus);
-        for scheme in [Scheme::Nucleotide, Scheme::PercentIdentity, Scheme::Differences] {
+        for scheme in [
+            Scheme::Nucleotide,
+            Scheme::PercentIdentity,
+            Scheme::Differences,
+        ] {
             let c = Colors::new(aln.alphabet(), ColorMode::new(scheme), Theme::DARK, false);
-            let s1 = Scene { aln: &aln, stats: &stats, pyramid: &mapped, map: Some(&map), rows: None, colors: &c, base: None };
-            let s2 = Scene { aln: &b, stats: &bstats, pyramid: &bpyr, map: None, rows: None, colors: &c, base: None };
+            let s1 = Scene {
+                aln: &aln,
+                stats: &stats,
+                pyramid: &mapped,
+                map: Some(&map),
+                rows: None,
+                colors: &c,
+                base: None,
+            };
+            let s2 = Scene {
+                aln: &b,
+                stats: &bstats,
+                pyramid: &bpyr,
+                map: None,
+                rows: None,
+                colors: &c,
+                base: None,
+            };
             for (cw, ch) in [(3.0, 2.0), (0.3, 0.2), (1.5, 0.1), (0.05, 0.05)] {
                 let (mut o1, mut o2) = (vec![0u8; 64 * 64 * 4], vec![0u8; 64 * 64 * 4]);
                 s1.render(cw, ch, 0, 0, 64, 64, &mut o1);
@@ -921,7 +1224,13 @@ mod tests {
     /// in the density view; the pyramid built for the view equals the reordered one's.
     #[test]
     fn row_view_equals_reordered() {
-        let rows: Vec<String> = (0..40).map(|r| (0..70).map(|c| b"ACGT-"[(r * 3 + c * 5 + (r * c) % 7) % 5] as char).collect()).collect();
+        let rows: Vec<String> = (0..40)
+            .map(|r| {
+                (0..70)
+                    .map(|c| b"ACGT-"[(r * 3 + c * 5 + (r * c) % 7) % 5] as char)
+                    .collect()
+            })
+            .collect();
         let (aln, stats, _) = scene_parts(&fasta(&rows));
         // view: rows 39..20 reversed, then clade {0..10} collapsed, then 10..20
         let order: Vec<u32> = (0..10).collect();
@@ -929,22 +1238,59 @@ mod tests {
         let mut view: Vec<u32> = (20..40).rev().collect();
         view.push(RowView::CLADE);
         view.extend(10..20);
-        let rv = RowView::new(view.clone(), 40, view.len() as u32, std::iter::once(0..10).collect(), order, vec![cons.clone()]);
+        let rv = RowView::new(
+            view.clone(),
+            40,
+            view.len() as u32,
+            std::iter::once(0..10).collect(),
+            order,
+            vec![cons.clone()],
+        );
         assert_eq!(rv.len(), 31);
         assert_eq!(rv.view_of(5), 20);
         let mapped = Pyramid::build_mapped(&aln, &stats.consensus, None, Some(&rv));
         let text: Vec<String> = view
             .iter()
-            .map(|&e| if e == RowView::CLADE { cons.iter().map(|&x| aln.symbol(x) as char).collect() } else { rows[e as usize].clone() })
+            .map(|&e| {
+                if e == RowView::CLADE {
+                    cons.iter().map(|&x| aln.symbol(x) as char).collect()
+                } else {
+                    rows[e as usize].clone()
+                }
+            })
             .collect();
         let (b, _, _) = scene_parts(&fasta(&text));
         let bpyr = Pyramid::build(&b, &stats.consensus);
         for (x, y) in mapped.levels.iter().zip(&bpyr.levels) {
-            assert_eq!((x.rows, x.cols, &x.majority, &x.diff), (y.rows, y.cols, &y.majority, &y.diff));
+            assert_eq!(
+                (x.rows, x.cols, &x.majority, &x.diff),
+                (y.rows, y.cols, &y.majority, &y.diff)
+            );
         }
-        let c = Colors::new(aln.alphabet(), ColorMode::new(Scheme::Nucleotide), Theme::LIGHT, false);
-        let s1 = Scene { aln: &aln, stats: &stats, pyramid: &mapped, map: None, rows: Some(&rv), colors: &c, base: None };
-        let s2 = Scene { aln: &b, stats: &stats, pyramid: &bpyr, map: None, rows: None, colors: &c, base: None };
+        let c = Colors::new(
+            aln.alphabet(),
+            ColorMode::new(Scheme::Nucleotide),
+            Theme::LIGHT,
+            false,
+        );
+        let s1 = Scene {
+            aln: &aln,
+            stats: &stats,
+            pyramid: &mapped,
+            map: None,
+            rows: Some(&rv),
+            colors: &c,
+            base: None,
+        };
+        let s2 = Scene {
+            aln: &b,
+            stats: &stats,
+            pyramid: &bpyr,
+            map: None,
+            rows: None,
+            colors: &c,
+            base: None,
+        };
         for (cw, ch) in [(3.0, 2.0), (0.3, 0.2), (0.05, 0.05)] {
             let (mut o1, mut o2) = (vec![0u8; 64 * 64 * 4], vec![0u8; 64 * 64 * 4]);
             s1.render(cw, ch, 0, 0, 64, 64, &mut o1);
@@ -964,15 +1310,35 @@ mod tests {
         assert_eq!(m.hidden_runs(10, 3..5), []);
         assert!(ColumnMap::build(5, |_| false).is_none());
         // hit-testing goes through the map: a click on view column 2 is alignment column 5
-        let v = Viewport { col0: 0.0, row0: 0.0, cw: 10.0, ch: 10.0, width: 100.0, height: 100.0 };
+        let v = Viewport {
+            col0: 0.0,
+            row0: 0.0,
+            cw: 10.0,
+            ch: 10.0,
+            width: 100.0,
+            height: 100.0,
+        };
         let (r, vc) = v.hit(25.0, 5.0, 3, m.len()).unwrap();
         assert_eq!((r, aln_col(Some(&m), vc)), (0, 5));
         assert_eq!(v.hit(65.0, 5.0, 3, m.len()), None); // past the last shown column
         // inserts and gappy columns
         let (aln, stats, _) = scene_parts(b"# STOCKHOLM 1.0\nx AC.gT-\ny A-tG--\nz A-.GT-\n//\n");
-        assert_eq!(ColumnMap::hiding(&aln, &stats, true, None).unwrap().visible, [0, 1, 3, 4, 5]);
-        assert_eq!(ColumnMap::hiding(&aln, &stats, false, Some(0.5)).unwrap().visible, [0, 3, 4]);
-        assert_eq!(ColumnMap::hiding(&aln, &stats, true, Some(1.0)).unwrap().visible, [0, 1, 3, 4]);
+        assert_eq!(
+            ColumnMap::hiding(&aln, &stats, true, None).unwrap().visible,
+            [0, 1, 3, 4, 5]
+        );
+        assert_eq!(
+            ColumnMap::hiding(&aln, &stats, false, Some(0.5))
+                .unwrap()
+                .visible,
+            [0, 3, 4]
+        );
+        assert_eq!(
+            ColumnMap::hiding(&aln, &stats, true, Some(1.0))
+                .unwrap()
+                .visible,
+            [0, 1, 3, 4]
+        );
         assert!(ColumnMap::hiding(&aln, &stats, false, None).is_none());
     }
 
@@ -981,7 +1347,15 @@ mod tests {
         let aln = parse_bytes(b">alpha\nAAC\n>Beta\nAGC\n>gamma\nATC\n").unwrap();
         let s = ColumnStats::compute(&aln);
         let t = column_track(&s, None, 0.0, 1.0, 4);
-        assert_eq!(t[0], Some(TrackPx { code: 1, col: 0, identity: 1.0, gaps: 0.0 }));
+        assert_eq!(
+            t[0],
+            Some(TrackPx {
+                code: 1,
+                col: 0,
+                identity: 1.0,
+                gaps: 0.0
+            })
+        );
         assert_eq!(t[3], None);
         let m = ColumnMap::build(3, |c| c == 0).unwrap();
         assert_eq!(column_track(&s, Some(&m), 0.0, 1.0, 3)[0].unwrap().col, 1);

@@ -18,7 +18,11 @@ pub enum SeqType {
 
 impl SeqType {
     pub fn kind(self) -> Kind {
-        if self == SeqType::Protein { Kind::Protein } else { Kind::Nucleotide }
+        if self == SeqType::Protein {
+            Kind::Protein
+        } else {
+            Kind::Nucleotide
+        }
     }
 }
 
@@ -29,7 +33,9 @@ impl std::str::FromStr for SeqType {
             "dna" => Ok(SeqType::Dna),
             "rna" => Ok(SeqType::Rna),
             "protein" | "aa" => Ok(SeqType::Protein),
-            _ => Err(format!("unknown sequence type {s:?}: expected dna, rna or protein")),
+            _ => Err(format!(
+                "unknown sequence type {s:?}: expected dna, rna or protein"
+            )),
         }
     }
 }
@@ -84,7 +90,13 @@ impl Alphabet {
             Kind::Nucleotide => 15, // N
             Kind::Protein => 23,    // X
         };
-        Alphabet { kind, name, bits, enc, symbols }
+        Alphabet {
+            kind,
+            name,
+            bits,
+            enc,
+            symbols,
+        }
     }
 
     #[inline]
@@ -114,7 +126,9 @@ impl Alphabet {
         let is = |a: &Alphabet| std::ptr::eq(self, a);
         if self.kind == Kind::Protein {
             None
-        } else if ((is(&DNA) || is(&DNA_WIDE)) && u == b'U') || ((is(&RNA) || is(&RNA_WIDE)) && u == b'T') {
+        } else if ((is(&DNA) || is(&DNA_WIDE)) && u == b'U')
+            || ((is(&RNA) || is(&RNA_WIDE)) && u == b'T')
+        {
             Some(&NT_MIXED)
         } else if matches!(u, b'X' | b'*') && (is(&DNA) || is(&RNA)) {
             Some(if is(&DNA) { &DNA_WIDE } else { &RNA_WIDE })
@@ -259,7 +273,11 @@ impl Census {
             SeqType::Protein => &PROTEIN,
             _ if self.t > 0 && self.u > 0 => &NT_MIXED,
             _ if self.u > 0 || (ty == SeqType::Rna && self.t == 0) => {
-                if self.x_or_stop { &RNA_WIDE } else { &RNA }
+                if self.x_or_stop {
+                    &RNA_WIDE
+                } else {
+                    &RNA
+                }
             }
             _ if self.x_or_stop => &DNA_WIDE,
             _ => &DNA,
@@ -288,7 +306,10 @@ mod tests {
         let dna = [&b"--ACRYKMSW-ACGT--"[..], &b"ACGTACGTAC".repeat(5)].concat();
         assert_eq!(Census::of(&dna).alphabet(), &DNA);
         // 6 in 30 (80%): protein
-        assert_eq!(Census::of(b"--ACRYKMSW-ACGT--AAACGTACGTACGTACGT").alphabet(), &PROTEIN);
+        assert_eq!(
+            Census::of(b"--ACRYKMSW-ACGT--AAACGTACGTACGTACGT").alphabet(),
+            &PROTEIN
+        );
         assert_eq!(Census::of(b"--------").alphabet(), &DNA);
         let mut c = Census::default();
         assert_eq!(c.add(b"--AC-GT", 3), 3);
@@ -302,7 +323,11 @@ mod tests {
         let silk = b"GAGAGSGAGAGSGAGAGYGAGAGS GAGAGSGAGAGSGAGAGSGAGAGS GAGAGYGAGAGSGAGAGSGAGAGT";
         let glycine = b"MGSGGGRGGGSGGRGYGGGGRGGG MGSGGGRGGGNGGRGYGGGGRGGG";
         let cys = b"GCKGKGAKCSRTMYDCCTGSCRSGKC";
-        for (name, s) in [("silk fibroin", &silk[..]), ("glycine-rich", glycine), ("Cys-rich", cys)] {
+        for (name, s) in [
+            ("silk fibroin", &silk[..]),
+            ("glycine-rich", glycine),
+            ("Cys-rich", cys),
+        ] {
             assert_eq!(Census::of(s).alphabet(), &PROTEIN, "{name}");
         }
         assert!(!Census::of(silk).protein_only && !Census::of(cys).protein_only);
@@ -310,7 +335,10 @@ mod tests {
         // microsatellite: no composition rule can tell them apart, so it needs `--type protein`.
         let afgp = b"AATAATAATAATAATAATAATAAT";
         assert_eq!(Census::of(afgp).alphabet(), &DNA);
-        assert_eq!(Census::of(afgp).alphabet_as(Some(SeqType::Protein)), &PROTEIN);
+        assert_eq!(
+            Census::of(afgp).alphabet_as(Some(SeqType::Protein)),
+            &PROTEIN
+        );
     }
 
     #[test]
@@ -318,9 +346,15 @@ mod tests {
         let silk = Census::of(b"GAGAGSGAGAGS");
         assert_eq!(silk.alphabet_as(Some(SeqType::Dna)), &DNA);
         assert_eq!(silk.alphabet_as(Some(SeqType::Rna)), &RNA);
-        assert_eq!(Census::of(b"ACGTXX").alphabet_as(Some(SeqType::Rna)), &DNA_WIDE); // T wins over the flag
+        assert_eq!(
+            Census::of(b"ACGTXX").alphabet_as(Some(SeqType::Rna)),
+            &DNA_WIDE
+        ); // T wins over the flag
         assert_eq!(Census::of(b"ACGU").alphabet_as(Some(SeqType::Dna)), &RNA);
-        assert_eq!(Census::of(b"ACGT").alphabet_as(Some(SeqType::Protein)), &PROTEIN);
+        assert_eq!(
+            Census::of(b"ACGT").alphabet_as(Some(SeqType::Protein)),
+            &PROTEIN
+        );
         assert_eq!(Census::of(b"ACGT").alphabet_as(None), &DNA);
         assert_eq!("Protein".parse::<SeqType>(), Ok(SeqType::Protein));
         assert!("nt".parse::<SeqType>().is_err());
@@ -358,7 +392,13 @@ mod tests {
         assert_eq!(RNA.encode(b'u'), DNA.encode(b'T'));
         assert_eq!(NT_MIXED.symbol(NT_MIXED.encode(b'u').unwrap()), b'U');
         assert_eq!(DNA.encode(b'E'), None);
-        assert_eq!((DNA.symbol(DNA.encode(b'?').unwrap()), PROTEIN.symbol(PROTEIN.encode(b'?').unwrap())), (b'N', b'X'));
+        assert_eq!(
+            (
+                DNA.symbol(DNA.encode(b'?').unwrap()),
+                PROTEIN.symbol(PROTEIN.encode(b'?').unwrap())
+            ),
+            (b'N', b'X')
+        );
     }
 
     #[test]

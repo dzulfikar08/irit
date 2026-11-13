@@ -17,7 +17,13 @@ pub struct Matrix {
 
 impl Matrix {
     pub fn empty(cols: usize, bits: u32) -> Self {
-        Matrix { rows: 0, cols, bits, stride: stride(cols, bits), blocks: Vec::new() }
+        Matrix {
+            rows: 0,
+            cols,
+            bits,
+            stride: stride(cols, bits),
+            blocks: Vec::new(),
+        }
     }
 
     pub fn bytes(&self) -> usize {
@@ -33,7 +39,11 @@ impl Matrix {
     #[inline]
     pub fn get(&self, r: usize, c: usize) -> u8 {
         let row = self.row_bytes(r);
-        if self.bits == 4 { (row[c >> 1] >> ((c & 1) * 4)) & 15 } else { row[c] }
+        if self.bits == 4 {
+            (row[c >> 1] >> ((c & 1) * 4)) & 15
+        } else {
+            row[c]
+        }
     }
 
     /// Append `n` zeroed rows and return them, for filling in parallel.
@@ -52,7 +62,11 @@ impl Matrix {
         self.blocks[first..]
             .iter_mut()
             .enumerate()
-            .flat_map(|(i, blk)| blk.chunks_exact_mut(stride).enumerate().map(move |(j, row)| ((first + i) * BLOCK_ROWS + j, row)))
+            .flat_map(|(i, blk)| {
+                blk.chunks_exact_mut(stride)
+                    .enumerate()
+                    .map(move |(j, row)| ((first + i) * BLOCK_ROWS + j, row))
+            })
             .filter(|(r, _)| *r >= start)
             .map(|(_, row)| row)
             .collect()
@@ -100,7 +114,10 @@ impl Matrix {
             let y = y | (y >> 2);
             n += (y & 0x1111_1111_1111_1111).count_ones() as usize;
         }
-        n += rest.iter().map(|&b| (b & 0x0F != 0) as usize + (b & 0xF0 != 0) as usize).sum::<usize>();
+        n += rest
+            .iter()
+            .map(|&b| (b & 0x0F != 0) as usize + (b & 0xF0 != 0) as usize)
+            .sum::<usize>();
         if c % 2 == 1 {
             n += (row[c / 2] & 0x0F != 0) as usize;
         }
@@ -112,7 +129,9 @@ impl Matrix {
     /// input again instead when that would matter.
     pub fn convert(&self, from: &Alphabet, to: &Alphabet) -> Matrix {
         assert_eq!(to.bits, 8);
-        let map: Vec<u8> = (0..NCODES as u8).map(|c| to.encode(from.symbol(c)).unwrap_or(0)).collect();
+        let map: Vec<u8> = (0..NCODES as u8)
+            .map(|c| to.encode(from.symbol(c)).unwrap_or(0))
+            .collect();
         let mut m = Matrix::empty(self.cols, 8);
         let mut buf = vec![0u8; self.cols];
         for (r, row) in m.grow(self.rows).into_iter().enumerate() {
@@ -208,16 +227,29 @@ mod tests {
 
     #[test]
     fn residues_before_packed_and_bytes() {
-        let seqs: [&[u8]; 4] = [b"A-CG--T-ACGTACGTACGT-", b"---------------------", b"ACGTACGTACGTACGTACGTA", b"-A"];
+        let seqs: [&[u8]; 4] = [
+            b"A-CG--T-ACGTACGTACGT-",
+            b"---------------------",
+            b"ACGTACGTACGTACGTACGTA",
+            b"-A",
+        ];
         for s in seqs {
             for (alpha, bits) in [(&DNA, 4), (&PROTEIN, 8)] {
                 let mut m = Matrix::empty(s.len(), bits);
                 encode_row(alpha, s, m.push_row()).unwrap();
                 for c in 0..=s.len() {
                     let want = s[..c].iter().filter(|&&b| b != b'-').count();
-                    assert_eq!(m.residues_before(0, c), want, "{} bits {bits} c {c}", String::from_utf8_lossy(s));
+                    assert_eq!(
+                        m.residues_before(0, c),
+                        want,
+                        "{} bits {bits} c {c}",
+                        String::from_utf8_lossy(s)
+                    );
                 }
-                assert_eq!(m.residues_before(0, s.len() + 5), s.iter().filter(|&&b| b != b'-').count());
+                assert_eq!(
+                    m.residues_before(0, s.len() + 5),
+                    s.iter().filter(|&&b| b != b'-').count()
+                );
             }
         }
     }
@@ -235,6 +267,13 @@ mod tests {
         }
         assert_eq!(m.rows, BLOCK_ROWS + 2);
         assert_eq!(m.get(5, 0), 5);
-        assert_eq!((m.get(BLOCK_ROWS - 1, 1), m.get(BLOCK_ROWS, 1), m.get(BLOCK_ROWS + 1, 1)), (7, 8, 9));
+        assert_eq!(
+            (
+                m.get(BLOCK_ROWS - 1, 1),
+                m.get(BLOCK_ROWS, 1),
+                m.get(BLOCK_ROWS + 1, 1)
+            ),
+            (7, 8, 9)
+        );
     }
 }

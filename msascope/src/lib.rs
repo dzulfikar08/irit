@@ -75,7 +75,9 @@ impl Alignment {
     }
 
     pub fn is_insert(&self, c: usize) -> bool {
-        self.inserts.get(c / 64).is_some_and(|w| w >> (c % 64) & 1 == 1)
+        self.inserts
+            .get(c / 64)
+            .is_some_and(|w| w >> (c % 64) & 1 == 1)
     }
 
     pub fn insert_count(&self) -> usize {
@@ -131,8 +133,13 @@ impl Loaded {
     /// [`Loaded::open_as`] reporting to `progress`; returns [`parse::Cancelled`] when it is
     /// cancelled (checked while reading and between the steps), and what was built so far is
     /// dropped on the way out.
-    pub fn open_with(path: &std::path::Path, ty: Option<alphabet::SeqType>, progress: Option<&parse::Progress>) -> anyhow::Result<Self> {
-        let (format, gzip) = parse::sniff(path).with_context(|| format!("reading {}", path.display()))?;
+    pub fn open_with(
+        path: &std::path::Path,
+        ty: Option<alphabet::SeqType>,
+        progress: Option<&parse::Progress>,
+    ) -> anyhow::Result<Self> {
+        let (format, gzip) =
+            parse::sniff(path).with_context(|| format!("reading {}", path.display()))?;
         let check = || progress.map_or(Ok(()), |p| p.check());
         let t = std::time::Instant::now();
         let aln = parse::load_with(path, ty, progress)?;
@@ -151,8 +158,19 @@ impl Loaded {
         }
         let t = std::time::Instant::now();
         let pyramid = pyramid::Pyramid::build(&aln, &stats.consensus);
-        let timings = Timings { parse, stats: stats_t, pyramid: t.elapsed() };
-        Ok(Loaded { aln, stats, pyramid, timings, format, gzip })
+        let timings = Timings {
+            parse,
+            stats: stats_t,
+            pyramid: t.elapsed(),
+        };
+        Ok(Loaded {
+            aln,
+            stats,
+            pyramid,
+            timings,
+            format,
+            gzip,
+        })
     }
 
     /// Load time in seconds (parse + column summaries + pyramid).
@@ -177,9 +195,17 @@ impl Loaded {
         gr_tags.dedup();
         Some(format!(
             "annotation: #=GC {}; #=GR {} lines ({}); {} KiB",
-            if tags.is_empty() { "none".into() } else { tags.join(", ") },
+            if tags.is_empty() {
+                "none".into()
+            } else {
+                tags.join(", ")
+            },
             a.gr.len(),
-            if gr_tags.is_empty() { "none".into() } else { gr_tags.join(", ") },
+            if gr_tags.is_empty() {
+                "none".into()
+            } else {
+                gr_tags.join(", ")
+            },
             annot::bytes(&a.gc, &a.gr).div_ceil(1024)
         ))
     }

@@ -81,7 +81,11 @@ fn set_body(body: &str) -> Result<String, String> {
     for c in body.chars() {
         match c {
             'A'..='Z' | 'a'..='z' => out.push(c.to_ascii_uppercase()),
-            _ => return Err(format!("'{c}' in a set: only residue letters can go in [ ] or {{ }}")),
+            _ => {
+                return Err(format!(
+                    "'{c}' in a set: only residue letters can go in [ ] or {{ }}"
+                ));
+            }
         }
     }
     if out.is_empty() {
@@ -115,7 +119,9 @@ pub fn prosite_to_regex(p: &str) -> Result<String, String> {
         }
         let (core, rep) = match e.find('(') {
             Some(k) => {
-                let r = e[k + 1..].strip_suffix(')').ok_or_else(|| format!("Missing ')' in '{part}'"))?;
+                let r = e[k + 1..]
+                    .strip_suffix(')')
+                    .ok_or_else(|| format!("Missing ')' in '{part}'"))?;
                 (&e[..k], Some(r))
             }
             None => (e, None),
@@ -130,13 +136,17 @@ pub fn prosite_to_regex(p: &str) -> Result<String, String> {
         } else if core.len() == 1 && core.as_bytes()[0].is_ascii_alphabetic() {
             core.to_ascii_uppercase()
         } else {
-            return Err(format!("Can't read '{part}': expected a residue, x, [..] or {{..}}"));
+            return Err(format!(
+                "Can't read '{part}': expected a residue, x, [..] or {{..}}"
+            ));
         };
         out.push_str(&piece);
         if let Some(r) = rep {
             let ok = |s: &str| !s.trim().is_empty() && s.trim().bytes().all(|b| b.is_ascii_digit());
             match r.split_once(',') {
-                Some((a, b)) if ok(a) && ok(b) => out.push_str(&format!("{{{},{}}}", a.trim(), b.trim())),
+                Some((a, b)) if ok(a) && ok(b) => {
+                    out.push_str(&format!("{{{},{}}}", a.trim(), b.trim()))
+                }
                 None if ok(r) => out.push_str(&format!("{{{}}}", r.trim())),
                 _ => return Err(format!("Bad repeat '({r})': use (3) or (2,4)")),
             }
@@ -155,7 +165,11 @@ impl Motif {
         if t.is_empty() {
             return Err("Empty motif".into());
         }
-        let (syntax, pattern) = if let Some(re) = t.strip_prefix('/').and_then(|r| r.strip_suffix('/')).filter(|r| !r.is_empty()) {
+        let (syntax, pattern) = if let Some(re) = t
+            .strip_prefix('/')
+            .and_then(|r| r.strip_suffix('/'))
+            .filter(|r| !r.is_empty())
+        {
             (Syntax::Regex, format!("(?i){re}"))
         } else if t.contains(['-', '[', ']', '{', '}', '(', ')', '<', '>']) {
             (Syntax::Prosite, prosite_to_regex(t)?)
@@ -173,13 +187,26 @@ impl Motif {
             .unicode(false)
             .size_limit(1 << 24)
             .build()
-            .map_err(|e| format!("Bad pattern: {}", e.to_string().lines().last().unwrap_or("")))?;
-        Ok(Motif { syntax, pattern, re })
+            .map_err(|e| {
+                format!(
+                    "Bad pattern: {}",
+                    e.to_string().lines().last().unwrap_or("")
+                )
+            })?;
+        Ok(Motif {
+            syntax,
+            pattern,
+            re,
+        })
     }
 
     /// Matches in one ungapped sequence, as (start, end) residue indices, end exclusive.
     pub fn find(&self, residues: &[u8]) -> Vec<(usize, usize)> {
-        self.re.find_iter(residues).filter(|m| m.end() > m.start()).map(|m| (m.start(), m.end())).collect()
+        self.re
+            .find_iter(residues)
+            .filter(|m| m.end() > m.start())
+            .map(|m| (m.start(), m.end()))
+            .collect()
     }
 }
 
@@ -230,7 +257,13 @@ pub fn search(aln: &Alignment, motif: &Motif, limit: usize, cancel: &AtomicBool)
         let per_row: Vec<(usize, Vec<Hit>)> = (start..(start + STEP).min(aln.rows()))
             .into_par_iter()
             .map_init(
-                || (vec![0u8; cols], Vec::with_capacity(cols), Vec::<u32>::with_capacity(cols)),
+                || {
+                    (
+                        vec![0u8; cols],
+                        Vec::with_capacity(cols),
+                        Vec::<u32>::with_capacity(cols),
+                    )
+                },
                 |(buf, res, at), r| {
                     aln.matrix.decode_row(r, 0, buf);
                     res.clear();
@@ -244,7 +277,16 @@ pub fn search(aln: &Alignment, motif: &Motif, limit: usize, cancel: &AtomicBool)
                     if !keep {
                         return (motif.find(res).len(), Vec::new());
                     }
-                    let v: Vec<Hit> = motif.find(res).into_iter().map(|(s, e)| Hit { row: r as u32, start: at[s], end: at[e - 1], residue: s as u32 }).collect();
+                    let v: Vec<Hit> = motif
+                        .find(res)
+                        .into_iter()
+                        .map(|(s, e)| Hit {
+                            row: r as u32,
+                            start: at[s],
+                            end: at[e - 1],
+                            residue: s as u32,
+                        })
+                        .collect();
                     (v.len(), v)
                 },
             )
@@ -276,7 +318,10 @@ mod tests {
 
     #[test]
     fn prosite_translation() {
-        assert_eq!(prosite_to_regex("C-x(2,4)-C-x(3)-[LIVMFYWC].").unwrap(), "C.{2,4}C.{3}[LIVMFYWC]");
+        assert_eq!(
+            prosite_to_regex("C-x(2,4)-C-x(3)-[LIVMFYWC].").unwrap(),
+            "C.{2,4}C.{3}[LIVMFYWC]"
+        );
         assert_eq!(prosite_to_regex("<M-{P}-x-[ST>]").unwrap(), "^M[^P].[ST]");
         assert_eq!(prosite_to_regex("a-b>").unwrap(), "AB$");
         assert!(prosite_to_regex("C--C").is_err());
@@ -292,9 +337,15 @@ mod tests {
         assert_eq!(m.syntax, Syntax::Prosite);
         assert_eq!(spans(&m, "ACAACAAAAAC"), [(1, 5)]);
         let m = Motif::compile("hgk", Kind::Protein).unwrap();
-        assert_eq!((m.syntax, spans(&m, "AHGKHGK")), (Syntax::Plain, vec![(1, 4), (4, 7)]));
+        assert_eq!(
+            (m.syntax, spans(&m, "AHGKHGK")),
+            (Syntax::Plain, vec![(1, 4), (4, 7)])
+        );
         let m = Motif::compile("/H.K/", Kind::Protein).unwrap();
-        assert_eq!((m.syntax, spans(&m, "XHGKX")), (Syntax::Regex, vec![(1, 4)]));
+        assert_eq!(
+            (m.syntax, spans(&m, "XHGKX")),
+            (Syntax::Regex, vec![(1, 4)])
+        );
         // IUPAC for nucleotides; T matches U.
         let m = Motif::compile("GRN", Kind::Nucleotide).unwrap();
         assert_eq!(spans(&m, "TGAC"), [(1, 4)]);
@@ -302,7 +353,10 @@ mod tests {
         let m = Motif::compile("AT", Kind::Nucleotide).unwrap();
         assert_eq!(spans(&m, "GAU"), [(1, 3)]);
         // X is any residue in protein.
-        assert_eq!(spans(&Motif::compile("CXC", Kind::Protein).unwrap(), "CAC"), [(0, 3)]);
+        assert_eq!(
+            spans(&Motif::compile("CXC", Kind::Protein).unwrap(), "CAC"),
+            [(0, 3)]
+        );
         assert!(Motif::compile("C1", Kind::Protein).is_err());
         assert!(Motif::compile("/(/", Kind::Protein).is_err());
         assert!(Motif::compile("", Kind::Protein).is_err());
@@ -315,10 +369,42 @@ mod tests {
         let h = search(&a, &m, 100, &AtomicBool::new(false)).unwrap();
         assert_eq!(h.total, 4);
         assert_eq!(h.rows, 3);
-        assert_eq!(h.hits[0], Hit { row: 0, start: 0, end: 4, residue: 0 });
-        assert_eq!(h.hits[1], Hit { row: 1, start: 0, end: 2, residue: 0 });
-        assert_eq!(h.hits[2], Hit { row: 1, start: 4, end: 6, residue: 4 });
-        assert_eq!(h.hits[3], Hit { row: 2, start: 2, end: 5, residue: 0 });
+        assert_eq!(
+            h.hits[0],
+            Hit {
+                row: 0,
+                start: 0,
+                end: 4,
+                residue: 0
+            }
+        );
+        assert_eq!(
+            h.hits[1],
+            Hit {
+                row: 1,
+                start: 0,
+                end: 2,
+                residue: 0
+            }
+        );
+        assert_eq!(
+            h.hits[2],
+            Hit {
+                row: 1,
+                start: 4,
+                end: 6,
+                residue: 4
+            }
+        );
+        assert_eq!(
+            h.hits[3],
+            Hit {
+                row: 2,
+                start: 2,
+                end: 5,
+                residue: 0
+            }
+        );
         assert_eq!(h.in_row(1), 1..3);
         assert_eq!(h.in_row(5), 4..4);
         // The limit keeps the first hits, counts all.
@@ -334,7 +420,11 @@ mod tests {
         let m = Motif::compile("ACG", Kind::Nucleotide).unwrap();
         let h = search(&a, &m, 30_000, &AtomicBool::new(false)).unwrap();
         assert_eq!((h.total, h.rows, h.hits.len()), (80_000, 40_000, 30_000));
-        assert!(h.hits.windows(2).all(|w| (w[0].row, w[0].start) < (w[1].row, w[1].start)));
+        assert!(
+            h.hits
+                .windows(2)
+                .all(|w| (w[0].row, w[0].start) < (w[1].row, w[1].start))
+        );
         assert_eq!(h.hits.last().unwrap().row, 14_999);
     }
 }

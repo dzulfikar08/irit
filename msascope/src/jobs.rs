@@ -40,7 +40,12 @@ impl Jobs {
     pub fn start(&mut self, path: PathBuf, total: u64) -> &Job {
         self.cancel();
         self.next += 1;
-        self.job = Some(Job { id: self.next, path, progress: Arc::new(Progress::new(total)), started: Instant::now() });
+        self.job = Some(Job {
+            id: self.next,
+            path,
+            progress: Arc::new(Progress::new(total)),
+            started: Instant::now(),
+        });
         self.job.as_ref().unwrap()
     }
 
@@ -96,7 +101,10 @@ mod tests {
         assert_eq!(jobs.cancel(), Some(PathBuf::from("big.fa")));
         assert!(p.is_cancelled() && jobs.current().is_none());
         // The background load returns later: dropped at once, the open file untouched.
-        assert!(matches!(jobs.finish(id, Ok(Big(drops.clone()))), Done::Stale));
+        assert!(matches!(
+            jobs.finish(id, Ok(Big(drops.clone()))),
+            Done::Stale
+        ));
         assert_eq!(drops.load(Ordering::Relaxed), 1);
         assert!(open.is_some());
         drop(open);
@@ -124,6 +132,9 @@ mod tests {
     fn errors_of_the_current_load_are_reported() {
         let mut jobs = Jobs::default();
         let id = jobs.start("bad.fa".into(), 1).id;
-        assert!(matches!(jobs.finish::<u8>(id, Err(anyhow::anyhow!("bad"))), Done::Current(_, Err(_))));
+        assert!(matches!(
+            jobs.finish::<u8>(id, Err(anyhow::anyhow!("bad"))),
+            Done::Current(_, Err(_))
+        ));
     }
 }

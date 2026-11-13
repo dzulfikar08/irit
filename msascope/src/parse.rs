@@ -28,16 +28,24 @@ fn strip_bom(b: &[u8]) -> &[u8] {
 
 pub fn detect_format(head: &[u8]) -> Result<Format> {
     let head = strip_bom(head);
-    let start = head.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(head.len());
+    let start = head
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(head.len());
     let head = &head[start..];
     if head.starts_with(b">") {
         Ok(Format::Fasta)
     } else if head.starts_with(b"# STOCKHOLM") {
         Ok(Format::Stockholm)
-    } else if [&b"CLUSTAL"[..], b"MUSCLE", b"PROBCONS"].iter().any(|p| head.starts_with(p)) {
+    } else if [&b"CLUSTAL"[..], b"MUSCLE", b"PROBCONS"]
+        .iter()
+        .any(|p| head.starts_with(p))
+    {
         Ok(Format::Clustal)
     } else {
-        bail!("unrecognised format: expected aligned FASTA ('>'), Clustal ('CLUSTAL') or Stockholm ('# STOCKHOLM')")
+        bail!(
+            "unrecognised format: expected aligned FASTA ('>'), Clustal ('CLUSTAL') or Stockholm ('# STOCKHOLM')"
+        )
     }
 }
 
@@ -76,13 +84,19 @@ fn match_marks(seq: &[u8], start: usize, bits: &mut Vec<u64>) {
 
 /// Insert columns from match marks: the columns in `0..cols` no row marked as a match.
 fn inserts_from(marks: &[u64], cols: usize) -> Vec<u64> {
-    let mut v: Vec<u64> = (0..cols.div_ceil(64)).map(|i| !marks.get(i).copied().unwrap_or(0)).collect();
+    let mut v: Vec<u64> = (0..cols.div_ceil(64))
+        .map(|i| !marks.get(i).copied().unwrap_or(0))
+        .collect();
     if let Some(last) = v.last_mut()
         && !cols.is_multiple_of(64)
     {
         *last &= (1u64 << (cols % 64)) - 1;
     }
-    if v.iter().all(|&w| w == 0) { Vec::new() } else { v }
+    if v.iter().all(|&w| w == 0) {
+        Vec::new()
+    } else {
+        v
+    }
 }
 
 /// Insert columns from a Stockholm `#=GC RF` line: `.`, `-`, `~` and `_` are inserts, anything
@@ -94,7 +108,11 @@ fn inserts_from_rf(rf: &[u8]) -> Vec<u64> {
             v[c / 64] |= 1 << (c % 64);
         }
     }
-    if v.iter().all(|&w| w == 0) { Vec::new() } else { v }
+    if v.iter().all(|&w| w == 0) {
+        Vec::new()
+    } else {
+        v
+    }
 }
 
 impl Format {
@@ -168,7 +186,11 @@ pub struct Snapshot {
 impl Snapshot {
     /// Share of the file read in this pass, 0–1 (0 when the size is unknown).
     pub fn fraction(&self) -> f64 {
-        if self.total == 0 { 0.0 } else { (self.bytes as f64 / self.total as f64).min(1.0) }
+        if self.total == 0 {
+            0.0
+        } else {
+            (self.bytes as f64 / self.total as f64).min(1.0)
+        }
     }
 }
 
@@ -190,7 +212,11 @@ impl Progress {
 
     /// `Err(Cancelled)` once [`Progress::cancel`] was called.
     pub fn check(&self) -> Result<()> {
-        if self.is_cancelled() { Err(Cancelled.into()) } else { Ok(()) }
+        if self.is_cancelled() {
+            Err(Cancelled.into())
+        } else {
+            Ok(())
+        }
     }
 
     pub fn set_stage(&self, s: Stage) {
@@ -237,7 +263,12 @@ impl std::error::Error for Cancelled {}
 
 /// Whether `e` (or an error it wraps, I/O errors included) is [`Cancelled`].
 pub fn is_cancelled(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| c.is::<Cancelled>() || c.downcast_ref::<std::io::Error>().and_then(|io| io.get_ref()).is_some_and(|i| i.is::<Cancelled>()))
+    e.chain().any(|c| {
+        c.is::<Cancelled>()
+            || c.downcast_ref::<std::io::Error>()
+                .and_then(|io| io.get_ref())
+                .is_some_and(|i| i.is::<Cancelled>())
+    })
 }
 
 /// Largest single read while a load reports progress, so cancel is noticed quickly.
@@ -273,7 +304,11 @@ pub fn load_as(path: &Path, ty: Option<SeqType>) -> Result<Alignment> {
 }
 
 /// [`load_as`] reporting to `progress`, and stopping with [`Cancelled`] when it is cancelled.
-pub fn load_with(path: &Path, ty: Option<SeqType>, progress: Option<&Progress>) -> Result<Alignment> {
+pub fn load_with(
+    path: &Path,
+    ty: Option<SeqType>,
+    progress: Option<&Progress>,
+) -> Result<Alignment> {
     let open = || -> Result<Reader<'_>> {
         let f = || File::open(path).with_context(|| format!("opening {}", path.display()));
         let mut magic = [0u8; 2];
@@ -281,12 +316,18 @@ pub fn load_with(path: &Path, ty: Option<SeqType>, progress: Option<&Progress>) 
         let raw: Box<dyn Read + '_> = match progress {
             Some(p) => {
                 p.start_pass();
-                Box::new(Counting { inner: f()?, progress: p })
+                Box::new(Counting {
+                    inner: f()?,
+                    progress: p,
+                })
             }
             None => Box::new(f()?),
         };
         Ok(if gz {
-            Box::new(BufReader::with_capacity(1 << 16, flate2::read::MultiGzDecoder::new(raw)))
+            Box::new(BufReader::with_capacity(
+                1 << 16,
+                flate2::read::MultiGzDecoder::new(raw),
+            ))
         } else {
             Box::new(BufReader::with_capacity(1 << 16, raw))
         })
@@ -307,7 +348,13 @@ pub fn parse_bytes_with(data: &[u8], progress: &Progress) -> Result<Alignment> {
     read(
         &|| {
             progress.start_pass();
-            Ok(Box::new(BufReader::with_capacity(1 << 16, Counting { inner: data, progress })) as Reader)
+            Ok(Box::new(BufReader::with_capacity(
+                1 << 16,
+                Counting {
+                    inner: data,
+                    progress,
+                },
+            )) as Reader)
         },
         None,
         Some(progress),
@@ -316,14 +363,25 @@ pub fn parse_bytes_with(data: &[u8], progress: &Progress) -> Result<Alignment> {
 
 /// Parse from `open`, which must return the same content each time: Clustal and Stockholm are read
 /// twice, and FASTA again in the rare case that the residue type changes after rows were packed.
-fn read<'a>(open: &dyn Fn() -> Result<Reader<'a>>, ty: Option<SeqType>, progress: Option<&Progress>) -> Result<Alignment> {
+fn read<'a>(
+    open: &dyn Fn() -> Result<Reader<'a>>,
+    ty: Option<SeqType>,
+    progress: Option<&Progress>,
+) -> Result<Alignment> {
     let mut r = open()?;
     match detect_format(r.fill_buf()?)? {
         Format::Fasta => {
             let mut forced = None;
             loop {
                 let res = fasta(r, CHUNK, forced, ty, progress);
-                let Some(a) = res.as_ref().err().and_then(|e| e.downcast_ref::<Restart>()).map(|r| r.0) else { return res };
+                let Some(a) = res
+                    .as_ref()
+                    .err()
+                    .and_then(|e| e.downcast_ref::<Restart>())
+                    .map(|r| r.0)
+                else {
+                    return res;
+                };
                 forced = Some(a);
                 r = open()?;
             }
@@ -382,7 +440,9 @@ impl Builder {
 
     /// Append (name, raw sequence) records, encoding them in parallel.
     fn push(&mut self, recs: &[Record]) -> Result<()> {
-        let Some((name, seq)) = recs.first() else { return Ok(()) };
+        let Some((name, seq)) = recs.first() else {
+            return Ok(());
+        };
         if self.matrix.is_none() {
             if !self.forced {
                 let (mut census, mut left) = (Census::default(), SAMPLE);
@@ -442,7 +502,10 @@ impl Builder {
         }
         if self.matches.is_some() {
             // Most files have no insert marks: the first row without one settles it.
-            if recs.par_iter().any(|(_, s)| !s.iter().any(|&b| insert_mark(b))) {
+            if recs
+                .par_iter()
+                .any(|(_, s)| !s.iter().any(|&b| insert_mark(b)))
+            {
                 self.matches = None;
             } else {
                 let batch = recs
@@ -466,16 +529,33 @@ impl Builder {
             }
         }
         if self.alpha.kind == Kind::Nucleotide && !self.question {
-            self.question = recs.par_iter().any(|(_, s)| memchr::memchr(b'?', s).is_some());
+            self.question = recs
+                .par_iter()
+                .any(|(_, s)| memchr::memchr(b'?', s).is_some());
         }
-        self.names.par_extend(recs.par_iter().map(|(h, _)| lossy(h)));
+        self.names
+            .par_extend(recs.par_iter().map(|(h, _)| lossy(h)));
         Ok(())
     }
 
     fn finish(self) -> Result<Alignment> {
-        let Some(matrix) = self.matrix else { bail!("no sequences found") };
-        let inserts = self.matches.map_or_else(Vec::new, |m| inserts_from(&m, matrix.cols));
-        Ok(Alignment { names: self.names, matrix, alpha: self.alpha, inserts, accessions: Vec::new(), newick: None, gc: Vec::new(), gr: Vec::new(), warnings: Vec::new() })
+        let Some(matrix) = self.matrix else {
+            bail!("no sequences found")
+        };
+        let inserts = self
+            .matches
+            .map_or_else(Vec::new, |m| inserts_from(&m, matrix.cols));
+        Ok(Alignment {
+            names: self.names,
+            matrix,
+            alpha: self.alpha,
+            inserts,
+            accessions: Vec::new(),
+            newick: None,
+            gc: Vec::new(),
+            gr: Vec::new(),
+            warnings: Vec::new(),
+        })
     }
 }
 
@@ -484,7 +564,12 @@ fn bad_char(b: u8, name: &str) -> anyhow::Error {
 }
 
 /// `alpha.widen(b)`, refusing to cross between nucleotides and protein when `--type` was given.
-fn widen(alpha: &'static Alphabet, ty: Option<SeqType>, b: u8, name: &str) -> Result<&'static Alphabet> {
+fn widen(
+    alpha: &'static Alphabet,
+    ty: Option<SeqType>,
+    b: u8,
+    name: &str,
+) -> Result<&'static Alphabet> {
     let to = alpha.widen(b).ok_or_else(|| bad_char(b, name))?;
     match ty {
         Some(t) if t.kind() != to.kind => Err(forced_char(b, name, t)),
@@ -493,16 +578,28 @@ fn widen(alpha: &'static Alphabet, ty: Option<SeqType>, b: u8, name: &str) -> Re
 }
 
 fn forced_char(b: u8, name: &str, ty: SeqType) -> anyhow::Error {
-    anyhow::anyhow!("sequence '{name}': {:?} is not a {} residue (the type was set with --type)", b as char, format!("{ty:?}").to_lowercase())
+    anyhow::anyhow!(
+        "sequence '{name}': {:?} is not a {} residue (the type was set with --type)",
+        b as char,
+        format!("{ty:?}").to_lowercase()
+    )
 }
 
 fn not_aligned(name: &str, n: usize, cols: usize) -> String {
-    format!("sequence '{name}' has {n} columns but the first has {cols}: not an alignment (sequences must have equal length)")
+    format!(
+        "sequence '{name}' has {n} columns but the first has {cols}: not an alignment (sequences must have equal length)"
+    )
 }
 
 /// FASTA in batches of about `chunk` bytes: read, split at record starts, encode the batch in parallel.
 /// Memory stays at the packed matrix plus one batch, for plain and gzip input alike.
-fn fasta(mut r: impl Read, mut chunk: usize, forced: Option<&'static Alphabet>, ty: Option<SeqType>, progress: Option<&Progress>) -> Result<Alignment> {
+fn fasta(
+    mut r: impl Read,
+    mut chunk: usize,
+    forced: Option<&'static Alphabet>,
+    ty: Option<SeqType>,
+    progress: Option<&Progress>,
+) -> Result<Alignment> {
     let mut b = Builder::new(forced, ty);
     let mut buf: Vec<u8> = Vec::new();
     let mut first = true;
@@ -514,14 +611,22 @@ fn fasta(mut r: impl Read, mut chunk: usize, forced: Option<&'static Alphabet>, 
         let eof = (&mut r).take(want).read_to_end(&mut buf)? < want as usize;
         if first {
             let skip = if buf.starts_with(BOM) { BOM.len() } else { 0 };
-            let skip = skip + buf[skip..].iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(buf.len() - skip);
+            let skip = skip
+                + buf[skip..]
+                    .iter()
+                    .position(|b| !b.is_ascii_whitespace())
+                    .unwrap_or(buf.len() - skip);
             buf.drain(..skip);
             if !buf.is_empty() && buf[0] != b'>' {
                 bail!("FASTA: data before the first '>' header");
             }
             first = buf.is_empty();
         }
-        let cut = if eof { buf.len() } else { memchr::memmem::rfind(&buf, b"\n>").map_or(0, |p| p + 1) };
+        let cut = if eof {
+            buf.len()
+        } else {
+            memchr::memmem::rfind(&buf, b"\n>").map_or(0, |p| p + 1)
+        };
         if cut == 0 && !eof {
             chunk *= 2; // one record is larger than the batch
             continue;
@@ -567,7 +672,11 @@ enum Line<'a> {
 
 /// Call `f` with the 1-based line number for every sequence line and block break of a Clustal or
 /// Stockholm file, skipping blank lines before the header, the header itself and markup.
-fn lines(mut r: impl BufRead, format: Format, mut f: impl FnMut(usize, Line) -> Result<()>) -> Result<()> {
+fn lines(
+    mut r: impl BufRead,
+    format: Format,
+    mut f: impl FnMut(usize, Line) -> Result<()>,
+) -> Result<()> {
     let mut buf = Vec::new();
     let (mut ln, mut header) = (0usize, true);
     loop {
@@ -588,20 +697,31 @@ fn lines(mut r: impl BufRead, format: Format, mut f: impl FnMut(usize, Line) -> 
             _ if blank => f(ln, Line::Break)?,
             Format::Stockholm if line.starts_with(b"//") => return Ok(()),
             Format::Stockholm if line.starts_with(b"#=GC") => {
-                let mut parts = line.split(|b| b.is_ascii_whitespace()).filter(|p| !p.is_empty());
-                if let (Some(_), Some(tag), Some(seg)) = (parts.next(), parts.next(), parts.next()) {
+                let mut parts = line
+                    .split(|b| b.is_ascii_whitespace())
+                    .filter(|p| !p.is_empty());
+                if let (Some(_), Some(tag), Some(seg)) = (parts.next(), parts.next(), parts.next())
+                {
                     f(ln, Line::Gc(tag, seg))?;
                 }
             }
             Format::Stockholm if line.starts_with(b"#=GR") => {
-                let mut parts = line.split(|b| b.is_ascii_whitespace()).filter(|p| !p.is_empty());
-                if let (Some(_), Some(name), Some(tag), Some(seg)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
+                let mut parts = line
+                    .split(|b| b.is_ascii_whitespace())
+                    .filter(|p| !p.is_empty());
+                if let (Some(_), Some(name), Some(tag), Some(seg)) =
+                    (parts.next(), parts.next(), parts.next(), parts.next())
+                {
                     f(ln, Line::Gr(name, tag, seg))?;
                 }
             }
             Format::Stockholm if line.starts_with(b"#=GS") => {
-                let mut parts = line.split(|b| b.is_ascii_whitespace()).filter(|p| !p.is_empty());
-                if let (Some(_), Some(name), Some(b"AC"), Some(acc)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
+                let mut parts = line
+                    .split(|b| b.is_ascii_whitespace())
+                    .filter(|p| !p.is_empty());
+                if let (Some(_), Some(name), Some(b"AC"), Some(acc)) =
+                    (parts.next(), parts.next(), parts.next(), parts.next())
+                {
                     f(ln, Line::Accession(name, acc))?;
                 }
             }
@@ -615,7 +735,9 @@ fn lines(mut r: impl BufRead, format: Format, mut f: impl FnMut(usize, Line) -> 
             // Consensus lines in Clustal start with whitespace.
             Format::Clustal if line[0].is_ascii_whitespace() => f(ln, Line::Break)?,
             _ => {
-                let mut parts = line.split(|b| b.is_ascii_whitespace()).filter(|p| !p.is_empty());
+                let mut parts = line
+                    .split(|b| b.is_ascii_whitespace())
+                    .filter(|p| !p.is_empty());
                 let (Some(name), Some(seq)) = (parts.next(), parts.next()) else {
                     bail!("line {ln}: expected 'name sequence'");
                 };
@@ -628,7 +750,13 @@ fn lines(mut r: impl BufRead, format: Format, mut f: impl FnMut(usize, Line) -> 
 /// Clustal and Stockholm: blocks of `name sequence` lines, the same names repeated in each block.
 /// Read twice so nothing but the packed matrix is held: the first pass (from `first`) finds the
 /// names, lengths and residue type, the second (from `open`) encodes each line straight into its row.
-fn interleaved<'a>(first: Reader<'a>, open: &dyn Fn() -> Result<Reader<'a>>, format: Format, ty: Option<SeqType>, progress: Option<&Progress>) -> Result<Alignment> {
+fn interleaved<'a>(
+    first: Reader<'a>,
+    open: &dyn Fn() -> Result<Reader<'a>>,
+    format: Format,
+    ty: Option<SeqType>,
+    progress: Option<&Progress>,
+) -> Result<Alignment> {
     let mut index: HashMap<Vec<u8>, usize> = HashMap::new();
     let mut names: Vec<Vec<u8>> = Vec::new();
     let mut lens: Vec<usize> = Vec::new();
@@ -681,13 +809,18 @@ fn interleaved<'a>(first: Reader<'a>, open: &dyn Fn() -> Result<Reader<'a>>, for
                 }
                 seen[i] = block;
                 match_marks(seq, lens[i], &mut marks);
-                lens[i] += seq.iter().filter(|b| !b.is_ascii_whitespace() && !b.is_ascii_digit()).count();
+                lens[i] += seq
+                    .iter()
+                    .filter(|b| !b.is_ascii_whitespace() && !b.is_ascii_digit())
+                    .count();
                 census.add(seq, usize::MAX);
             }
         }
         Ok(())
     })?;
-    let Some(&cols) = lens.first() else { bail!("no sequences found") };
+    let Some(&cols) = lens.first() else {
+        bail!("no sequences found")
+    };
     if cols == 0 {
         bail!("sequence '{}' is empty", lossy(&names[0]));
     }
@@ -695,7 +828,8 @@ fn interleaved<'a>(first: Reader<'a>, open: &dyn Fn() -> Result<Reader<'a>>, for
         bail!(not_aligned(&lossy(&names[i]), lens[i], cols));
     }
     let alpha = census.alphabet_as(ty);
-    let (gc, mut gr_fill, warnings) = notes.finish(cols, |n| index.get(n).copied(), crate::annot::GR_BUDGET);
+    let (gc, mut gr_fill, warnings) =
+        notes.finish(cols, |n| index.get(n).copied(), crate::annot::GR_BUDGET);
     let mut m = Matrix::empty(cols, alpha.bits);
     let mut rows = m.grow(names.len());
     let mut off = vec![0usize; names.len()];
@@ -718,11 +852,29 @@ fn interleaved<'a>(first: Reader<'a>, open: &dyn Fn() -> Result<Reader<'a>>, for
     }
     drop(rows);
     // RF wins over the marks when it covers every column.
-    let inserts = if rf.len() == cols { inserts_from_rf(&rf) } else { inserts_from(&marks, cols) };
-    let accessions = if acc.is_empty() { Vec::new() } else { names.iter().map(|n| acc.get(n).cloned()).collect() };
+    let inserts = if rf.len() == cols {
+        inserts_from_rf(&rf)
+    } else {
+        inserts_from(&marks, cols)
+    };
+    let accessions = if acc.is_empty() {
+        Vec::new()
+    } else {
+        names.iter().map(|n| acc.get(n).cloned()).collect()
+    };
     let newick = (!nh.is_empty()).then(|| lossy(&nh));
     let gr = gr_fill.finish(cols);
-    Ok(Alignment { names: names.iter().map(|n| lossy(n)).collect(), matrix: m, alpha, inserts, accessions, newick, gc, gr, warnings })
+    Ok(Alignment {
+        names: names.iter().map(|n| lossy(n)).collect(),
+        matrix: m,
+        alpha,
+        inserts,
+        accessions,
+        newick,
+        gc,
+        gr,
+        warnings,
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -730,7 +882,13 @@ mod tests {
     use crate::alphabet::{DNA, NT_MIXED, PROTEIN, RNA};
 
     fn seqs(a: &Alignment) -> Vec<String> {
-        (0..a.rows()).map(|r| (0..a.cols()).map(|c| a.symbol(a.matrix.get(r, c)) as char).collect()).collect()
+        (0..a.rows())
+            .map(|r| {
+                (0..a.cols())
+                    .map(|c| a.symbol(a.matrix.get(r, c)) as char)
+                    .collect()
+            })
+            .collect()
     }
 
     /// Parse whole, and FASTA also in tiny batches so the type is first chosen from one row and
@@ -742,7 +900,9 @@ mod tests {
                 let mut forced = None;
                 let a = loop {
                     match fasta(text, chunk, forced, None, None) {
-                        Err(e) if e.downcast_ref::<Restart>().is_some() => forced = Some(e.downcast_ref::<Restart>().unwrap().0),
+                        Err(e) if e.downcast_ref::<Restart>().is_some() => {
+                            forced = Some(e.downcast_ref::<Restart>().unwrap().0)
+                        }
                         r => break r.unwrap(),
                     }
                 };
@@ -825,7 +985,10 @@ mod tests {
         let afgp = b">afgp1\nAATAATAATAATAATAATAATAAT\n>afgp2\nAATAATAATAATAATAATAATAAT\n";
         assert_eq!(parse_bytes(afgp).unwrap().alpha, &DNA);
         let a = parse_bytes_as(afgp, Some(SeqType::Protein)).unwrap();
-        assert_eq!((a.alpha, seqs(&a)[0].as_str()), (&PROTEIN, "AATAATAATAATAATAATAATAAT"));
+        assert_eq!(
+            (a.alpha, seqs(&a)[0].as_str()),
+            (&PROTEIN, "AATAATAATAATAATAATAATAAT")
+        );
     }
 
     #[test]
@@ -833,14 +996,31 @@ mod tests {
         let sto = b"# STOCKHOLM 1.0\nx GAGAGS\ny GAGAGS\n//\n";
         assert_eq!(parse_bytes(sto).unwrap().alpha, &PROTEIN);
         assert_eq!(parse_bytes_as(sto, Some(SeqType::Dna)).unwrap().alpha, &DNA);
-        assert_eq!(parse_bytes_as(b">a\nGAGAGS\n", Some(SeqType::Rna)).unwrap().alpha, &RNA);
+        assert_eq!(
+            parse_bytes_as(b">a\nGAGAGS\n", Some(SeqType::Rna))
+                .unwrap()
+                .alpha,
+            &RNA
+        );
         // a forced nucleotide type never widens to protein; it reports the residue instead
-        let e = parse_bytes_as(b">a\nACGT\n>b\nACGE\n", Some(SeqType::Dna)).err().unwrap();
+        let e = parse_bytes_as(b">a\nACGT\n>b\nACGE\n", Some(SeqType::Dna))
+            .err()
+            .unwrap();
         assert!(format!("{e:#}").contains("--type"), "{e:#}");
-        let e = parse_bytes_as(b"CLUSTAL\n\nx ACGE\n", Some(SeqType::Dna)).err().unwrap();
+        let e = parse_bytes_as(b"CLUSTAL\n\nx ACGE\n", Some(SeqType::Dna))
+            .err()
+            .unwrap();
         assert!(format!("{e:#}").contains("--type"), "{e:#}");
         for chunk in [1, 8] {
-            let e = fasta(&b">a\nACGT\n>b\nACGE\n"[..], chunk, None, Some(SeqType::Dna), None).err().unwrap();
+            let e = fasta(
+                &b">a\nACGT\n>b\nACGE\n"[..],
+                chunk,
+                None,
+                Some(SeqType::Dna),
+                None,
+            )
+            .err()
+            .unwrap();
             assert!(e.to_string().contains("--type"), "{e}");
         }
     }
@@ -857,7 +1037,10 @@ mod tests {
             assert_eq!(seqs(&a), ["ACGUXXACGU", "ACGUACGUAC"]);
         }
         let a = parse_bytes(b"# STOCKHOLM 1.0\nx ACGTXXACGT\ny ACGTACGTAC\n//\n").unwrap();
-        assert_eq!((a.kind(), seqs(&a)[0].as_str()), (Kind::Nucleotide, "ACGTXXACGT"));
+        assert_eq!(
+            (a.kind(), seqs(&a)[0].as_str()),
+            (Kind::Nucleotide, "ACGTXXACGT")
+        );
         // a protein with a stop stays protein
         for a in all_ways(b">a\nMKVLE*\n>b\nMKVLA*\n") {
             assert_eq!(a.alpha, &PROTEIN);
@@ -866,7 +1049,9 @@ mod tests {
 
     #[test]
     fn stockholm_without_blank_line_between_blocks() {
-        let e = parse_bytes(b"# STOCKHOLM 1.0\na ACGU\nb ACGU\na AC\nb A-\n//\n").err().unwrap();
+        let e = parse_bytes(b"# STOCKHOLM 1.0\na ACGU\nb ACGU\na AC\nb A-\n//\n")
+            .err()
+            .unwrap();
         assert!(format!("{e:#}").contains("blank line"), "{e:#}");
     }
 
@@ -883,7 +1068,10 @@ mod tests {
 
     #[test]
     fn rejects_unaligned_and_garbage() {
-        let e = parse_bytes(b">a\nACGT\n>b\nACG\n").err().unwrap().to_string();
+        let e = parse_bytes(b">a\nACGT\n>b\nACG\n")
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("not an alignment"), "{e}");
         assert!(fasta(&b">a\nACGT\n>b\nACG\n"[..], 4, None, None, None).is_err());
         assert!(parse_bytes(b">a\n\n>b\nAC\n").is_err());
@@ -931,12 +1119,21 @@ mod tests {
 
     #[test]
     fn duplicate_name_in_block() {
-        for (text, ln) in [(&b"# STOCKHOLM 1.0\nx AC\nx AG\ny AC\n//\n"[..], 3), (b"CLUSTAL\n\nx AC\nx AG\ny AC\n", 4)] {
+        for (text, ln) in [
+            (&b"# STOCKHOLM 1.0\nx AC\nx AG\ny AC\n//\n"[..], 3),
+            (b"CLUSTAL\n\nx AC\nx AG\ny AC\n", 4),
+        ] {
             let e = parse_bytes(text).err().unwrap().to_string();
-            assert!(e.contains("'x' appears twice") && e.contains(&format!("line {ln}:")), "{e}");
+            assert!(
+                e.contains("'x' appears twice") && e.contains(&format!("line {ln}:")),
+                "{e}"
+            );
         }
         // A row missing from a block is still reported by name.
-        let e = parse_bytes(b"CLUSTAL\n\nx AC\ny AC\n\nx GG\n").err().unwrap().to_string();
+        let e = parse_bytes(b"CLUSTAL\n\nx AC\ny AC\n\nx GG\n")
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("'y' has 2 columns"), "{e}");
     }
 
@@ -948,7 +1145,8 @@ mod tests {
         assert_eq!(seqs(&a), ["AC-GU", "ACUG-"]);
         assert_eq!(a.alpha, &RNA);
         // Odd block widths land on the right nibble.
-        let a = parse_bytes(b"# STOCKHOLM 1.0\nx A\ny C\n\nx CGT\ny GTA\n\nx A-\ny -A\n//\n").unwrap();
+        let a =
+            parse_bytes(b"# STOCKHOLM 1.0\nx A\ny C\n\nx CGT\ny GTA\n\nx A-\ny -A\n//\n").unwrap();
         assert_eq!(seqs(&a), ["ACGTA-", "CGTA-A"]);
     }
 
@@ -986,7 +1184,10 @@ mod tests {
         let a = parse_bytes(text).unwrap();
         assert_eq!(insert_cols(&a), [3]);
         assert!(a.gc.is_empty());
-        assert_eq!(a.warnings, ["#=GC RF has 2 columns, the alignment 4; left out"]);
+        assert_eq!(
+            a.warnings,
+            ["#=GC RF has 2 columns, the alignment 4; left out"]
+        );
     }
 
     /// `#=GC` and `#=GR` lines: every tag is kept, joined across blocks in file order; lines that
@@ -1005,13 +1206,24 @@ mod tests {
         assert_eq!(&*a.gc[1].data, b"ACdEF");
         // y's PP line covers 2 of 5 columns: left out
         assert_eq!(a.gr.len(), 2);
-        let x: Vec<(&str, &[u8])> = crate::annot::row_annots(&a.gr, 0).iter().map(|g| (&*g.tag, &*g.data)).collect();
+        let x: Vec<(&str, &[u8])> = crate::annot::row_annots(&a.gr, 0)
+            .iter()
+            .map(|g| (&*g.tag, &*g.data))
+            .collect();
         assert_eq!(x, [("SS", &b"HHEE."[..]), ("PP", &b"9*87."[..])]);
         assert!(crate::annot::row_annots(&a.gr, 1).is_empty());
-        assert!(a.warnings.iter().any(|w| w == "#=GR y PP has 2 columns, the alignment 5; left out"));
+        assert!(
+            a.warnings
+                .iter()
+                .any(|w| w == "#=GR y PP has 2 columns, the alignment 5; left out")
+        );
         assert_eq!(a.warnings.len(), 3, "{:?}", a.warnings);
         assert!(a.warnings[0].starts_with("#=GC PP_cons has 4 columns"));
-        assert!(a.warnings.iter().any(|w| w.starts_with("#=GR nobody SS: no sequence")));
+        assert!(
+            a.warnings
+                .iter()
+                .any(|w| w.starts_with("#=GR nobody SS: no sequence"))
+        );
         // FASTA has none
         let f = parse_bytes(b">a\nAC\n").unwrap();
         assert!(f.gc.is_empty() && f.gr.is_empty() && f.warnings.is_empty());
@@ -1030,7 +1242,12 @@ mod tests {
             assert!(a.inserts.is_empty());
         }
         // plain upper-case FASTA: none
-        assert!(parse_bytes(b">a\nACGT\n>b\nAC-T\n").unwrap().inserts.is_empty());
+        assert!(
+            parse_bytes(b">a\nACGT\n>b\nAC-T\n")
+                .unwrap()
+                .inserts
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1039,11 +1256,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("msascope-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut a = Vec::new();
-        for (name, text) in [("a.fa", &b">a\nAC-T\n>b\nACGT\n"[..]), ("a.sto", b"# STOCKHOLM 1.0\na AC\nb AC\n\na -T\nb GT\n//\n")] {
+        for (name, text) in [
+            ("a.fa", &b">a\nAC-T\n>b\nACGT\n"[..]),
+            ("a.sto", b"# STOCKHOLM 1.0\na AC\nb AC\n\na -T\nb GT\n//\n"),
+        ] {
             let plain = dir.join(name);
             std::fs::write(&plain, text).unwrap();
             let gz = dir.join(format!("{name}.gz"));
-            let mut e = flate2::write::GzEncoder::new(File::create(&gz).unwrap(), flate2::Compression::fast());
+            let mut e = flate2::write::GzEncoder::new(
+                File::create(&gz).unwrap(),
+                flate2::Compression::fast(),
+            );
             e.write_all(text).unwrap();
             e.finish().unwrap();
             let (p, z) = (load(&plain).unwrap(), load(&gz).unwrap());
@@ -1058,7 +1281,9 @@ mod tests {
     fn big(rows: usize, cols: usize) -> (Vec<u8>, Vec<u8>) {
         let (mut fa, mut sto) = (Vec::new(), b"# STOCKHOLM 1.0\n".to_vec());
         for r in 0..rows {
-            let seq: String = (0..cols).map(|c| b"ACGT-"[(r * 7 + c * 3) % 5] as char).collect();
+            let seq: String = (0..cols)
+                .map(|c| b"ACGT-"[(r * 7 + c * 3) % 5] as char)
+                .collect();
             fa.extend_from_slice(format!(">s{r}\n{seq}\n").as_bytes());
             sto.extend_from_slice(format!("s{r} {seq}\n").as_bytes());
         }
@@ -1092,7 +1317,10 @@ mod tests {
             let p = Progress::new(data.len() as u64);
             let a = parse_bytes_with(data, &p).unwrap();
             let s = p.snapshot();
-            assert_eq!((a.rows(), s.rows, s.bytes, s.pass), (2000, 2000, data.len() as u64, passes));
+            assert_eq!(
+                (a.rows(), s.rows, s.bytes, s.pass),
+                (2000, 2000, data.len() as u64, passes)
+            );
             assert_eq!(s.fraction(), 1.0);
         }
     }
@@ -1123,14 +1351,30 @@ mod tests {
             let p = Progress::new(data.len() as u64);
             let open = || -> Result<Reader> {
                 p.start_pass();
-                let r = CancelAfter { inner: data, p: &p, after: 200_000, done: 0 };
-                Ok(Box::new(BufReader::with_capacity(1 << 16, Counting { inner: r, progress: &p })))
+                let r = CancelAfter {
+                    inner: data,
+                    p: &p,
+                    after: 200_000,
+                    done: 0,
+                };
+                Ok(Box::new(BufReader::with_capacity(
+                    1 << 16,
+                    Counting {
+                        inner: r,
+                        progress: &p,
+                    },
+                )))
             };
             let e = read(&open, None, Some(&p)).err().expect("cancelled");
             assert!(is_cancelled(&e), "{e:#}");
             // Stopped at the first read after the flag: at most one read past it.
             let s = p.snapshot();
-            assert!(s.bytes <= (200_000 + READ_MAX) as u64 && s.bytes < data.len() as u64 && s.pass == 1, "{s:?}");
+            assert!(
+                s.bytes <= (200_000 + READ_MAX) as u64
+                    && s.bytes < data.len() as u64
+                    && s.pass == 1,
+                "{s:?}"
+            );
         }
         // Cancelled before starting.
         let p = Progress::new(0);

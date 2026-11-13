@@ -8,7 +8,8 @@ mod gui;
 use gui::app::{MsaScope, peak_rss_mb};
 use gui::theme::{Settings, is_dark};
 
-const USAGE: &str = "usage: msascope [FILE] [--tree TREE] [--type dna|rna|protein] [--stats] [--bench]
+const USAGE: &str =
+    "usage: msascope [FILE] [--tree TREE] [--type dna|rna|protein] [--stats] [--bench]
   FILE     aligned FASTA (.gz ok), Clustal or Stockholm
   --tree   Newick tree whose leaves are the sequences (default: the file's #=GF NH lines, or
            FILE's stem with .nwk, .newick, .tree or .treefile next to it)
@@ -32,11 +33,28 @@ fn main() -> anyhow::Result<()> {
         };
         match a.as_str() {
             "--type" => ty = Some(parse_ty(args.next())?),
-            _ if a.starts_with("--type=") => ty = Some(parse_ty(Some(a["--type=".len()..].to_string()))?),
-            "--tree" => tree = Some(PathBuf::from(args.next().ok_or_else(|| anyhow::anyhow!("--tree needs a file\n{USAGE}"))?)),
+            _ if a.starts_with("--type=") => {
+                ty = Some(parse_ty(Some(a["--type=".len()..].to_string()))?)
+            }
+            "--tree" => {
+                tree =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        anyhow::anyhow!("--tree needs a file\n{USAGE}")
+                    })?))
+            }
             "--stats" => stats = true,
-            "--motif" => motif = Some(args.next().ok_or_else(|| anyhow::anyhow!("--motif needs a pattern\n{USAGE}"))?),
-            "--sort" => sort = Some(args.next().ok_or_else(|| anyhow::anyhow!("--sort needs a key\n{USAGE}"))?),
+            "--motif" => {
+                motif = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--motif needs a pattern\n{USAGE}"))?,
+                )
+            }
+            "--sort" => {
+                sort = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--sort needs a key\n{USAGE}"))?,
+                )
+            }
             "--bench" => bench = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -46,7 +64,9 @@ fn main() -> anyhow::Result<()> {
         }
     }
     if stats {
-        let Some(p) = path else { anyhow::bail!("--stats needs a file\n{USAGE}") };
+        let Some(p) = path else {
+            anyhow::bail!("--stats needs a file\n{USAGE}")
+        };
         let l = Loaded::open_as(&p, ty)?;
         println!("{}", l.summary());
         if let Some(a) = l.annotation_summary() {
@@ -70,30 +90,111 @@ fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
+    // Files Finder asks us to open (double-click, Open With, a drop on the Dock icon) arrive
+    // before or after the window exists; they wait here until the app can take them.
+    let (url_tx, url_rx) = std::sync::mpsc::channel::<Vec<PathBuf>>();
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
+    app.on_open_urls(move |urls| {
+        let paths = gui::menu::file_urls_to_paths(&urls);
+        if !paths.is_empty() {
+            url_tx.send(paths).ok();
+        }
+    });
+    // macOS: a click on the Dock icon with no window open opens one.
+    app.on_reopen(move |cx| {
+        if cx.windows().is_empty() {
+            open_main_window(None, None, ty, false, cx);
+        }
+    });
+    app.run(move |cx| {
         gpui_kit::init(cx);
         let settings = Settings::load();
         gui::tokens::apply_palette(settings.theme.palette(is_dark(cx.window_appearance())), cx);
         gui::fonts::apply(None, cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
-            titlebar: Some(TitlebarOptions { title: Some("msascope".into()), ..Default::default() }),
-            app_id: Some("msascope".into()),
-            window_min_size: Some(size(px(640.), px(420.))),
-            ..Default::default()
-        };
-        gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| MsaScope::new(path, tree, ty, bench, window, cx)))
-            .expect("failed to open window");
+        gui::menu::install(cx, move |cx| {
+            open_main_window(None, None, ty, false, cx);
+        });
+        let main = open_main_window(path, tree, ty, bench, cx);
+        let main = std::rc::Rc::new(std::cell::RefCell::new(main));
+        cx.spawn(async move |cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(150))
+                    .await;
+                let mut batch = Vec::new();
+                while let Ok(p) = url_rx.try_recv() {
+                    batch.extend(p);
+                }
+                if batch.is_empty() {
+                    continue;
+                }
+                cx.update(|cx| {
+                    let view = main.borrow().upgrade();
+                    match view {
+                        Some(v) => v.update(cx, |v, cx| v.open_dropped(&batch, cx)),
+                        None => {
+                            let mut paths = batch.into_iter();
+                            let first = paths.next();
+                            *main.borrow_mut() = open_main_window(first, None, ty, false, cx);
+                            let rest: Vec<PathBuf> = paths.collect();
+                            if let (Some(v), false) = (main.borrow().upgrade(), rest.is_empty()) {
+                                v.update(cx, |v, cx| v.open_dropped(&rest, cx));
+                            }
+                        }
+                    }
+                    cx.activate(true);
+                });
+            }
+        })
+        .detach();
     });
     Ok(())
 }
 
+/// Open the viewer window; returns its view (weak, so a closed window can be noticed).
+fn open_main_window(
+    path: Option<PathBuf>,
+    tree: Option<PathBuf>,
+    ty: Option<SeqType>,
+    bench: bool,
+    cx: &mut App,
+) -> WeakEntity<MsaScope> {
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
+        titlebar: Some(TitlebarOptions {
+            title: Some("msascope".into()),
+            ..Default::default()
+        }),
+        app_id: Some("msascope".into()),
+        window_min_size: Some(size(px(640.), px(420.))),
+        ..Default::default()
+    };
+    let (_, view) = gpui_kit::open_window(options, cx, |window, cx| {
+        cx.new(|cx| MsaScope::new(path, tree, ty, bench, window, cx))
+    })
+    .expect("failed to open window");
+    view.downgrade()
+}
+
 /// `--stats --motif`: time a motif search over every row.
 fn motif_stats(l: &Loaded, pattern: &str) -> anyhow::Result<()> {
-    let m = msascope::motif::Motif::compile(pattern, l.aln.kind()).map_err(|e| anyhow::anyhow!(e))?;
+    let m =
+        msascope::motif::Motif::compile(pattern, l.aln.kind()).map_err(|e| anyhow::anyhow!(e))?;
     let t = std::time::Instant::now();
-    let h = msascope::motif::search(&l.aln, &m, 1_000_000, &std::sync::atomic::AtomicBool::new(false)).unwrap();
-    println!("motif {pattern} ({}): {} matches in {} sequences, {:.3} s", m.pattern, h.total, h.rows, t.elapsed().as_secs_f64());
+    let h = msascope::motif::search(
+        &l.aln,
+        &m,
+        1_000_000,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    println!(
+        "motif {pattern} ({}): {} matches in {} sequences, {:.3} s",
+        m.pattern,
+        h.total,
+        h.rows,
+        t.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
@@ -113,10 +214,22 @@ fn sort_stats(l: &Loaded, key: &str, ix: Option<&msascope::tree::TreeIndex>) -> 
     let stats = RowStats::compute(&l.aln, &l.stats.consensus, map.as_ref(), None);
     let t_stats = t.elapsed();
     let t = Instant::now();
-    let v = flat_view(&l.aln, None, Some(Sort { key, reverse: false }), Some(&stats));
+    let v = flat_view(
+        &l.aln,
+        None,
+        Some(Sort {
+            key,
+            reverse: false,
+        }),
+        Some(&stats),
+    );
     let t_sort = t.elapsed();
     let t = Instant::now();
-    let f = Filter { name: msascope::rows::NameQuery::parse("/[02468]$/").unwrap(), min_identity: Some(0.5), ..Default::default() };
+    let f = Filter {
+        name: msascope::rows::NameQuery::parse("/[02468]$/").unwrap(),
+        min_identity: Some(0.5),
+        ..Default::default()
+    };
     let keep = f.keep(&l.aln, Some(&stats)).unwrap();
     let shown = keep.iter().filter(|&&k| k).count();
     let t_filter = t.elapsed();
@@ -130,8 +243,13 @@ fn sort_stats(l: &Loaded, key: &str, ix: Option<&msascope::tree::TreeIndex>) -> 
     );
     if let Some(ix) = ix {
         let t = Instant::now();
-        let (rv, _) = msascope::tree::row_view_kept(&l.aln, ix, &vec![false; ix.tree.len()], Some(&keep));
-        print!("; filtered tree order {:.3} s ({} rows)", t.elapsed().as_secs_f64(), rv.len());
+        let (rv, _) =
+            msascope::tree::row_view_kept(&l.aln, ix, &vec![false; ix.tree.len()], Some(&keep));
+        print!(
+            "; filtered tree order {:.3} s ({} rows)",
+            t.elapsed().as_secs_f64(),
+            rv.len()
+        );
     }
     println!();
     Ok(())
