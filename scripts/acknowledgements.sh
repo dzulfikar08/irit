@@ -11,6 +11,7 @@ out="${1:?usage: $0 OUT.html}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 command -v cargo-about >/dev/null || { echo "error: cargo-about missing (cargo install cargo-about --locked --features cli)" >&2; exit 1; }
 
+mkdir -p "$(dirname "$out")"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cargo about generate --manifest-path "$root/msascope/Cargo.toml" -c "$root/msascope/about.toml" \
