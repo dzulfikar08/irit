@@ -107,8 +107,14 @@ What's done, what's next, and what's further out. Items move up as evidence come
       reproducibility, time, cost, human intervention)? A possible paper. First data point: one
       isolate through `irit-mcp` fits an 8 GB cap and gets the right species
       ([laptop run](research/e2e-laptop.md)), with the steps called by a scripted client rather than an
-      agent. Still to do: more genomes and lineages, an agent choosing the calls, and the
+      agent. Second data point: an agent with only `irit-mcp` (no shell, no web) redid Table 1 of a
+      December 2025 *K. pneumoniae* genome announcement on the laptop. AMR genes and MLST matched
+      exactly, GTDB confirmed the species, and it found six irit bugs (#14–#19)
+      ([write-up](research/paper-redo-kpn.md)). Still to do: more papers and lineages, and the
       hand-built comparison.
+- [ ] **Gaps the paper redo showed**: QUAST-style assembly stats, coverage by read mapping, and
+      virulence/typing (Kleborate, VirulenceFinder/VFDB); then a MAG route for metagenomes
+      (assembly, binning, abundance, dereplication) on 8 GB.
 - [ ] **Instrument connection**: lab instruments run vendor software on dedicated (often older Windows)
       PCs, and labs usually connect them through a LIMS, which parses instrument exports or uses vendor
       drivers. So the practical route is the LIMS or the files instruments drop for it. Open standards exist (SiLA 2; LADS, an OPC UA companion specification for lab devices).
