@@ -8,7 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CLIS: -p sheetgen -p leanqc -p isotable -p dblock
+  CLIS: -p sheetgen -p leanqc -p isotable -p dblock -p seqplan
 
 jobs:
   # Linux: every crate, including msascope's GPUI viewer.
@@ -23,7 +23,7 @@ jobs:
       - name: System libraries for msascope (GPUI)
         run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # irit-mcp's integration test runs the real leanqc binary.
+      # irit-mcp's integration tests run the real leanqc and seqplan binaries.
       - run: cargo build --release $CLIS
       - run: cargo test --workspace
 
@@ -42,7 +42,7 @@ jobs:
       - run: cargo test --workspace --exclude msascope
       - run: cargo test -p msascope --no-default-features
 
-  # Windows: the four command-line tools (irit-mcp and gtdbprep use Unix-only APIs for now) and
+  # Windows: the five command-line tools (irit-mcp and gtdbprep use Unix-only APIs for now) and
   # msascope's core; msascope.yml builds the viewer itself.
   windows:
     runs-on: windows-latest
@@ -52,7 +52,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p sheetgen -p leanqc -p isotable -p dblock --all-targets -- -D warnings
-      - run: cargo test -p sheetgen -p leanqc -p isotable -p dblock
+      - run: cargo clippy -p sheetgen -p leanqc -p isotable -p dblock -p seqplan --all-targets -- -D warnings
+      - run: cargo test -p sheetgen -p leanqc -p isotable -p dblock -p seqplan
       - run: cargo clippy -p msascope --no-default-features --all-targets -- -D warnings
       - run: cargo test -p msascope --no-default-features

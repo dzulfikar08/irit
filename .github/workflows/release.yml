@@ -6,13 +6,13 @@
 #   irit-x86_64-linux.tar.gz, irit-aarch64-linux.tar.gz   command-line tools, static (musl)
 #   irit-universal-macos.tar.gz                           command-line tools, universal,
 #                                                         Developer ID signed and notarised
-#   irit-x86_64-windows.zip                               sheetgen, leanqc, isotable, dblock (unsigned)
+#   irit-x86_64-windows.zip                               sheetgen, leanqc, isotable, dblock, seqplan (unsigned)
 #   msascope.dmg                                           msascope.app, universal, notarised, stapled
 #   msascope-universal-macos.tar.gz                        the same msascope.app (for install.sh)
 #   msascope-x86_64-linux.tar.gz, msascope-aarch64-linux.tar.gz   glibc 2.39+ (Ubuntu 24.04 builds)
 #   SHA256SUMS                                            every archive above
-# The command-line archives hold sheetgen, leanqc, isotable, dblock, irit-mcp, gtdbprep and
-# irit-gtdb-prep (Windows: the first four; irit-mcp and gtdbprep are Unix-only).
+# The command-line archives hold sheetgen, leanqc, isotable, dblock, seqplan, irit-mcp, gtdbprep and
+# irit-gtdb-prep (Windows: the first five; irit-mcp and gtdbprep are Unix-only).
 # The unversioned names are what https://github.com/dzulfikar08/irit/releases/latest/download/<name>
 # and scripts/install.sh use, so they must not change.
 #
@@ -45,9 +45,9 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   # Packages and binaries in the command-line archives (Windows: WIN_PKGS, binaries of the same name).
-  CLI_PKGS: sheetgen leanqc isotable dblock irit-mcp gtdbprep
-  CLI_BINS: sheetgen leanqc isotable dblock irit-mcp gtdbprep irit-gtdb-prep
-  WIN_PKGS: sheetgen leanqc isotable dblock
+  CLI_PKGS: sheetgen leanqc isotable dblock seqplan irit-mcp gtdbprep
+  CLI_BINS: sheetgen leanqc isotable dblock seqplan irit-mcp gtdbprep irit-gtdb-prep
+  WIN_PKGS: sheetgen leanqc isotable dblock seqplan
 
 jobs:
   check:

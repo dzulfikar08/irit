@@ -5,7 +5,7 @@
 #   curl -fsSL .../install.sh | sh -s -- --no-gui          # command-line tools only, no msascope
 #   curl -fsSL .../install.sh | sh -s -- --uninstall       # remove what this script installed
 #
-# Installs sheetgen, leanqc, isotable, dblock, irit-mcp, gtdbprep and irit-gtdb-prep into
+# Installs sheetgen, leanqc, isotable, dblock, seqplan, irit-mcp, gtdbprep and irit-gtdb-prep into
 # $PREFIX/bin (PREFIX defaults to ~/.local), plus the msascope viewer:
 #   macOS: $IRIT_APPS/msascope.app (default ~/Applications; signed and notarised) and a
 #          $PREFIX/bin/msascope link to it.
@@ -27,7 +27,7 @@ prefix="${PREFIX:-$HOME/.local}"
 bindir="$prefix/bin"
 apps="${IRIT_APPS:-$HOME/Applications}"
 manifest="$prefix/share/irit/installed-files"
-clis="sheetgen leanqc isotable dblock irit-mcp gtdbprep irit-gtdb-prep"
+clis="sheetgen leanqc isotable dblock seqplan irit-mcp gtdbprep irit-gtdb-prep"
 # Viewer names: msascope in releases after v0.2.1, msaview up to v0.2.1. The bundle id goes
 # with the name.
 viewers="msascope msaview"
@@ -65,7 +65,7 @@ case "$(uname -s)" in
   Darwin) os=macos ;;
   Linux) os=linux ;;
   MINGW*|MSYS*|CYGWIN*) die "on Windows, download irit-x86_64-windows.zip from https://github.com/${repo}/releases/latest" ;;
-  *) die "no prebuilt irit for $(uname -s); build it with Rust: cargo install --git https://github.com/${repo} sheetgen leanqc isotable dblock" ;;
+  *) die "no prebuilt irit for $(uname -s); build it with Rust: cargo install --git https://github.com/${repo} sheetgen leanqc isotable dblock seqplan" ;;
 esac
 
 sha256() {
@@ -139,7 +139,7 @@ command -v tar >/dev/null 2>&1 || die "tar is needed"
 case "$(uname -m)" in
   aarch64|arm64) arch=aarch64 ;;
   x86_64|amd64) arch=x86_64 ;;
-  *) die "no prebuilt irit for $(uname -m) $os; build it with Rust: cargo install --git https://github.com/${repo} sheetgen leanqc isotable dblock" ;;
+  *) die "no prebuilt irit for $(uname -m) $os; build it with Rust: cargo install --git https://github.com/${repo} sheetgen leanqc isotable dblock seqplan" ;;
 esac
 if [ "$os" = macos ]; then
   cli_asset="irit-universal-macos.tar.gz"
@@ -177,7 +177,7 @@ if ! curl -fsL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"; then
   echo "error: irit $tag was released before this installer existed: it has no SHA256SUMS or" >&2
   echo "       ${cli_asset}. Releases from v0.2.0 on have them. For $tag, download an archive" >&2
   echo "       by hand from https://github.com/${repo}/releases/tag/${tag}, or build it with Rust:" >&2
-  echo "       cargo install --git https://github.com/${repo} --tag ${tag} sheetgen leanqc isotable dblock" >&2
+  echo "       cargo install --git https://github.com/${repo} --tag ${tag} sheetgen leanqc isotable dblock seqplan" >&2
   exit 1
 fi
 
