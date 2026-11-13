@@ -20,6 +20,7 @@ actions!(
         Quit,
         Open,
         OpenSample,
+        AllowFolder,
         CloseFile,
         CloseWindow,
         ExportSelection,
@@ -95,15 +96,7 @@ fn menus() -> Vec<Menu> {
     app_items.push(MenuItem::action("Quit msascope", Quit));
     vec![
         Menu::new("msascope").items(app_items),
-        Menu::new("File").items([
-            MenuItem::action("Open…", Open),
-            MenuItem::action("Open Sample Alignment", OpenSample),
-            MenuItem::separator(),
-            MenuItem::action("Export…", ExportSelection),
-            MenuItem::separator(),
-            MenuItem::action("Close File", CloseFile),
-            MenuItem::action("Close Window", CloseWindow),
-        ]),
+        Menu::new("File").items(file_items()),
         Menu::new("Edit").items([
             MenuItem::action("Copy Selection", CopySelection),
             MenuItem::action("Select All", SelectAllCells),
@@ -113,6 +106,24 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Acknowledgements", Acknowledgements),
         ]),
     ]
+}
+
+fn file_items() -> Vec<MenuItem> {
+    let mut items = vec![
+        MenuItem::action("Open…", Open),
+        MenuItem::action("Open Sample Alignment", OpenSample),
+    ];
+    if super::sandbox::active() {
+        items.push(MenuItem::action("Allow Access to Folder…", AllowFolder));
+    }
+    items.extend([
+        MenuItem::separator(),
+        MenuItem::action("Export…", ExportSelection),
+        MenuItem::separator(),
+        MenuItem::action("Close File", CloseFile),
+        MenuItem::action("Close Window", CloseWindow),
+    ]);
+    items
 }
 
 /// About msascope: the version, the licence and the help link.

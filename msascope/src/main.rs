@@ -108,7 +108,12 @@ fn main() -> anyhow::Result<()> {
     });
     app.run(move |cx| {
         gpui_kit::init(cx);
-        let settings = Settings::load();
+        let mut settings = Settings::load();
+        // App Sandbox: regain access to recent files and allowed folders (once per run).
+        if gui::sandbox::active() && !settings.bookmarks.is_empty() {
+            settings.restore_bookmarks();
+            settings.save();
+        }
         gui::tokens::apply_palette(settings.theme.palette(is_dark(cx.window_appearance())), cx);
         gui::fonts::apply(None, cx);
         gui::menu::install(cx, move |cx| {

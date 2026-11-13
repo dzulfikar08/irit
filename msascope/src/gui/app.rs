@@ -610,6 +610,9 @@ impl MsaScope {
                 match result {
                     Ok(l) => {
                         v.settings.add_recent(&path);
+                        if let Some(b) = super::sandbox::bookmark(&path) {
+                            v.settings.add_bookmark(&path, b);
+                        }
                         v.settings.save();
                         v.path = Some(path);
                         eprintln!("msascope: {}", l.summary());
@@ -672,7 +675,14 @@ impl MsaScope {
                             });
                         match source {
                             Some(s) => v.load_tree(s, cx),
-                            None => v.rebuild_layout(cx),
+                            None => {
+                                // The App Sandbox hides the file's folder, so a tree next to it
+                                // can't be seen until the user allows the folder.
+                                if super::sandbox::active() && v.status.is_empty() {
+                                    v.status = "To load a tree saved next to this file, choose File ▸ Allow Access to Folder…".into();
+                                }
+                                v.rebuild_layout(cx)
+                            }
                         }
                     }
                     Err(e) => {
@@ -680,7 +690,11 @@ impl MsaScope {
                         v.data = None;
                         v.close(cx);
                         v.path = Some(path);
-                        v.error = Some(format!("{e:#}").into());
+                        let mut msg = format!("{e:#}");
+                        if super::sandbox::active() && msg.contains("Operation not permitted") {
+                            msg += ". This version of msascope can only open files you choose: use Open…, drag the file onto the window, or open it from Finder.";
+                        }
+                        v.error = Some(msg.into());
                     }
                 }
                 cx.notify();
@@ -933,6 +947,41 @@ impl MsaScope {
                 }
             })
             .ok();
+        })
+        .detach();
+    }
+
+    /// App Sandbox: let the user allow the open file's folder (kept as a bookmark), then look for
+    /// a tree next to the alignment there.
+    pub(super) fn prompt_allow_folder(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Allow".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = rx.await
+                && let Some(dir) = paths.into_iter().next()
+            {
+                this.update(cx, |v, cx| {
+                    if let Some(b) = super::sandbox::bookmark(&dir) {
+                        v.settings.add_bookmark(&dir, b);
+                        v.settings.save();
+                    }
+                    if v.data.is_some() && v.tree.is_none() && !v.tree_loading {
+                        let found = v.path.as_deref().and_then(|p| tree::sibling_candidates(p).into_iter().find(|c| c.is_file()));
+                        match found {
+                            Some(t) => v.load_tree(TreeSource::File(t), cx),
+                            None => {
+                                v.status = "No tree with this file's name in that folder (.nwk, .newick, .tree, .treefile)".into();
+                                cx.notify();
+                            }
+                        }
+                    }
+                })
+                .ok();
+            }
         })
         .detach();
     }
@@ -1645,6 +1694,7 @@ impl Render for MsaScope {
             )
             .on_action(cx.listener(|v, _: &menu::Open, _, cx| v.prompt_open(cx)))
             .on_action(cx.listener(|v, _: &menu::OpenSample, _, cx| v.open_sample(cx)))
+            .on_action(cx.listener(|v, _: &menu::AllowFolder, _, cx| v.prompt_allow_folder(cx)))
             .on_action(cx.listener(|v, _: &menu::CloseFile, _, cx| v.close(cx)))
             .on_action(cx.listener(|_, _: &menu::CloseWindow, window, _| window.remove_window()))
             .on_action(cx.listener(|v, _: &menu::ExportSelection, _, cx| {
