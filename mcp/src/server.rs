@@ -21,7 +21,8 @@ dblock_* (reference databases); \
 plus the microbial isolate path with third-party tools: fastp (trimming), shovill (Illumina assembly), flye and \
 medaka (nanopore/PacBio long-read assembly and polishing), bakta (annotation), checkm2 (completeness/contamination), gtdbprep_ani and gtdbtk_classify_wf (taxonomy), mlst (sequence type), \
 amrfinder (AMRFinderPlus resistance genes), coverm_genome (isolate depth by read mapping) and kleborate (K. pneumoniae typing, virulence and resistance scores); and metagenomes to MAGs: megahit (assembly), coverm_contig (depth) and \
-metabat2 (bins), then checkm2, gtdbprep_ani/gtdbtk_classify_wf and isotable mode mag on the bins. Those need the program installed (Bioconda) and, for bakta, \
+metabat2 or semibin2 (bins), then checkm2, gtdbprep_ani/gtdbtk_classify_wf and isotable mode mag on the bins; across samples, galah (dereplication) \
+and coverm_abundance (each genome's abundance in each sample). Those need the program installed (Bioconda) and, for bakta, \
 checkm2, gtdbtk_classify_wf and amrfinder, a database (dblock_env shows dblock-managed paths); they can run for \
 hours. Their results list `warnings` when the installed version isn't the one irit-mcp was checked against, and for warnings the tool printed that matter (read them). \
 Parameters are checked before anything runs; unknown parameters are refused, so read each tool's schema \
@@ -796,16 +797,103 @@ run record: Medaka downloads named models at run time).")]
     }
 
     #[tool(description = "CoverM 0.8.0 contig: map each sample's paired reads to the contigs (strobealign by default) and write a \
-per-contig coverage table. With methods [\"metabat\"] the table is MetaBAT2's depth input; give one read pair per sample (more samples \
-help binning). Returns per sample the reads mapped and the percentage, from CoverM's log.")]
+per-contig coverage table. With methods [\"metabat\"] the table is the depth input of metabat2 (and, with one sample, of semibin2 with \
+an environment); give one read pair per sample (more samples help binning). bam_cache_dir also keeps each sample's sorted BAM, the \
+bams input of semibin2. Returns per sample the reads mapped and the percentage, from CoverM's log, and the BAM files.")]
     async fn coverm_contig(&self, Parameters(params): Parameters<x::CovermContigParams>) -> Result<CallToolResult, ErrorData> {
         let d = self.execute("coverm_contig", &params, x::coverm_contig(&self.cfg.ctx, &params)).await;
         let mapped = results::coverm_mapped(&d.stderr);
         let table = self.cfg.ctx.cwd.join(&params.output);
+        let bams: Vec<String> = match &params.bam_cache_dir {
+            Some(dir) => params.r1.iter().map(|r1| x::coverm_cached_bam(Path::new(dir), &params.reference, r1).to_string_lossy().into_owned()).collect(),
+            None => Vec::new(),
+        };
         self.external_reply(d, |v| {
             v["output"] = json!(params.output);
             v["contigs_with_coverage"] = json!(results::table_rows(&table)?);
             v["mapped"] = json!(mapped);
+            if !bams.is_empty() {
+                v["bams"] = json!(bams);
+            }
+            Ok(())
+        })
+    }
+
+    #[tool(description = "CoverM 0.8.0 genome, for many genomes and samples: map each sample's paired reads to a set of genomes \
+(e.g. galah's dereplicated representatives; give them all in one call) and write one table, a row per genome plus `unmapped`, with per \
+sample (named after its read 1 file) the relative abundance (%), mean depth, covered fraction and read count. CoverM's relative abundance \
+is the genome's share of the summed mean coverage times the fraction of the sample's reads that mapped, so it is a share of all reads and \
+`unmapped` holds the rest. A genome covered under min_covered_fraction (default 0 here) is reported as 0. The table is what co-occurrence \
+analysis of genomes across samples takes. Returns per sample the reads mapped, the unmapped percentage and how many genomes were detected.")]
+    async fn coverm_abundance(&self, Parameters(params): Parameters<x::CovermAbundanceParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("coverm_abundance", &params, x::coverm_abundance(&self.cfg.ctx, &params)).await;
+        let mapped = results::coverm_mapped(&d.stderr);
+        let table = self.cfg.ctx.cwd.join(&params.output);
+        self.external_reply(d, |v| {
+            let mut s = results::coverm_abundance_summary(&table)?;
+            for row in s["samples"].as_array_mut().into_iter().flatten() {
+                if let Some(m) = mapped.iter().find(|m| m["sample"] == row["sample"]) {
+                    row["reads_mapped"] = m["reads_mapped"].clone();
+                    row["reads_total"] = m["reads_total"].clone();
+                    row["percent_mapped"] = m["percent"].clone();
+                }
+            }
+            v["output"] = json!(params.output);
+            v["abundance"] = s;
+            Ok(())
+        })
+    }
+
+    #[tool(description = "SemiBin 2.6.0 (SemiBin2 single_easy_bin): bin one sample's metagenome contigs into genomes (MAGs) with a \
+neural network. Either a pretrained model (`environment`: human_gut, dog_gut, cat_gut, mouse_gut, pig_gut, chicken_caecum, human_oral, \
+ocean, soil, built_environment, wastewater, or global when none matches) with `depth` (coverm_contig's metabat table of this sample) or \
+`bams` (one); or, without environment, a model trained on this sample (self-supervised) from `bams` (coverm_contig's bam_cache_dir, one \
+per sample mapped to these contigs). Writes `<outdir>/output_bins/<tag>_<n>.fa`: run checkm2 on `<outdir>/output_bins` with extension \
+fa. Seed 1 unless set. Give each sample its own tag when bins of several samples go to galah. Returns each bin's contigs, length, N50 \
+and GC %.")]
+    async fn semibin2(&self, Parameters(params): Parameters<x::Semibin2Params>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("semibin2", &params, x::semibin2(&self.cfg.ctx, &params)).await;
+        let outdir = self.cfg.ctx.cwd.join(&params.outdir);
+        let tag = x::semibin2_tag(&params).to_string();
+        self.external_reply(d, |v| {
+            let mut bins = Vec::new();
+            for b in x::semibin2_bins(&outdir, &tag) {
+                let mut s = results::assembly_stats(&b)?;
+                s["bin"] = json!(b.file_stem().map(|n| n.to_string_lossy().into_owned()));
+                s["file"] = json!(b);
+                bins.push(s);
+            }
+            v["bins_dir"] = json!(outdir.join("output_bins"));
+            v["bin_count"] = json!(bins.len());
+            v["binned_length"] = json!(bins.iter().map(|b| b["total_length"].as_u64().unwrap_or(0)).sum::<u64>());
+            v["bins"] = json!(bins);
+            Ok(())
+        })
+    }
+
+    #[tool(description = "galah 0.6.3 cluster: dereplicate genomes (e.g. the bins of several samples) at an ANI (default 95%, a \
+species) with skani, keeping one representative per cluster. With `checkm2_report` (one checkm2 quality_report.tsv covering every \
+genome) the best genome by quality_formula represents each cluster, and min_completeness / max_contamination leave genomes out. Genomes \
+are named after their files, so bins of different samples need different names (metabat2 prefix, semibin2 tag). Writes \
+`<outdir>/clusters.tsv`, `<outdir>/representatives.txt` and copies of the representatives in `<outdir>/representatives/` (the genomes \
+for coverm_abundance). Returns the clusters, their sizes and the genomes left out.")]
+    async fn galah(&self, Parameters(params): Parameters<x::GalahParams>) -> Result<CallToolResult, ErrorData> {
+        let inv = x::galah(&self.cfg.ctx, &params);
+        let given: Vec<String> = inv
+            .as_ref()
+            .map(|i| i.args.iter().skip_while(|a| *a != "--genome-fasta-files").skip(1).map(|a| a.trim_start_matches("./").to_string()).collect())
+            .unwrap_or_default();
+        let d = self.execute("galah", &params, inv).await;
+        let outdir = self.cfg.ctx.cwd.join(&params.outdir);
+        self.external_reply(d, |v| {
+            let clusters = results::galah_clusters(&outdir.join("clusters.tsv"))?;
+            let members: Vec<&str> = clusters.iter().flat_map(|c| c["members"].as_array().into_iter().flatten().filter_map(Value::as_str)).collect();
+            let left_out: Vec<&String> = given.iter().filter(|g| !members.iter().any(|m| m.trim_start_matches("./") == g.as_str())).collect();
+            v["genomes_given"] = json!(given.len());
+            v["cluster_count"] = json!(clusters.len());
+            v["left_out"] = json!(left_out);
+            v["representatives_dir"] = json!(outdir.join("representatives"));
+            v["clusters"] = json!(clusters);
             Ok(())
         })
     }

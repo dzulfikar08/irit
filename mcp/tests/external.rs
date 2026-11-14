@@ -259,20 +259,52 @@ const COVERM: &str = r#"
 [ "${1:-}" = --version ] && { echo "coverm 0.8.0"; exit 0; }
 case "${1:-}" in contig|genome) cmd=$1 ;; *) die "expected contig or genome" ;; esac
 shift
-out= ; ref= ; methods= ; mode= ; r1=
+out= ; ref= ; methods= ; mode= ; r1= ; r1s= ; n=0 ; genomes= ; mcf=10 ; cache=
 while [ $# -gt 0 ]; do
   case "$1" in
     --reference=*) ref=${1#--reference=} ;;
     --output-file=*) out=${1#--output-file=} ;;
     --mapper=*|--threads=*|--min-read-percent-identity=*|--min-read-aligned-percent=*) ;;
-    --single-genome|--min-covered-fraction=*) [ $cmd = genome ] || die "genome option $1 for contig" ;;
+    --bam-file-cache-directory=*) cache=${1#--bam-file-cache-directory=} ;;
+    --min-covered-fraction=*) [ $cmd = genome ] || die "genome option $1 for contig"; mcf=${1#--min-covered-fraction=} ;;
+    --single-genome) [ $cmd = genome ] || die "genome option $1 for contig" ;;
+    --genome-fasta-files) [ $cmd = genome ] || die "genome option $1 for contig"; mode=g ;;
     --methods) mode=m ;;
     --coupled) mode=c ;;
     -*) die "unknown option $1" ;;
-    *) case "$mode" in m) methods="$methods $1" ;; c) [ -f "$1" ] || die "cannot open $1"; r1=${r1:-$(basename "$1")} ;; *) die "stray $1" ;; esac ;;
+    *) case "$mode" in
+         m) methods="$methods $1" ;;
+         g) [ -f "$1" ] || die "cannot open $1"; genomes="$genomes $1" ;;
+         c) [ -f "$1" ] || die "cannot open $1"; n=$((n + 1)); [ $((n % 2)) = 1 ] && { r1=${r1:-$(basename "$1")}; r1s="$r1s $(basename "$1")"; } ;;
+         *) die "stray $1" ;;
+       esac ;;
   esac
   shift
 done
+# A sorted "BAM" per read pair: BGZF-like gzip of the BAM magic and header text. The header names a
+# temporary folder, as CoverM's samtools sort -T does, so its bytes differ between runs.
+if [ -n "$cache" ]; then
+  mkdir -p "$cache"
+  for s in $r1s; do
+    { printf 'BAM\001\046\000\000\000@HD\tVN:1.6\tSO:coordinate\n@CO\t%08d\n' $(($$ % 100000000)); } | gzip -c > "$cache/$(basename "$ref").$s.bam"
+  done
+fi
+if [ $cmd = genome ] && [ -n "$genomes" ]; then
+  case "$methods" in *count*) [ "$mcf" = 0 ] || die "The 'counts' coverage estimator cannot be used when --min-covered-fraction is > 0" ;; esac
+  { printf 'Genome'
+    for s in $r1s; do printf '\t%s Relative Abundance (%%)\t%s Mean\t%s Covered Fraction\t%s Read Count' "$s" "$s" "$s" "$s"; done
+    printf '\nunmapped'
+    for s in $r1s; do printf '\t10\tNA\tNA\tNA'; done
+    printf '\n'
+    i=0
+    for g in $genomes; do
+      i=$((i + 1)); b=$(basename "$g"); printf '%s' "${b%.*}"
+      for s in $r1s; do printf '\t%s\t%s\t0.95\t%s' "$((90 / i))" "$((20 / i))" "$((900 / i))"; done
+      printf '\n'
+    done; } > "$out"
+  for s in $r1s; do echo "[2026-11-14T02:29:40Z INFO  coverm::genome] In sample '$s', found 90 reads mapped out of 100 total (90.00%)" >&2; done
+  exit 0
+fi
 [ -f "$ref" ] || die "no reference"
 if [ $cmd = genome ]; then
   s="$(basename "$ref")/$r1"
@@ -306,6 +338,76 @@ done
 [ -d "$(dirname "$out")" ] || die "output folder missing"
 printf '>k141_1\nACGTACGTACGT\n' > "$out.1.fa"
 printf '>k141_2\nGGGGCCCC\n' > "$out.2.fa"
+"#;
+
+/// SemiBin 2.6.0's single_easy_bin: a MetaBAT depth table only with a pretrained model, else BAMs;
+/// two bins named `<tag>_<n>.fa` in `<output>/output_bins`.
+const SEMIBIN2: &str = r#"
+[ "${1:-}" = --version ] && { echo "2.6.0"; exit 0; }
+[ "${1:-}" = single_easy_bin ] || die "expected single_easy_bin"
+shift
+in= ; out= ; tag=SemiBin ; env= ; depth= ; bams= ; mode=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --input-fasta=*) in=${1#--input-fasta=} ;;
+    --output=*) out=${1#--output=} ;;
+    --tag-output=*) tag=${1#--tag-output=} ;;
+    --environment=*) env=${1#--environment=} ;;
+    --depth-metabat2=*) depth=${1#--depth-metabat2=} ;;
+    --compression=none|--engine=cpu) ;;
+    --random-seed=*|--threads=*|--min-len=*|--minfasta-kbs=*) ;;
+    --input-bam) mode=b ;;
+    -*) die "unknown option $1" ;;
+    *) [ "$mode" = b ] || die "stray $1"; [ -f "$1" ] || die "cannot open $1"; bams="$bams $1" ;;
+  esac
+  shift
+done
+[ -f "$in" ] || die "no contigs"
+if [ -n "$depth" ]; then
+  [ -n "$env" ] || die "You need to use one of our provided models if you provide a depth file from Metabat2."
+  [ -f "$depth" ] || die "no depth file"
+else
+  [ -n "$bams" ] || die "You need to input BAM files if you want to calculate coverage features."
+fi
+mkdir -p "$out/output_bins"
+echo "started $(date +%s%N)" > "$out/SemiBinRun.log"
+printf '>k141_1\nACGTACGTACGT\n' > "$out/output_bins/${tag}_0.fa"
+printf '>k141_2\nGGGGCCCC\n' > "$out/output_bins/${tag}_1.fa"
+printf 'contig\tbin\nk141_1\t0\nk141_2\t1\n' > "$out/contig_bins.tsv"
+[ -n "$env" ] || echo "model" > "$out/model.pt"
+"#;
+
+/// galah 0.6.3's cluster: genomes with the same sequence cluster, the first given represents them;
+/// a CheckM2 report must list every genome; the representatives' folder must be empty.
+const GALAH: &str = r#"
+[ "${1:-}" = --version ] && { echo "galah 0.6.3"; exit 0; }
+[ "${1:-}" = cluster ] || die "expected cluster"
+shift
+cdef= ; rlist= ; rdir= ; files= ; mode= ; report=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --ani=*|--min-aligned-fraction=*|--precluster-ani=*|--threads=*|--min-completeness=*|--max-contamination=*|--quality-formula=*|--small-genomes) ;;
+    --checkm2-quality-report=*) report=${1#--checkm2-quality-report=}; [ -f "$report" ] || die "no report" ;;
+    --output-cluster-definition=*) cdef=${1#--output-cluster-definition=} ;;
+    --output-representative-list=*) rlist=${1#--output-representative-list=} ;;
+    --output-representative-fasta-directory-copy=*) rdir=${1#--output-representative-fasta-directory-copy=} ;;
+    --genome-fasta-files) mode=f ;;
+    -*) die "unknown option $1" ;;
+    *) [ "$mode" = f ] || die "stray $1"; [ -f "$1" ] || die "cannot open $1"; files="$files $1" ;;
+  esac
+  shift
+done
+if [ -d "$rdir" ] && [ -n "$(ls -A "$rdir")" ]; then echo "ERROR The output-representative-fasta-directory-copy specified ($rdir) exists and is not empty" >&2; exit 1; fi
+mkdir -p "$rdir"
+: > "$cdef"; : > "$rlist"; seen=
+for f in $files; do
+  b=$(basename "$f"); b=${b%.*}
+  [ -z "$report" ] || grep -q "$(printf '^%s\t' "$b")" "$report" || die "Failed to find CheckM statistics for $f"
+  key=$(grep -v '>' "$f" | cksum | cut -d' ' -f1)
+  rep=$(printf '%s\n' $seen | grep "^$key=" | head -n 1 | cut -d= -f2)
+  if [ -z "$rep" ]; then rep=$f; seen="$seen $key=$f"; echo "$f" >> "$rlist"; cp "$f" "$rdir/"; fi
+  printf '%s\t%s\n' "$rep" "$f" >> "$cdef"
+done
 "#;
 
 /// Kleborate 3.2.4's command line: `--outdir` as its own word, a preset, `--assemblies` last; one
@@ -373,6 +475,8 @@ fn setup() -> Setup {
         ("megahit", MEGAHIT),
         ("coverm", COVERM),
         ("metabat2", METABAT2),
+        ("SemiBin2", SEMIBIN2),
+        ("galah", GALAH),
     ] {
         script(&tools, n, b);
     }
@@ -757,6 +861,139 @@ fn assembly_stats_depth_and_kleborate_with_stand_ins_join_in_isotable_and_replay
     assert!(err.contains("outputs match"), "{err}");
     for (p, h) in &all {
         if p.ends_with("shovill.log") {
+            continue;
+        }
+        assert_eq!(&sha256(p), h, "{} differs after replay", p.display());
+    }
+}
+
+/// Two samples binned with SemiBin2 (one with a pretrained model on CoverM's depth table, one
+/// trained on CoverM's cached BAM), CheckM2 over all the bins, galah dereplication, and CoverM
+/// abundance of the representatives in both samples; then replayed. The cached BAMs differ
+/// between runs (their header names a temporary folder), and the replay says so without failing.
+#[test]
+fn multi_sample_binning_dereplication_and_abundance_with_stand_ins_replay() {
+    let s = setup();
+    let work = &s.work;
+    for f in ["reads/s2_R1.fastq", "reads/s2_R2.fastq", "other/s1_R1.fastq"] {
+        write(work, f, "@r1\nACGT\n+\nIIII\n");
+    }
+    write(work, "asm/m1/final.contigs.fa", ">k141_1\nACGTACGTACGT\n>k141_2\nGGGGCCCC\n");
+    write(work, "asm/m2/final.contigs.fa", ">k141_1\nACGTACGTACGT\n>k141_2\nGGGGCCCC\n");
+    let mut c = Client::spawn(work, &[], &[("PATH", &s.path)]);
+    let tools = c.request("tools/list", json!({}));
+    let list = tools["result"]["tools"].as_array().unwrap();
+    for want in ["semibin2", "galah", "coverm_abundance"] {
+        let t = list.iter().find(|t| t["name"] == want).unwrap_or_else(|| panic!("{want} missing"));
+        assert_eq!(t["inputSchema"]["additionalProperties"], false, "{want}");
+    }
+    let pair = |n: &str| json!({"r1": [format!("reads/{n}_R1.fastq")], "r2": [format!("reads/{n}_R2.fastq")]});
+    let with = |mut a: Value, b: Value| {
+        a.as_object_mut().unwrap().extend(b.as_object().unwrap().clone());
+        a
+    };
+    // 1: sample 1, depth table and a pretrained model
+    let r = c.call("coverm_contig", with(pair("s1"), json!({"reference": "asm/m1/final.contigs.fa", "output": "depth/s1.tsv", "methods": ["metabat"]})));
+    assert_ne!(r["isError"], true, "{r}");
+    let r = c.call("semibin2", json!({"contigs": "asm/m1/final.contigs.fa", "depth": "depth/s1.tsv", "outdir": "bins/s1"}));
+    assert_eq!(r["structuredContent"]["field"], "environment", "{r}");
+    let r = c.call("semibin2", json!({"contigs": "asm/m1/final.contigs.fa", "depth": "depth/s1.tsv", "environment": "global", "outdir": "bins/s1", "tag": "s1"}));
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    assert_eq!(v["bin_count"], 2, "{v}");
+    assert_eq!(v["bins"][1]["bin"], "s1_1", "{v}");
+    assert_eq!(v["version"], "2.6.0");
+    assert_eq!(v["warnings"], json!([]), "{v}");
+    let cmd = v["command"].as_str().unwrap();
+    assert!(cmd.contains("--random-seed=1") && cmd.contains("--compression=none") && cmd.contains("--engine=cpu"), "{cmd}");
+    // 2: sample 2, BAM cached by CoverM, a model trained on it
+    let r = c.call(
+        "coverm_contig",
+        with(pair("s2"), json!({"reference": "asm/m2/final.contigs.fa", "output": "depth/s2.tsv", "methods": ["metabat"], "bam_cache_dir": "bams"})),
+    );
+    assert_ne!(r["isError"], true, "{r}");
+    let bam = "bams/final.contigs.fa.s2_R1.fastq.bam";
+    assert_eq!(r["structuredContent"]["bams"], json!([bam]), "{r}");
+    let r = c.call("semibin2", json!({"contigs": "asm/m2/final.contigs.fa", "bams": ["depth/s2.tsv"], "outdir": "bins/s2", "tag": "s2"}));
+    assert_eq!(r["structuredContent"]["field"], "bams", "{r}");
+    let r = c.call("semibin2", json!({"contigs": "asm/m2/final.contigs.fa", "bams": [bam], "outdir": "bins/s2", "tag": "s2", "threads": 2}));
+    assert_ne!(r["isError"], true, "{r}");
+    assert_eq!(r["structuredContent"]["bin_count"], 2, "{r}");
+    // 3: CheckM2 over all four bins, one report
+    let r = c.call(
+        "checkm2",
+        json!({"genomes": ["bins/s1/output_bins/s1_0.fa", "bins/s1/output_bins/s1_1.fa", "bins/s2/output_bins/s2_0.fa", "bins/s2/output_bins/s2_1.fa"],
+               "outdir": "checkm2", "db": "db/checkm2"}),
+    );
+    assert_ne!(r["isError"], true, "{r}");
+    // 4: galah. A report that misses genomes, and two genomes with one name, are refused first.
+    let bin_dirs = json!(["bins/s1/output_bins", "bins/s2/output_bins"]);
+    write(work, "partial_report.tsv", "Name\tCompleteness\tContamination\ns1_0\t99\t1\n");
+    let r = c.call("galah", json!({"genome_dirs": bin_dirs, "checkm2_report": "partial_report.tsv", "outdir": "derep"}));
+    assert_eq!(r["structuredContent"]["field"], "checkm2_report", "{r}");
+    assert!(r["structuredContent"]["message"].as_str().unwrap().contains("3 of the genomes"), "{r}");
+    write(work, "other/s1_0.fa", ">x\nACGT\n");
+    let r = c.call("galah", json!({"genome_dirs": bin_dirs, "genomes": ["other/s1_0.fa"], "outdir": "derep"}));
+    assert_eq!(r["structuredContent"]["field"], "genomes", "{r}");
+    let r = c.call("galah", json!({"genome_dirs": bin_dirs, "checkm2_report": "checkm2/quality_report.tsv", "outdir": "derep", "min_completeness": 50}));
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    assert_eq!((v["genomes_given"].as_u64(), v["cluster_count"].as_u64()), (Some(4), Some(2)), "{v}");
+    assert_eq!(v["clusters"][0]["members"], json!(["bins/s1/output_bins/s1_0.fa", "bins/s2/output_bins/s2_0.fa"]), "{v}");
+    assert_eq!(v["left_out"], json!([]), "{v}");
+    assert_eq!(v["version"], "galah 0.6.3");
+    assert!(v["command"].as_str().unwrap().contains("--threads=1"), "{v}");
+    // galah won't copy into a folder of representatives that has files
+    let r = c.call("galah", json!({"genome_dirs": bin_dirs, "outdir": "derep", "overwrite": true}));
+    assert_eq!(r["structuredContent"]["field"], "outdir", "{r}");
+    // 5: abundance of the representatives in both samples
+    let both = json!({"r1": ["reads/s1_R1.fastq", "reads/s2_R1.fastq"], "r2": ["reads/s1_R2.fastq", "reads/s2_R2.fastq"]});
+    let r = c.call("coverm_abundance", with(both.clone(), json!({"genome_dirs": ["derep/representatives"], "output": "abundance.tsv", "min_covered_fraction": 0.5})));
+    assert_eq!(r["structuredContent"]["field"], "min_covered_fraction", "{r}");
+    let r = c.call(
+        "coverm_abundance",
+        json!({"genome_dirs": ["derep/representatives"], "r1": ["reads/s1_R1.fastq", "other/s1_R1.fastq"], "r2": ["reads/s1_R2.fastq", "reads/s2_R2.fastq"], "output": "abundance.tsv"}),
+    );
+    assert_eq!(r["structuredContent"]["field"], "r1", "{r}");
+    let r = c.call("coverm_abundance", with(both, json!({"genome_dirs": ["derep/representatives"], "output": "abundance.tsv", "threads": 2})));
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    let a = &v["abundance"];
+    assert_eq!(a["genomes"], 2, "{v}");
+    assert_eq!(a["samples"][1]["sample"], "s2_R1.fastq", "{v}");
+    assert_eq!(a["samples"][1]["unmapped_percent"], 10.0, "{v}");
+    assert_eq!(a["samples"][1]["genomes_detected"], 2, "{v}");
+    assert_eq!(a["samples"][1]["percent_mapped"], 90.0, "{v}");
+    assert_eq!(a["columns_per_sample"], json!(["Relative Abundance (%)", "Mean", "Covered Fraction", "Read Count"]), "{v}");
+    let cmd = v["command"].as_str().unwrap();
+    assert!(cmd.contains("--min-covered-fraction=0") && cmd.contains("--methods relative_abundance mean covered_fraction count"), "{cmd}");
+    assert_eq!(v["warnings"], json!([]), "{v}");
+    c.close();
+
+    // run record and replay from a clean folder
+    let run_dir = work.join("irit-runs/test-run");
+    let log: Value = serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
+    let ok: Vec<&Value> = log["calls"].as_array().unwrap().iter().filter(|c| c["status"] == "ok").collect();
+    assert_eq!(
+        ok.iter().map(|c| c["mcp_tool"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["coverm_contig", "semibin2", "coverm_contig", "semibin2", "checkm2", "galah", "coverm_abundance"]
+    );
+    // the cached BAM and SemiBin2's log are volatile; the bins are not
+    assert!(ok[2]["outputs"].as_array().unwrap().iter().any(|o| o["path"].as_str().unwrap().ends_with(".bam") && o["volatile"] == true), "{}", ok[2]["outputs"]);
+    assert!(ok[3]["outputs"].as_array().unwrap().iter().all(|o| (o["volatile"] == true) == o["path"].as_str().unwrap().ends_with("SemiBinRun.log")), "{}", ok[3]["outputs"]);
+    let all: Vec<(PathBuf, String)> = ok.iter().flat_map(|c| outputs(c)).collect();
+    for d in ["depth", "bins", "bams", "checkm2", "derep"] {
+        std::fs::remove_dir_all(work.join(d)).unwrap();
+    }
+    std::fs::remove_file(work.join("abundance.tsv")).unwrap();
+    let out = Command::new("sh").arg(run_dir.join("replay.sh")).env("PATH", &s.path).current_dir(work).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "replay failed: {err}");
+    assert!(err.contains("outputs match"), "{err}");
+    assert!(err.contains(&format!("reads {}", work.join(bam).display())), "{err}");
+    for (p, h) in &all {
+        if p.ends_with("SemiBinRun.log") || p.extension().is_some_and(|e| e == "bam") {
+            assert!(p.is_file(), "{}", p.display());
             continue;
         }
         assert_eq!(&sha256(p), h, "{} differs after replay", p.display());

@@ -1,5 +1,5 @@
 """Drives irit-mcp over stdio against the real fastp, Shovill, Bakta, CheckM2, GTDB-Tk, mlst,
-AMRFinderPlus, MEGAHIT, CoverM, MetaBAT2 and Kleborate.
+AMRFinderPlus, MEGAHIT, CoverM, MetaBAT2, SemiBin2, galah and Kleborate.
 
 Used by .github/workflows/mcp-real-tools.yml. Standard library only. The run:
 
@@ -252,6 +252,39 @@ def main():
         )
         longest = max((b.get("total_length", 0) for b in bins.get("bins", [])), default=0)
         expect(f"metabat2{suffix}", 2_000_000 < longest < 3_200_000, f"{bins.get('bin_count')} bins, largest {longest} bp; S. aureus is about 2.8 Mb")
+        # SemiBin2 trained on this mock (self-supervised) from the two samples' BAMs, which CoverM
+        # keeps with bam_cache_dir; then galah over both binners' bins (the S. aureus bins are one
+        # species, so they cluster), then each representative's abundance in both samples.
+        cached = call(
+            "coverm_contig",
+            {"reference": "mag/asm/final.contigs.fa", **pairs, "output": "mag/mean.tsv", "bam_cache_dir": "mag/bams", "threads": 4},
+            f"coverm_contig bams{suffix}",
+        )
+        sb = call(
+            "semibin2",
+            {"contigs": "mag/asm/final.contigs.fa", "bams": cached.get("bams", []), "outdir": "mag/semibin", "tag": "sb", "threads": 4},
+            f"semibin2{suffix}",
+        )
+        longest = max((b.get("total_length", 0) for b in sb.get("bins", [])), default=0)
+        expect(f"semibin2{suffix}", 2_000_000 < longest < 3_200_000, f"{sb.get('bin_count')} bins, largest {longest} bp; S. aureus is about 2.8 Mb")
+        derep = call(
+            "galah",
+            {"genome_dirs": ["mag/bins", "mag/semibin/output_bins"], "outdir": "mag/derep"},
+            f"galah{suffix}",
+        )
+        given, clusters = derep.get("genomes_given", 0), derep.get("cluster_count", 0)
+        expect(f"galah{suffix}", 0 < clusters < given, f"{given} bins in {clusters} clusters")
+        ab = call(
+            "coverm_abundance",
+            {"genome_dirs": ["mag/derep/representatives"], **pairs, "output": "mag/abundance.tsv", "threads": 4},
+            f"coverm_abundance{suffix}",
+        )
+        a = ab.get("abundance", {})
+        expect(
+            f"coverm_abundance{suffix}",
+            a.get("genomes") == clusters and len(a.get("samples", [])) == 2 and all(s.get("unmapped_percent", 100) < 50 for s in a.get("samples", [])),
+            json.dumps(a)[:400],
+        )
         # Depth by mapping the trimmed reads to the SKESA assembly (about 53x of raw reads; Shovill
         # logs the depth it estimated before subsampling to 30x).
         cov = call(

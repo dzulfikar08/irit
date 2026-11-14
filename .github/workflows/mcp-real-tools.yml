@@ -1,7 +1,8 @@
 # Opt-in check of irit-mcp's third-party wrappers against the real programs: fastp 1.4.0,
 # Shovill 1.4.2, Bakta 1.12.2 (light database), CheckM2 1.1.0, GTDB-Tk 2.8.0 (GTDB's mock database),
-# mlst 2.35.0, AMRFinderPlus 4.2.7 (dblock's pinned database), CoverM 0.8.0 (also for isolate depth)
-# and Kleborate 3.2.4, on a small genome, on real S. aureus reads and on a K. pneumoniae reference
+# mlst 2.35.0, AMRFinderPlus 4.2.7 (dblock's pinned database), CoverM 0.8.0 (also for isolate depth
+# and multi-genome abundance), MEGAHIT 1.2.9, MetaBAT 2.18, SemiBin 2.6.0, galah 0.6.3 and
+# Kleborate 3.2.4, on a small genome, on real S. aureus reads and on a K. pneumoniae reference
 # genome, then isotable (and its assembly statistics). Downloads about 3 GB of databases and takes about an hour, so it
 # only runs by hand:
 #   gh workflow run mcp-real-tools.yml --ref <branch>
@@ -44,11 +45,15 @@ jobs:
           # fails on the newer Python the solver otherwise picks, so Shovill's environment gets 3.11.
           for spec in "bakta bakta=1.12.2" "checkm2 checkm2=1.1.0" "gtdbtk gtdbtk=2.8.0" "shovill shovill=1.4.2 python=3.11" \
                       "mlst mlst=2.35.0" "amrfinder ncbi-amrfinderplus=4.2.7" "megahit megahit=1.2.9" "coverm coverm=0.8.0" \
-                      "metabat2 metabat2=2.18"; do
+                      "metabat2 metabat2=2.18" "semibin semibin=2.6.0"; do
             set -- $spec
             name=$1; shift
             micromamba create -y -n "$name" -c conda-forge -c bioconda "$@"
           done
+          # galah 0.6.3 runs skani; Bioconda's package also pulls in CheckM2 with TensorFlow (about 1 GB)
+          # for --run-checkm2, which irit-mcp doesn't use, so galah goes in without its dependencies.
+          micromamba create -y -n galah -c conda-forge -c bioconda skani=0.4.0
+          micromamba install -y -n galah --no-deps -c conda-forge -c bioconda galah=0.6.3
           # Kleborate 3.2.4 from pip: Bioconda's package also installs ECTyper, whose install script downloads
           # about 900 MB. pip's needs pandas, and Kaptive 3.2.x (3.3 dropped kaptive.database, which it imports).
           micromamba create -y -n kleborate -c conda-forge -c bioconda python=3.12 mash minimap2 pip
@@ -58,7 +63,7 @@ jobs:
           root=${MAMBA_ROOT_PREFIX:?setup-micromamba sets MAMBA_ROOT_PREFIX}
           # program:environment. amrfinder_index is what dblock runs to index the AMRFinderPlus database.
           for pe in fastp:fastp bakta:bakta checkm2:checkm2 gtdbtk:gtdbtk shovill:shovill mlst:mlst amrfinder:amrfinder amrfinder_index:amrfinder \
-                    megahit:megahit coverm:coverm metabat2:metabat2 kleborate:kleborate; do
+                    megahit:megahit coverm:coverm metabat2:metabat2 kleborate:kleborate SemiBin2:semibin galah:galah; do
             t=${pe%%:*}; e=${pe#*:}
             # CheckM2's TensorFlow library asks for an executable stack, which newer glibc refuses
             # ("cannot enable executable stack"); this tunable allows it for that process only.
@@ -125,6 +130,8 @@ jobs:
             work/kleb_first/*
             work/shovill_first/sa/shovill.log
             work/mag_first/depth.tsv
+            work/mag_first/derep/clusters.tsv
+            work/mag_first/abundance.tsv
             work/mag_first/asm/log
             work/dblock.lock
           if-no-files-found: warn

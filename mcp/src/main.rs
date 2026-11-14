@@ -16,8 +16,8 @@ Usage: irit-mcp [--bin-dir DIR] [--tool-path NAME=PATH]... [--runs-dir DIR] [--r
 
   --bin-dir DIR          Folder with the irit binaries (env IRIT_BIN_DIR). Default: PATH.
   --tool-path NAME=PATH  Where a third-party tool is: fastp, shovill, flye, medaka_consensus, bakta,
-                         checkm2, gtdbtk, mlst, amrfinder, megahit, coverm, metabat2, kleborate
-                         or rasusa. Default: PATH.
+                         checkm2, gtdbtk, mlst, amrfinder, megahit, coverm, metabat2, SemiBin2,
+                         galah, kleborate or rasusa. Default: PATH.
   --runs-dir DIR         Where run records go (env IRIT_RUNS_DIR). Default: ./irit-runs
   --run-id ID            Name of this session's run folder, which must not hold a record yet.
                          Default: <UTC time>-<pid>

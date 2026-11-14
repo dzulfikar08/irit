@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### irit-mcp
+- **`semibin2`** (SemiBin 2.6.0, single sample): pretrained environment models from CoverM's depth
+  table, or self-supervised training from BAMs. On the Crystal Geyser sample the pretrained models
+  took about a minute in 0.9–1.5 GiB and gave 25–27 bins against MetaBAT2's 23, without better
+  quality; self-supervised training was killed at 8 GB.
+- **`galah`** (0.6.3): dereplicate bins from several samples at 95 % ANI, choosing representatives
+  by CheckM2 quality. 48 bins made 24 clusters in under a second.
+- **`coverm_abundance`**: several samples mapped to a set of genomes, one genome × sample table
+  (relative abundance, mean depth, covered fraction, read count) for `cooccur`.
+- `coverm_contig` gains `bam_cache_dir`, to keep each sample's sorted BAM for SemiBin2.
+
 ### sheetgen
 - **`sheetgen verify`** checks read files before analysis: full gzip decompression (every member,
   CRC-32 and length) and FASTQ structure, with MD5 and SHA-256 in the same pass, compared with an

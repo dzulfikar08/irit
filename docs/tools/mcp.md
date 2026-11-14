@@ -241,7 +241,7 @@ and `catalog` (extra catalog JSON).
 
 ### Third-party tools
 
-Fourteen tools wrap thirteen programs irit doesn't ship. Each one is pinned to an upstream version: its
+Eighteen tools wrap sixteen programs irit doesn't ship. Each one is pinned to an upstream version: its
 parameters are exactly the flags that version has, read from its source at that release tag (for
 Shovill, mlst and AMRFinderPlus also compared with `--help` of the Bioconda package).
 Nothing else is offered, so an agent can't pass a flag the program doesn't know.
@@ -260,6 +260,9 @@ Nothing else is offered, so an agent can't pass a flag the program doesn't know.
 | `megahit` | MEGAHIT | 1.2.9 | [`src/megahit`](https://github.com/voutcn/megahit/blob/v1.2.9/src/megahit) (`parse_option`) | `megahit=1.2.9` |
 | `coverm_contig` | CoverM `contig` | 0.8.0 | [`src/cli.rs`](https://github.com/wwood/CoverM/blob/v0.8.0/src/cli.rs) and `coverm contig --full-help` | `coverm=0.8.0` |
 | `coverm_genome` | CoverM `genome` | 0.8.0 | [`src/cli.rs`](https://github.com/wwood/CoverM/blob/v0.8.0/src/cli.rs) and `coverm genome --full-help` | `coverm=0.8.0` |
+| `coverm_abundance` | CoverM `genome` | 0.8.0 | as `coverm_genome` | `coverm=0.8.0` |
+| `semibin2` | SemiBin2 `single_easy_bin` | 2.6.0 | `SemiBin2 single_easy_bin --help` and [`SemiBin/main.py`](https://github.com/BigDataBiology/SemiBin/blob/v2.6.0/SemiBin/main.py) of the Bioconda package | `semibin=2.6.0` |
+| `galah` | galah `cluster` | 0.6.3 | `galah cluster --full-help` of the Bioconda package ([src/cluster_argument_parsing.rs](https://github.com/wwood/galah)) | `galah=0.6.3` with `skani=0.4.0` (but see [`galah`](#galah)) |
 | `kleborate` | Kleborate | 3.2.4 | [`kleborate/__main__.py`](https://github.com/klebgenomics/Kleborate/blob/v3.2.4/kleborate/__main__.py) and `kleborate --help` of the pip package | `kleborate=3.2.4` (but see [`kleborate`](#kleborate): pip is lighter) |
 | `metabat2` | MetaBAT 2 | 2.18 | `metabat2 --help` of the Bioconda package ([MetaBAT](https://bitbucket.org/berkeleylab/metabat)) | `metabat2=2.18` |
 | `rasusa` | Rasusa `reads` | 5.1.0 | `rasusa reads --help` of the Bioconda package ([src/cli.rs](https://github.com/mbhall88/rasusa)) | `rasusa=5.1.0` |
@@ -830,10 +833,18 @@ MetaBAT's own `jgi_summarize_bam_contig_depths` does.
 | `methods` | list | `mean` (CoverM's default), `trimmed_mean`, `covered_fraction`, `covered_bases`, `variance`, `length`, `count`, `reads_per_base`, `rpkm`, `tpm`, or `metabat` on its own. |
 | `min_read_percent_identity`, `min_read_aligned_percent` | percentages | Read filters. |
 | `threads` | integer | CoverM's default is 1. |
+| `bam_cache_dir` | folder | Also keep each sample's BAM (`--bam-file-cache-directory`): `<folder>/<reference file name>.<read 1 file name>.bam`, sorted by coordinate. These are the `bams` of [`semibin2`](#semibin2). Two samples whose read 1 files have the same name are refused (they would share a BAM). |
 
 Returns the number of contigs in the table and, per sample, the reads mapped and their percentage
-from CoverM's log. Not offered: BAM input or caching (`--bam-files`, `--cache-unfiltered-bam-*`),
-the `--*-params` options (free text passed to the aligner), sharding and pre-built indexes.
+from CoverM's log, and the BAM paths with `bam_cache_dir`. A cached BAM's header records the
+temporary folder CoverM sorted in (`samtools sort -T /tmp/coverm_fifo.<random>/...`), so its bytes
+differ between identical runs: BAMs are volatile outputs, and `replay.sh` says that a later call
+read a BAM that differs (the alignments don't). Measured (2026-11-14, this project's laptop, 8 GB
+cap, 6 threads): the Crystal Geyser sample's 9.7 million trimmed reads with `bam_cache_dir` in
+104 s at 4.69 GiB (cgroup peak), a 1.05 GB BAM; the depth table was byte-identical to the one of the
+earlier run without the cache. Not offered: BAM input (`--bam-files`),
+`--cache-unfiltered-bam-files`, `--discard-unmapped`, the `--*-params` options (free text passed to
+the aligner), sharding and pre-built indexes.
 
 #### `coverm_genome`
 
@@ -887,6 +898,185 @@ Returns each bin's contigs, length, N50 and GC, the bin count and the binned len
 no `--version`, so the version is the first line of its `--help` (on stderr), in the record and in
 `replay.sh`'s version check. It fails (exit 1, "no large target contigs") when no contig reaches
 `min_contig`.
+
+#### `semibin2`
+
+Bins one sample's contigs with SemiBin2 (`SemiBin2 single_easy_bin`), a binner that embeds contigs
+with a neural network before clustering them. Writes `<outdir>/output_bins/<tag>_<n>.fa` (plain
+FASTA) and `<outdir>/contig_bins.tsv`. Two ways to run it:
+
+- **A pretrained model** (`environment`) with `depth`, `coverm_contig`'s metabat table of this one
+  sample, or with one BAM. SemiBin2 2.6.0 ships models for `human_gut`, `dog_gut`, `cat_gut`,
+  `mouse_gut`, `pig_gut`, `chicken_caecum`, `human_oral`, `ocean`, `soil`, `built_environment`,
+  `wastewater` and `global` (`get_model_path` in its `utils.py`); use `global` when none matches.
+  SemiBin2 only accepts a MetaBAT depth table together with a pretrained model, and only a
+  single-sample one.
+- **Its own model**, trained on this sample (self-supervised), from `bams`: one sorted BAM per
+  sample, all mapped to these contigs, which `coverm_contig` keeps with `bam_cache_dir`. This did
+  not fit in 8 GB (below).
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `contigs` | file (required) | One sample's assembly, FASTA. |
+| `outdir` | folder (required) | Output folder; one with files needs `overwrite` (SemiBin2 replaces `output_bins/` and its tables). |
+| `environment` | one of the twelve above | Use that pretrained model. Needed with `depth`; with `bams`, exactly one BAM. |
+| `depth` | file | `coverm_contig`'s metabat table with one sample (its header is checked: five columns). |
+| `bams` | list of files | Coordinate-sorted BAMs (checked: `SO:coordinate` in the header; SemiBin2 runs `bedtools genomecov` on them). |
+| `tag` | text | Bin file prefix, default `SemiBin`. Give each sample its own: galah and CoverM name genomes after the file. |
+| `min_len` | integer, at least 500 | Shortest contig binned. Default: SemiBin2 picks 1000 or 2500 bp from the assembly (2500 for the sample below). |
+| `minfasta_kbs` | integer | Smallest bin written, in kb (default 200). |
+| `seed` | integer | Default **1** here; without a seed SemiBin2's results may differ between runs. |
+| `threads` | integer | SemiBin2's default is every CPU. |
+
+The server always passes `--compression=none` (SemiBin2's default is gzip; plain FASTA is what
+`checkm2` with `extension: fa` and `galah` read here) and `--engine=cpu` (the same bins on a
+machine with a GPU). Returns each bin's contigs, length, N50 and GC, the bin count and the binned
+length. `SemiBinRun.log` is volatile; `recluster_bins_info.tsv` names the output folder, so it only
+matches when replayed into the same path, as `replay.sh` does. Not offered: `multi_easy_bin` (it
+needs the samples' contigs concatenated with `SemiBin2 concatenate_fasta` and every sample mapped to
+that, a route of its own), `--semi-supervised` (mmseqs2 and GTDB, over 100 GB), `--abundance`
+(strobealign-aemb files, which SemiBin2 only takes from five samples on), long-read mode, CRAM, and
+the training and graph settings.
+
+Measured on 2026-11-14 on this project's laptop (12 cores, 30 GB, shared: 1-minute load 8-29),
+each step under an 8 GB no-swap cap, 6 threads, on the Crystal Geyser sample of
+[the MAG laptop test](../research/mag-laptop.md) (its MEGAHIT contigs and CoverM depth table):
+
+| Run | Wall | Peak (cgroup) | Bins | Mb binned | `high*` / medium / low (isotable MAG mode) | Bins with contamination ≥ 10% |
+|---|---|---|---|---|---|---|
+| MetaBAT2 (earlier run, same contigs and depth) | 2.6 s | 0.24 GiB | 23 | 24.4 | 4 / 13 / 6 | 1 |
+| SemiBin2 `global`, `depth` | 74-109 s (54 s through irit-mcp) | 1.11-1.48 GiB | 25 | 26.7 | 4 / 11 / 10 | 2 |
+| SemiBin2 `ocean`, `depth` | 59 s | 0.88 GiB | 26 | 26.3 | 3 / 13 / 10 | 2 |
+| SemiBin2 `soil`, `depth` | 54 s | 0.85 GiB | 27 | 26.8 | 3 / 12 / 12 | 2 |
+| SemiBin2 trained on the sample, one BAM | killed after 244 s and 398 s | 8 GB cap | | | | |
+
+- On this CPR-rich groundwater sample the pretrained models gave 2-4 more bins than MetaBAT2 and
+  2-2.4 Mb more binned sequence, but not better bins: 15-16 of them were at least 50% complete with
+  under 10% contamination, against MetaBAT2's 17. No model was trained on groundwater. Other data
+  may differ; this is one sample.
+- Two runs of `global` with seed 1 gave byte-identical bins (`recluster_bins_info.tsv` differed
+  only by the output folder it names), and so did the call through irit-mcp (other `tag`).
+- **Self-supervised training does not fit in 8 GB.** It was killed at the cap twice, in its first
+  training epoch (about 3 minutes each, of 15). SemiBin2 2.6.0 builds min(500 × contigs, 4 million)
+  random contig pairs as feature rows every epoch (`train_self` in `self_supervised_model.py`),
+  about 2.2 million pairs for the 4,455 split contigs here; the batch size doesn't change that. A
+  call without `environment` therefore carries a warning before it runs, and a SemiBin2 killed in
+  training gets a hint to use a pretrained environment. On 32 GB or more it should run.
+- CheckM2 (`lowmem`) on the 25-27 bins: 356-461 s, 3.5-4.4 GiB.
+
+#### `galah`
+
+Dereplicates genomes, typically the bins of several samples, with galah (`galah cluster`): genomes
+within an ANI (default 95%, a species) and aligned fraction of each other form a cluster, and one
+genome represents it. skani does the comparisons. Writes `<outdir>/clusters.tsv`
+(`representative<TAB>member` lines, paths as given), `<outdir>/representatives.txt` and copies of
+the representatives in `<outdir>/representatives/`, which is what `coverm_abundance` then maps to.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `genomes` | list of files | Genome FASTA files. |
+| `genome_dirs` | list of folders | Folders of genomes, matched by `extension` (default `fa`, MetaBAT2's and SemiBin2's). Give this and/or `genomes`. |
+| `outdir` | folder (required) | Its `representatives/` must be missing or empty (galah refuses otherwise, and so does the server first, even with `overwrite`). |
+| `ani` | percent, 80-100 | Default 95. |
+| `min_aligned_fraction` | percent | galah's default 15. |
+| `precluster_ani` | percent, at most `ani` | galah's default 90. |
+| `checkm2_report` | file | A CheckM2 `quality_report.tsv` listing **every** genome. Each cluster's best genome by `quality_formula` represents it; without a report, the first genome given does (and a warning says so). |
+| `min_completeness`, `max_contamination` | percent | Leave genomes out by CheckM2's numbers (need `checkm2_report`). |
+| `quality_formula` | `Parks2020_reduced` (galah's default), `completeness-4contamination`, `completeness-5contamination` | How the representative is chosen. galah's `dRep` formula is not offered: it needs CheckM 1's strain heterogeneity. |
+| `small_genomes` | boolean | skani's settings for genomes under about 20 kb. |
+| `threads` | integer | Default **1** here (below). |
+
+Checks before running: genomes are named after their files (without the FASTA extension), as
+galah, CheckM2 and CoverM name them, so two files with one name (`bin.1.fa` of two samples) are
+refused: give each sample's bins their own prefix (`metabat2` `prefix`, `semibin2` `tag`). galah
+takes one `--checkm2-quality-report` and panics when a genome is missing from it ("Failed to find
+CheckM statistics"), so the server checks that every genome has a row and refuses the call
+otherwise: run `checkm2` once over all the genomes (its `genomes` list).
+
+Returns the clusters (sorted, with their members and sizes), the number of genomes given and of
+clusters, and the genomes left out by the quality filters. With more than one thread galah 0.6.3
+writes `clusters.tsv` and `representatives.txt` in a different order each run (the same clusters:
+checked on 48 bins, sorted files identical); with one they were byte-identical. One thread is the
+default, and with more both files are volatile. One thread was fast enough: 48 bins in 0.84 s.
+
+Install: Bioconda's `galah=0.6.3` also installs CheckM2 with TensorFlow (about 1 GB) for
+`--run-checkm2`, which irit-mcp doesn't use. galah itself only needs `skani` on `PATH`:
+`micromamba create -n galah -c conda-forge -c bioconda skani=0.4.0`, then `micromamba install -n
+galah --no-deps -c conda-forge -c bioconda galah=0.6.3` (1 MB). Not offered: `--run-checkm2`,
+CheckM 1 and dRep quality tables, FastANI and finch, contig clustering, `--reference-genomes`,
+`--low-memory`.
+
+Measured (2026-11-14, same laptop and cap): the 23 MetaBAT2 bins and the 25 SemiBin2 `global` bins
+of the Crystal Geyser sample, with one CheckM2 report for all 48 (the two reports joined by hand), in
+0.84 s and 84 MB: 24 clusters, 22 of them a MetaBAT2 bin and a SemiBin2 bin of the same genome, one
+of three and one single SemiBin2 bin. 12 representatives came from each binner.
+
+#### `coverm_abundance`
+
+Each genome's abundance in each sample: maps every sample's reads to a set of genomes
+(`coverm genome` with `--genome-fasta-files`, all genomes in one reference) and writes one table, a
+row per genome plus `unmapped`, and per sample `<read 1 file> Relative Abundance (%)`, `Mean`,
+`Covered Fraction` and `Read Count` columns (CoverM's dense layout). This is the genome × sample
+table a co-occurrence analysis across samples takes.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `genomes`, `genome_dirs`, `extension` | as for `galah` | The genomes, e.g. `galah`'s `<outdir>/representatives`. Names must be unique. |
+| `r1`, `r2` | lists of files (required) | One read pair per sample. Columns are named after the read 1 file, so name the files after the samples; two read 1 files with one name are refused. |
+| `output` | file (required) | The table (TSV). |
+| `min_covered_fraction` | percent: 0, or 1-100 | Default **0** here (CoverM's own is 10). |
+| `mapper`, `min_read_percent_identity`, `min_read_aligned_percent`, `threads` | | As for `coverm_contig`. |
+| `overwrite` | boolean | Default `false`. |
+
+Why a separate tool from `coverm_genome`: that one is for an isolate (one assembly, one genome,
+`--single-genome`, isotable's naming and the Shovill depth check); this one is many genomes and
+many samples, for MAGs.
+
+What the numbers mean (**cited**, [the CoverM paper](https://doi.org/10.1093/bioinformatics/btaf147),
+Equation 1, and [its README](https://github.com/wwood/CoverM/blob/v0.8.0/README.md)): a genome's
+relative abundance is its share of the summed mean coverage of all the genomes given, times the
+fraction of the sample's reads that aligned to any of them, so it estimates the share of cells and
+is a share of all reads; the `unmapped` row holds "the reads that did not map to any of the provided
+genomes". Two things follow, which is why the genomes should be one dereplicated set given in one
+call: abundances are only comparable across samples when every sample was mapped to the same set,
+and a genome left out leaves its reads unmapped or on its relatives.
+
+`min_covered_fraction`: CoverM reports a genome covered less than this as 0 in that sample, and
+CoverM 0.8.0 refuses the `count` method unless it is 0 ("does not calculate the covered
+fraction"). So the default is 0, and the table's `Covered Fraction` column lets a later step set its
+own presence threshold. With a value above 0 the table has no `Read Count` columns (a warning says
+so). Values between 0 and 1 are refused: CoverM would read them as fractions.
+
+Returns, per sample, the reads mapped and their percentage (from CoverM's log), the `unmapped`
+percentage and how many genomes have an abundance above 0; and the genome count and the columns per
+sample. Not offered: `--dereplicate` (galah is its own recorded step), sharding, BAM input, sparse
+output.
+
+Measured (2026-11-14, same laptop and cap, 6 threads): the 24 galah representatives above, with the
+Crystal Geyser sample's trimmed reads split into two halves of 2.43 million pairs as two "samples":
+91 s, 1.90 GiB. 41.5% and 41.7% of the reads mapped (73.3% map to the whole assembly); all 24
+genomes were detected in both halves. A two-sample stand-in test checks the table's layout; this
+real run checks the layout and the time and memory, not biology (both halves are one sample).
+
+#### Example: several samples to a genome × sample table
+
+```json
+{"name": "coverm_contig", "arguments": {"reference": "asm/s1/final.contigs.fa", "r1": ["trim/s1_1.fastq.gz"],
+  "r2": ["trim/s1_2.fastq.gz"], "output": "depth/s1.depth.tsv", "methods": ["metabat"], "threads": 6}}
+{"name": "semibin2", "arguments": {"contigs": "asm/s1/final.contigs.fa", "depth": "depth/s1.depth.tsv",
+  "environment": "global", "outdir": "bins/s1", "tag": "s1", "threads": 6}}
+... the same for s2, s3, ... (or metabat2 with prefix s2, ...)
+{"name": "checkm2", "arguments": {"genomes": ["bins/s1/output_bins/s1_0.fa", "..."], "outdir": "checkm2", "lowmem": true}}
+{"name": "galah", "arguments": {"genome_dirs": ["bins/s1/output_bins", "bins/s2/output_bins"],
+  "checkm2_report": "checkm2/quality_report.tsv", "min_completeness": 50, "max_contamination": 10, "outdir": "derep"}}
+{"name": "coverm_abundance", "arguments": {"genome_dirs": ["derep/representatives"],
+  "r1": ["trim/s1_1.fastq.gz", "trim/s2_1.fastq.gz"], "r2": ["trim/s1_2.fastq.gz", "trim/s2_2.fastq.gz"],
+  "output": "abundance.tsv", "threads": 6}}
+```
+
+CheckM2 over many bins in one call needs memory (48 genomes peaked at 7.7 GiB, above); galah takes
+one report, so for more bins than fit, join the batches' `quality_report.tsv` files under one
+header line (outside irit-mcp, for now).
 
 #### Example: an isolate from reads to resistance genes
 
@@ -1243,6 +1433,21 @@ run but does not carry the data.
   warning) → `kleborate` through a wrapper script that `exec`s it, with stand-in bundled data in
   `lib/python3.12/site-packages` (hashed into the record) → isotable with `depth` and `kleborate`
   required, then replay.
+- Stand-ins for several samples (2026-11-14): `coverm_contig` (depth for one sample, a cached BAM for
+  the other) → `semibin2` with a pretrained model and with the BAM → `checkm2` over all bins →
+  `galah` (refusing a report that misses genomes, two genomes with one name, and a representatives
+  folder with files) → `coverm_abundance` over two samples → replay from a clean folder. The
+  stand-in BAM's header changes every run, as CoverM's does; the replay says the next call read a
+  BAM that differs and still passes.
+- With the real programs on the laptop (2026-11-14, each step under an 8 GB cap, the Crystal
+  Geyser sample): fastp → `coverm_contig` with `bam_cache_dir` (depth table identical to the
+  earlier run's) → `semibin2` trained on the BAM (killed at the cap, twice) → `galah` →
+  `coverm_abundance` → `semibin2` `global`; then `replay.sh` from a folder without their outputs:
+  "5 commands re-run, 62 outputs match", 414 s, 4.46 GiB peak. Numbers in
+  [`semibin2`](#semibin2), [`galah`](#galah) and [`coverm_abundance`](#coverm_abundance). The
+  real-tools workflow now also installs SemiBin2 and galah and runs `coverm_contig` with
+  `bam_cache_dir`, `semibin2` (trained, on the two-genome mock), `galah` over the MetaBAT2 and
+  SemiBin2 bins and `coverm_abundance`; not yet run.
 - By hand: a session with sheetgen → leanqc → isotable → dblock_catalog replayed with all 7 outputs
   matching; dblock_add, plan, verify, env and check against a local project. On 2026-11-14, the
   real CoverM 0.8.0 and Kleborate 3.2.4 on BfR-EC-20867 from the paper redo: `assembly_stats`,
@@ -1285,5 +1490,10 @@ run but does not carry the data.
   ECTyper when installed.
 - `assembly_stats` has not been compared with a QUAST run (QUAST isn't installed on the laptop); it
   follows QUAST 5's `basic_stats.py` and matches hand counts and Kleborate's contig statistics.
+- SemiBin2: only single-sample binning (`single_easy_bin`) is wrapped; multi-sample binning
+  (`multi_easy_bin`, contigs of all samples concatenated and every sample mapped to them) is not.
+  Its self-supervised training did not fit in 8 GB on a real sample; the pretrained models did.
+- galah takes one CheckM2 report; bins checked in several CheckM2 batches need their reports joined
+  by hand first.
 - A long Bakta or GTDB-Tk call blocks until it ends; there is no progress reporting or
   cancellation beyond the client closing the connection.

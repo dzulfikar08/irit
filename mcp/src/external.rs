@@ -1,5 +1,5 @@
 //! Third-party tools (fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst, AMRFinderPlus,
-//! MEGAHIT, CoverM, MetaBAT2, Kleborate, Rasusa): typed
+//! MEGAHIT, CoverM, MetaBAT2, SemiBin2, galah, Kleborate, Rasusa): typed
 //! parameters, checks before running, and their argument vectors.
 //!
 //! Every flag here exists in the pinned upstream version (see [`PINNED`]); the comment above each
@@ -22,7 +22,7 @@ pub struct Pinned {
     pub url: &'static str,
 }
 
-pub const PINNED: [Pinned; 14] = [
+pub const PINNED: [Pinned; 16] = [
     Pinned { tool: "fastp", version: "1.4.0", bioconda: "fastp=1.4.0", url: "https://github.com/OpenGene/fastp" },
     Pinned { tool: "shovill", version: "1.4.2", bioconda: "shovill=1.4.2", url: "https://github.com/tseemann/shovill" },
     // Flye's --version prints the build too: `2.9.6-b1802` for the 2.9.6 release (and Bioconda's).
@@ -42,6 +42,13 @@ pub const PINNED: [Pinned; 14] = [
     // install script downloads about 900 MB; pip's (with kaptive 3.2.2, see docs/tools/mcp.md) doesn't.
     Pinned { tool: "kleborate", version: "3.2.4", bioconda: "kleborate=3.2.4", url: "https://github.com/klebgenomics/Kleborate" },
     Pinned { tool: "rasusa", version: "5.1.0", bioconda: "rasusa=5.1.0", url: "https://github.com/mbhall88/rasusa" },
+    // The program is `SemiBin2`; `SemiBin2 --version` prints `2.6.0`. The package brings bedtools,
+    // samtools, Prodigal and HMMER, and CPU PyTorch (about 390 MB to download).
+    Pinned { tool: "SemiBin2", version: "2.6.0", bioconda: "semibin=2.6.0", url: "https://github.com/BigDataBiology/SemiBin" },
+    // galah needs skani on PATH (0.4.0 in Bioconda's galah=0.6.3). The package also pulls in CheckM2
+    // with TensorFlow (about 1 GB) for --run-checkm2, which irit-mcp doesn't use: `galah=0.6.3
+    // --no-deps` plus `skani=0.4.0` is enough.
+    Pinned { tool: "galah", version: "0.6.3", bioconda: "galah=0.6.3 skani=0.4.0", url: "https://github.com/wwood/galah" },
 ];
 
 /// Arguments that make a tool print its version, and whether it prints it on stderr. MetaBAT2
@@ -159,7 +166,7 @@ pub fn result_warnings(inv: &Invocation) -> Vec<String> {
                 inv.args.iter().skip_while(|a| *a != "--assemblies").skip(1).map(|a| kleborate_strain(a)).collect();
             kleborate_warnings(&strains, given("--preset=kpsc"), &rows)
         }
-        "coverm" if inv.args.first().is_some_and(|a| a == "genome") => {
+        "coverm" if inv.args.first().is_some_and(|a| a == "genome") && given("--single-genome") => {
             let reference = inv.args.iter().find_map(|a| a.strip_prefix("--reference="));
             let log = reference.and_then(|r| std::fs::read_to_string(inv.inputs[0].with_file_name("shovill.log")).ok().map(|l| (r, l)));
             match (log, inv.outputs.first().and_then(|o| crate::results::coverm_genome_summary(o).ok())) {
@@ -398,6 +405,9 @@ pub fn mlst_scheme_warnings(rows: &[serde_json::Value]) -> Vec<String> {
 pub fn failure_hint(tool: &str, exit_status: Option<i32>, stderr: &str) -> Option<String> {
     if tool == "checkm2" && stderr.contains("died with <Signals.SIGKILL") {
         return Some("CheckM2's DIAMOND step was killed (SIGKILL), which usually means it ran out of memory; rerun with lowmem: true (DIAMOND block size 0.5) and/or fewer threads".into());
+    }
+    if tool == "SemiBin2" && (exit_status.is_none() || exit_status == Some(137)) && stderr.contains("Training model") {
+        return Some("SemiBin2 was killed while training its own model, which holds up to 4 million contig pairs in memory (about 8 GB was not enough for one sample of 4,842 contigs); rerun with a pretrained environment (global when none matches) and depth or one BAM".into());
     }
     if exit_status.is_none() || exit_status == Some(137) {
         return Some(format!("{tool} was killed by a signal, often the out-of-memory killer under a memory cap; check the cap, give the tool less memory or fewer threads, or use its low-memory option"));
@@ -2947,6 +2957,16 @@ pub struct CovermContigParams {
     /// Threads for mapping and sorting. CoverM's default is 1.
     #[serde(default)]
     pub threads: Option<u32>,
+    /// Also keep the sorted BAM of each sample in this folder (inside the root): `<folder>/<reference file name>.<read 1 file name>.bam`. The `bams` input of semibin2 (self-supervised training). About the size of the gzipped reads.
+    #[serde(default)]
+    pub bam_cache_dir: Option<String>,
+}
+
+/// The BAM CoverM 0.8.0 caches for one read pair with `--bam-file-cache-directory`:
+/// `<dir>/<reference file name>.<read 1 file name>.bam` (sorted by coordinate).
+pub fn coverm_cached_bam(dir: &Path, reference: &str, r1: &str) -> PathBuf {
+    let name = |s: &str| Path::new(s).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    dir.join(format!("{}.{}.bam", name(reference), name(r1)))
 }
 
 pub fn coverm_contig(ctx: &Ctx, p: &CovermContigParams) -> Check<Invocation> {
@@ -2999,6 +3019,26 @@ pub fn coverm_contig(ctx: &Ctx, p: &CovermContigParams) -> Check<Invocation> {
     }
     if p.methods.contains(&CovermMethod::Metabat) && p.methods.len() > 1 {
         return v::invalid("methods", "metabat writes a table of its own and can't be combined with other methods");
+    }
+    if let Some(d) = &p.bam_cache_dir {
+        let dir = v::output_dir(ctx, "bam_cache_dir", d, None, true)?;
+        let mut bams: Vec<PathBuf> = Vec::new();
+        for r1 in &p.r1 {
+            let bam = coverm_cached_bam(&dir, &p.reference, r1);
+            if bams.contains(&bam) {
+                return v::invalid("bam_cache_dir", format!("two read 1 files are named {:?}; CoverM would cache both samples' BAMs as one file", bam.file_name().unwrap_or_default()));
+            }
+            if !p.overwrite && bam.exists() {
+                return v::invalid("bam_cache_dir", format!("{} already exists; pass overwrite: true to replace it", bam.display()));
+            }
+            bams.push(bam);
+        }
+        // The BAM header records CoverM's temporary sort folder (`samtools sort -T /tmp/coverm_fifo.<random>/...`),
+        // so the bytes differ between identical runs; the alignments don't.
+        inv.volatile = &[".bam"];
+        inv.expect.extend(bams.iter().map(|b| vec![b.clone()]));
+        inv.outputs.extend(bams);
+        inv.opt("bam-file-cache-directory", d);
     }
     // Both take several values (clap num_args 1..), which end at the next option: methods first,
     // then the reads, last, one value per argument.
@@ -3202,6 +3242,591 @@ pub fn coverm_genome(ctx: &Ctx, p: &CovermGenomeParams) -> Check<Invocation> {
     }
     // Both take several values (clap num_args 1..), which end at the next option.
     inv.args.extend(["--methods", "mean", "covered_fraction", "--coupled"].map(String::from));
+    inv.args.extend(reads);
+    Ok(inv)
+}
+
+// ---------- SemiBin2 ----------
+// Flags: SemiBin 2.6.0 `SemiBin2 single_easy_bin --help` (argparse, SemiBin/main.py `parse_args`; the
+// environments are `get_model_path` in SemiBin/utils.py, the models in SemiBin/models/),
+// https://github.com/BigDataBiology/SemiBin/tree/v2.6.0. Not offered: multi_easy_bin (it needs the
+// samples' contigs concatenated with SemiBin2 concatenate_fasta and every sample mapped to that,
+// a route of its own), --semi-supervised (needs mmseqs2 and GTDB, over 100 GB), --abundance
+// (strobealign-aemb files, which SemiBin2 only takes from 5 samples on), --sequencing-type
+// long_read, CRAM input, --write-pre-reclustering-bins, --no-recluster, the training and graph
+// knobs (--epochs, --batch-size, --max-edges, --max-node, --ml-threshold, --ratio).
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SemibinEnvironment {
+    HumanGut,
+    DogGut,
+    CatGut,
+    MouseGut,
+    PigGut,
+    ChickenCaecum,
+    HumanOral,
+    Ocean,
+    Soil,
+    BuiltEnvironment,
+    Wastewater,
+    /// Trained across environments: the one to use when none of the others matches.
+    Global,
+}
+
+impl SemibinEnvironment {
+    pub fn name(self) -> &'static str {
+        match self {
+            SemibinEnvironment::HumanGut => "human_gut",
+            SemibinEnvironment::DogGut => "dog_gut",
+            SemibinEnvironment::CatGut => "cat_gut",
+            SemibinEnvironment::MouseGut => "mouse_gut",
+            SemibinEnvironment::PigGut => "pig_gut",
+            SemibinEnvironment::ChickenCaecum => "chicken_caecum",
+            SemibinEnvironment::HumanOral => "human_oral",
+            SemibinEnvironment::Ocean => "ocean",
+            SemibinEnvironment::Soil => "soil",
+            SemibinEnvironment::BuiltEnvironment => "built_environment",
+            SemibinEnvironment::Wastewater => "wastewater",
+            SemibinEnvironment::Global => "global",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Semibin2Params {
+    /// Contigs FASTA (plain or gzip): one sample's metagenome assembly, e.g. MEGAHIT's final.contigs.fa.
+    pub contigs: String,
+    /// Output folder, inside the root. Bins go to `<outdir>/output_bins/<tag>_<n>.fa` (plain FASTA, ready for checkm2 with extension fa); contig_bins.tsv lists each binned contig's bin.
+    pub outdir: String,
+    /// Allow an outdir that already has files (SemiBin2 replaces output_bins/ and its tables). Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// Use SemiBin2's pretrained model for this environment instead of training one. Needed with depth; with bams, leave it out to train on this sample (self-supervised).
+    #[serde(default)]
+    pub environment: Option<SemibinEnvironment>,
+    /// One sample's MetaBAT depth table from coverm_contig with methods ["metabat"] and one read pair. Needs environment. Give this or bams.
+    #[serde(default)]
+    pub depth: Option<String>,
+    /// Sorted BAM files of reads mapped to these contigs, one per sample: coverm_contig's bam_cache_dir. Without environment SemiBin2 trains its own model on them (self-supervised). With environment, exactly one.
+    #[serde(default)]
+    pub bams: Vec<String>,
+    /// Bin file name prefix (letters, digits, _ . -). Default `SemiBin`. Give each sample its own (e.g. the sample name) when bins of several samples are dereplicated together: galah and CoverM name genomes after the file.
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// Shortest contig to bin, in bp (at least 500). Default: SemiBin2 picks 1000 or 2500 from the assembly.
+    #[serde(default)]
+    pub min_len: Option<u32>,
+    /// Smallest bin written, in kb. SemiBin2's default 200.
+    #[serde(default)]
+    pub minfasta_kbs: Option<u32>,
+    /// Random seed. Default here 1: without one SemiBin2's results may differ between runs.
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// Threads. SemiBin2's default is every CPU.
+    #[serde(default)]
+    pub threads: Option<u32>,
+}
+
+/// The seed irit-mcp passes when none is given.
+pub const SEMIBIN2_DEFAULT_SEED: u64 = 1;
+
+/// SemiBin2 2.6.0's self-supervised training holds min(500 x contigs, 4 million) cannot-link pairs
+/// of feature rows in memory each epoch (SemiBin/self_supervised_model.py, `train_self`), whatever
+/// the batch size. On the laptop, one sample with 4,842 contigs of 2.5 kb or more went over an 8 GB
+/// cap in the first of 15 epochs (3 min each); the pretrained global model took 1.2 GiB.
+const SEMIBIN2_TRAINING_MEMORY: &str = "no environment: SemiBin2 trains its own model (self-supervised), which holds up to 4 million contig pairs in memory; on an 8 GB laptop one sample with 4,842 contigs was killed at the cap after an epoch of 3 minutes (of 15). Under 8-16 GB use a pretrained environment (global when none matches), which took 1.2 GiB and 2 minutes";
+
+pub fn semibin2_tag(p: &Semibin2Params) -> &str {
+    p.tag.as_deref().unwrap_or("SemiBin")
+}
+
+/// A BAM file sorted by coordinate: BGZF, `BAM\1`, and `SO:coordinate` in the header text.
+/// SemiBin2 2.6.0 computes coverage with `bedtools genomecov`, which needs that order.
+fn sorted_bam(path: &Path, field: &str, value: &str) -> Check<()> {
+    use std::io::Read;
+    let mut head = vec![0u8; 1 << 16];
+    let n = std::fs::File::open(path)
+        .map(flate2::read::MultiGzDecoder::new)
+        .and_then(|mut gz| {
+            let mut got = 0;
+            while got < head.len() {
+                match gz.read(&mut head[got..])? {
+                    0 => break,
+                    k => got += k,
+                }
+            }
+            Ok(got)
+        })
+        .unwrap_or(0);
+    let head = &head[..n];
+    if head.len() < 8 || &head[..4] != b"BAM\x01" {
+        return v::invalid(field, format!("{value} is not a BAM file"));
+    }
+    let text_len = u32::from_le_bytes([head[4], head[5], head[6], head[7]]) as usize;
+    let text = String::from_utf8_lossy(&head[8..head.len().min(8 + text_len)]);
+    if !text.lines().next().is_some_and(|l| l.starts_with("@HD") && l.contains("SO:coordinate")) {
+        return v::invalid(field, format!("{value} is not sorted by coordinate (no SO:coordinate in its @HD line); coverm_contig's bam_cache_dir writes sorted BAMs"));
+    }
+    Ok(())
+}
+
+pub fn semibin2(ctx: &Ctx, p: &Semibin2Params) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("SemiBin2");
+    // Its log carries times and the process id.
+    inv.volatile = &["SemiBinRun.log"];
+    inv.args.push("single_easy_bin".into());
+    let contigs = v::existing_file(cwd, "contigs", &p.contigs)?;
+    v::sequence_file(&contigs, "contigs", &p.contigs, Seq::Fasta)?;
+    inv.inputs.push(contigs);
+    inv.opt("input-fasta", &p.contigs);
+    match (&p.depth, p.bams.is_empty()) {
+        (Some(_), false) | (None, true) => {
+            return v::invalid("depth", "give either depth (coverm_contig's metabat table, with environment) or bams (coverm_contig's bam_cache_dir)");
+        }
+        (Some(d), true) => {
+            if p.environment.is_none() {
+                return v::invalid("environment", "SemiBin2 only bins from a MetaBAT depth table with a pretrained model: set environment (global when none matches), or give bams to train one");
+            }
+            let depth = v::existing_file(cwd, "depth", d)?;
+            let first = std::fs::read_to_string(&depth).ok().and_then(|t| t.lines().next().map(str::to_string)).unwrap_or_default();
+            if !first.starts_with("contigName\tcontigLen\ttotalAvgDepth") {
+                return v::invalid("depth", format!("{d} is not a MetaBAT depth table; make one with coverm_contig methods [\"metabat\"]"));
+            }
+            // contigName, contigLen, totalAvgDepth, then depth and variance per sample
+            if first.split('\t').count() != 5 {
+                return v::invalid(
+                    "depth",
+                    format!("{d} has {} samples; SemiBin2's pretrained models take one sample's depth (coverm_contig with one read pair)", (first.split('\t').count().saturating_sub(3)) / 2),
+                );
+            }
+            inv.inputs.push(depth);
+            inv.opt("depth-metabat2", d);
+        }
+        (None, false) => {
+            if p.environment.is_some() && p.bams.len() > 1 {
+                return v::invalid("bams", "SemiBin2's pretrained models take one sample: give one BAM, or leave environment out to train on several");
+            }
+            for b in &p.bams {
+                let path = v::existing_file(cwd, "bams", b)?;
+                sorted_bam(&path, "bams", b)?;
+                if inv.inputs.contains(&path) {
+                    return v::invalid("bams", format!("{b} is given twice"));
+                }
+                inv.inputs.push(path);
+            }
+        }
+    }
+    match p.environment {
+        Some(e) => inv.opt("environment", e.name()),
+        None => inv.warnings.push(SEMIBIN2_TRAINING_MEMORY.into()),
+    }
+    let tag = semibin2_tag(p);
+    v::file_stem("tag", tag)?;
+    let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(p.overwrite), true)?;
+    inv.outputs.push(outdir.clone());
+    inv.opt("output", &p.outdir);
+    inv.expect = vec![vec![outdir.join("contig_bins.tsv")]];
+    if p.tag.is_some() {
+        inv.opt("tag-output", tag);
+    }
+    // Plain FASTA (SemiBin2's default is gzip), as MetaBAT2 writes, for checkm2 and galah.
+    inv.opt("compression", "none");
+    // The CPU even where a GPU is found, so the same call gives the same bins on any machine.
+    inv.opt("engine", "cpu");
+    if let Some(m) = p.min_len {
+        v::range("min_len", m, 500, u32::MAX)?;
+        inv.opt("min-len", m);
+    }
+    if let Some(k) = p.minfasta_kbs {
+        v::range("minfasta_kbs", k, 1, 1_000_000)?;
+        inv.opt("minfasta-kbs", k);
+    }
+    inv.opt("random-seed", p.seed.unwrap_or(SEMIBIN2_DEFAULT_SEED));
+    if let Some(t) = p.threads {
+        v::range("threads", t, 1, 1024)?;
+        inv.opt("threads", t);
+    }
+    // -b takes several values (nargs='*'): last, one value per argument.
+    if !p.bams.is_empty() {
+        inv.args.push("--input-bam".into());
+        inv.args.extend(p.bams.iter().map(|b| list_item(b)));
+    }
+    Ok(inv)
+}
+
+/// SemiBin2's bins: `<outdir>/output_bins/<tag>_<n>.fa`, in bin-number order.
+pub fn semibin2_bins(outdir: &Path, tag: &str) -> Vec<PathBuf> {
+    let mut bins: Vec<(u64, PathBuf)> = std::fs::read_dir(outdir.join("output_bins"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let n = name.strip_prefix(tag)?.strip_prefix('_')?.strip_suffix(".fa")?.parse().ok()?;
+            Some((n, e.path()))
+        })
+        .collect();
+    bins.sort();
+    bins.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Genome FASTA files given as files and/or folders (matched by extension), each checked; with
+/// the name each genome gets in galah's and CoverM's tables (the file name without its FASTA
+/// extension), which must be unique.
+fn genome_files(ctx: &Ctx, genomes: &[String], dirs: &[String], extension: &Option<String>) -> Check<Vec<(PathBuf, String, String)>> {
+    let cwd = ctx.cwd.as_path();
+    if genomes.is_empty() && dirs.is_empty() {
+        return v::invalid("genomes", "give genome FASTA files (genomes) and/or folders of them (genome_dirs)");
+    }
+    if dirs.is_empty() && extension.is_some() {
+        return v::invalid("extension", "extension applies to genome_dirs only");
+    }
+    let mut out: Vec<(PathBuf, String, String)> = Vec::new();
+    for g in genomes {
+        let path = v::existing_file(cwd, "genomes", g)?;
+        out.push((path, g.clone(), String::new()));
+    }
+    let ext = extension.as_deref().unwrap_or("fa");
+    v::extension("extension", ext)?;
+    for d in dirs {
+        let dir = v::existing_dir(cwd, "genome_dirs", d)?;
+        let files = v::files_with_extension(&dir, ext);
+        if files.is_empty() {
+            return v::invalid("genome_dirs", format!("no *.{} files in {d}; set extension (e.g. fna, fasta)", ext.trim_start_matches('.')));
+        }
+        for f in files {
+            let shown = format!("{}/{}", d.trim_end_matches('/'), f.file_name().unwrap_or_default().to_string_lossy());
+            out.push((f, shown, String::new()));
+        }
+    }
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for (path, shown, name) in out.iter_mut() {
+        v::sequence_file(path, "genomes", shown, Seq::Fasta)?;
+        if seen.contains(path) {
+            return v::invalid("genomes", format!("{shown} is given twice"));
+        }
+        seen.push(path.clone());
+        *name = kleborate_strain(shown);
+    }
+    for (i, (_, shown, name)) in out.iter().enumerate() {
+        if let Some((_, other, _)) = out[..i].iter().find(|(_, _, n)| n == name) {
+            return v::invalid(
+                "genomes",
+                format!("{other} and {shown} would both be called {name:?} (genomes are named after the file); bins of different samples need different names: metabat2 prefix or semibin2 tag per sample"),
+            );
+        }
+    }
+    Ok(out)
+}
+
+// ---------- galah ----------
+// Flags: galah 0.6.3 `galah cluster --full-help` (clap, src/cluster_argument_parsing.rs),
+// https://github.com/wwood/galah/tree/v0.6.3. galah takes one --checkm2-quality-report, and panics
+// when a genome is missing from it, so irit-mcp checks that first. Not offered: --run-checkm2
+// (irit-mcp's checkm2 does that, with lowmem), --checkm-tab-table and --genome-info (CheckM 1, dRep),
+// the dRep quality formula (it needs CheckM 1's strain heterogeneity), --cluster-method fastani and
+// --precluster-method finch, contig clustering, --reference-genomes, --low-memory.
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub enum GalahQualityFormula {
+    /// galah's default: completeness - 5 x contamination - 5 x contigs/100 - 5 x ambiguous bases/100000 (Parks et al. 2020, reduced).
+    #[serde(rename = "Parks2020_reduced")]
+    Parks2020Reduced,
+    #[serde(rename = "completeness-4contamination")]
+    Completeness4Contamination,
+    #[serde(rename = "completeness-5contamination")]
+    Completeness5Contamination,
+}
+
+impl GalahQualityFormula {
+    fn name(self) -> &'static str {
+        match self {
+            GalahQualityFormula::Parks2020Reduced => "Parks2020_reduced",
+            GalahQualityFormula::Completeness4Contamination => "completeness-4contamination",
+            GalahQualityFormula::Completeness5Contamination => "completeness-5contamination",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GalahParams {
+    /// Genome FASTA files (plain or gzip), e.g. bins of several samples. Give this and/or genome_dirs.
+    #[serde(default)]
+    pub genomes: Vec<String>,
+    /// Folders of genome FASTA files matched by extension, e.g. one metabat2 or semibin2 bin folder per sample.
+    #[serde(default)]
+    pub genome_dirs: Vec<String>,
+    /// With genome_dirs: file extension to match. Default fa (MetaBAT2's and SemiBin2's bins).
+    #[serde(default)]
+    pub extension: Option<String>,
+    /// Output folder, inside the root: clusters.tsv (representative, member), representatives.txt, and copies of the representative genomes in representatives/ (for coverm_abundance genome_dirs). Its representatives/ must be missing or empty.
+    pub outdir: String,
+    /// Allow an outdir that already has files (clusters.tsv and representatives.txt are replaced). Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// ANI to dereplicate at, in percent. Default 95 (a species, as GTDB draws them).
+    #[serde(default)]
+    pub ani: Option<f64>,
+    /// Smallest aligned fraction of two genomes, in percent, to cluster them. galah's default 15.
+    #[serde(default)]
+    pub min_aligned_fraction: Option<f64>,
+    /// Precluster ANI, in percent, at most ani. galah's default 90.
+    #[serde(default)]
+    pub precluster_ani: Option<f64>,
+    /// CheckM2's quality_report.tsv covering every genome (one checkm2 call over all of them): the best genome of each cluster becomes its representative, by quality_formula. Without it, the first given.
+    #[serde(default)]
+    pub checkm2_report: Option<String>,
+    /// Leave out genomes below this completeness (percent). Needs checkm2_report.
+    #[serde(default)]
+    pub min_completeness: Option<f64>,
+    /// Leave out genomes above this contamination (percent). Needs checkm2_report.
+    #[serde(default)]
+    pub max_contamination: Option<f64>,
+    #[serde(default)]
+    pub quality_formula: Option<GalahQualityFormula>,
+    /// skani's settings for small genomes (under about 20 kb).
+    #[serde(default)]
+    pub small_genomes: bool,
+    /// Threads. Default 1: with more, galah writes clusters.tsv and representatives.txt in a different order each run (same clusters), so replay can only check they exist.
+    #[serde(default)]
+    pub threads: Option<u32>,
+}
+
+/// Genome names in a CheckM2 quality_report.tsv (its Name column).
+fn checkm2_report_names(path: &Path) -> Result<Vec<String>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut lines = text.lines();
+    let header: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
+    let need = |c: &str| header.iter().position(|h| *h == c).ok_or_else(|| format!("no {c} column; not a CheckM2 quality_report.tsv"));
+    let name = need("Name")?;
+    need("Completeness")?;
+    need("Contamination")?;
+    Ok(lines.filter_map(|l| l.split('\t').nth(name)).filter(|n| !n.is_empty()).map(str::to_string).collect())
+}
+
+pub fn galah(ctx: &Ctx, p: &GalahParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("galah");
+    inv.args.push("cluster".into());
+    let genomes = genome_files(ctx, &p.genomes, &p.genome_dirs, &p.extension)?;
+    let ani = p.ani.unwrap_or(95.0);
+    for (field, x) in [("ani", Some(ani)), ("min_aligned_fraction", p.min_aligned_fraction), ("precluster_ani", p.precluster_ani)] {
+        if let Some(x) = x {
+            // CoverM/galah read values up to 1 as fractions: irit-mcp takes percentages only.
+            if !x.is_finite() || !(1.0..=100.0).contains(&x) {
+                return v::invalid(field, format!("{x} is not a percentage between 1 and 100 (e.g. 95)"));
+            }
+        }
+    }
+    if ani < 80.0 {
+        return v::invalid("ani", format!("{ani}% is below what skani estimates reliably (about 80%); species are about 95%"));
+    }
+    if p.precluster_ani.is_some_and(|pc| pc > ani) {
+        return v::invalid("precluster_ani", "precluster_ani must not be above ani");
+    }
+    inv.opt("ani", ani);
+    if let Some(x) = p.min_aligned_fraction {
+        inv.opt("min-aligned-fraction", x);
+    }
+    if let Some(x) = p.precluster_ani {
+        inv.opt("precluster-ani", x);
+    }
+    match &p.checkm2_report {
+        Some(r) => {
+            let path = v::existing_file(cwd, "checkm2_report", r)?;
+            let names = checkm2_report_names(&path).or_else(|e| v::invalid("checkm2_report", format!("{r}: {e}")))?;
+            let missing: Vec<&str> = genomes.iter().map(|(_, _, n)| n.as_str()).filter(|n| !names.iter().any(|x| x == n)).collect();
+            if !missing.is_empty() {
+                return v::invalid(
+                    "checkm2_report",
+                    format!(
+                        "{r} has no row for {} of the genomes ({}{}); galah stops on that. Run checkm2 once over all of them (genomes list)",
+                        missing.len(),
+                        missing.iter().take(5).copied().collect::<Vec<_>>().join(", "),
+                        if missing.len() > 5 { ", ..." } else { "" }
+                    ),
+                );
+            }
+            inv.inputs.push(path);
+            inv.opt("checkm2-quality-report", r);
+        }
+        None => {
+            if p.min_completeness.is_some() || p.max_contamination.is_some() || p.quality_formula.is_some() {
+                return v::invalid("checkm2_report", "min_completeness, max_contamination and quality_formula need checkm2_report");
+            }
+            inv.warnings.push("no checkm2_report: galah picks the first genome given in each cluster as its representative, not the best one".into());
+        }
+    }
+    for (field, flag, x) in [("min_completeness", "min-completeness", p.min_completeness), ("max_contamination", "max-contamination", p.max_contamination)] {
+        if let Some(x) = x {
+            v::percent(field, x)?;
+            inv.opt(flag, x);
+        }
+    }
+    if let Some(f) = p.quality_formula {
+        inv.opt("quality-formula", f.name());
+    }
+    inv.flag("small-genomes", p.small_genomes);
+    let threads = p.threads.unwrap_or(1);
+    v::range("threads", threads, 1, 1024)?;
+    inv.opt("threads", threads);
+    if threads > 1 {
+        inv.volatile = &["clusters.tsv", "representatives.txt"];
+    }
+    let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(p.overwrite), true)?;
+    let reps = outdir.join("representatives");
+    if std::fs::read_dir(&reps).is_ok_and(|mut rd| rd.next().is_some()) {
+        return v::invalid("outdir", format!("{}/representatives already has files, and galah refuses to copy into it; remove it or pick another outdir", p.outdir.trim_end_matches('/')));
+    }
+    let base = p.outdir.trim_end_matches('/');
+    let (clusters, list) = (outdir.join("clusters.tsv"), outdir.join("representatives.txt"));
+    for (out, flag, name) in
+        [(&clusters, "output-cluster-definition", "clusters.tsv"), (&list, "output-representative-list", "representatives.txt")]
+    {
+        if !p.overwrite && out.exists() {
+            return v::invalid("outdir", format!("{base}/{name} already exists; pass overwrite: true"));
+        }
+        inv.opt(flag, format!("{base}/{name}"));
+    }
+    inv.opt("output-representative-fasta-directory-copy", format!("{base}/representatives"));
+    inv.outputs.extend([clusters.clone(), list.clone(), reps]);
+    inv.expect = vec![vec![clusters], vec![list]];
+    for (path, _, _) in &genomes {
+        inv.inputs.push(path.clone());
+    }
+    inv.args.push("--genome-fasta-files".into());
+    inv.args.extend(genomes.iter().map(|(_, shown, _)| list_item(shown)));
+    Ok(inv)
+}
+
+// ---------- CoverM abundance (genome mode, many genomes and samples) ----------
+// Flags: CoverM v0.8.0 `coverm genome --full-help` (src/cli.rs), https://github.com/wwood/CoverM/tree/v0.8.0.
+// CoverM 0.8.0 refuses the count method unless --min-covered-fraction is 0 ("does not calculate the
+// covered fraction"). Not offered: --dereplicate (galah does that as its own recorded step),
+// --sharded, BAM input, sparse output (the co-occurrence step reads the dense table).
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CovermAbundanceParams {
+    /// Genome FASTA files, e.g. galah's representatives. Give this and/or genome_dirs. Give all the genomes at once (a dereplicated set): reads are shared out among the genomes given, and relative abundance is a share of all reads.
+    #[serde(default)]
+    pub genomes: Vec<String>,
+    /// Folders of genome FASTA files matched by extension, e.g. galah's `<outdir>/representatives`.
+    #[serde(default)]
+    pub genome_dirs: Vec<String>,
+    /// With genome_dirs: file extension to match. Default fa (MetaBAT2's and SemiBin2's bins).
+    #[serde(default)]
+    pub extension: Option<String>,
+    /// Read 1 FASTQ files (plain or gzip), one per sample, paired with r2 in order. Each sample's columns are named after its read 1 file name, so name the files after the samples.
+    pub r1: Vec<String>,
+    /// Read 2 FASTQ files, as many as r1.
+    pub r2: Vec<String>,
+    /// Output table (TSV), inside the root: one row per genome plus `unmapped`; per sample `<read 1 file> Relative Abundance (%)`, `Mean`, `Covered Fraction` and `Read Count` columns.
+    pub output: String,
+    /// Replace an existing output. Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    #[serde(default)]
+    pub mapper: Option<CovermMapper>,
+    /// Exclude reads below this percent identity (e.g. 95). Default 0.
+    #[serde(default)]
+    pub min_read_percent_identity: Option<f64>,
+    /// Exclude reads with less than this percent of their bases aligned (e.g. 75). Default 0.
+    #[serde(default)]
+    pub min_read_aligned_percent: Option<f64>,
+    /// Report a genome covered less than this (percent) as 0 in that sample. Default here 0 (CoverM's own is 10), because CoverM leaves out the read Count column otherwise; the Covered Fraction column lets a later step apply a threshold.
+    #[serde(default)]
+    pub min_covered_fraction: Option<f64>,
+    /// Threads for mapping and sorting. CoverM's default is 1.
+    #[serde(default)]
+    pub threads: Option<u32>,
+}
+
+/// The methods coverm_abundance asks for: count only when CoverM allows it (min covered fraction 0).
+pub fn coverm_abundance_methods(p: &CovermAbundanceParams) -> &'static [&'static str] {
+    if p.min_covered_fraction.unwrap_or(0.0) > 0.0 {
+        &["relative_abundance", "mean", "covered_fraction"]
+    } else {
+        &["relative_abundance", "mean", "covered_fraction", "count"]
+    }
+}
+
+pub fn coverm_abundance(ctx: &Ctx, p: &CovermAbundanceParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("coverm");
+    inv.args.push("genome".into());
+    let genomes = genome_files(ctx, &p.genomes, &p.genome_dirs, &p.extension)?;
+    for (path, _, _) in &genomes {
+        inv.inputs.push(path.clone());
+    }
+    v::non_empty_list("r1", &p.r1)?;
+    read_pairs(&p.r1, &p.r2)?;
+    let mut reads = Vec::new();
+    let mut samples: Vec<String> = Vec::new();
+    for (a, b) in p.r1.iter().zip(&p.r2) {
+        let sample = Path::new(a).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if samples.contains(&sample) {
+            return v::invalid("r1", format!("two read 1 files are named {sample:?}; CoverM names each sample's columns after it, so they would clash"));
+        }
+        samples.push(sample);
+        for (field, value) in [("r1", a), ("r2", b)] {
+            let path = v::existing_file(cwd, field, value)?;
+            v::sequence_file(&path, field, value, Seq::Fastq)?;
+            if inv.inputs.contains(&path) {
+                return v::invalid(field, format!("{value} is given twice"));
+            }
+            inv.inputs.push(path);
+            reads.push(list_item(value));
+        }
+    }
+    let out = v::output_file(ctx, "output", &p.output, p.overwrite)?;
+    if inv.inputs.contains(&out) {
+        return v::invalid("output", "output is one of the inputs");
+    }
+    inv.outputs.push(out.clone());
+    inv.opt("output-file", &p.output);
+    inv.expect = vec![vec![out]];
+    let mcf = p.min_covered_fraction.unwrap_or(0.0);
+    v::percent("min_covered_fraction", mcf)?;
+    if mcf > 0.0 && mcf < 1.0 {
+        // CoverM reads a value below 1 as a fraction (0.5 = 50%).
+        return v::invalid("min_covered_fraction", format!("{mcf} would be read by CoverM as a fraction ({}%); give a percentage of at least 1, or 0", mcf * 100.0));
+    }
+    inv.opt("min-covered-fraction", mcf);
+    if mcf > 0.0 {
+        inv.warnings.push(format!(
+            "min_covered_fraction {mcf}: CoverM 0.8.0 can't count reads then, so the table has no Read Count columns; the reads of genomes it reports as 0 count as unmapped"
+        ));
+    }
+    if let Some(m) = p.mapper {
+        inv.opt("mapper", match m {
+            CovermMapper::Strobealign => "strobealign",
+            CovermMapper::Minimap2Sr => "minimap2-sr",
+            CovermMapper::BwaMem => "bwa-mem",
+        });
+    }
+    for (field, val) in [("min_read_percent_identity", p.min_read_percent_identity), ("min_read_aligned_percent", p.min_read_aligned_percent)] {
+        if let Some(x) = val {
+            if !x.is_finite() || !(0.0..=100.0).contains(&x) {
+                return v::invalid(field, format!("{x} is not a percentage (0-100)"));
+            }
+            inv.opt(&field.replace('_', "-"), x);
+        }
+    }
+    if let Some(t) = p.threads {
+        v::range("threads", t, 1, 1024)?;
+        inv.opt("threads", t);
+    }
+    // Each takes several values (clap num_args 1..), which end at the next option.
+    inv.args.push("--genome-fasta-files".into());
+    inv.args.extend(genomes.iter().map(|(_, shown, _)| list_item(shown)));
+    inv.args.push("--methods".into());
+    inv.args.extend(coverm_abundance_methods(p).iter().map(|m| m.to_string()));
+    inv.args.push("--coupled".into());
     inv.args.extend(reads);
     Ok(inv)
 }
@@ -3753,6 +4378,230 @@ mod tests {
         assert!(serde_json::from_value::<CovermContigParams>(with("mapper", json!("minimap2-sr"))).is_ok());
     }
 
+    /// A coordinate-sorted BAM's start (gzip of `BAM\1`, the header length and text), as CoverM caches it.
+    fn fake_bam(dir: &Path, name: &str, header: &str) {
+        use std::io::Write;
+        let mut raw = b"BAM\x01".to_vec();
+        raw.extend((header.len() as u32).to_le_bytes());
+        raw.extend(header.as_bytes());
+        let p = dir.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let mut gz = flate2::write::GzEncoder::new(std::fs::File::create(p).unwrap(), flate2::Compression::default());
+        gz.write_all(&raw).unwrap();
+        gz.finish().unwrap();
+    }
+
+    #[test]
+    fn coverm_contig_caches_bams() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        for f in ["reads/a_1.fq", "reads/a_2.fq", "other/a_1.fq", "other/a_2.fq"] {
+            write(d.path(), f, "@a\nACGT\n+\nIIII\n");
+        }
+        write(d.path(), "asm/final.contigs.fa", ">k141_1\nACGT\n");
+        let p: CovermContigParams = parse(json!({
+            "reference": "asm/final.contigs.fa", "r1": ["reads/a_1.fq"], "r2": ["reads/a_2.fq"], "output": "d.tsv", "methods": ["metabat"], "bam_cache_dir": "bams"
+        }));
+        let inv = coverm_contig(&cx, &p).unwrap();
+        assert!(inv.args.contains(&"--bam-file-cache-directory=bams".to_string()), "{:?}", inv.args);
+        let bam = cx.cwd.join("bams/final.contigs.fa.a_1.fq.bam");
+        assert!(inv.expect.contains(&vec![bam.clone()]) && inv.outputs.contains(&bam));
+        assert_eq!(inv.volatile, [".bam"]);
+        // two samples whose read 1 files share a name would share a BAM
+        let two = json!({"reference": "asm/final.contigs.fa", "r1": ["reads/a_1.fq", "other/a_1.fq"], "r2": ["reads/a_2.fq", "other/a_2.fq"],
+                         "output": "d.tsv", "bam_cache_dir": "bams"});
+        assert_eq!(coverm_contig(&cx, &parse(two)).unwrap_err().field, "bam_cache_dir");
+        write(d.path(), "bams/final.contigs.fa.a_1.fq.bam", "x");
+        assert_eq!(coverm_contig(&cx, &p).unwrap_err().field, "bam_cache_dir");
+    }
+
+    #[test]
+    fn semibin2_args_checks_and_bins() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        write(d.path(), "asm/final.contigs.fa", ">k141_1\nACGT\n");
+        write(d.path(), "depth/one.tsv", "contigName\tcontigLen\ttotalAvgDepth\ts.bam\ts.bam-var\nk141_1\t4\t1\t1\t0\n");
+        write(d.path(), "depth/two.tsv", "contigName\tcontigLen\ttotalAvgDepth\ta.bam\ta.bam-var\tb.bam\tb.bam-var\nk141_1\t4\t1\t1\t0\t1\t0\n");
+        fake_bam(d.path(), "bams/s1.bam", "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:k141_1\tLN:4\n");
+        fake_bam(d.path(), "-s2.bam", "@HD\tVN:1.6\tSO:coordinate\n");
+        fake_bam(d.path(), "bams/unsorted.bam", "@HD\tVN:1.6\tSO:unsorted\n");
+        let p: Semibin2Params = parse(json!({"contigs": "asm/final.contigs.fa", "depth": "depth/one.tsv", "environment": "global", "outdir": "bins/s1", "tag": "s1", "threads": 6}));
+        assert_eq!(
+            semibin2(&cx, &p).unwrap().args,
+            [
+                "single_easy_bin",
+                "--input-fasta=asm/final.contigs.fa",
+                "--depth-metabat2=depth/one.tsv",
+                "--environment=global",
+                "--output=bins/s1",
+                "--tag-output=s1",
+                "--compression=none",
+                "--engine=cpu",
+                "--random-seed=1",
+                "--threads=6",
+            ]
+        );
+        // trained on two samples' BAMs; the BAMs go last
+        let p: Semibin2Params = parse(json!({"contigs": "asm/final.contigs.fa", "bams": ["bams/s1.bam", "-s2.bam"], "outdir": "b", "seed": 7, "min_len": 1000}));
+        let inv = semibin2(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            ["single_easy_bin", "--input-fasta=asm/final.contigs.fa", "--output=b", "--compression=none", "--engine=cpu", "--min-len=1000", "--random-seed=7", "--input-bam", "bams/s1.bam", "./-s2.bam"]
+        );
+        assert_eq!(inv.expect, [vec![cx.cwd.join("b/contig_bins.tsv")]]);
+        // training its own model: the memory warning comes before it runs
+        assert!(inv.warnings[0].contains("self-supervised"), "{:?}", inv.warnings);
+        let bad = |j: serde_json::Value| semibin2(&cx, &parse(j)).unwrap_err().field;
+        let base = json!({"contigs": "asm/final.contigs.fa", "outdir": "b"});
+        let with = |extra: serde_json::Value| {
+            let mut j = base.clone();
+            j.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            j
+        };
+        assert_eq!(bad(with(json!({}))), "depth"); // neither depth nor bams
+        assert_eq!(bad(with(json!({"depth": "depth/one.tsv", "bams": ["bams/s1.bam"], "environment": "soil"}))), "depth");
+        assert_eq!(bad(with(json!({"depth": "depth/one.tsv"}))), "environment");
+        assert_eq!(bad(with(json!({"depth": "depth/two.tsv", "environment": "soil"}))), "depth");
+        assert_eq!(bad(with(json!({"bams": ["bams/s1.bam", "-s2.bam"], "environment": "ocean"}))), "bams");
+        assert_eq!(bad(with(json!({"bams": ["bams/unsorted.bam"]}))), "bams");
+        assert_eq!(bad(with(json!({"bams": ["depth/one.tsv"]}))), "bams");
+        assert_eq!(bad(with(json!({"bams": ["bams/s1.bam", "bams/s1.bam"]}))), "bams");
+        assert_eq!(bad(with(json!({"bams": ["bams/s1.bam"], "tag": "a/b"}))), "tag");
+        assert_eq!(bad(with(json!({"bams": ["bams/s1.bam"], "min_len": 100}))), "min_len");
+        assert!(serde_json::from_value::<Semibin2Params>(with(json!({"environment": "groundwater"}))).is_err());
+        for e in ["human_gut", "chicken_caecum", "built_environment", "wastewater"] {
+            let p: Semibin2Params = parse(with(json!({"environment": e})));
+            assert_eq!(p.environment.unwrap().name(), e);
+        }
+        // bins in number order; files of other tags or kinds are not bins
+        for f in ["SemiBin_10.fa", "SemiBin_2.fa", "SemiBin_0.fa", "SemiBin_1.fa.gz", "other_1.fa"] {
+            write(d.path(), &format!("out/output_bins/{f}"), ">c\nA\n");
+        }
+        let names: Vec<String> =
+            semibin2_bins(&d.path().join("out"), "SemiBin").iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["SemiBin_0.fa", "SemiBin_2.fa", "SemiBin_10.fa"]);
+    }
+
+    #[test]
+    fn galah_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        for f in ["bins/s1/s1.1.fa", "bins/s1/s1.2.fa", "bins/s2/s2.1.fa", "bins/s2/notes.txt", "-odd.fna", "dup/s1.1.fa"] {
+            write(d.path(), f, ">c\nACGT\n");
+        }
+        write(d.path(), "checkm2/quality_report.tsv", "Name\tCompleteness\tContamination\ns1.1\t90\t1\ns1.2\t60\t3\ns2.1\t95\t0.5\n-odd\t50\t0\n");
+        let p: GalahParams = parse(json!({"genome_dirs": ["bins/s1", "bins/s2"], "checkm2_report": "checkm2/quality_report.tsv", "outdir": "derep",
+                                          "min_completeness": 50, "max_contamination": 10, "quality_formula": "completeness-5contamination"}));
+        let inv = galah(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            [
+                "cluster",
+                "--ani=95",
+                "--checkm2-quality-report=checkm2/quality_report.tsv",
+                "--min-completeness=50",
+                "--max-contamination=10",
+                "--quality-formula=completeness-5contamination",
+                "--threads=1",
+                "--output-cluster-definition=derep/clusters.tsv",
+                "--output-representative-list=derep/representatives.txt",
+                "--output-representative-fasta-directory-copy=derep/representatives",
+                "--genome-fasta-files",
+                "bins/s1/s1.1.fa",
+                "bins/s1/s1.2.fa",
+                "bins/s2/s2.1.fa",
+            ]
+        );
+        assert!(inv.volatile.is_empty() && inv.warnings.is_empty());
+        let inv = galah(&cx, &parse(json!({"genomes": ["-odd.fna"], "outdir": "o", "ani": 99, "precluster_ani": 95, "threads": 4, "small_genomes": true}))).unwrap();
+        assert_eq!(&inv.args[..5], ["cluster", "--ani=99", "--precluster-ani=95", "--small-genomes", "--threads=4"]);
+        assert_eq!(inv.args.last().unwrap(), "./-odd.fna");
+        // several threads: same clusters, lines in another order
+        assert_eq!(inv.volatile, ["clusters.tsv", "representatives.txt"]);
+        assert!(inv.warnings[0].contains("no checkm2_report"), "{:?}", inv.warnings);
+        let bad = |j: serde_json::Value| galah(&cx, &parse(j)).unwrap_err().field;
+        assert_eq!(bad(json!({"outdir": "o"})), "genomes");
+        assert_eq!(bad(json!({"genomes": ["bins/s1/s1.1.fa"], "extension": "fa", "outdir": "o"})), "extension");
+        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "extension": "fna", "outdir": "o"})), "genome_dirs");
+        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "genomes": ["dup/s1.1.fa"], "outdir": "o"})), "genomes");
+        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "genomes": ["bins/s1/s1.1.fa"], "outdir": "o"})), "genomes");
+        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "outdir": "o", "ani": 0.95})), "ani");
+        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "outdir": "o", "ani": 70})), "ani");
+        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "outdir": "o", "ani": 95, "precluster_ani": 97})), "precluster_ani");
+        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "outdir": "o", "min_completeness": 50})), "checkm2_report");
+        write(d.path(), "short.tsv", "Name\tCompleteness\tContamination\ns1.1\t90\t1\n");
+        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "outdir": "o", "checkm2_report": "short.tsv"})), "checkm2_report");
+        write(d.path(), "notcheckm.tsv", "genome\tquality\n");
+        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "outdir": "o", "checkm2_report": "notcheckm.tsv"})), "checkm2_report");
+        assert!(serde_json::from_value::<GalahParams>(json!({"genome_dirs": ["bins/s1"], "outdir": "o", "quality_formula": "dRep"})).is_err());
+        // representatives/ with files: galah refuses, so irit-mcp does first, even with overwrite
+        write(d.path(), "derep/representatives/s1.1.fa", ">c\nA\n");
+        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "outdir": "derep", "overwrite": true})), "outdir");
+    }
+
+    #[test]
+    fn coverm_abundance_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        for f in ["reads/s1_R1.fq.gz", "reads/s1_R2.fq.gz", "reads/s2_R1.fq.gz", "reads/s2_R2.fq.gz", "other/s1_R1.fq.gz"] {
+            write(d.path(), f, "@a\nACGT\n+\nIIII\n");
+        }
+        for f in ["derep/representatives/s1.1.fa", "derep/representatives/s2.3.fa", "extra/g.fna"] {
+            write(d.path(), f, ">c\nACGT\n");
+        }
+        let p: CovermAbundanceParams = parse(json!({
+            "genome_dirs": ["derep/representatives"], "genomes": ["extra/g.fna"], "r1": ["reads/s1_R1.fq.gz", "reads/s2_R1.fq.gz"],
+            "r2": ["reads/s1_R2.fq.gz", "reads/s2_R2.fq.gz"], "output": "abundance.tsv", "threads": 6
+        }));
+        let inv = coverm_abundance(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            [
+                "genome",
+                "--output-file=abundance.tsv",
+                "--min-covered-fraction=0",
+                "--threads=6",
+                "--genome-fasta-files",
+                "extra/g.fna",
+                "derep/representatives/s1.1.fa",
+                "derep/representatives/s2.3.fa",
+                "--methods",
+                "relative_abundance",
+                "mean",
+                "covered_fraction",
+                "count",
+                "--coupled",
+                "reads/s1_R1.fq.gz",
+                "reads/s1_R2.fq.gz",
+                "reads/s2_R1.fq.gz",
+                "reads/s2_R2.fq.gz",
+            ]
+        );
+        assert!(inv.warnings.is_empty());
+        // not an isolate's depth: the Shovill depth check doesn't apply
+        assert!(result_warnings(&inv).is_empty());
+        // CoverM's 10% threshold: no read counts then
+        let p10: CovermAbundanceParams = parse(json!({"genome_dirs": ["derep/representatives"], "r1": ["reads/s1_R1.fq.gz"], "r2": ["reads/s1_R2.fq.gz"],
+                                                     "output": "a.tsv", "min_covered_fraction": 10}));
+        let inv = coverm_abundance(&cx, &p10).unwrap();
+        assert!(inv.args.contains(&"--min-covered-fraction=10".to_string()) && !inv.args.contains(&"count".to_string()), "{:?}", inv.args);
+        assert!(inv.warnings[0].contains("no Read Count"), "{:?}", inv.warnings);
+        let bad = |j: serde_json::Value| coverm_abundance(&cx, &parse(j)).unwrap_err().field;
+        let base = json!({"genome_dirs": ["derep/representatives"], "r1": ["reads/s1_R1.fq.gz"], "r2": ["reads/s1_R2.fq.gz"], "output": "a.tsv"});
+        let with = |k: &str, v: serde_json::Value| {
+            let mut j = base.clone();
+            j[k] = v;
+            j
+        };
+        assert_eq!(bad(with("min_covered_fraction", json!(0.5))), "min_covered_fraction");
+        assert_eq!(bad(with("min_covered_fraction", json!(101))), "min_covered_fraction");
+        assert_eq!(bad(with("r2", json!([]))), "r2");
+        assert_eq!(bad(json!({"r1": ["reads/s1_R1.fq.gz"], "r2": ["reads/s1_R2.fq.gz"], "output": "a.tsv"})), "genomes");
+        let same = json!({"genome_dirs": ["derep/representatives"], "r1": ["reads/s1_R1.fq.gz", "other/s1_R1.fq.gz"], "r2": ["reads/s1_R2.fq.gz", "reads/s2_R2.fq.gz"], "output": "a.tsv"});
+        assert_eq!(bad(same), "r1");
+        assert_eq!(bad(with("output", json!("reads/s1_R1.fq.gz"))), "output");
+    }
+
     #[test]
     fn metabat2_args_checks_and_bins() {
         let d = tempfile::tempdir().unwrap();
@@ -3801,6 +4650,10 @@ mod tests {
         let checkm2 = "[05:35:04 PM] ERROR: An error occured while running DIAMOND: Command 'diamond blastp --outfmt 6 --threads 6 --block-size 2.0 --quiet ' died with <Signals.SIGKILL: 9>.\n";
         assert!(failure_hint("checkm2", Some(1), checkm2).unwrap().contains("lowmem: true"));
         assert!(failure_hint("megahit", None, "").unwrap().contains("killed by a signal"));
+        // as SemiBin2 2.6.0 logged it before the 8 GB cap killed its training
+        let semibin = "2026-11-14 18:15:34 dzul SemiBin2[3661952] INFO Training model...\n  7%|| 1/15 [03:03<42:54, 183.90s/it]\n";
+        assert!(failure_hint("SemiBin2", None, semibin).unwrap().contains("pretrained environment"));
+        assert!(failure_hint("SemiBin2", None, "Generating features").unwrap().contains("killed by a signal"));
         assert!(failure_hint("megahit", Some(137), "").is_some());
         assert!(failure_hint("checkm2", Some(1), "ERROR: no genomes").is_none());
     }

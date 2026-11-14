@@ -246,6 +246,60 @@ pub fn coverm_genome_summary(path: &Path) -> Result<Vec<Value>, String> {
     }
 }
 
+/// galah's cluster definition (`representative<TAB>member` lines), as clusters sorted by
+/// representative, members sorted: `{representative, members, size}`. galah writes the lines in a
+/// different order between runs with several threads, so they are sorted here.
+pub fn galah_clusters(path: &Path) -> Result<Vec<Value>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut clusters: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for l in text.lines().filter(|l| !l.trim().is_empty()) {
+        let (rep, member) = l.split_once('\t').ok_or_else(|| format!("{}: not a galah cluster file (line {l:?})", path.display()))?;
+        clusters.entry(rep.to_string()).or_default().push(member.to_string());
+    }
+    Ok(clusters
+        .into_iter()
+        .map(|(rep, mut members)| {
+            members.sort();
+            json!({"representative": rep, "size": members.len(), "members": members})
+        })
+        .collect())
+}
+
+/// `coverm genome`'s dense table with several samples: per sample (named after its read 1 file),
+/// the `unmapped` row's relative abundance and how many genomes have a relative abundance above 0;
+/// and the genome count. Missing Relative Abundance columns are an error.
+pub fn coverm_abundance_summary(path: &Path) -> Result<Value, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (header, rows) = parse_table(&text);
+    if header.first().map(String::as_str) != Some("Genome") {
+        return Err(format!("{}: not a `coverm genome` table (no Genome column)", path.display()));
+    }
+    const RA: &str = " Relative Abundance (%)";
+    let samples: Vec<(usize, &str)> = header.iter().enumerate().filter_map(|(i, h)| h.strip_suffix(RA).map(|s| (i, s))).collect();
+    if samples.is_empty() {
+        return Err(format!("{}: no Relative Abundance columns", path.display()));
+    }
+    let rows: Vec<&Vec<String>> = rows.iter().filter(|r| r.len() == header.len()).collect();
+    let genomes: Vec<&Vec<String>> = rows.iter().copied().filter(|r| r[0] != "unmapped").collect();
+    let num = |s: &str| s.parse::<f64>().ok();
+    let per_sample: Vec<Value> = samples
+        .iter()
+        .map(|&(i, s)| {
+            let unmapped = rows.iter().find(|r| r[0] == "unmapped").and_then(|r| num(&r[i]));
+            json!({
+                "sample": s,
+                "unmapped_percent": unmapped,
+                "genomes_detected": genomes.iter().filter(|r| num(&r[i]).is_some_and(|x| x > 0.0)).count(),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "genomes": genomes.len(),
+        "samples": per_sample,
+        "columns_per_sample": header.iter().skip(1).filter_map(|h| h.strip_prefix(samples[0].1)?.strip_prefix(' ')).collect::<Vec<_>>(),
+    }))
+}
+
 /// Kleborate columns returned per assembly (the part of the header after the last `__`).
 const KLEBORATE_KEEP: [&str; 22] = [
     "strain", "species", "species_match", "QC_warnings", "ST", "virulence_score", "resistance_score", "num_resistance_classes",
@@ -564,6 +618,42 @@ mod tests {
         assert!(g[1].get("screened").is_none());
         assert_eq!((&g[2]["screened"], &g[2]["assigned_by_ani"]), (&json!(false), &json!(false)));
         assert!(gtdbprep_ani_summary("nothing\n", d.path()).is_err());
+    }
+
+    #[test]
+    fn galah_and_coverm_abundance_tables() {
+        let d = tempfile::tempdir().unwrap();
+        // galah 0.6.3 with several threads: lines in any order
+        let c = d.path().join("clusters.tsv");
+        std::fs::write(&c, "b/s2_1.fa\tb/s2_1.fa\na/s1_0.fa\ta/s1_0.fa\nb/s2_1.fa\ta/s1_3.fa\na/s1_0.fa\tb/s2_0.fa\n").unwrap();
+        assert_eq!(
+            galah_clusters(&c).unwrap(),
+            [
+                json!({"representative": "a/s1_0.fa", "size": 2, "members": ["a/s1_0.fa", "b/s2_0.fa"]}),
+                json!({"representative": "b/s2_1.fa", "size": 2, "members": ["a/s1_3.fa", "b/s2_1.fa"]}),
+            ]
+        );
+        std::fs::write(&c, "no tab here\n").unwrap();
+        assert!(galah_clusters(&c).is_err());
+        // as CoverM 0.8.0 wrote it for two samples (read 1 file names) and three genomes
+        let t = d.path().join("ab.tsv");
+        std::fs::write(
+            &t,
+            "Genome\ts1_R1.fq.gz Relative Abundance (%)\ts1_R1.fq.gz Mean\ts1_R1.fq.gz Covered Fraction\ts1_R1.fq.gz Read Count\t\
+             s2_R1.fq.gz Relative Abundance (%)\ts2_R1.fq.gz Mean\ts2_R1.fq.gz Covered Fraction\ts2_R1.fq.gz Read Count\n\
+             unmapped\t11.1\tNA\tNA\tNA\t15.151512\tNA\tNA\tNA\n\
+             bin.3\t45.47339\t0.26225328\t0.20197713\t6000\t4.6665273\t0.043685634\t0.041151453\t1000\n\
+             bin.5\t43.42661\t0.25044912\t0.20406914\t2001\t53.476135\t0.50061613\t0.342701\t4000\n\
+             bin.12\t0\t0\t0\t0\t26.705828\t0.25000626\t0.21438038\t600\n",
+        )
+        .unwrap();
+        let s = coverm_abundance_summary(&t).unwrap();
+        assert_eq!(s["genomes"], 3);
+        assert_eq!(s["samples"][0], json!({"sample": "s1_R1.fq.gz", "unmapped_percent": 11.1, "genomes_detected": 2}));
+        assert_eq!(s["samples"][1]["genomes_detected"], 3);
+        assert_eq!(s["columns_per_sample"], json!(["Relative Abundance (%)", "Mean", "Covered Fraction", "Read Count"]));
+        std::fs::write(&t, "Genome\ts1 Mean\nbin.3\t1\n").unwrap();
+        assert!(coverm_abundance_summary(&t).is_err());
     }
 
     #[test]
