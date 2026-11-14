@@ -6,6 +6,10 @@ whole schema (standard JSON Schema plus nf-schema's `uniqueEntries`, `unique` an
 you launch, so mistakes show up in seconds instead of ten minutes into a run. If the schema has a
 rule sheetgen can't evaluate, it says which and stops, unless you pass `--allow-unchecked`.
 
+`sheetgen verify` checks the read files themselves before an analysis starts: gzip and FASTQ
+integrity, MD5 and SHA-256, and the MD5s published in an `md5sum` file or at ENA (see
+[Checking read files](#checking-read-files-sheetgen-verify)).
+
 ## Why
 
 Every nf-core pipeline ships its own small script for this, none of them read subfolders, and none
@@ -160,6 +164,111 @@ refused.
 Regression tests run against the real `schema_input.json` of nf-core/bacass 2.7.0, rnaseq 3.27.0,
 mag 5.5.0, taxprofiler 2.0.1 and fetchngs 1.13.0 (copies in `sheetgen/tests/fixtures/`).
 
+## Checking read files: `sheetgen verify`
+
+A download can arrive at the right size and still be corrupt without curl reporting an error. In
+this project four ENA files did; the gzip CRC error showed up only when Flye was deep into the
+file. `sheetgen verify` reads each file once and checks it before anything else does:
+
+```sh
+sheetgen verify reads/                                    # every FASTQ file under reads/
+sheetgen verify reads/ --md5 reads/MD5SUMS                # compare with an md5sum file
+sheetgen verify ERR044595_1.fastq.gz ERR044595_2.fastq.gz --ena
+sheetgen verify AHB29_ont.fastq.gz --ena --run AHB29_ont.fastq.gz=ERR15424439
+sheetgen verify --sheet samplesheet.csv --json > verify.json
+```
+
+| Option | Effect |
+|---|---|
+| `PATH...` | Read files, or folders scanned recursively for FASTQ files (all of them, `_fail_` files included). |
+| `--sheet FILE` | Also check every FASTQ path in this sample sheet (CSV, or TSV by extension or tabs). Relative paths are taken from the current folder; URLs are skipped with a note. |
+| `--md5 FILE` | Expected MD5s, `md5sum` style (`<md5>  <file>` or `<md5> *<file>`) or BSD style (`MD5 (file) = <md5>`). Names are matched by path relative to the list's folder, then by file name. Repeatable. |
+| `--ena` | Look up expected MD5s and sizes at ENA (network; nothing is fetched without this flag). |
+| `--run FILE=ACCESSION` | Run accession for a file whose name doesn't contain one (needs `--ena`). Repeatable. |
+| `--json` | Print the report as JSON on stdout (for irit-mcp and scripts). |
+| `-j N` | Check N files at a time (default 1; each file uses four threads). |
+
+What is checked, in one pass over the file:
+
+- **gzip**: every member is decompressed to the end, so zlib checks each member's header, CRC-32
+  and length. Files made of several gzip members (concatenated `cat a.gz b.gz`, or bgzip) are read
+  to the last member. A file that ends inside a member, or has data after the last member that isn't
+  gzip, is corrupt.
+- **FASTQ**: four-line records, a header starting with `@`, a third line starting with `+`, and a
+  quality string as long as the sequence (a trailing `\r` is ignored; blank lines only at the end).
+  Reads and bases are counted. Multi-line (wrapped) FASTQ is reported as broken. Characters inside
+  the sequence and quality lines are not checked.
+- **MD5 and SHA-256** of the file as stored, computed on the same read.
+- `.bz2`/`.zst` files are hashed only; their content is not checked.
+
+Each file gets one status, and the exit status is 1 if any file isn't `ok`:
+
+| Status | Meaning |
+|---|---|
+| `ok` | gzip and FASTQ fine, and the MD5 (and ENA's size, when known) match. Without `--md5` or `--ena`, a structurally fine file is `ok`. |
+| `mismatch` | Structure fine, but the MD5 or size differs from the expected one. |
+| `corrupt` | gzip or FASTQ problem. The report gives what was wrong, the byte offset in the file as stored (compressed bytes for gzip) and the FASTQ record and line being read. |
+| `not listed` | `--md5` or `--ena` was given but has no entry for this file. |
+
+Where a problem is reported: for plain FASTQ, the offset is the start of the bad line. For gzip,
+it is where zlib stopped; a CRC-32 or length error can only be noticed at the end of a member, so
+the damage is somewhere before that. Damaged deflate data often decodes to garbage that breaks the
+FASTQ records first; sheetgen then keeps decompressing, and if the gzip check fails too, it reports
+the gzip damage, located at the record where the reads first broke (nearer the damage), with
+zlib's position in the message. Entries of an `--md5` list that weren't checked are listed in a
+note (and in `listed_not_checked` in the JSON), without failing the run.
+
+### ENA lookup
+
+With `--ena`, the run accession (`ERR`, `SRR` or `DRR` followed by six or more digits) is taken
+from the file name, or from `--run`. One request per run goes to ENA's portal API:
+
+```
+https://www.ebi.ac.uk/ena/portal/api/filereport?accession=<RUN>&result=read_run&fields=run_accession,fastq_ftp,fastq_md5,fastq_bytes&format=tsv
+```
+
+The response lists the run's FASTQ files with their MD5s and sizes. A local file is matched to one
+of them by the same file name, else by mate (`x_1`, `x_R1` → ENA's `<RUN>_1.fastq.gz`, `_2`
+likewise, a file without a mate token → `<RUN>.fastq.gz`), else to the run's only file. If none
+fits, the file is `not listed` with a note naming ENA's files. A failed lookup (after three tries)
+stops the run.
+
+### JSON report
+
+`--json` prints one object: `ok` (all files ok), `files` (one entry per file, in input order),
+`summary` (counts per status), `listed_not_checked`, `notes`, `bytes` and `seconds`. Each file has
+`path`, `status`, `bytes`, `md5`, `sha256`, `expected_md5`, `expected_bytes`, `expected_from` (the
+list file, or `ENA <run> (<file>)`), `compression` (`gzip`, `plain` or `not checked`),
+`gzip_members`, `uncompressed_bytes`, `reads`, `bases`, `problem` (`null`, or `what`,
+`byte_offset`, `record`, `line`), `note` and `seconds`.
+
+### Speed and memory
+
+The file is read in 1 MiB blocks by one thread and handed to three others (MD5, SHA-256, and gzip
+plus FASTQ), at most four blocks ahead, so memory stays flat whatever the file or read size.
+A single-member gzip file can only be inflated on one core, which sets the speed; `-j` checks
+several files at once.
+
+Measured 2026-11-14 on a laptop with a Ryzen 5 PRO 4650U (6 cores, 12 threads) that other jobs
+were using at the same time (load average 11-15). The test file was a 568 MB single-member Nanopore
+`.fastq.gz` (117,455 reads, 713 Mbases), already in the page cache, and each tool was run twice back to back:
+
+| Command | Wall time |
+|---|---|
+| `sheetgen verify` (gzip, FASTQ, MD5, SHA-256) | 3.3-3.5 s (163-174 MB/s), 12.5 MB peak RSS |
+| `gzip -t` | 6.2-7.4 s |
+| `md5sum` | 0.9 s |
+| `gzip -dc \| md5sum` | 6.8-10.7 s |
+
+Under heavier load (average 20-30) the four files of a Nanopore data set (4.46 GB together) took
+55.6 s one at a time (80 MB/s, 17 MB peak RSS) and 29.6 s with `-j 4` (150 MB/s; the 2.07 GB file
+sets the wall time). All four MD5s matched ENA's.
+
+On a copy of a real 309 MB file with one byte flipped at offset 150,000,000, zlib noticed the CRC
+error only at the end of the file (byte 308,990,709); `verify` reported the damage at byte
+150,351,704, record 40,973, where the decompressed reads first broke. `gzip -t` reports only
+"crc error". A copy cut at 200,000,000 bytes was reported as truncated at that byte.
+
 ## Tested
 
 On a deliberately messy folder (two lanes of one sample, SRA-style `_1/_2` names, a sample and
@@ -186,4 +295,5 @@ the QIIME 2 writer.
 - The `schema` keyword (validate a file's contents against another schema) is not supported and is
   reported as unchecked.
 - YAML sample sheets (supported by nf-schema) are not written yet.
-- No check that R1 and R2 have the same read count (that needs reading the files).
+- No check that R1 and R2 have the same read count when writing a sheet (that needs reading the
+  files); `sheetgen verify` reports each file's read count.
