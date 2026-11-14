@@ -433,6 +433,13 @@ plasmids. Every output is volatile (multi-threaded runs differ; `flye.log` has t
 count, length and N50 go into the run record, as for Shovill. isotable reads `assembly.fasta` when
 `flye.log` is beside it.
 
+**Small plasmids.** Default mode missed a 4,999 bp resistance plasmid at 11x (chromosome 98x)
+that `meta` found, and Flye closed several small plasmids as two or three copies in one circle.
+For each circular contig up to 300 kb, irit-mcp measures how much of its sequence (21-mers) occurs
+more than once in it. Above half, it warns that genes there are counted more than once and the
+length isn't the plasmid's. On the nanopore runs, multi-copy contigs scored 0.92–1.0 and all
+others at most 0.2 ([measurements](../research/nanopore-laptop.md#three-more-isolates-small-plasmids-measured)).
+
 **Deep data.** `asm_coverage` limits only the first stage: the later stages map every read. On
 the laptop, *K. pneumoniae* AF38 (5.7 Mb, 2.58 Gb of reads, about 450x) went over the 8 GB cap in
 Flye's consensus stage with `asm_coverage` 50 and was killed. Subsample deep data with

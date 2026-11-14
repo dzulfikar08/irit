@@ -101,7 +101,10 @@ What's done, what's next, and what's further out. Items move up as evidence come
       the same completeness and the same GTDB species from ONT reads alone as from Illumina, in an
       8 GB cap ([write-up](research/nanopore-laptop.md)). isotable reads long-read QC, the record
       hashes Medaka's model file, and Medaka `batch_size` 50 or 25 keeps it under 5 GiB with the
-      same consensus (#21). Next: more isolates (plasmid-borne genes, where Flye is weakest).
+      same consensus (#21). Three more isolates with small resistance plasmids: same STs and every
+      resistance element, once Flye's `--meta` caught a 5 kb plasmid default mode missed; deep reads
+      subsampled with `rasusa`; irit-mcp warns about plasmids Flye closed as several copies.
+      Next: a ligation-kit dataset, and a way to check read files against ENA/SRA MD5s.
 - [ ] **`dblock` additions**: GTDB-Tk split download (waits for GTDB-Tk's gPlace layout). Parallel
       downloads are built (unreleased, `fetch --jobs`).
 - [ ] **Check the `irit-mcp` wrappers on a large machine**: Bakta with the full database, SPAdes

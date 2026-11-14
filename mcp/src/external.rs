@@ -167,8 +167,102 @@ pub fn result_warnings(inv: &Invocation) -> Vec<String> {
                 _ => Vec::new(),
             }
         }
+        "flye" => inv.outputs.first().map(|d| flye_tandem_warnings(&d.join("assembly.fasta"), &d.join("assembly_info.txt"))).unwrap_or_default(),
         _ => Vec::new(),
     }
+}
+
+/// Flye can close a small plasmid as two or more copies of itself in one circle. On the nanopore
+/// run, *K. pneumoniae* AF38's 6,141 bp blaOXA-232 plasmid came out as an 18,377 bp contig holding
+/// three copies, so AMRFinderPlus reported blaOXA-232 three times. AF39's 3,731 bp blaTEM-1 plasmid
+/// came out inside an 11,269 bp circle with two copies of it, which isn't a clean multiple. So the
+/// check is how much of a circular contig (up to 300 kb) repeats itself.
+fn flye_tandem_warnings(assembly: &Path, info: &Path) -> Vec<String> {
+    let circular: std::collections::HashSet<String> = std::fs::read_to_string(info)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f.len() > 3 && f[3] == "Y").then(|| f[0].to_string())
+        })
+        .collect();
+    let Ok(text) = std::fs::read_to_string(assembly) else { return Vec::new() };
+    let mut out = Vec::new();
+    for rec in text.split('>').skip(1) {
+        let (head, body) = rec.split_once('\n').unwrap_or((rec, ""));
+        let name = head.split_whitespace().next().unwrap_or("");
+        if !circular.contains(name) {
+            continue;
+        }
+        let seq: Vec<u8> = body.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+        if seq.len() > 300_000 {
+            continue;
+        }
+        let repeated = repeated_fraction(&seq);
+        if repeated >= 0.5 {
+            let shape = match tandem_copies(&seq) {
+                Some(n) => format!("{n} copies of one {} bp sequence", seq.len() / n),
+                None => "partly a repeat of itself".to_string(),
+            };
+            out.push(format!(
+                "Flye's {name} ({} bp, circular) looks like {shape} ({:.0} % of it occurs twice or more): probably a small plasmid closed as several copies. Genes on it are counted more than once by AMRFinderPlus and the like, and its length is not the plasmid's; Medaka keeps the copies",
+                seq.len(),
+                repeated * 100.0
+            ));
+        }
+    }
+    out
+}
+
+/// The share of a sequence's 21-mer positions whose 21-mer occurs more than once in it. On the
+/// nanopore runs, contigs Flye made of plasmid copies had 0.92-1.0, every other contig up to 300 kb
+/// at most 0.2 (AF38, AF39, AF47 and AHB29, default and meta assemblies).
+pub fn repeated_fraction(seq: &[u8]) -> f64 {
+    let mut counts: std::collections::HashMap<&[u8], u32> = std::collections::HashMap::new();
+    let windows: Vec<&[u8]> = seq.windows(21).collect();
+    for w in &windows {
+        *counts.entry(w).or_default() += 1;
+    }
+    if windows.is_empty() {
+        return 0.0;
+    }
+    windows.iter().filter(|w| counts[*w] > 1).count() as f64 / windows.len() as f64
+}
+
+/// How many copies of one unit a sequence is (2 to 6), judged by 21-mers: every unit-long piece
+/// shares at least 85 % of its 21-mers with the first (AF38's 3-mer: 92 %; a single copy cut in
+/// pieces: about 1 %). The largest such count; None for none.
+/// Set comparison tolerates the few differences between copies and Flye's arbitrary start point.
+pub fn tandem_copies(seq: &[u8]) -> Option<usize> {
+    const K: usize = 21;
+    let kmers = |s: &[u8]| -> std::collections::HashSet<u64> {
+        s.windows(K)
+            .filter_map(|w| {
+                w.iter().try_fold(0u64, |acc, b| {
+                    let v = match b.to_ascii_uppercase() {
+                        b'A' => 0,
+                        b'C' => 1,
+                        b'G' => 2,
+                        b'T' => 3,
+                        _ => return None,
+                    };
+                    Some(acc << 2 | v)
+                })
+            })
+            .collect()
+    };
+    (2..=6).rev().find(|&n| {
+        let unit = seq.len() / n;
+        if unit < 1000 {
+            return false;
+        }
+        let first = kmers(&seq[..unit]);
+        (1..n).all(|i| {
+            let piece = kmers(&seq[i * unit..(i + 1) * unit]);
+            !piece.is_empty() && piece.iter().filter(|k| first.contains(k)).count() * 100 >= piece.len() * 85
+        })
+    })
 }
 
 /// Shovill's depth estimate is read bases over its own genome-size estimate unless `--gsize` was
@@ -3837,6 +3931,40 @@ mod tests {
         assert_eq!(bad(json!({"reads": ["reads/ont.fastq"], "outputs": ["reads/r1.fq"], "num": 5})), "outputs"); // exists
         assert!(rasusa_size("x", "5500000").is_ok() && rasusa_size("x", "4.1MB").is_ok() && rasusa_size("x", "7Tb").is_ok());
         assert!(rasusa_size("x", "mb").is_err() && rasusa_size("x", "5m").is_err());
+    }
+
+    #[test]
+    fn flye_tandem_copies_are_flagged() {
+        // a pseudo-random 6 kb unit (xorshift), so no repeats of its own
+        let mut x: u32 = 2463534242;
+        let unit: Vec<u8> = (0..6000)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                b"ACGT"[(x % 4) as usize]
+            })
+            .collect();
+        assert_eq!(tandem_copies(&unit), None);
+        let mut three = [unit.clone(), unit.clone(), unit.clone()].concat();
+        // a few differences between copies and a rotated start, as Flye gives
+        for i in (7000..17000).step_by(997) {
+            three[i] = if three[i] == b'A' { b'C' } else { b'A' };
+        }
+        three.rotate_left(1234);
+        assert_eq!(tandem_copies(&three), Some(3));
+        assert_eq!(tandem_copies(&[unit.clone(), unit.clone()].concat()), Some(2));
+
+        let d = tempfile::tempdir().unwrap();
+        let asm = d.path().join("assembly.fasta");
+        let s = |v: &[u8]| String::from_utf8(v.to_vec()).unwrap();
+        std::fs::write(&asm, format!(">contig_1\n{}\n>contig_2\n{}\n>contig_3\n{}\n", s(&three), s(&unit), s(&three))).unwrap();
+        let info = d.path().join("assembly_info.txt");
+        std::fs::write(&info, "#seq_name\tlength\tcov.\tcirc.\trepeat\tmult.\talt_group\tgraph_path\ncontig_1\t18000\t179\tY\tN\t1\t*\t1\ncontig_2\t6000\t90\tY\tN\t1\t*\t2\ncontig_3\t18000\t50\tN\tN\t1\t*\t3\n").unwrap();
+        let w = flye_tandem_warnings(&asm, &info);
+        assert_eq!(w.len(), 1, "{w:?}"); // contig_3 is linear, contig_2 a single copy
+        assert!(w[0].starts_with("Flye's contig_1 (18000 bp, circular) looks like 3 copies of one 6000 bp sequence ("), "{w:?}");
+        assert!(repeated_fraction(&unit) < 0.01 && repeated_fraction(&three) > 0.9);
     }
 
     #[test]

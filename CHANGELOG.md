@@ -18,6 +18,11 @@
 - **Outputs isotable won't read are allowed**: mlst, AMRFinderPlus and CoverM genome outputs not
   named `<sample>.<tool>.tsv` now run with a warning instead of being refused, for side analyses
   that shouldn't join the table (found by the second paper redo).
+- **Flye: plasmids closed as several copies are flagged.** A circular contig up to 300 kb with more
+  than half of its 21-mers repeated gets a warning (and the copy count when it is a clean
+  multiple): AF38's 6,141 bp *blaOXA-232* plasmid came out as three copies in an 18,377 bp circle,
+  so AMRFinderPlus listed the gene three times. Flye's description mentions `meta` for small
+  plasmids.
 - A tool whose bundled data (mlst's schemes, Kleborate's databases) can't be found now gets a
   warning that the record identifies it by version only.
 

@@ -31,6 +31,14 @@ from the sources linked next to them.
 - **Matches the published analysis.** Our assemblies contain every element the study's Autocycler
   assembly of these reads has (45/45). The four extra elements show up in our Illumina assembly
   too, so they come from the newer AMRFinderPlus database, not from nanopore errors.
+- **Three more isolates with small resistance plasmids** ([below](#three-more-isolates-small-plasmids-measured)):
+  - Same ST as the study for all three, and every resistance element of the hybrid assemblies,
+    except one.
+  - The exception: default Flye missed AHB29's 4,999 bp *blaSHV* plasmid, as the study's
+    assemblers did. Flye `--meta` found it.
+  - Deep reads (450x) had to be subsampled to fit 8 GB.
+  - Flye closed several small plasmids as two or three copies in one circle, which multiplies
+    gene counts. irit-mcp now warns about it.
 - **What the laptop doesn't do:** basecalling. These reads arrived already basecalled with the
   `sup` model. Basecalling is GPU work, and on a CPU it is roughly 30× slower (see
   [basecalling](#basecalling)).
@@ -169,11 +177,89 @@ the laptop didn't do it.
   here on a laptop. Wick found `sup@v5.2.0` clearly better than `hac@v6.0.0` for assembly
   ([blog, 2026](https://rrwick.github.io/2026/06/11/dorado-v2.html)).
 
+## Three more isolates: small plasmids (measured)
+
+Measured 2026-11-14 on the same laptop, each run in an 8 GB, no-swap cgroup, through irit-mcp.
+The three isolates come from the same study as AF47 (Nagy et al.), so the study's hybrid
+assemblies (Unicycler with Illumina, `unicycler_bold` in its FigShare tables) give the expected
+plasmids and genes. They were chosen because a resistance gene sits on a small plasmid:
+
+| Isolate | Reads (ENA) | Gene on a small plasmid (hybrid assembly) | The study's Flye + Medaka |
+|---|---|---|---|
+| *K. pneumoniae* AF38 | ERR15423950, 2.58 Gb (about 450x) | *blaOXA-232* on 6,141 bp | found |
+| *E. coli* AHB29 | ERR15424439, 0.71 Gb (about 135x) | *blaSHV* on 4,999 bp | missed (so did its Autocycler + Medaka) |
+| *E. coli* AF39 | ERR15423954, 1.89 Gb (about 340x) | one of two *blaTEM-1* copies on 3,731 bp | missed that copy |
+
+**Route:** leanqc, then [`rasusa`](../tools/mcp.md#rasusa) to 100x, then Flye
+(`genome_size` set), Medaka (model `r1041_e82_400bps_sup_v5.0.0`, `batch_size` 50), AMRFinderPlus
+`--plus` and mlst. For AHB29 and AF39, Flye also ran in `--meta` mode, which keeps
+uneven coverage.
+
+**Deep reads need subsampling first.** The first AF38 run gave Flye all 2.58 Gb with
+`asm_coverage` 50. That option limits only Flye's first stage, and the consensus stage, which
+maps every read, went over 8 GB after 27 minutes and was killed. irit-mcp got a
+`rasusa` tool for this, and Flye's description now says so.
+
+| Isolate | Flye | Medaka | Contigs (circular) | Chromosome | ST (study's) |
+|---|---|---|---|---|---|
+| AF38 | 24 min, 4.54 GiB | 8.9 min, 5.28 GiB | 7 (7) | closed, 5.51 Mb | 231 (231) |
+| AHB29 | 20 min, 5.15 GiB | 6.9 min, 4.87 GiB | 3 (3) | closed, 5.19 Mb | 73 (73) |
+| AHB29 `--meta` | 21 min, 4.98 GiB | 5.8 min, 5.15 GiB | 13 (6) | closed | 73 |
+| AF39 | 13 min, 6.96 GiB | 4.2 min, 6.58 GiB | 7 (6) | closed, 5.15 Mb (the hybrid's is in two pieces) | 3032 (3032) |
+| AF39 `--meta` | 30 min, 6.46 GiB | 4.3 min, 6.49 GiB | 6 (6) | closed | 3032 |
+
+Rasusa took 53–145 s and at most 1.85 GiB. Nothing was OOM-killed once the reads were subsampled.
+
+**Resistance genes against the hybrid assembly** (AMRFinderPlus elements of type AMR, including
+point mutations; the study ran an older AMRFinderPlus database):
+
+| Assembly | Hybrid's elements found | Missing | Extra |
+|---|---|---|---|
+| AF38 | 21 of 21 | none | *mrx(A)*, *ompK35* truncation (newer database) |
+| AHB29 | 5 of 6 | ***blaSHV*** | none |
+| AHB29 `--meta` | 6 of 6 | none (*blaSHV-1*: the newer database names the allele) | none |
+| AF39 | 24 of 24 | none | *mrx(A)*, *cirA* Y277* |
+| AF39 `--meta` | 24 of 24 | none | same |
+
+- **AHB29's 4,999 bp plasmid** was missed by default Flye, as by the study's assemblers. In these
+  reads it sits at about 11x against 98x for the chromosome. That is low even though these reads
+  come from a rapid kit, which recovers small plasmids better than ligation (Wick et al.,
+  *Microbial Genomics* 2021, [doi:10.1099/mgen.0.000631](https://doi.org/10.1099/mgen.0.000631)).
+  `--meta` recovered it, along with ten extra contigs at 3–18x depth. Long-read assemblers in
+  general miss or distort small plasmids ([*Long read genome assemblers struggle with small
+  plasmids*, Microbial Genomics 2023, doi:10.1099/mgen.0.001024](https://doi.org/10.1099/mgen.0.001024)).
+- **AF39's 3,731 bp plasmid** was found by both modes this time, inside an 11,269 bp circle at
+  20x.
+
+**Small plasmids come out as several copies.** Flye closed several small plasmids as one circle
+holding two or three copies:
+- AF38's 6,141 bp *blaOXA-232* plasmid is an 18,377 bp contig with three copies, so
+  AMRFinderPlus lists *blaOXA-232* three times.
+- AHB29's plasmid in the `--meta` assembly is a 14,997 bp circle: three copies of 4,999 bp, three
+  *blaSHV-1* hits.
+- AF39's 3,731 bp plasmid is in an 11,269 bp circle with two *blaTEM-1* copies.
+- Two contigs of AF47 (10,848 and 17,738 bp) have the same shape.
+
+A gene's presence is right, but its copy count and the plasmid's length are not. Medaka keeps
+the copies.
+
+irit-mcp now warns about these. For each circular Flye contig up to 300 kb, it measures how much
+of the contig's sequence (21-mers) occurs more than once in it. Every multi-copy contig above
+scored 0.92–1.0; every other contig of these assemblies scored at most 0.2. Contigs above 0.5
+get a warning naming the copy count where the contig is a clean multiple.
+
 ## Limits and open questions
 
-- **One isolate.** AF47 is hard: its chromosome didn't close, and neither did the study's. Easier
-  genomes, and isolates whose resistance genes sit on small plasmids, need testing next. Small
-  plasmids are where Flye is weakest.
+- **Four isolates, one study.** AF47's chromosome didn't close; the other three closed. All four
+  come from one study's PromethION runs with the rapid barcoding kit and `sup` basecalls. Ligation
+  kits (which recover small plasmids less well, Wick et al. 2021) and other labs are untested.
+- **Small plasmids:** check them with `--meta` as well as the default. On AHB29 only `--meta` found
+  the resistance plasmid; it also adds low-depth fragments, so read its extra contigs with
+  care.
+- **Corrupt downloads.** Four ENA downloads (AHB29 and AF39, twice each) arrived the right size
+  but corrupt, with no error from curl; a third copy matched ENA's MD5. Flye stopped at an
+  "invalid sequence symbol" deep into the file. Check reads against ENA's MD5s before a run; irit
+  can't do that yet.
 - **isotable needed a long-read read-QC row** (fixed, [#21](https://github.com/dzulfikar08/irit/issues/21)).
   It marked the ONT sample `incomplete` for "no read count / no Q30 (fastp)", and leanqc's FastQC
   thresholds failed long reads on per-position quality. isotable now takes reads, read N50 and

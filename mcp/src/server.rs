@@ -735,7 +735,9 @@ use one empty outdir per sample. A 5 Mb genome at 50-100x takes roughly 10-30 mi
 contig count, total length, N50, longest contig and GC %, and per contig its depth and circularity. Flye recovers small plasmids \
 less reliably than consensus assemblers: check plasmid-borne genes. Polish with medaka next for fewer small insertions/deletions. \
 Deep data: asm_coverage only limits the first stage, and Flye's later stages use every read; a 5.7 Mb genome at 450x went over 8 GB, \
-so subsample reads above about 150x with rasusa first (e.g. coverage 100).")]
+so subsample reads above about 150x with rasusa first (e.g. coverage 100). Small plasmids: default mode can miss one at low depth \
+(meta mode found a 5 kb resistance plasmid default missed), and Flye may close a small plasmid as 2-3 copies in one circle; \
+a warning names such contigs, whose genes are then counted more than once.")]
     async fn flye(&self, Parameters(params): Parameters<x::FlyeParams>) -> Result<CallToolResult, ErrorData> {
         let d = self.execute("flye", &params, x::flye(&self.cfg.ctx, &params)).await;
         let dir = self.cfg.ctx.cwd.join(&params.outdir);
