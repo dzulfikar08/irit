@@ -11,6 +11,7 @@ pub mod hash;
 pub mod manifest;
 pub mod outputs;
 pub mod pipeline;
+pub mod place;
 pub mod reference;
 pub mod rename;
 pub mod tools;

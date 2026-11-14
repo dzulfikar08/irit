@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### gtdbprep
+- **`gtdbprep place`**: GTDB-Tk tree placement on the placement-only data dblock fetches
+  (identify, align `--skip_gtdb_refs`, classify without the ANI screen), with gPlace as the placer
+  under a memory cap. It checks that gPlace wrote every placement, skips genomes `gtdbprep ani`
+  assigned (`--skip-assigned`), and writes `place.tsv` and a `place.json` run record. On the three
+  Crystal Geyser bins the ANI screen couldn't assign it gave the same classifications as the earlier
+  manual run, 5.6 GiB peak.
+
 ### fieldsheet (new)
 - An offline web app, installable on a phone, for recording sample metadata in the field:
   projects, automatic sample IDs, range checks, GPS with a coarse or off option, photos kept on the

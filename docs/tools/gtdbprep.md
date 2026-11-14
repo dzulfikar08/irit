@@ -37,12 +37,17 @@ gtdbprep classify --bundle bundle.tar.gz --work prep-work --data release232/
 
 # Testing: prep, classify from the bundle, plain classify_wf, compare genome by genome
 gtdbprep verify --genomes mags/ -x fa --work rt-work --data release232/ --env ...
+
+# Laptop: species by ANI, then tree placement with gPlace for the rest (sections below)
+gtdbprep ani --genomes mags/ -x fa --work ani-work ...
+gtdbprep place --genomes mags/ -x fa --work place-work --skip-assigned ani-work \
+    --data placement-lite/release232 --env ~/micromamba/envs/gtdbtk
 ```
 
 Options shared by all commands: `--data` (or `GTDBTK_DATA_PATH`), `--env` (or `GTDBPREP_ENV`, a
 conda prefix whose `bin/` goes first on `PATH`), `--cpus` (default 4). `--full-tree true|false` on
-`classify` and `verify` defaults to false, or to true when the reference data has an empty `split/`
-folder (GTDB's mockup database).
+`classify`, `verify` and `place` defaults to false, or to true when the reference data has an empty
+`split/` folder (GTDB's mockup database).
 
 `prep` writes into `--work`:
 
@@ -414,6 +419,115 @@ checkpoint: a smaller index, but more data downloaded per sketch.
 public reference database, so the server can see which references were fetched, and so roughly
 which taxa the genomes belong to.
 
+## Tree placement on the placement-only data (`place`)
+
+Genomes the ANI screen doesn't assign to a species need tree placement. `gtdbtk classify_wf` can't
+do that on the `gtdbtk-r232-placement-lite` data: it aligns genomes against GTDB's reference MSA
+(7.9 GB), which that mirror leaves out. Placement itself doesn't need the MSA. `gtdbprep place`
+runs the route that does work: GTDB-Tk's `identify`, `align --skip_gtdb_refs`, then `classify`
+without the ANI screen, with [gPlace](https://github.com/cmc-aau/gPlace) instead of pplacer, under
+a memory cap. Every step is GTDB-Tk's ([GTDB-Tk](https://github.com/Ecogenomics/GTDBTk), Chaumeil
+et al.), and the placements are gPlace's (by GTDB-Tk's author; identical to pplacer's on 59
+genomes, [gPlace vs pplacer](../research/gplace-checks.md)). gtdbprep only arranges the calls and
+checks them. Cite GTDB, GTDB-Tk and gPlace for results.
+
+```sh
+gtdbprep place --genomes bins/ -x fa --work place-work \
+    --data <store>/gtdbtk-r232-placement-lite/release232 \
+    --env ~/micromamba/envs/gtdbtk --cpus 6 --max-memory 6G \
+    --skip-assigned ani-work      # optional: the --work folder of `gtdbprep ani`
+```
+
+What it does:
+
+1. Links the input files into `<work>/genomes/`, since GTDB-Tk refuses genome paths with spaces,
+   and lists them with GTDB-Tk's own rules, so genome IDs match the ones `ani` reports. With
+   `--skip-assigned`, it reads `<ani work>/assigned.json` and the screen's `ani_summary.tsv`
+   files, and unlinks the genomes the screen assigned: they need no placement.
+2. `gtdbtk identify`, then `gtdbtk align --skip_gtdb_refs`.
+3. `gtdbtk classify --pplacer_cpus N`, run through GTDB-Tk's own `main()` after setting
+   `options.skip_ani_screen = True`. That is the flag `classify_wf` sets after its own ANI step;
+   GTDB-Tk 2.8 has no command-line option for it, and the placement-only data has no skani
+   database. The call refuses any GTDB-Tk version other than 2.8.0.
+4. **gPlace as the placer.** GTDB-Tk has no option for choosing the placer
+   ([GTDBTk#728](https://github.com/Ecogenomics/GTDBTk/issues/728)). It runs
+   `pplacer -m WAG -j N -c REFPKG -o OUT.json MSA` by name, so `place` writes a `pplacer` script
+   into `<work>/bin/` and puts it first on `PATH`. The script runs
+   `gplace place --max_memory <cap>` with the same arguments and logs each call to
+   `<work>/logs/gplace-calls.log`. Only `pplacer --version` goes to the real pplacer (GTDB-Tk logs
+   it). Two checks: before `classify`, the Python that runs GTDB-Tk confirms that `pplacer`
+   resolves to that script; afterwards, every `pplacer.*.json` placement file under
+   `<work>/classify` must be the output of a logged gPlace call. Otherwise the run fails.
+
+`--max-memory` (default `6G`) goes to gPlace's `--max_memory`. gPlace then splits a tree into tiles
+when the whole placement wouldn't fit. At 6G every R232 tree peaked at about 5 GiB
+([gPlace vs pplacer](../research/gplace-checks.md#what-it-means-for-the-laptop-plan)). With the
+full bacterial tree (`--full-tree true`, not in placement-lite), don't go below about 5.2G.
+`--pplacer-cpus` (default 1) is gPlace's `-j`. `--gplace` names the program if it isn't the
+environment's or the one on `PATH`.
+
+**Outputs** in `--work`:
+
+| Path | What |
+|---|---|
+| `place.tsv` | one row per input genome (below) |
+| `classify/` | GTDB-Tk's own output: `gtdbtk.bac120.summary.tsv` (and `ar53`), trees, logs, the placement files in `classify/intermediate_results/pplacer/` |
+| `identify/`, `align/` | GTDB-Tk's `identify` and `align` output |
+| `place.json` | the run record: tool versions (GTDB-Tk, gPlace), options, counts, times, number of gPlace calls |
+| `logs/` | one log per command, and `gplace-calls.log` |
+
+`place.tsv` columns: `genome`, `classification`, `method`, `gtdbtk_method`, `note`,
+`pplacer_taxonomy`, `red_value`, `msa_percent`, `translation_table`, `closest_reference`,
+`closest_reference_ani`, `closest_reference_af`, `warnings`. `method` is:
+
+- `placement`: placed in the tree; the rest of the row is GTDB-Tk's summary row
+  (`gtdbtk_method` is its `classification_method`, `closest_reference` its
+  `closest_placement_reference`; with no ANI screen these are `N/A`);
+- `ani_screen`: skipped because `gtdbprep ani` assigned it; the classification and the closest
+  reference (with its ANI and AF) are the screen's;
+- `not_placed`: GTDB-Tk returned a row but no placement, for example
+  `Unclassified Bacteria` for a genome with too little of the marker alignment (see `warnings`);
+- `no_result`: GTDB-Tk returned no row (see `identify/gtdbtk.failed_genomes.tsv`).
+
+The command prints the same table, then counts and times. It exits 0 on success and 2 on any
+failure, with the reason on stderr. If every genome was assigned by the ANI screen, it runs no
+GTDB-Tk step and writes the table from the screen alone. The work folder must be new, empty, or
+one an earlier `place` made (marked by `place.json`): a rerun replaces `place`'s own files there and
+nothing else.
+
+**Installing gPlace.** gPlace 0.1.1 is not on PyPI or Bioconda (they have 0.1.0, as of
+2026-11-10), and `place` was tested only with 0.1.1. On the test laptop it was built from source
+with pip into the GTDB-Tk environment, which needs a C compiler (system gcc 16.2.1 there):
+
+```sh
+micromamba create -n gtdbtk -c conda-forge -c bioconda python=3.12 gtdbtk=2.8.0 skani=0.3.1
+micromamba run -n gtdbtk pip install \
+    git+https://github.com/cmc-aau/gPlace@695a401e0b54cc1bde55a5e1498a0697899b15ea
+micromamba run -n gtdbtk gplace check_install   # "Installation OK ... bit for bit"
+```
+
+**Tested** (2026-11-14): see [the run below](#place-on-the-crystal-geyser-bins).
+
+### `place` on the Crystal Geyser bins
+
+2026-11-14, GTDB-Tk 2.8.0 and gPlace 0.1.1 (`695a401`) in one micromamba environment,
+`gtdbtk-r232-placement-lite`, on the 12-core laptop. The input was the 23 MetaBAT 2 bins from Crystal
+Geyser ([MAGs on a laptop](../research/mag-laptop.md)), with `--skip-assigned` set to the
+`gtdbprep ani` work folder from that run, `--cpus 6`, `--max-memory 6G`. The whole command ran in a
+systemd scope with `MemoryMax=8G` and `MemorySwapMax=0`.
+
+- 20 bins were skipped as ANI-assigned. The other three were placed, with 3 gPlace calls: the
+  backbone, class-level tree 6 and class-level tree 1.
+- **Same classifications as the earlier run:** bin.12 `Unclassified Bacteria` (3.6% of the MSA),
+  bin.13 `g__Sideroxyarcus;s__`, bin.16 `g__OLB19;s__`. GTDB-Tk's `gtdbtk.bac120.summary.tsv` was
+  byte-identical to that of the run that used a separate shim and launcher outside gtdbprep, and so
+  were the placements in all three placement files.
+- **Peak memory 5.60 GiB** (the scope's `memory.peak`, 6,017,150,976 bytes), no OOM kill. gPlace
+  tiled all three trees; its largest estimate was 5.7 GiB, for class-level tree 1.
+- **Wall time 11.3 min:** identify 17 s, align 3 s, classify 652 s. The machine was shared, with a
+  load average of 20 to 27 on 12 cores the whole time. The earlier run of the same classify took
+  270 s at a load of about 1.7, so most of the difference is likely contention.
+
 ## Known gaps
 
 - **Mockup only.** The round trip ran against GTDB's mockup database (5 reference genomes, full
@@ -431,8 +545,13 @@ which taxa the genomes belong to.
 - **The ANI-screen step calls GTDB-Tk's internal Python API** (`ANIScreener.run_aniscreen`), which
   may change in a later GTDB-Tk release. The call is pinned to GTDB-Tk 2.8.0: `classify` refuses
   other versions until the API has been checked against them.
-- **Placement-side provenance** (pplacer/gPlace version, full-package hash) is not written next to
-  the results yet; only the laptop side has a manifest.
+- **Placement-side provenance** for `classify` (pplacer/gPlace version, full-package hash) is not
+  written next to the results yet; only the laptop side has a manifest. `place` records the GTDB-Tk
+  and gPlace versions in `place.json`, but no reference-data hash.
+- **`place` does not write a merged GTDB-Tk summary.** GTDB-Tk's `summary.tsv` in
+  `<work>/classify` holds only the placed genomes; ANI-assigned genomes are merged in `place.tsv`,
+  not in GTDB-Tk's format. `place` was tested on bacteria only (no archaea, no `--full-tree`), and
+  with gPlace 0.1.1 only.
 - **Marker summaries are plain text** inside a folder bundle (1.9 KB per genome); use `.tar.gz`
   to send them compressed.
 - **Linux and macOS only** (random IDs come from `/dev/urandom`; GTDB-Tk doesn't run on Windows).

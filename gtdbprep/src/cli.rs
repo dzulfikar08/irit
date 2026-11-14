@@ -31,6 +31,9 @@ enum Command {
     /// GTDB-Tk's ANI species screen without the 85 GB skani database: screen locally, fetch only
     /// the reference sketches needed, run GTDB-Tk's screen on them.
     Ani(AniArgs),
+    /// Tree placement on placement-only reference data: `identify`, `align --skip_gtdb_refs`, then
+    /// `classify` without the ANI screen, with gPlace as the placer under a memory cap.
+    Place(PlaceArgs),
     /// Make the screen index `ani` needs, from a full skani database (maintainers).
     #[command(subcommand)]
     AniIndex(AniIndexCmd),
@@ -88,6 +91,45 @@ struct AniArgs {
     #[arg(long, env = "GTDBTK_DATA_PATH")]
     data: PathBuf,
     /// Conda/micromamba environment with GTDB-Tk 2.8.
+    #[arg(long, env = "GTDBPREP_ENV")]
+    env: Option<PathBuf>,
+    #[arg(long, default_value_t = 4)]
+    cpus: usize,
+}
+
+#[derive(Args)]
+struct PlaceArgs {
+    /// Folder of genome FASTA files, as GTDB-Tk's --genome_dir.
+    #[arg(long)]
+    genomes: PathBuf,
+    /// File name extension, as GTDB-Tk's -x.
+    #[arg(short = 'x', long, default_value = "fna")]
+    extension: String,
+    /// Work folder (GTDB-Tk's identify/, align/ and classify/ output, place.tsv, place.json, logs).
+    /// Must be new, empty, or an earlier `place` run's (its files are replaced).
+    #[arg(long)]
+    work: PathBuf,
+    /// gPlace's --max_memory: 6G kept every GTDB R232 tree at about 5 GiB.
+    #[arg(long, default_value = crate::place::DEFAULT_MAX_MEMORY)]
+    max_memory: String,
+    /// CPUs for each gPlace call (GTDB-Tk's --pplacer_cpus).
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..))]
+    pplacer_cpus: u16,
+    /// Work folder of `gtdbprep ani`: genomes its screen assigned to a species are not placed and
+    /// get the screen's call in place.tsv.
+    #[arg(long)]
+    skip_assigned: Option<PathBuf>,
+    /// The gplace program (default: the GTDB-Tk environment's, else the one on PATH).
+    #[arg(long)]
+    gplace: Option<PathBuf>,
+    /// Pass --full_tree to GTDB-Tk (default: only when the reference data has no split trees).
+    #[arg(long)]
+    full_tree: Option<bool>,
+    /// GTDB-Tk reference data with the placement trees (`gtdbtk-r232-placement-lite` has them;
+    /// no skani/ or msa/ needed).
+    #[arg(long, env = "GTDBTK_DATA_PATH")]
+    data: PathBuf,
+    /// Conda/micromamba environment with GTDB-Tk 2.8.0 and gPlace.
     #[arg(long, env = "GTDBPREP_ENV")]
     env: Option<PathBuf>,
     #[arg(long, default_value_t = 4)]
@@ -223,6 +265,19 @@ fn prep_options(a: &PrepArgs) -> PrepOptions {
     }
 }
 
+fn place_options(a: &PlaceArgs, full_tree: bool) -> crate::place::PlaceOptions {
+    crate::place::PlaceOptions {
+        genomes: a.genomes.clone(),
+        extension: a.extension.clone(),
+        work: a.work.clone(),
+        max_memory: a.max_memory.clone(),
+        pplacer_cpus: usize::from(a.pplacer_cpus),
+        skip_assigned: a.skip_assigned.clone(),
+        gplace: a.gplace.clone(),
+        full_tree,
+    }
+}
+
 fn full_tree(flag: Option<bool>, data: &Path) -> bool {
     flag.unwrap_or_else(|| {
         let none = !reference::has_split_trees(data);
@@ -281,6 +336,34 @@ fn run(cli: Cli) -> Result<bool> {
                 "GTDB-Tk's ANI screen output: {}",
                 r.out_dir.join("classify/ani_screen").display()
             );
+            Ok(true)
+        }
+        Command::Place(a) => {
+            let ft = full_tree(a.full_tree, &a.data);
+            let opts = place_options(&a, ft);
+            let t = Tools {
+                env_prefix: a.env,
+                data: a.data,
+                cpus: a.cpus.max(1),
+            };
+            let r = crate::place::run(&opts, &t)?;
+            print!("{}", crate::place::rows_to_tsv(&r.rows));
+            println!(
+                "{} genome(s) placed with gPlace ({} gplace call(s), --max_memory {}), {} skipped \
+                 (assigned by the ANI screen)",
+                r.placed, r.gplace_calls, opts.max_memory, r.skipped
+            );
+            println!(
+                "times: identify {:.1} s, align {:.1} s, classify {:.1} s",
+                r.seconds_identify, r.seconds_align, r.seconds_classify
+            );
+            println!("table: {}", r.table.display());
+            if r.placed > 0 {
+                println!(
+                    "GTDB-Tk's summary: {}",
+                    r.gtdbtk_out.join("classify").display()
+                );
+            }
             Ok(true)
         }
         Command::AniIndex(AniIndexCmd::Build { db, out, release }) => {
@@ -402,5 +485,70 @@ pub fn main(fixed: Option<&str>) -> ExitCode {
             eprintln!("gtdbprep: error: {e:#}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn place(args: &[&str]) -> Result<PlaceArgs, clap::Error> {
+        let mut v = vec!["gtdbprep", "place"];
+        v.extend_from_slice(args);
+        match Cli::try_parse_from(v)?.command {
+            Command::Place(a) => Ok(a),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn place_arguments() {
+        let base = ["--genomes", "g", "--work", "w", "--data", "d"];
+        let a = place(&base).unwrap();
+        assert_eq!(
+            (
+                a.extension.as_str(),
+                a.max_memory.as_str(),
+                a.pplacer_cpus,
+                a.cpus
+            ),
+            ("fna", "6G", 1, 4)
+        );
+        assert!(a.skip_assigned.is_none() && a.gplace.is_none() && a.full_tree.is_none());
+        let mut v = base.to_vec();
+        v.extend([
+            "-x",
+            "fa",
+            "--max-memory",
+            "8.5G",
+            "--pplacer-cpus",
+            "2",
+            "--skip-assigned",
+            "ani",
+            "--gplace",
+            "/x/gplace",
+            "--env",
+            "/e",
+            "--cpus",
+            "6",
+            "--full-tree",
+            "false",
+        ]);
+        let a = place(&v).unwrap();
+        let o = place_options(&a, false);
+        assert_eq!(o.extension, "fa");
+        assert_eq!(o.max_memory, "8.5G");
+        assert_eq!(o.pplacer_cpus, 2);
+        assert_eq!(o.skip_assigned.as_deref(), Some(Path::new("ani")));
+        assert_eq!(o.gplace.as_deref(), Some(Path::new("/x/gplace")));
+        assert_eq!(a.env.as_deref(), Some(Path::new("/e")));
+        assert_eq!(a.cpus, 6);
+        assert_eq!(a.full_tree, Some(false));
+        // --work and --genomes are required; --pplacer-cpus 0 is refused.
+        assert!(place(&["--genomes", "g", "--data", "d"]).is_err());
+        assert!(place(&["--work", "w", "--data", "d"]).is_err());
+        let mut v = base.to_vec();
+        v.extend(["--pplacer-cpus", "0"]);
+        assert!(place(&v).is_err());
     }
 }
