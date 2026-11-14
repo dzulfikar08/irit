@@ -55,6 +55,12 @@ What's done, what's next, and what's further out. Items move up as evidence come
       ([seqplan](tools/seqplan.md)). Next: measure how low the coverage can go for this kind of
       work (subsampling the *K. pneumoniae* reads from the paper reproduction), so a plan can use
       a measured coverage instead of a habit.
+- [x] **`leanqc` long-read views** (0.3.2): N50, N90, length bins and quality by length.
+- [x] **Replay gaps from the laptop run closed** (0.3.2): output folders ([#2](https://github.com/dzulfikar08/irit/issues/2)),
+      naming genomes ([#3](https://github.com/dzulfikar08/irit/issues/3)), a recorded `gtdbprep ani`
+      tool ([#4](https://github.com/dzulfikar08/irit/issues/4)), Shovill and leanqc outputs that change
+      between runs ([#5](https://github.com/dzulfikar08/irit/issues/5), [#6](https://github.com/dzulfikar08/irit/issues/6)),
+      so `replay.sh` reruns the isolate path from reads to species on its own.
 
 ## Next
 
@@ -81,32 +87,28 @@ What's done, what's next, and what's further out. Items move up as evidence come
       since (0.3.4): parallel range requests with retries (377 sketches from GTDB's server in
       474–562 s instead of 1,167–2,275 s), and the opt-in `--species-only`, which fetched 47 instead of 882
       sketches for six test genomes with the same calls (fewer unassigned-hits rows than GTDB-Tk's;
-      [measurements](research/ani-laptop.md#7-parallel-requests-and-a-species-only-mode)). Next:
-      check `--species-only` on genera with many moderately related species, where the "other
-      related references" column may lose rows.
+      [measurements](research/ani-laptop.md#7-parallel-requests-and-a-species-only-mode)). On five
+      genomes from crowded genera (*Streptococcus*, *B. cereus*, *Burkholderia*, *Pseudomonas*,
+      *Klebsiella*) `--species-only` fetched 542 instead of 2,694 references with the same calls and
+      the same related references ([measurements](research/ani-laptop.md#species-only-in-crowded-genera)).
 - [ ] **`msascope` after the redesign** (built in 0.3.0–0.3.2: themes, names, hover card, colour
       schemes, hidden insert and gappy columns, tree panel, selection, export, sort and filter,
-      motif search, annotation tracks, reference row): remember the reference row between
-      sessions, annotation tracks and the pinned row in figures, multi-threaded gzip, alignments
-      larger than RAM.
+      motif search, annotation tracks, reference row, remembered between sessions, and annotation
+      tracks and the pinned row in figures; unreleased: gzip decoded on its own thread, BGZF in
+      parallel): alignments larger than RAM.
 - [ ] **Nanopore isolates on a laptop**: `flye` and `medaka` tools in `irit-mcp` (0.4.0). One
       carbapenemase-producing *K. pneumoniae* gave the same ST, the same 49 AMRFinderPlus elements,
       the same completeness and the same GTDB species from ONT reads alone as from Illumina, in an
       8 GB cap ([write-up](research/nanopore-laptop.md)). isotable reads long-read QC, the record
       hashes Medaka's model file, and Medaka `batch_size` 50 or 25 keeps it under 5 GiB with the
       same consensus (#21). Next: more isolates (plasmid-borne genes, where Flye is weakest).
-- [ ] **`dblock` additions**: GTDB-Tk split download, parallel downloads.
-- [ ] **`leanqc` additions**: long-read views (N50, quality by length).
+- [ ] **`dblock` additions**: GTDB-Tk split download (waits for GTDB-Tk's gPlace layout). Parallel
+      downloads are built (unreleased, `fetch --jobs`).
 - [ ] **Check the `irit-mcp` wrappers on a large machine**: Bakta with the full database, SPAdes
       through Shovill (the real-tools workflow uses SKESA). GTDB-Tk `classify_wf` has now run with
       R232 data for a genome the ANI screen assigns, through the small data folder `gtdbprep ani`
       builds ([laptop run](research/e2e-laptop.md)); genomes that need tree placement still go
       through the launcher and gPlace outside irit-mcp ([#4](https://github.com/dzulfikar08/irit/issues/4)).
-- [ ] **Close the replay gaps from the laptop run**: output folders ([#2](https://github.com/dzulfikar08/irit/issues/2)),
-      naming genomes ([#3](https://github.com/dzulfikar08/irit/issues/3)), a recorded `gtdbprep ani`
-      tool ([#4](https://github.com/dzulfikar08/irit/issues/4)), Shovill and leanqc outputs that change
-      between runs ([#5](https://github.com/dzulfikar08/irit/issues/5), [#6](https://github.com/dzulfikar08/irit/issues/6)),
-      so `replay.sh` reruns the isolate path from reads to species on its own.
 
 ## Later
 
@@ -123,8 +125,10 @@ What's done, what's next, and what's further out. Items move up as evidence come
       exactly, GTDB confirmed the species, and it found six irit bugs (#14–#19)
       ([write-up](research/paper-redo-kpn.md)). Still to do: more papers and lineages, and the
       hand-built comparison.
-- [ ] **Gaps the paper redo showed**: QUAST-style assembly stats, coverage by read mapping, and
-      virulence/typing (Kleborate, VirulenceFinder/VFDB).
+- [ ] **Gaps the paper redo showed**: QUAST-style assembly stats (`assembly_stats`), coverage by
+      read mapping (`coverm_genome`) and *Klebsiella* typing (`kleborate`) are built (unreleased).
+      Still missing: virulence genes for other species (VirulenceFinder/VFDB) and plasmid replicons
+      (PlasmidFinder).
 - [x] **How much depth is enough** ([write-up](research/coverage-depth.md)): on the paper's three
       *K. pneumoniae*, every Table 1 call held down to 15× (20× is a practical target, 2.5 times as
       many isolates per run as 50×); below that Shovill needs `gsize`, and irit-mcp warns when it didn't get one (#22).

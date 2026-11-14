@@ -313,7 +313,10 @@ same genomes fetched nothing and took 18 s, and needs no `--source`.
 references that could give the species call (see below). Measured with `--source gtdb` and an
 empty cache: *M. tuberculosis* H37Rv 1 reference instead of 377 (2.9 MB instead of 1.23 GB),
 *E. coli* K-12 18 instead of 420 (61 MB instead of 1.32 GB), *B. subtilis* 168 14 instead of 21.
-The species call is the same; what can be missing are rows of the other two files (below).
+The species call is the same; what can be missing are rows of the other two files (below). In
+crowded genera the saving is smaller: five genomes from *Streptococcus*, *Bacillus cereus*,
+*Burkholderia*, *Pseudomonas* and *Klebsiella* needed 542 references instead of 2,694 (1.68 GB
+instead of 8.07 GB), with the same calls and the same related references.
 
 **`--source gtdb` is opt-in, at GTDB's request.** GTDB publishes the skani database only inside its 60.8 GB
 `.tar.gz`. `gtdbprep ani` reads sketches out of that file on GTDB's server with HTTP range
@@ -386,9 +389,10 @@ does not assign) lists only the references that were fetched. For a test genome 
 within reach, that was 2 rows instead of 14. GTDB-Tk's `classify` reads this file for its notes
 on genomes placed in the tree (closest reference, near misses), so those notes can differ too;
 the placement and the classification itself don't use it. The "other related references" column
-of `ani_summary.tsv` can also lose rows of more distant references: every reference dropped on the
-test genomes had ANI 87.1 or less (or no skani hit). None were lost from the five assigned genomes'
-files. Measurements: [The ANI species check on a laptop](../research/ani-laptop.md#7-parallel-requests-and-a-species-only-mode).
+of `ani_summary.tsv` lists the 50 closest references with AF >= 0.5, so it loses a row only if a
+dropped reference had AF >= 0.5. No related reference was lost on any of the ten assigned test genomes
+(for one, two tied references came out in the other order); on the five from crowded genera, every
+dropped reference had AF below 0.5 (the highest ANI among them was 88.24). Measurements: [The ANI species check on a laptop](../research/ani-laptop.md#7-parallel-requests-and-a-species-only-mode).
 
 It prints, per genome, the number of marker k-mers and of references screened in, and the bytes
 fetched. Peak memory was 1.9 GB for 9 genomes (3,166 references); GTDB-Tk's own screen on the full

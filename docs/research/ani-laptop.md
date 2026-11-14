@@ -374,11 +374,48 @@ requests is the reliable figure.
   doesn't assign lists only the fetched references (bmut: 2 of 14 rows). GTDB-Tk's `classify`
   reads that file for its notes on placed genomes (closest reference, near misses), so those notes
   can be shorter; the placement and classification don't use it. The "other related references"
-  column can lose references the rule drops (here, below ANI 87.1); none were lost on these
-  genomes, whose related references are all at ANI 87.8 or more. Genomes in genera with many
-  moderately related species may lose some.
+  column lists the 50 closest hits with AF >= 0.5 (GTDB-Tk 2.8.0, `ANIScreener` and
+  `Classify.formatnote`), so it loses a row only if the rule drops a reference with AF >= 0.5.
+  None were lost on these genomes, nor on five genomes from crowded genera (below).
 - **It is not GTDB-Tk-identical output**, so it stays opt-in. The default still fetches every
   reference skani's screen keeps.
+
+### Species-only in crowded genera
+
+Measured 2026-11-14 on the same laptop and connection, `--source gtdb`, each mode with its own
+empty cache, on five NCBI reference genomes from genera with many species at ANI 88–95 % to each
+other (renamed, since GTDB-Tk refuses genomes named like its references): *Streptococcus mitis* B6
+(GCF_000027165.1), *Bacillus cereus* ATCC 14579 (GCF_000007825.1), *Burkholderia cenocepacia*
+J2315 (GCF_000009485.1), *Pseudomonas fluorescens* SBW25 (GCF_000009225.2) and *Klebsiella
+pneumoniae* HS11286 (GCF_000240185.1). The fetch shared the connection with other downloads, so
+its times are rough; the bytes are exact.
+
+| Run | References fetched | Downloaded | Requests | Fetch (s) |
+|---|---:|---:|---:|---:|
+| Full (default) | 2,694 | 8,075 MB | 2,267 | 3,207 |
+| `--species-only` | 542 | 1,683 MB | 528 | 683 |
+
+| Genome | Screened in | Kept by `--species-only` | Call (both runs) | Other related references |
+|---|---:|---:|---|---|
+| *S. mitis* B6 | 637 | 334 | GCF_000027165.1, 100.0 (*S. mitis_AR*) | 50 and 50, same set |
+| *B. cereus* ATCC 14579 | 74 | 45 | GCF_000007825.1, 100.0 | 42 and 42, identical |
+| *B. cenocepacia* J2315 | 488 | 67 | GCF_900446215.1, 100.0 | 50 and 50, identical |
+| *P. fluorescens* SBW25 | 1,142 | 91 | GCF_021166635.1, 98.22 (*Aquipseudomonas petroselini* in R232) | 33 and 33, identical |
+| *K. pneumoniae* HS11286 | 474 | 5 | GCF_000742135.1, 99.08 | 4 and 4, identical |
+
+- **Same calls, and the same related references.** All five calls, ANIs and AFs match. The
+  `ani_summary.tsv` files differ in one place: for *S. mitis*, two references with the same ANI
+  (93.19) and AF (0.688) are listed in the other order. GTDB-Tk sorts by ANI then AF and keeps
+  skani's output order for ties, and skani lists them in a different order from a smaller database.
+- **Why nothing was lost.** Searching both fetched databases with skani 0.3.1 gave 810 hits in
+  the full run and 541 in the species-only run. None of the 269 dropped hits had AF >= 0.5 (the
+  highest dropped ANI was 88.24, for *S. mitis*), and only AF >= 0.5 hits can appear in the
+  related-references column.
+- **The saving is smaller here.** `--species-only` fetched a fifth of the full run (4.8 times
+  fewer bytes), against a nineteenth on the first six genomes. In a crowded genus many references
+  share enough markers to be within reach of ANI 93, so they have to be fetched. *S. mitis* alone
+  kept 334 of its 637.
+- None of these genomes was unassigned, so the unassigned-hits file was empty in both runs.
 
 ## 8. Licences and credit
 
