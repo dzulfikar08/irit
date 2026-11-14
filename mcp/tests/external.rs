@@ -833,8 +833,10 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     assert_eq!((res["sample"].as_str(), res["scheme"].as_str(), res["st"].as_str()), (Some("s1"), Some("saureus"), Some("22")), "{r}");
     assert!(r["structuredContent"]["command"].as_str().unwrap().contains("--label=s1"));
     assert_eq!(r["structuredContent"]["database_version"], "2025-12-29", "{r}");
-    let r = c.call("mlst", json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.tsv"}));
-    assert_eq!(r["structuredContent"]["field"], "outfile", "{r}");
+    // a name isotable won't read runs, with a warning (a side analysis outside the table)
+    let r = c.call("mlst", json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "side/s1.tsv"}));
+    assert_ne!(r["isError"], true, "{r}");
+    assert!(r["structuredContent"]["warnings"].to_string().contains("isotable won't read"), "{r}");
 
     // 3: AMRFinderPlus with the database from $AMRFINDER_DB
     let r = c.call(
@@ -872,12 +874,12 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     let log: Value = serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
     let calls = log["calls"].as_array().unwrap();
     let ok: Vec<&Value> = calls.iter().filter(|c| c["status"] == "ok").collect();
-    assert_eq!(ok.iter().map(|c| c["mcp_tool"].as_str().unwrap()).collect::<Vec<_>>(), ["shovill", "mlst", "amrfinder", "isotable"]);
+    assert_eq!(ok.iter().map(|c| c["mcp_tool"].as_str().unwrap()).collect::<Vec<_>>(), ["shovill", "mlst", "mlst", "amrfinder", "isotable"]);
     let mlst_inputs: Vec<&str> = ok[1]["inputs"].as_array().unwrap().iter().map(|i| i["path"].as_str().unwrap()).collect();
     for want in ["db/VERSION.txt", "db/scheme_species_map.tab", "db/blast/mlst.fa.nsq", "db/pubmlst/saureus/saureus.txt"] {
         assert!(mlst_inputs.iter().any(|p| p.ends_with(want)), "{want} not in {mlst_inputs:?}");
     }
-    let amr = ok[2];
+    let amr = ok[3];
     assert_eq!(amr["version"], "4.2.7");
     assert!(amr["inputs"].as_array().unwrap().iter().any(|i| i["path"].as_str().unwrap().ends_with("2026-10-29.1/version.txt")));
     let shovill_log = outputs(ok[0]).into_iter().find(|(p, _)| p.ends_with("shovill.log")).unwrap();

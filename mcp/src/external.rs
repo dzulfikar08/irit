@@ -1992,14 +1992,17 @@ pub fn small_skani_db(skani: &Path) -> Vec<PathBuf> {
     entries
 }
 
-/// An output whose name isotable's file search must recognise: it ends in `.tsv` and holds `tag`
+/// An output whose name isotable's file search recognises: it ends in `.tsv` and holds `tag`
 /// (isotable/src/parse.rs `scan`: `mlst` for mlst, `amrfinder` for AMRFinderPlus, any case for the latter).
-fn isotable_name(field: &str, value: &str, tag: &str, example: &str) -> Check<()> {
+/// Any other name is allowed (a side analysis that shouldn't join the table), with a warning that
+/// isotable won't read it.
+fn isotable_name(inv: &mut Invocation, value: &str, tag: &str, example: &str) {
     let name = Path::new(value).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     if !name.ends_with(".tsv") || !name.to_ascii_lowercase().contains(tag) {
-        return v::invalid(field, format!("{value}: name it like {example} (ending in .tsv, with \"{tag}\" in the name) so isotable finds it"));
+        inv.warnings.push(format!(
+            "{value}: isotable won't read this file; name it like {example} (ending in .tsv, with \"{tag}\" in the name) if it belongs in the table"
+        ));
     }
-    Ok(())
 }
 
 /// The sample part of `<sample>.<tag>.tsv` (or `_<tag>`, `-<tag>`), if the name has one.
@@ -2149,7 +2152,7 @@ pub fn mlst(ctx: &Ctx, p: &MlstParams) -> Check<Invocation> {
         v::sequence_file(&path, "contigs", c, Seq::Fasta)?;
         inv.inputs.push(path);
     }
-    isotable_name("outfile", &p.outfile, "mlst", "s1.mlst.tsv")?;
+    isotable_name(&mut inv, &p.outfile, "mlst", "s1.mlst.tsv");
     let out = v::output_file(ctx, "outfile", &p.outfile, p.overwrite)?;
     inv.outputs.push(out.clone());
     inv.opt("outfile", &p.outfile);
@@ -2293,7 +2296,7 @@ pub struct AmrfinderParams {
     /// Text for a first "Name" column on every row, e.g. the sample name.
     #[serde(default)]
     pub name: Option<String>,
-    /// Report, inside the root. Name it `<sample>.amrfinder.tsv` so isotable finds it and takes the sample name from it.
+    /// Report, inside the root. Name it `<sample>.amrfinder.tsv` so isotable finds it and takes the sample name from it; another name is allowed (with a warning) for a run that shouldn't join the table.
     pub output: String,
     /// Also write every mutation position checked here (needs organism).
     #[serde(default)]
@@ -2475,7 +2478,7 @@ pub fn amrfinder(ctx: &Ctx, p: &AmrfinderParams) -> Check<Invocation> {
         v::text("name", n)?;
         inv.opt("name", n);
     }
-    isotable_name("output", &p.output, "amrfinder", "s1.amrfinder.tsv")?;
+    isotable_name(&mut inv, &p.output, "amrfinder", "s1.amrfinder.tsv");
     let out = v::output_file(ctx, "output", &p.output, p.overwrite)?;
     inv.outputs.push(out.clone());
     inv.opt("output", &p.output);
@@ -3075,7 +3078,7 @@ pub fn coverm_genome(ctx: &Ctx, p: &CovermGenomeParams) -> Check<Invocation> {
         inv.inputs.push(path);
         reads.push(list_item(value));
     }
-    isotable_name("output", &p.output, "coverm", "s1.coverm.tsv")?;
+    isotable_name(&mut inv, &p.output, "coverm", "s1.coverm.tsv");
     let out = v::output_file(ctx, "output", &p.output, p.overwrite)?;
     if inv.inputs.contains(&out) {
         return v::invalid("output", "output is one of the inputs");
@@ -4014,8 +4017,9 @@ mod tests {
         let bad = |v: serde_json::Value| mlst(&cx, &parse(v)).unwrap_err().field;
         assert_eq!(bad(json!({"contigs": [], "outfile": "typing/a.mlst.tsv"})), "contigs");
         assert_eq!(bad(json!({"contigs": ["reads.fq"], "outfile": "typing/a.mlst.tsv"})), "contigs");
-        assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.tsv"})), "outfile"); // isotable wouldn't find it
-        assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.mlst.csv"})), "outfile");
+        // isotable wouldn't find it: allowed, with a warning
+        let side = mlst(&cx, &parse(json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.tsv"}))).unwrap();
+        assert!(side.warnings.iter().any(|w| w.contains("isotable won't read")), "{:?}", side.warnings);
         assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa", "asm/s2/contigs.fa"], "outfile": "typing/a.mlst.tsv", "label": "x"})), "label");
         assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/a.mlst.tsv", "label": "a\tb"})), "label");
         assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/a.mlst.tsv", "scheme": "../x"})), "scheme");
@@ -4108,7 +4112,8 @@ mod tests {
         assert_eq!(bad(json!({"report_common": true, "organism": "Escherichia"})).field, "report_common"); // needs plus
         assert_eq!(bad(json!({"ident_min": 1.5})).field, "ident_min");
         assert_eq!(bad(json!({"coverage_min": -0.1})).field, "coverage_min");
-        assert_eq!(bad(json!({"output": "typing/s1.tsv"})).field, "output");
+        let side = amrfinder(&cx, &parse(json!({"nucleotide": "asm/s1/contigs.fa", "database": "amrdb", "output": "side/s1.noorganism.tsv"}))).unwrap();
+        assert!(side.warnings.iter().any(|w| w.contains("isotable won't read")), "{:?}", side.warnings);
         assert_eq!(bad(json!({"mutation_all": "typing/m.tsv"})).field, "mutation_all"); // needs organism
         assert_eq!(bad(json!({"protein_output": "typing/p.faa"})).field, "protein_output");
         assert_eq!(bad(json!({"nucleotide_output": "typing/s1.amrfinder.tsv"})).field, "nucleotide_output");
@@ -4362,7 +4367,7 @@ mod tests {
         let inv = coverm_genome(&cx, &parse(with("threads", json!(4)))).unwrap();
         assert!(inv.args.contains(&"--threads=4".to_string()));
         let bad = |j: serde_json::Value| coverm_genome(&cx, &parse(j)).unwrap_err();
-        assert_eq!(bad(with("output", json!("cov/s1.tsv"))).field, "output");
+        assert!(coverm_genome(&cx, &parse(with("output", json!("cov/s1.tsv")))).unwrap().warnings.iter().any(|w| w.contains("isotable won't read")));
         assert_eq!(bad(with("r2", json!("trim/s1_R1.fq.gz"))).field, "r2");
         assert_eq!(bad(with("assembly", json!("trim/s1_R1.fq.gz"))).field, "assembly");
         assert_eq!(bad(with("min_read_percent_identity", json!(101))).field, "min_read_percent_identity");

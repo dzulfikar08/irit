@@ -15,6 +15,9 @@
   1 by default (byte-identical output, so replayed and compared). Flye's description and guide now
   say that `asm_coverage` only limits its first stage: a 5.7 Mb *K. pneumoniae* at about 450x went
   over 8 GB in Flye's consensus stage, so deep long reads are subsampled first.
+- **Outputs isotable won't read are allowed**: mlst, AMRFinderPlus and CoverM genome outputs not
+  named `<sample>.<tool>.tsv` now run with a warning instead of being refused, for side analyses
+  that shouldn't join the table (found by the second paper redo).
 - A tool whose bundled data (mlst's schemes, Kleborate's databases) can't be found now gets a
   warning that the record identifies it by version only.
 

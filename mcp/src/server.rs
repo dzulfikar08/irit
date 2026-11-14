@@ -691,7 +691,8 @@ SHA-256 with deep: true (minutes to hours). Read-only.")]
     }
 
     #[tool(description = "Environment variables (GTDBTK_DATA_PATH, CHECKM2DB, BAKTA_DB, AMRFINDER_DB, ...) pointing at the locked databases, as a \
-map and as shell export lines. Read-only.")]
+map and as shell export lines. Read-only. Needs a project: in a new folder call dblock_add first (dblock_plan then shows which \
+databases the shared store already holds).")]
     async fn dblock_env(&self, Parameters(params): Parameters<p::DblockProject>) -> Result<CallToolResult, ErrorData> {
         let d = self.execute("dblock_env", &params, p::dblock_simple(&self.cfg.ctx, "env", &params)).await;
         self.reply(d, |d, v| {
