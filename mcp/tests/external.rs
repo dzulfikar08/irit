@@ -269,6 +269,8 @@ while [ $# -gt 0 ]; do
     --min-covered-fraction=*) [ $cmd = genome ] || die "genome option $1 for contig"; mcf=${1#--min-covered-fraction=} ;;
     --single-genome) [ $cmd = genome ] || die "genome option $1 for contig" ;;
     --genome-fasta-files) [ $cmd = genome ] || die "genome option $1 for contig"; mode=g ;;
+    --genome-fasta-directory=*) gdir=${1#--genome-fasta-directory=} ;;
+    --genome-fasta-extension=*) gext=${1#--genome-fasta-extension=} ;;
     --methods) mode=m ;;
     --coupled) mode=c ;;
     -*) die "unknown option $1" ;;
@@ -288,6 +290,10 @@ if [ -n "$cache" ]; then
   for s in $r1s; do
     { printf 'BAM\001\046\000\000\000@HD\tVN:1.6\tSO:coordinate\n@CO\t%08d\n' $(($$ % 100000000)); } | gzip -c > "$cache/$(basename "$ref").$s.bam"
   done
+fi
+if [ -n "${gdir:-}" ]; then
+  for g in "$gdir"/*."${gext:-fna}"; do [ -f "$g" ] && genomes="$genomes $g"; done
+  [ -n "$genomes" ] || die "no genomes in $gdir"
 fi
 if [ $cmd = genome ] && [ -n "$genomes" ]; then
   case "$methods" in *count*) [ "$mcf" = 0 ] || die "The 'counts' coverage estimator cannot be used when --min-covered-fraction is > 0" ;; esac
@@ -392,11 +398,16 @@ while [ $# -gt 0 ]; do
     --output-representative-list=*) rlist=${1#--output-representative-list=} ;;
     --output-representative-fasta-directory-copy=*) rdir=${1#--output-representative-fasta-directory-copy=} ;;
     --genome-fasta-files) mode=f ;;
+    --genome-fasta-directory=*) gdir=${1#--genome-fasta-directory=} ;;
+    --genome-fasta-extension=*) gext=${1#--genome-fasta-extension=} ;;
     -*) die "unknown option $1" ;;
     *) [ "$mode" = f ] || die "stray $1"; [ -f "$1" ] || die "cannot open $1"; files="$files $1" ;;
   esac
   shift
 done
+if [ -n "${gdir:-}" ]; then
+  for g in "$gdir"/*."${gext:-fna}"; do [ -f "$g" ] && files="$files $g"; done
+fi
 if [ -d "$rdir" ] && [ -n "$(ls -A "$rdir")" ]; then echo "ERROR The output-representative-fasta-directory-copy specified ($rdir) exists and is not empty" >&2; exit 1; fi
 mkdir -p "$rdir"
 : > "$cdef"; : > "$rlist"; seen=

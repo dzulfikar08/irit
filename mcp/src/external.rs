@@ -3698,9 +3698,21 @@ pub fn galah(ctx: &Ctx, p: &GalahParams) -> Check<Invocation> {
     for (path, _, _) in &genomes {
         inv.inputs.push(path.clone());
     }
-    inv.args.push("--genome-fasta-files".into());
-    inv.args.extend(genomes.iter().map(|(_, shown, _)| list_item(shown)));
+    genome_args(&mut inv, &p.genomes, &p.genome_dirs, &p.extension, &genomes);
     Ok(inv)
+}
+
+/// Genomes for galah and CoverM: one folder is passed as the folder (`-d`, `-x`), so a replay
+/// after a non-deterministic assembler takes whatever bins the folder then holds (SemiBin2 numbers
+/// its bins by cluster, so the names can change); otherwise the files themselves.
+fn genome_args(inv: &mut Invocation, genomes: &[String], dirs: &[String], extension: &Option<String>, files: &[(PathBuf, String, String)]) {
+    if genomes.is_empty() && dirs.len() == 1 {
+        inv.opt("genome-fasta-directory", &dirs[0]);
+        inv.opt("genome-fasta-extension", extension.as_deref().unwrap_or("fa").trim_start_matches('.'));
+    } else {
+        inv.args.push("--genome-fasta-files".into());
+        inv.args.extend(files.iter().map(|(_, shown, _)| list_item(shown)));
+    }
 }
 
 // ---------- CoverM abundance (genome mode, many genomes and samples) ----------
@@ -3822,8 +3834,7 @@ pub fn coverm_abundance(ctx: &Ctx, p: &CovermAbundanceParams) -> Check<Invocatio
         inv.opt("threads", t);
     }
     // Each takes several values (clap num_args 1..), which end at the next option.
-    inv.args.push("--genome-fasta-files".into());
-    inv.args.extend(genomes.iter().map(|(_, shown, _)| list_item(shown)));
+    genome_args(&mut inv, &p.genomes, &p.genome_dirs, &p.extension, &genomes);
     inv.args.push("--methods".into());
     inv.args.extend(coverm_abundance_methods(p).iter().map(|m| m.to_string()));
     inv.args.push("--coupled".into());
