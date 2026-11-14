@@ -227,6 +227,10 @@ impl Progress {
         self.rows.store(n as u64, Ordering::Relaxed);
     }
 
+    pub(crate) fn add_bytes(&self, n: u64) {
+        self.bytes.fetch_add(n, Ordering::Relaxed);
+    }
+
     /// A new pass over the file: bytes count from 0 again.
     fn start_pass(&self) {
         self.bytes.store(0, Ordering::Relaxed);
@@ -309,10 +313,16 @@ pub fn load_with(
     ty: Option<SeqType>,
     progress: Option<&Progress>,
 ) -> Result<Alignment> {
+    let f = || File::open(path).with_context(|| format!("opening {}", path.display()));
+    let mut magic = [0u8; 2];
+    let gz = f()?.read(&mut magic)? == 2 && magic == [0x1f, 0x8b];
     let open = || -> Result<Reader<'_>> {
-        let f = || File::open(path).with_context(|| format!("opening {}", path.display()));
-        let mut magic = [0u8; 2];
-        let gz = f()?.read(&mut magic)? == 2 && magic == [0x1f, 0x8b];
+        if gz {
+            if let Some(p) = progress {
+                p.start_pass();
+            }
+            return Ok(Box::new(crate::gzip::Piped::new(f()?, progress)?));
+        }
         let raw: Box<dyn Read + '_> = match progress {
             Some(p) => {
                 p.start_pass();
@@ -323,16 +333,11 @@ pub fn load_with(
             }
             None => Box::new(f()?),
         };
-        Ok(if gz {
-            Box::new(BufReader::with_capacity(
-                1 << 16,
-                flate2::read::MultiGzDecoder::new(raw),
-            ))
-        } else {
-            Box::new(BufReader::with_capacity(1 << 16, raw))
-        })
+        Ok(Box::new(BufReader::with_capacity(1 << 16, raw)))
     };
-    read(&open, ty, progress).with_context(|| format!("reading {}", path.display()))
+    // The gzip decoder holds up to IN_FLIGHT decoded bytes; a smaller batch keeps the peak the same.
+    let batch = if gz { CHUNK - crate::gzip::IN_FLIGHT } else { CHUNK };
+    read(&open, ty, progress, batch).with_context(|| format!("reading {}", path.display()))
 }
 
 pub fn parse_bytes(data: &[u8]) -> Result<Alignment> {
@@ -340,7 +345,7 @@ pub fn parse_bytes(data: &[u8]) -> Result<Alignment> {
 }
 
 pub fn parse_bytes_as(data: &[u8], ty: Option<SeqType>) -> Result<Alignment> {
-    read(&|| Ok(Box::new(data) as Reader), ty, None)
+    read(&|| Ok(Box::new(data) as Reader), ty, None, CHUNK)
 }
 
 /// [`parse_bytes`] reporting to `progress` (for tests of progress and cancel).
@@ -358,22 +363,25 @@ pub fn parse_bytes_with(data: &[u8], progress: &Progress) -> Result<Alignment> {
         },
         None,
         Some(progress),
+        CHUNK,
     )
 }
 
-/// Parse from `open`, which must return the same content each time: Clustal and Stockholm are read
-/// twice, and FASTA again in the rare case that the residue type changes after rows were packed.
+/// Parse from `open`, FASTA in batches of `batch` bytes. `open` must return the same content each
+/// time: Clustal and Stockholm are read twice, and FASTA again in the rare case that the residue
+/// type changes after rows were packed.
 fn read<'a>(
     open: &dyn Fn() -> Result<Reader<'a>>,
     ty: Option<SeqType>,
     progress: Option<&Progress>,
+    batch: usize,
 ) -> Result<Alignment> {
     let mut r = open()?;
     match detect_format(r.fill_buf()?)? {
         Format::Fasta => {
             let mut forced = None;
             loop {
-                let res = fasta(r, CHUNK, forced, ty, progress);
+                let res = fasta(r, batch, forced, ty, progress);
                 let Some(a) = res
                     .as_ref()
                     .err()
@@ -1255,6 +1263,11 @@ mod tests {
         use std::io::Write;
         let dir = std::env::temp_dir().join(format!("msascope-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        let gzip = |text: &[u8]| {
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            e.write_all(text).unwrap();
+            e.finish().unwrap()
+        };
         let mut a = Vec::new();
         for (name, text) in [
             ("a.fa", &b">a\nAC-T\n>b\nACGT\n"[..]),
@@ -1263,17 +1276,60 @@ mod tests {
             let plain = dir.join(name);
             std::fs::write(&plain, text).unwrap();
             let gz = dir.join(format!("{name}.gz"));
-            let mut e = flate2::write::GzEncoder::new(
-                File::create(&gz).unwrap(),
-                flate2::Compression::fast(),
-            );
-            e.write_all(text).unwrap();
-            e.finish().unwrap();
+            std::fs::write(&gz, gzip(text)).unwrap();
             let (p, z) = (load(&plain).unwrap(), load(&gz).unwrap());
             assert_eq!(seqs(&p), seqs(&z));
             a.push(seqs(&p));
         }
         assert_eq!(a[0], a[1]);
+        // Larger than the decoder's chunks: plain gzip, multi-member gzip (members cut anywhere,
+        // even inside a header line) and BGZF give the same alignment, FASTA and Stockholm.
+        let (fa, sto) = big(3000, 3000);
+        for (name, text) in [("big.fa", &fa), ("big.sto", &sto)] {
+            let plain = dir.join(name);
+            std::fs::write(&plain, text).unwrap();
+            let want = load(&plain).unwrap();
+            let multi: Vec<u8> = text.chunks(1_000_003).flat_map(gzip).collect();
+            for (kind, bytes) in [
+                ("gz", gzip(text)),
+                ("multi.gz", multi),
+                ("bgzf.gz", crate::gzip::tests::to_bgzf(text, 65280)),
+            ] {
+                let gz = dir.join(format!("{name}.{kind}"));
+                std::fs::write(&gz, bytes).unwrap();
+                let (format, z) = sniff(&gz).unwrap();
+                assert!(z);
+                assert_eq!(format, sniff(&plain).unwrap().0);
+                let got = load(&gz).unwrap();
+                assert_eq!(got.names, want.names, "{kind}");
+                assert_eq!(seqs(&got), seqs(&want), "{kind}");
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Progress over a gzip load counts every compressed byte, and cancel stops it.
+    #[test]
+    fn gzip_progress_and_cancel() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("msascope-gzp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (fa, _) = big(3000, 3000);
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        e.write_all(&fa).unwrap();
+        let gz = dir.join("a.fa.gz");
+        let bytes = e.finish().unwrap();
+        std::fs::write(&gz, &bytes).unwrap();
+        for b in [bytes.clone(), crate::gzip::tests::to_bgzf(&fa, 65280)] {
+            std::fs::write(&gz, &b).unwrap();
+            let p = Progress::new(b.len() as u64);
+            load_with(&gz, None, Some(&p)).unwrap();
+            assert_eq!(p.snapshot().bytes, b.len() as u64);
+            let p = Progress::new(b.len() as u64);
+            p.cancel();
+            let e = load_with(&gz, None, Some(&p)).err().expect("cancelled");
+            assert!(is_cancelled(&e), "{e:#}");
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1365,7 +1421,7 @@ mod tests {
                     },
                 )))
             };
-            let e = read(&open, None, Some(&p)).err().expect("cancelled");
+            let e = read(&open, None, Some(&p), CHUNK).err().expect("cancelled");
             assert!(is_cancelled(&e), "{e:#}");
             // Stopped at the first read after the flag: at most one read past it.
             let s = p.snapshot();

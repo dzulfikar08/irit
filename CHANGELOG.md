@@ -21,6 +21,13 @@
   depth; `--min-depth` (default 20) grades the mapped depth (warn below it, fail below half), and a
   warning says when the two differ by more than 1.5×. New requirements `depth` and `kleborate`.
 
+### msascope
+- **Faster gzip loading**: gzip input is decompressed on its own thread while the parser encodes,
+  BGZF (`bgzip`) files are decompressed 32 members at a time in parallel, and flate2 uses its
+  zlib-rs backend. On a 20,000 × 30,000 alignment, measured on a busy machine: BGZF 5.4 → 4.4 s
+  and one-member gzip 7.2 → 6.3 s (medians of 9), fastest runs 3.0 → 1.4 s and 3.1 → 2.6 s; peak
+  memory unchanged. Tests cover plain, multi-member and BGZF gzip, progress and cancel.
+
 ### dblock
 - **Downloads side by side**: `fetch --jobs N` (default 4) downloads the parts or files of an entry,
   and several databases, under one shared limit; `--jobs 1` fetches one thing at a time as before.

@@ -132,10 +132,10 @@ the file's size (compressed bytes for a `.gz` file), the sequences read so far a
 taken; then "column summaries…" and "overview…" for the two steps after reading. Clustal and
 Stockholm files are read twice (names first, then residues), and the bar shows both passes. The
 status bar repeats the progress. **Cancel** (or Escape) stops the load: the reader checks for it
-on every read (at most 256 KiB) and after each FASTA batch (64 MB), and between the steps after reading;
-what was read is freed when the load returns, and the file that was open before stays open. Opening
-another file while one loads cancels the first. A file that fails to load shows its error in the
-window as before.
+on every read (at most 256 KiB, or one 2 MiB piece of decompressed gzip) and after each FASTA batch
+(64 MB), and between the steps after reading; what was read is freed when the load returns, and
+the file that was open before stays open. Opening another file while one loads cancels the first.
+A file that fails to load shows its error in the window as before.
 
 ### Colour schemes
 
@@ -468,8 +468,14 @@ both T and U needs a 17th code, and one with `X` or `*` needs codes beyond the 1
 stored at one byte per residue like protein (no residue is rewritten to fit the 4-bit codes).
 
 **Loading.** FASTA is read in 64 MB batches; the records in each batch are encoded into their rows
-in parallel. Plain and gzip input take the same path and memory stays at the packed matrix plus one
-batch. (The first version memory-mapped the file instead: parsing was 1 s faster, but the mapped
+in parallel, and memory stays at the packed matrix plus one batch. Gzip input is decompressed on a
+thread of its own, which hands 2 MiB pieces to the reader through a queue of three, so decoding
+goes on while a batch is encoded; the batch is 12 MiB smaller then (52 MB), so the batch plus what
+the decoder holds stays at 64 MB. A BGZF file (gzip in members of at most 64 KiB that each give
+their size in a `BC` extra field, as `bgzip` writes them) is decoded 32 members at a time, the
+members in parallel. Other gzip, one member or many, is decoded in order on that thread, and so
+is the rest of a BGZF file from the first member that isn't BGZF. Decoding uses flate2's zlib-rs
+backend. (The first version memory-mapped the file instead: parsing was 1 s faster, but the mapped
 3 GB file counted towards resident memory and peaked at 4.3 GB.) If the type widens after rows
 were packed, the packed rows are converted to one byte per residue, briefly holding the old and the
 new matrix. Clustal and Stockholm are read twice, line
@@ -514,8 +520,8 @@ Radeon graphics. Rust 1.99.1, release build (thin LTO). Test data from `msagen` 
 which is RAM-backed (tmpfs) here, so these are warm-cache numbers; reading from a disk adds the
 time to read the file.
 
-Gzip loading is limited by decompression, which runs on one thread; the parsed batches are still
-encoded in parallel. The gzip row is a single run; four loads of the plain file (one with
+When this table was measured, gzip was decompressed on the reading thread before each batch was
+encoded (see 2026-11-14 below for the decoder thread and BGZF). The gzip row is a single run; four loads of the plain file (one with
 `--stats`, three inside the viewer) took 5.1–5.4 s.
 
 Release binaries: `msascope` 36 MB (most of it GPUI and the bundled icon set), `msagen` 0.4 MB.
@@ -777,6 +783,39 @@ So the difference was between the two measuring sessions (the same 0.3.0 binary 
 more this time), not between the builds, and there was nothing to fix. heaptrack and valgrind
 are not installed on this machine, so the heap was not profiled by allocation site.
 
+**Gzip decoded on its own thread, BGZF in parallel (2026-11-14).** Checked against commit
+`4cd7557`, both built the same way: release, thin LTO, as a small program that calls
+`Loaded::open` as `--stats` does (the GUI was not built). This project's laptop (above), Rust
+1.100.0, files on the SSD (warm page cache). Test data: `msagen 20000 30000` (20,000 × 30,000
+DNA, 600 MB FASTA), gzipped by `msagen` (236 MB, one member), and recompressed by a script as BGZF
+(179 MB, 64 KiB members) and as plain multi-member gzip (175 MB, a member per 4 MiB of input).
+Every load of every file, before and after, gave the same names and matrix (one hash over both).
+Other builds kept the machine busy throughout: load average 22 to 34 on 12 threads in the main
+round, 21 to 31 in the earlier one, so the times move by a factor of two between runs and even
+the plain file, whose loading did not change, came out 16% faster after. Parse time (reading and
+encoding), alternate runs:
+
+| | before (`4cd7557`) | after |
+|---|---|---|
+| Plain FASTA, median of 9 / of 5 (earlier round) | 1.81 / 2.05 s | 1.64 / 1.92 s |
+| Gzip, one member, median of 9 / of 5 | 7.23 / 6.14 s | 6.25 / 3.92 s |
+| Gzip, one member, fastest of 9 | 3.10 s | 2.60 s |
+| BGZF, median of 9 / of 5 | 5.39 / 4.60 s | 4.37 / 1.87 s |
+| BGZF, fastest of 9 | 2.95 s | 1.41 s |
+| Multi-member gzip, median of 9 / of 5 | 5.23 / 3.78 s | 4.57 / 2.93 s |
+| After/before ratio of alternating pairs, median of 9: plain / gzip / BGZF / multi-member | | 0.84 / 0.81 / 0.69 / 0.89 |
+| Peak RSS: plain / gzip and multi-member / BGZF | 353–354 MiB | 353–354 / 353 / 345–350 MiB |
+
+The earlier round ran a first version of the change (4 MiB pieces, queue of two), the same in
+everything that decides the speed. Its BGZF result split the gain: the decoder thread and the
+parallel members brought the median from 4.60 s to 2.98 s and the zlib-rs backend to 1.87 s; for
+one-member gzip, the thread alone gave 6.14 to 5.57 s and zlib-rs 3.92 s. A one-member gzip file
+can't be split between threads, so beyond zlib-rs it gains only the overlap with encoding.
+That first version peaked up to 8 MiB above the old 354 MiB on BGZF input (the compressed
+members weren't counted, and each member's buffer was reserved at 64 KiB);
+counting them and taking the batch down to 52 MB brought every file to or below the old peak.
+These numbers should be measured again on a quiet machine.
+
 ## Test data
 
 `msagen ROWS COLS OUT [--protein] [--seed N] [--tree TREE.nwk]` writes a synthetic alignment (OUT ending in `.gz` is
@@ -894,7 +933,8 @@ Each step has to keep the load and paint times in [Measured](#measured) within 5
   mode, go-to and search were (driven through the keyboard while taking screenshots).
 - The whole alignment must fit in RAM: about half a byte per nucleotide cell, so 10^6 × 30 kb needs
   about 15 GB. A memory-mapped packed cache file would lift that.
-- Gzip input loads about 3× slower than plain FASTA because decompression is single-threaded.
+- Gzip input that isn't BGZF is decompressed on one thread (alongside the parsing), and loads
+  about 2× slower than plain FASTA (3× before the zlib-rs backend); BGZF (`bgzip`) files are decompressed in parallel.
 - While a file loads, the window shows its progress instead of the file that was open (which
   comes back if the load is cancelled); one file is open at a time.
 - Upper pyramid levels approximate the majority (area-weighted majority of majorities).

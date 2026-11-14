@@ -4,6 +4,7 @@ pub mod alphabet;
 pub mod annot;
 pub mod export;
 pub mod goto;
+mod gzip;
 pub mod header;
 pub mod jobs;
 pub mod matrix;
