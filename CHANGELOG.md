@@ -11,6 +11,10 @@
 - **`kleborate`** (Kleborate 3.2.4): *Klebsiella* typing (ST, virulence and resistance scores,
   ybt/clb/iuc/iro/rmpADC, K/O loci with Kaptive's confidence). Its bundled databases are hashed into
   the record; warns about assemblies with no row or outside the KpSC.
+- **`rasusa`** (Rasusa 5.1.0): subsample reads to a depth, number of bases, reads or a fraction, seed
+  1 by default (byte-identical output, so replayed and compared). Flye's description and guide now
+  say that `asm_coverage` only limits its first stage: a 5.7 Mb *K. pneumoniae* at about 450x went
+  over 8 GB in Flye's consensus stage, so deep long reads are subsampled first.
 - A tool whose bundled data (mlst's schemes, Kleborate's databases) can't be found now gets a
   warning that the record identifies it by version only.
 

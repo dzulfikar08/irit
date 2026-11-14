@@ -1,5 +1,5 @@
 //! Third-party tools (fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst, AMRFinderPlus,
-//! MEGAHIT, CoverM, MetaBAT2, Kleborate): typed
+//! MEGAHIT, CoverM, MetaBAT2, Kleborate, Rasusa): typed
 //! parameters, checks before running, and their argument vectors.
 //!
 //! Every flag here exists in the pinned upstream version (see [`PINNED`]); the comment above each
@@ -22,7 +22,7 @@ pub struct Pinned {
     pub url: &'static str,
 }
 
-pub const PINNED: [Pinned; 13] = [
+pub const PINNED: [Pinned; 14] = [
     Pinned { tool: "fastp", version: "1.4.0", bioconda: "fastp=1.4.0", url: "https://github.com/OpenGene/fastp" },
     Pinned { tool: "shovill", version: "1.4.2", bioconda: "shovill=1.4.2", url: "https://github.com/tseemann/shovill" },
     // Flye's --version prints the build too: `2.9.6-b1802` for the 2.9.6 release (and Bioconda's).
@@ -41,6 +41,7 @@ pub const PINNED: [Pinned; 13] = [
     // `kleborate --version` prints `Kleborate v3.2.4`. Bioconda's package also pulls in ECTyper, whose
     // install script downloads about 900 MB; pip's (with kaptive 3.2.2, see docs/tools/mcp.md) doesn't.
     Pinned { tool: "kleborate", version: "3.2.4", bioconda: "kleborate=3.2.4", url: "https://github.com/klebgenomics/Kleborate" },
+    Pinned { tool: "rasusa", version: "5.1.0", bioconda: "rasusa=5.1.0", url: "https://github.com/mbhall88/rasusa" },
 ];
 
 /// Arguments that make a tool print its version, and whether it prints it on stderr. MetaBAT2
@@ -2534,6 +2535,123 @@ fn read_pairs(r1: &[String], r2: &[String]) -> Check<()> {
     Ok(())
 }
 
+// ---------- Rasusa ----------
+// Flags: rasusa 5.1.0 `rasusa reads --help` (clap, src/cli.rs and src/subcmd/reads.rs),
+// https://github.com/mbhall88/rasusa; the bioconda rasusa=5.1.0 package gives the same list.
+// Not offered: --one-pass / --probability (an approximate count), --strict, alignment formats
+// (SAM/BAM/CRAM in or out), --threads (BAM only), -Z/-O/-l (the format comes from the file name).
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RasusaParams {
+    /// Reads of one sample: one FASTQ/FASTA file (long reads, or single-end), or read 1 then read 2 of a pair. Plain or gzip.
+    pub reads: Vec<String>,
+    /// Output file(s), one per input in the same order, inside the root. `.gz` gives gzip output.
+    pub outputs: Vec<String>,
+    /// Target depth, e.g. 100. Needs genome_size. Give this, bases, num or frac.
+    #[serde(default)]
+    pub coverage: Option<f64>,
+    /// Genome size for coverage, e.g. 5.5mb or 5500000.
+    #[serde(default)]
+    pub genome_size: Option<String>,
+    /// Target number of bases, e.g. 550mb (instead of coverage).
+    #[serde(default)]
+    pub bases: Option<String>,
+    /// Target number of reads (of each file for a pair), e.g. 50000.
+    #[serde(default)]
+    pub num: Option<u64>,
+    /// Target fraction of the reads, between 0 and 1.
+    #[serde(default)]
+    pub frac: Option<f64>,
+    /// Random seed. Default 1, so the same call keeps the same reads.
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// Replace existing output files. Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// A size the way rasusa reads it (`4.3kb`, `7Tb`, `9000`, `4.1MB`): a number, then an optional
+/// b, kb, mb, gb or tb in any case.
+fn rasusa_size(field: &str, s: &str) -> Check<()> {
+    let lower = s.to_ascii_lowercase();
+    let num = ["tb", "gb", "mb", "kb", "b"].iter().find_map(|u| lower.strip_suffix(u)).unwrap_or(&lower);
+    match num.parse::<f64>() {
+        Ok(n) if n.is_finite() && n > 0.0 && !num.starts_with(['+', '-']) => Ok(()),
+        _ => v::invalid(field, format!("{s:?} is not a size like 5.5mb or 5500000")),
+    }
+}
+
+pub fn rasusa(ctx: &Ctx, p: &RasusaParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("rasusa");
+    inv.args.push("reads".into());
+    v::non_empty_list("reads", &p.reads)?;
+    if p.reads.len() > 2 {
+        return v::invalid("reads", "one file, or read 1 and read 2 of one pair");
+    }
+    if p.outputs.len() != p.reads.len() {
+        return v::invalid("outputs", format!("{} input file(s) but {} output(s); give one output per input", p.reads.len(), p.outputs.len()));
+    }
+    let mut ins: Vec<PathBuf> = Vec::new();
+    for r in &p.reads {
+        let path = v::existing_file(cwd, "reads", r)?;
+        if ins.contains(&path) {
+            return v::invalid("reads", format!("{r} is listed twice"));
+        }
+        if v::sequence_file(&path, "reads", r, Seq::Fastq).is_err() {
+            v::sequence_file(&path, "reads", r, Seq::Fasta).map_err(|e| v::Invalid { message: format!("{r} is neither FASTQ nor FASTA ({})", e.message), ..e })?;
+        }
+        ins.push(path);
+    }
+    let targets = [p.coverage.is_some(), p.bases.is_some(), p.num.is_some(), p.frac.is_some()].iter().filter(|t| **t).count();
+    if targets != 1 {
+        return v::invalid("coverage", "give exactly one target: coverage (with genome_size), bases, num or frac");
+    }
+    if let Some(c) = p.coverage {
+        let Some(g) = &p.genome_size else {
+            return v::invalid("genome_size", "coverage needs genome_size, e.g. 5.5mb");
+        };
+        if !c.is_finite() || c <= 0.0 {
+            return v::invalid("coverage", "a depth above 0, e.g. 100");
+        }
+        rasusa_size("genome_size", g)?;
+        inv.opt("genome-size", g);
+        inv.opt("coverage", c);
+    } else if p.genome_size.is_some() {
+        return v::invalid("genome_size", "genome_size is only used with coverage");
+    }
+    if let Some(b) = &p.bases {
+        rasusa_size("bases", b)?;
+        inv.opt("bases", b);
+    }
+    if let Some(n) = p.num {
+        v::range("num", n, 1, u64::MAX)?;
+        inv.opt("num", n);
+    }
+    if let Some(f) = p.frac {
+        if !f.is_finite() || f <= 0.0 || f > 1.0 {
+            return v::invalid("frac", "a fraction above 0 and at most 1, e.g. 0.25");
+        }
+        inv.opt("frac", f);
+    }
+    inv.opt("seed", p.seed.unwrap_or(1));
+    let mut outs = Vec::new();
+    for o in &p.outputs {
+        let path = v::output_file(ctx, "outputs", o, p.overwrite)?;
+        if ins.iter().any(|i| v::resolve(i) == v::resolve(&path)) || outs.contains(&path) {
+            return v::invalid("outputs", format!("{o} is also an input or listed twice"));
+        }
+        inv.opt("output", o);
+        outs.push(path);
+    }
+    inv.expect = outs.iter().map(|o| vec![o.clone()]).collect();
+    inv.outputs.extend(outs);
+    inv.inputs.extend(ins);
+    inv.args.extend(p.reads.iter().map(|r| list_item(r)));
+    Ok(inv)
+}
+
 // ---------- MEGAHIT ----------
 // Flags: MEGAHIT v1.2.9 `src/megahit` (Python getopt in `parse_option`: short -1 -2 -r -m -o -t,
 // long --out-dir= --memory= --k-list= ...; `--force` is accepted there though the usage text
@@ -3681,6 +3799,41 @@ mod tests {
     fn flye_version_with_build() {
         assert_eq!(version_warning("flye", Some("2.9.6-b1802")), None);
         assert!(version_warning("flye", Some("2.9.5-b1801")).is_some());
+    }
+
+    #[test]
+    fn rasusa_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        write(d.path(), "reads/ont.fastq", "@a\nACGT\n+\nIIII\n");
+        write(d.path(), "reads/r1.fq", "@a\nACGT\n+\nIIII\n");
+        write(d.path(), "-r2.fq", "@a\nACGT\n+\nIIII\n");
+        let p: RasusaParams = parse(json!({"reads": ["reads/ont.fastq"], "outputs": ["sub/ont.fq.gz"], "coverage": 100, "genome_size": "5.7mb"}));
+        let inv = rasusa(&cx, &p).unwrap();
+        assert_eq!(inv.args, ["reads", "--genome-size=5.7mb", "--coverage=100", "--seed=1", "--output=sub/ont.fq.gz", "reads/ont.fastq"]);
+        assert_eq!(inv.expect, [vec![d.path().join("sub/ont.fq.gz")]]);
+        let pair: RasusaParams = parse(json!({"reads": ["reads/r1.fq", "-r2.fq"], "outputs": ["s_1.fq.gz", "s_2.fq.gz"], "num": 1000, "seed": 7}));
+        assert_eq!(rasusa(&cx, &pair).unwrap().args, ["reads", "--num=1000", "--seed=7", "--output=s_1.fq.gz", "--output=s_2.fq.gz", "reads/r1.fq", "./-r2.fq"]);
+
+        let bad = |j: serde_json::Value| rasusa(&cx, &parse(j)).unwrap_err().field;
+        let one = |extra: serde_json::Value| {
+            let mut j = json!({"reads": ["reads/ont.fastq"], "outputs": ["o.fq"]});
+            j.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            j
+        };
+        assert_eq!(bad(one(json!({}))), "coverage"); // no target
+        assert_eq!(bad(one(json!({"num": 5, "frac": 0.5}))), "coverage"); // two targets
+        assert_eq!(bad(one(json!({"coverage": 100}))), "genome_size");
+        assert_eq!(bad(one(json!({"coverage": 100, "genome_size": "big"}))), "genome_size");
+        assert_eq!(bad(one(json!({"coverage": 0, "genome_size": "5mb"}))), "coverage");
+        assert_eq!(bad(one(json!({"frac": 1.5}))), "frac");
+        assert_eq!(bad(one(json!({"bases": "-5mb"}))), "bases");
+        assert_eq!(bad(one(json!({"num": 5, "genome_size": "5mb"}))), "genome_size");
+        assert_eq!(bad(json!({"reads": ["reads/ont.fastq"], "outputs": ["a.fq", "b.fq"], "num": 5})), "outputs");
+        assert_eq!(bad(json!({"reads": ["reads/ont.fastq"], "outputs": ["reads/ont.fastq"], "num": 5, "overwrite": true})), "outputs");
+        assert_eq!(bad(json!({"reads": ["reads/ont.fastq"], "outputs": ["reads/r1.fq"], "num": 5})), "outputs"); // exists
+        assert!(rasusa_size("x", "5500000").is_ok() && rasusa_size("x", "4.1MB").is_ok() && rasusa_size("x", "7Tb").is_ok());
+        assert!(rasusa_size("x", "mb").is_err() && rasusa_size("x", "5m").is_err());
     }
 
     #[test]

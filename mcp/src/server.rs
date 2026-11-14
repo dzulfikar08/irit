@@ -732,7 +732,9 @@ file contigs.fa: give mlst a label and amrfinder an output named after the sampl
 the default). Writes `<outdir>/assembly.fasta` plus `assembly_info.txt` (each contig's length, depth and whether it is circular); \
 use one empty outdir per sample. A 5 Mb genome at 50-100x takes roughly 10-30 minutes and a few GB of RAM. Returns the assembly's \
 contig count, total length, N50, longest contig and GC %, and per contig its depth and circularity. Flye recovers small plasmids \
-less reliably than consensus assemblers: check plasmid-borne genes. Polish with medaka next for fewer small insertions/deletions.")]
+less reliably than consensus assemblers: check plasmid-borne genes. Polish with medaka next for fewer small insertions/deletions. \
+Deep data: asm_coverage only limits the first stage, and Flye's later stages use every read; a 5.7 Mb genome at 450x went over 8 GB, \
+so subsample reads above about 150x with rasusa first (e.g. coverage 100).")]
     async fn flye(&self, Parameters(params): Parameters<x::FlyeParams>) -> Result<CallToolResult, ErrorData> {
         let d = self.execute("flye", &params, x::flye(&self.cfg.ctx, &params)).await;
         let dir = self.cfg.ctx.cwd.join(&params.outdir);
@@ -740,6 +742,19 @@ less reliably than consensus assemblers: check plasmid-borne genes. Polish with 
             v["assembly_file"] = json!(dir.join("assembly.fasta"));
             v["assembly"] = results::assembly_stats(&dir.join("assembly.fasta"))?;
             v["contigs"] = json!(results::flye_info(&dir.join("assembly_info.txt"))?);
+            Ok(())
+        })
+    }
+
+    #[tool(description = "Rasusa 5.1.0: randomly subsample reads to a target depth (coverage with genome_size), number of bases, \
+number of reads or fraction. Long reads: one file; Illumina: read 1 and read 2, kept as pairs. Use it before Flye on deep long-read \
+data (above about 150x) so the assembly fits in memory, or to test how results hold at lower depth. Seed 1 by default, so the same \
+call keeps the same reads. Writes one output per input (`.gz` names give gzip). Minutes for a few GB. Returns the outputs.")]
+    async fn rasusa(&self, Parameters(params): Parameters<x::RasusaParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("rasusa", &params, x::rasusa(&self.cfg.ctx, &params)).await;
+        let outs: Vec<PathBuf> = params.outputs.iter().map(|o| self.cfg.ctx.cwd.join(o)).collect();
+        self.external_reply(d, |v| {
+            v["output_files"] = json!(outs);
             Ok(())
         })
     }

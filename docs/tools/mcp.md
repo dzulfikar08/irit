@@ -67,7 +67,7 @@ Any client that takes a JSON config (Claude Desktop's `claude_desktop_config.jso
 | Option | Effect |
 |---|---|
 | `--bin-dir DIR` | Folder holding the irit binaries (env `IRIT_BIN_DIR`). Default: search `PATH`. |
-| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `flye`, `medaka_consensus`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`, `megahit`, `coverm`, `metabat2`, `kleborate`). Repeatable. Default: search `PATH`. |
+| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `flye`, `medaka_consensus`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`, `megahit`, `coverm`, `metabat2`, `kleborate`, `rasusa`). Repeatable. Default: search `PATH`. |
 | `--runs-dir DIR` | Where run records go (env `IRIT_RUNS_DIR`). Default `./irit-runs`. |
 | `--run-id ID` | Name of this session's run folder. Default `<UTC time>-<pid>`. The server refuses to start when that folder already holds a record, so a second session can't overwrite the first one's. |
 | `--root DIR` | Folder the tools may write in. Default: the server's working folder. |
@@ -262,6 +262,7 @@ Nothing else is offered, so an agent can't pass a flag the program doesn't know.
 | `coverm_genome` | CoverM `genome` | 0.8.0 | [`src/cli.rs`](https://github.com/wwood/CoverM/blob/v0.8.0/src/cli.rs) and `coverm genome --full-help` | `coverm=0.8.0` |
 | `kleborate` | Kleborate | 3.2.4 | [`kleborate/__main__.py`](https://github.com/klebgenomics/Kleborate/blob/v3.2.4/kleborate/__main__.py) and `kleborate --help` of the pip package | `kleborate=3.2.4` (but see [`kleborate`](#kleborate): pip is lighter) |
 | `metabat2` | MetaBAT 2 | 2.18 | `metabat2 --help` of the Bioconda package ([MetaBAT](https://bitbucket.org/berkeleylab/metabat)) | `metabat2=2.18` |
+| `rasusa` | Rasusa `reads` | 5.1.0 | `rasusa reads --help` of the Bioconda package ([src/cli.rs](https://github.com/mbhall88/rasusa)) | `rasusa=5.1.0` |
 
 Bioconda's current Shovill is 1.4.2, not the older 1.1.0: 1.4.x added `--plasmid`, changed
 `--mincov`'s default to 2 and needs at least 8 GB for `--ram`.
@@ -420,7 +421,7 @@ Assembles one isolate from long reads: ONT R10.4.1 reads basecalled with hac or 
 | `overwrite` | boolean | Allow an `outdir` that has files (Flye then continues from them; prefer an empty folder). |
 | `link_as` | file | As Shovill's: a link named after the sample to `<outdir>/assembly.fasta`. |
 | `genome_size` | text | Like `5.5m` or `5000000`. Needed for `asm_coverage`. |
-| `asm_coverage` | integer | Use only the longest reads up to this depth for the first stage (caps memory on deep data). |
+| `asm_coverage` | integer | Use only the longest reads up to this depth for the first stage. Not with `meta`. |
 | `threads`, `iterations`, `min_overlap`, `read_error` | numbers | As the Flye flags. |
 | `meta`, `keep_haplotypes`, `no_alt_contigs`, `scaffold` | booleans | As the Flye flags. |
 | `deterministic` | boolean | Build disjointigs single-threaded so identical runs give identical assemblies (slower). |
@@ -432,9 +433,37 @@ plasmids. Every output is volatile (multi-threaded runs differ; `flye.log` has t
 count, length and N50 go into the run record, as for Shovill. isotable reads `assembly.fasta` when
 `flye.log` is beside it.
 
+**Deep data.** `asm_coverage` limits only the first stage: the later stages map every read. On
+the laptop, *K. pneumoniae* AF38 (5.7 Mb, 2.58 Gb of reads, about 450x) went over the 8 GB cap in
+Flye's consensus stage with `asm_coverage` 50 and was killed. Subsample deep data with
+[`rasusa`](#rasusa) first (this project uses 100x).
+
 Not offered: `--extra-params` (free text into Flye's configuration), `--resume`,
 `--resume-from`, `--stop-after`, `--polish-target`, and the deprecated `--subassemblies`,
 `--plasmids`, `--trestle` and `--hifi-error`.
+
+#### `rasusa`
+
+Randomly subsamples reads to a target, for deep long-read data before Flye or to test how results
+hold at lower depth. Rasusa (Hall, *JOSS* 2022, [doi:10.21105/joss.03941](https://doi.org/10.21105/joss.03941)).
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `reads` | list of files (required) | One FASTQ/FASTA file, or read 1 then read 2 of a pair (pairs are kept together). Plain or gzip. |
+| `outputs` | list of files (required) | One per input, same order; `.gz` gives gzip. |
+| `coverage` + `genome_size` | number + text | Target depth, e.g. 100 and `5.7mb`. |
+| `bases` | text | Target bases, e.g. `570mb`. |
+| `num` | integer | Target reads (of each file for a pair). |
+| `frac` | number | Target fraction, above 0 and at most 1. |
+| `seed` | integer | Default 1, so the same call keeps the same reads. |
+| `overwrite` | boolean | Replace existing outputs. |
+
+Give exactly one of `coverage`, `bases`, `num` and `frac`. With the same seed the output is
+byte-identical (checked on 2,000 reads of AHB29: same MD5 twice), so the outputs are not volatile
+and `replay.sh` compares their hashes. Returns `output_files`.
+
+Not offered: `--one-pass` / `--probability` (approximate counts), `--strict`, alignment formats,
+and the compression and format overrides (the file name decides).
 
 #### `medaka`
 
@@ -1029,7 +1058,7 @@ sh irit-runs/<run-id>/replay.sh                            # binaries from PATH
 IRIT_BIN_DIR=/opt/irit/bin sh irit-runs/<run-id>/replay.sh # or from a folder
 ```
 
-Third-party tools (fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder, megahit, coverm, metabat2, kleborate) are always taken from
+Third-party tools (fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder, megahit, coverm, metabat2, kleborate, rasusa) are always taken from
 `PATH`, so activate their conda environment first. `IRIT_BIN_DIR` applies to the irit tools only.
 
 Some third-party outputs differ between two identical runs. They are recorded with
