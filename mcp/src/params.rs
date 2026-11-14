@@ -395,14 +395,17 @@ pub enum Requirement {
     Contamination,
     Kraken,
     Gtdb,
+    /// Mean depth from read mapping (coverm_genome).
+    Depth,
     Mlst,
     Amr,
+    Kleborate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IsotableParams {
-    /// Results folders to search recursively for fastp, leanqc, QUAST, Shovill (`contigs.fa` beside `shovill.log`), BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs.
+    /// Results folders to search recursively for fastp, leanqc, QUAST, Shovill (`contigs.fa` beside `shovill.log`), Flye, Medaka, BUSCO, CheckM2, GTDB-Tk, Kraken 2, CoverM genome (`<sample>.coverm.tsv`), mlst, AMRFinderPlus and Kleborate outputs.
     pub dirs: Vec<String>,
     /// Sample sheet (CSV/TSV, e.g. from sheetgen) with the real sample names to join on. Strongly recommended: without it, joins are by file name only.
     #[serde(default)]
@@ -443,6 +446,9 @@ pub struct IsotableParams {
     /// Isolate mode: warn above this CheckM2 contamination %; fail above 5. Default 2.
     #[serde(default)]
     pub max_contamination: Option<f64>,
+    /// Warn below this mean depth from read mapping (coverm_genome); fail below half of it. Default 20 (docs/research/coverage-depth.md); 0 turns it off. Shovill's own depth estimate is shown but never graded.
+    #[serde(default)]
+    pub min_depth: Option<f64>,
 }
 
 pub fn isotable(ctx: &Ctx, p: &IsotableParams) -> Check<Invocation> {
@@ -497,7 +503,43 @@ pub fn isotable(ctx: &Ctx, p: &IsotableParams) -> Check<Invocation> {
     if let Some(x) = p.min_n50 {
         inv.opt("min-n50", x);
     }
+    if let Some(x) = p.min_depth {
+        if !x.is_finite() || !(0.0..=100_000.0).contains(&x) {
+            return v::invalid("min_depth", format!("{x} is not a depth between 0 and 100000"));
+        }
+        inv.opt("min-depth", x);
+    }
     inv.positionals(&p.dirs);
+    Ok(inv)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AssemblyStatsParams {
+    /// Assembly FASTA files (plain or gzip): Shovill's contigs.fa, Flye's assembly.fasta, a reference genome, ...
+    pub assemblies: Vec<String>,
+    /// Leave out contigs shorter than this (bp) from every statistic except contigs_all and length_all. Default 500, QUAST's default, so the numbers match a QUAST report.
+    #[serde(default)]
+    pub min_contig: Option<u64>,
+}
+
+/// `isotable assembly-stats --json`: QUAST-style statistics, computed by isotable (stdout is the result).
+pub fn assembly_stats(ctx: &Ctx, p: &AssemblyStatsParams) -> Check<Invocation> {
+    let mut inv = Invocation::new("isotable");
+    inv.args.push("assembly-stats".into());
+    v::non_empty_list("assemblies", &p.assemblies)?;
+    for a in &p.assemblies {
+        let path = v::existing_file(&ctx.cwd, "assemblies", a)?;
+        v::sequence_file(&path, "assemblies", a, crate::validate::Seq::Fasta)?;
+        inv.inputs.push(path);
+    }
+    inv.flag("json", true);
+    // given explicitly, so the record says which cut-off the numbers use
+    let min = p.min_contig.unwrap_or(isotable::asm::QUAST_MIN_CONTIG);
+    v::range("min_contig", min, 0, 1_000_000_000)?;
+    inv.opt("min-contig", min);
+    inv.stdout_is_output = true;
+    inv.positionals(&p.assemblies);
     Ok(inv)
 }
 

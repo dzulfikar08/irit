@@ -86,13 +86,13 @@ pub fn scan(dirs: &[std::path::PathBuf]) -> Result<Scan> {
             } else if name == "transposed_report.tsv" {
                 Some(("QUAST", quast(path)))
             } else if name == "contigs.fa" && path.with_file_name("shovill.log").is_file() {
-                Some(("Shovill", shovill(path)))
+                Some(("Shovill", assembly(path, Some(&path.with_file_name("shovill.log")))))
             } else if name == "assembly.fasta" && path.with_file_name("flye.log").is_file() {
                 // Flye's `<outdir>/assembly.fasta`, named after its folder like Shovill's.
-                Some(("Flye", shovill(path)))
+                Some(("Flye", assembly(path, None)))
             } else if name == "consensus.fasta" && path.with_file_name("consensus_probs.hdf").is_file() {
                 // medaka_consensus's polished `<outdir>/consensus.fasta`; it replaces the draft.
-                Some(("Medaka", shovill(path)))
+                Some(("Medaka", assembly(path, None)))
             } else if name.starts_with("short_summary") && name.ends_with(".json") {
                 Some(("BUSCO", busco(path, &name)))
             } else if name == "quality_report.tsv" {
@@ -107,6 +107,16 @@ pub fn scan(dirs: &[std::path::PathBuf]) -> Result<Scan> {
                     }
                     r => Some(("Kraken 2", r.map(|r| r.into_iter().collect()))),
                 }
+            } else if name.to_ascii_lowercase().contains("coverm") && name.ends_with(".tsv") {
+                match coverm_genome(path, &name) {
+                    Ok(None) => {
+                        skipped.push(format!("{} (named like CoverM output but not a `coverm genome` table with Mean and Covered Fraction)", path.display()));
+                        None
+                    }
+                    r => Some(("CoverM", r.map(Option::unwrap_or_default))),
+                }
+            } else if KLEBORATE_OUTPUTS.contains(&name.as_str()) {
+                Some(("Kleborate", kleborate(path)))
             } else if name.contains("mlst") && name.ends_with(".tsv") {
                 Some(("mlst", mlst(path)))
             } else if name.to_ascii_lowercase().contains("amrfinder") && name.ends_with(".tsv") {
@@ -358,66 +368,140 @@ fn quast(path: &Path) -> Result<Vec<Record>> {
             if let Some(v) = get_num(&r, "GC (%)") {
                 fields.push(("gc", Value::Num(v)));
             }
+            // The same names as the statistics isotable computes from an assembly, so the two agree.
+            for (col, key) in [("Largest contig", "largest"), ("L50", "l50"), ("N90", "n90"), ("# contigs (>= 1000 bp)", "contigs_1kb")] {
+                if let Some(v) = get_num(&r, col) {
+                    fields.push((key, Value::Int(v as u64)));
+                }
+            }
+            if let Some(v) = get_num(&r, "# N's per 100 kbp") {
+                fields.push(("ns_per_100kbp", Value::Num(v)));
+            }
             Some(rec(name, Kind::Genome, fields))
         })
         .collect())
 }
 
-/// QUAST's default `--min-contig`: its `# contigs`, `Total length`, `N50` and `GC (%)` count only
-/// contigs at least this long.
-const QUAST_MIN_CONTIG: u64 = 500;
-
-/// Shovill's `<outdir>/contigs.fa` (recognised by the `shovill.log` beside it), named after its
-/// folder as Shovill always names the file contigs.fa. Contigs, length, N50 and GC are counted the
-/// way QUAST reports them (contigs of 500 bp or more; GC over A, C, G and T), so a QUAST report on
-/// the same assembly agrees.
-fn shovill(path: &Path) -> Result<Vec<Record>> {
+/// An assembly's FASTA (Shovill's `contigs.fa`, Flye's `assembly.fasta`, Medaka's
+/// `consensus.fasta`), named after its folder as these tools always use the same file name.
+/// Statistics are counted the way QUAST reports them (see [`crate::asm`]: contigs of 500 bp or
+/// more; GC over A, C, G and T), so a QUAST report on the same assembly agrees. With Shovill's log,
+/// also the sequencing depth Shovill estimated: read bases over the genome size it used, which is
+/// its own k-mer estimate unless `--gsize` was given (docs/research/coverage-depth.md: up to 3x off).
+fn assembly(path: &Path, shovill_log: Option<&Path>) -> Result<Vec<Record>> {
     let name = path
         .parent()
         .and_then(Path::file_name)
         .map(|n| n.to_string_lossy().into_owned())
-        .context("contigs.fa has no folder to name the sample")?;
-    // (length, G+C, A+C+G+T) per contig
-    let mut contigs: Vec<(u64, u64, u64)> = Vec::new();
-    let mut cur: Option<(u64, u64, u64)> = None;
-    for line in std::io::BufReader::new(std::fs::File::open(path)?).lines() {
-        let line = line?;
-        if line.starts_with('>') {
-            contigs.extend(cur.replace((0, 0, 0)));
-        } else if let Some((len, gc, acgt)) = cur.as_mut() {
-            let seq = line.trim_end().as_bytes();
-            *len += seq.len() as u64;
-            for b in seq {
-                match b.to_ascii_uppercase() {
-                    b'G' | b'C' => {
-                        *gc += 1;
-                        *acgt += 1;
-                    }
-                    b'A' | b'T' => *acgt += 1,
-                    _ => {}
-                }
-            }
-        } else if !line.trim().is_empty() {
-            bail!("not FASTA: sequence before the first > line");
-        }
+        .context("the assembly has no folder to name the sample")?;
+    let s = crate::asm::stats(path, crate::asm::QUAST_MIN_CONTIG)?;
+    let mut fields = vec![("contigs", Value::Int(s.contigs)), ("length", Value::Int(s.length))];
+    if s.contigs > 0 {
+        fields.push(("n50", Value::Int(s.n50)));
     }
-    contigs.extend(cur);
-    contigs.retain(|c| c.0 >= QUAST_MIN_CONTIG);
-    contigs.sort_unstable_by_key(|a| std::cmp::Reverse(a.0));
-    let total: u64 = contigs.iter().map(|c| c.0).sum();
-    let mut acc = 0;
-    let n50 = contigs.iter().find(|c| {
-        acc += c.0;
-        acc * 2 >= total
-    });
-    let mut fields = vec![("contigs", Value::Int(contigs.len() as u64)), ("length", Value::Int(total))];
-    fields.extend(n50.map(|c| ("n50", Value::Int(c.0))));
-    let (gc, acgt) = contigs.iter().fold((0, 0), |(g, a), c| (g + c.1, a + c.2));
-    if acgt > 0 {
-        // two decimals, as QUAST prints it
-        fields.push(("gc", Value::Num((gc as f64 * 10000.0 / acgt as f64).round() / 100.0)));
+    fields.extend(s.gc.map(|g| ("gc", Value::Num(g))));
+    if s.contigs > 0 {
+        fields.extend([("largest", Value::Int(s.largest)), ("l50", Value::Int(s.l50)), ("n90", Value::Int(s.n90))]);
+        fields.push(("ns_per_100kbp", Value::Num(s.ns_per_100kbp)));
+    }
+    fields.extend([("contigs_1kb", Value::Int(s.contigs_1kb)), ("contigs_all", Value::Int(s.contigs_all))]);
+    if let Some(log) = shovill_log {
+        let text = std::fs::read_to_string(log)?;
+        fields.extend(shovill_depth(&text).map(|d| ("shovill_depth", Value::Num(d))));
     }
     Ok(vec![rec(name, Kind::Genome, fields)])
+}
+
+/// `[shovill] Estimated sequencing depth: 70 x` (Shovill 1.1-1.4), the depth before any subsampling.
+pub fn shovill_depth(log: &str) -> Option<f64> {
+    log.lines()
+        .find_map(|l| l.trim().strip_prefix("[shovill] Estimated sequencing depth: "))
+        .and_then(|r| r.split_whitespace().next())
+        .and_then(|n| n.trim_end_matches('x').parse().ok())
+}
+
+/// `coverm genome` with methods mean and covered_fraction (CoverM 0.8.0: `Genome`, then `<sample>
+/// Mean` and `<sample> Covered Fraction` per read set). A table of one genome is one sample's,
+/// named after the file (`<sample>.coverm.tsv`): with `--single-genome` CoverM calls the genome
+/// `genome1`. Several genomes are named after their rows. Depths of several read sets add up; the
+/// covered fraction is given for one read set only. `None` for any other table (`coverm contig`).
+pub fn coverm_genome(path: &Path, name: &str) -> Result<Option<Vec<Record>>> {
+    let text = std::fs::read_to_string(path)?;
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let Some(header) = lines.next() else { return Ok(None) };
+    let cols: Vec<&str> = header.split('\t').collect();
+    if cols.first() != Some(&"Genome") {
+        return Ok(None);
+    }
+    let means: Vec<usize> = (1..cols.len()).filter(|&i| cols[i].ends_with(" Mean")).collect();
+    let covered: Vec<usize> = (1..cols.len()).filter(|&i| cols[i].ends_with(" Covered Fraction")).collect();
+    if means.is_empty() {
+        return Ok(None);
+    }
+    let rows: Vec<Vec<&str>> = lines.map(|l| l.split('\t').collect::<Vec<_>>()).filter(|r| r[0] != "unmapped").collect();
+    let stem = name.split(".coverm").next().unwrap_or(name).split("_coverm").next().unwrap_or(name).trim_end_matches(".tsv");
+    let mut out = Vec::new();
+    for r in &rows {
+        let num = |i: usize| -> Result<f64> {
+            r.get(i).and_then(|v| v.trim().parse().ok()).with_context(|| format!("no number in column {} of row {}", cols[i], r[0]))
+        };
+        let depth: f64 = means.iter().map(|&i| num(i)).sum::<Result<f64>>()?;
+        let mut fields = vec![("mapped_depth", Value::Num(depth))];
+        if let [i] = covered[..] {
+            fields.push(("covered_fraction", Value::Num(num(i)? * 100.0)));
+        }
+        let raw = if rows.len() == 1 && !stem.is_empty() { stem.to_string() } else { r[0].to_string() };
+        out.push(rec(raw, Kind::Genome, fields));
+    }
+    Ok(Some(out))
+}
+
+/// Kleborate 3's output tables, one per species group: `klebsiella_pneumo_complex_output.txt`,
+/// `klebsiella_oxytoca_complex_output.txt`, `escherichia_output.txt`. Kleborate 3.2.4 writes each
+/// assembly to the table of its species, whatever the preset.
+pub const KLEBORATE_OUTPUTS: &[&str] = &["klebsiella_pneumo_complex_output.txt", "klebsiella_oxytoca_complex_output.txt", "escherichia_output.txt"];
+
+/// The species of the *K. pneumoniae* species complex (KpSC), as Kleborate names them.
+pub const KPSC_SPECIES: &[&str] =
+    &["Klebsiella pneumoniae", "Klebsiella quasipneumoniae", "Klebsiella variicola", "Klebsiella quasivariicola", "Klebsiella africana"];
+
+/// Kleborate column (the part after the last `__` of its full header, the whole name with
+/// `--trim_headers`) and isotable's field.
+pub const KLEBORATE_FIELDS: &[(&str, &str)] = &[
+    ("species", "kleborate_species"),
+    ("species_match", "kleborate_species_match"),
+    ("ST", "kleborate_st"),
+    ("virulence_score", "virulence_score"),
+    ("resistance_score", "resistance_score"),
+    ("K_locus", "k_locus"),
+    ("O_locus", "o_locus"),
+    ("Yersiniabactin", "ybt"),
+    ("Colibactin", "clb"),
+    ("Aerobactin", "iuc"),
+    ("Salmochelin", "iro"),
+    ("RmpADC", "rmpadc"),
+];
+
+/// Kleborate 3's table: one row per assembly, named by its `strain` column (the assembly's file
+/// name without the extension).
+pub fn kleborate(path: &Path) -> Result<Vec<Record>> {
+    let rows = tsv(path)?;
+    let mut out = Vec::new();
+    for r in rows {
+        let Some(strain) = r.get("strain").filter(|s| !s.is_empty()) else { continue };
+        let mut fields = Vec::new();
+        for (col, key) in KLEBORATE_FIELDS {
+            let v = r.iter().find(|(k, _)| k.rsplit("__").next() == Some(col)).map(|(_, v)| v.trim());
+            if let Some(v) = v.filter(|v| !v.is_empty()) {
+                fields.push((*key, Value::Text(v.to_string())));
+            }
+        }
+        out.push(rec(strain.clone(), Kind::Genome, fields));
+    }
+    if out.is_empty() && !std::fs::read_to_string(path)?.lines().next().is_some_and(|h| h.split('\t').any(|c| c == "strain")) {
+        bail!("no strain column; not a Kleborate 3 table");
+    }
+    Ok(out)
 }
 
 fn busco(path: &Path, name: &str) -> Result<Vec<Record>> {
@@ -758,12 +842,27 @@ mod tests {
         std::fs::write(dir.join("contigs.fa"), fa).unwrap();
         // without shovill.log beside it, a contigs.fa is not taken as Shovill's
         assert!(scan(&[t.path().to_path_buf()]).unwrap().0.is_empty());
-        std::fs::write(dir.join("shovill.log"), "").unwrap();
+        std::fs::write(dir.join("shovill.log"), "[shovill] Using genome size 1600 bp\n[shovill] Estimated sequencing depth: 61 x\n").unwrap();
         let (records, seen, _) = scan(&[t.path().to_path_buf()]).unwrap();
         assert_eq!(seen["Shovill"], 1);
         assert_eq!(records[0].raw_name, "s1");
         // GC over the two counted contigs: 400 C + 600 G of 1600
-        assert_eq!(records[0].fields, [("contigs", Value::Int(2)), ("length", Value::Int(1600)), ("n50", Value::Int(1000)), ("gc", Value::Num(62.5))]);
+        assert_eq!(
+            records[0].fields,
+            [
+                ("contigs", Value::Int(2)),
+                ("length", Value::Int(1600)),
+                ("n50", Value::Int(1000)),
+                ("gc", Value::Num(62.5)),
+                ("largest", Value::Int(1000)),
+                ("l50", Value::Int(1)),
+                ("n90", Value::Int(600)),
+                ("ns_per_100kbp", Value::Num(0.0)),
+                ("contigs_1kb", Value::Int(1)),
+                ("contigs_all", Value::Int(3)),
+                ("shovill_depth", Value::Num(61.0)),
+            ]
+        );
         std::fs::write(dir.join("contigs.fa"), "ACGT\n").unwrap();
         assert!(scan(&[t.path().to_path_buf()]).is_err());
     }
@@ -781,8 +880,9 @@ mod tests {
         let (records, seen, _) = scan(&[t.path().to_path_buf()]).unwrap();
         assert_eq!((seen["Flye"], records.len()), (1, 1));
         assert_eq!(records[0].raw_name, "s1");
-        // GC as for Shovill: 800 C of 5800 counted bases
-        assert_eq!(records[0].fields, [("contigs", Value::Int(2)), ("length", Value::Int(5800)), ("n50", Value::Int(5000)), ("gc", Value::Num(13.79))]);
+        // GC as for Shovill: 800 C of 5800 counted bases; no Shovill log, so no depth estimate
+        assert_eq!(records[0].fields[..4], [("contigs", Value::Int(2)), ("length", Value::Int(5800)), ("n50", Value::Int(5000)), ("gc", Value::Num(13.79))]);
+        assert!(!records[0].fields.iter().any(|(k, _)| *k == "shovill_depth"));
         // The Medaka consensus of the same sample replaces the draft (a few bases differ).
         std::fs::write(medaka.join("consensus.fasta"), format!(">contig_1\n{}\n>contig_2\n{}\n", "A".repeat(5001), "C".repeat(800))).unwrap();
         std::fs::write(medaka.join("consensus_probs.hdf"), "").unwrap();
@@ -830,5 +930,47 @@ mod tests {
         std::fs::write(t.path().join("classify/gtdbtk.bac120.summary.tsv"), format!("user_genome\tclassification\ns1\t{tax}\n")).unwrap();
         let (records, _, _) = scan(&[t.path().to_path_buf()]).unwrap();
         assert!(records.iter().all(|r| r.fields == [("gtdb", Value::Text(tax.into()))]));
+    }
+
+    #[test]
+    fn coverm_genome_tables() {
+        let t = tempfile::tempdir().unwrap();
+        // as coverm genome --single-genome --methods mean covered_fraction wrote it on the laptop
+        let one = t.path().join("BfR-EC-20867.coverm.tsv");
+        std::fs::write(&one, "Genome\tcontigs.fa/BfR-EC-20867_R1.fastq.gz Mean\tcontigs.fa/BfR-EC-20867_R1.fastq.gz Covered Fraction\ngenome1\t50.337517\t0.9999248\n").unwrap();
+        let r = coverm_genome(&one, "BfR-EC-20867.coverm.tsv").unwrap().unwrap();
+        assert_eq!(r[0].raw_name, "BfR-EC-20867");
+        assert_eq!(r[0].fields[0], ("mapped_depth", Value::Num(50.337517)));
+        assert_eq!(r[0].fields[1].1.show(), "99.99");
+        // two read sets add up; several genomes keep their own names
+        let two = t.path().join("x_coverm.tsv");
+        std::fs::write(&two, "Genome\ta Mean\tb Mean\na\t10\t5\nb\t1\t2\n").unwrap();
+        let r = coverm_genome(&two, "x_coverm.tsv").unwrap().unwrap();
+        assert_eq!((r[0].raw_name.as_str(), &r[0].fields), ("a", &vec![("mapped_depth", Value::Num(15.0))]));
+        // coverm contig's table is not taken
+        let contig = t.path().join("s.coverm.tsv");
+        std::fs::write(&contig, "Contig\ts Mean\nk1\t5\n").unwrap();
+        assert!(coverm_genome(&contig, "s.coverm.tsv").unwrap().is_none());
+        let (_, seen, skipped) = scan(&[t.path().to_path_buf()]).unwrap();
+        assert_eq!(seen["CoverM"], 2);
+        assert!(skipped.iter().any(|s| s.contains("s.coverm.tsv")), "{skipped:?}");
+    }
+
+    #[test]
+    fn kleborate_tables_full_or_trimmed_headers() {
+        let t = tempfile::tempdir().unwrap();
+        let full = "strain\tenterobacterales__species__species\tenterobacterales__species__species_match\tklebsiella_pneumo_complex__mlst__ST\tklebsiella__ybst__Yersiniabactin\tklebsiella_pneumo_complex__virulence_score__virulence_score\tklebsiella_pneumo_complex__kaptive__K_locus\nBfR-EC-20867\tKlebsiella pneumoniae\tstrong\tST716\tybt 9; ICEKp3\t1\tKL25\n";
+        std::fs::write(t.path().join("klebsiella_pneumo_complex_output.txt"), full).unwrap();
+        let (r, seen, _) = scan(&[t.path().to_path_buf()]).unwrap();
+        assert_eq!(seen["Kleborate"], 1);
+        assert_eq!(r[0].raw_name, "BfR-EC-20867");
+        let get = |k: &str| r[0].fields.iter().find(|(f, _)| *f == k).map(|(_, v)| v.show());
+        assert_eq!((get("kleborate_st"), get("ybt"), get("k_locus")), (Some("ST716".into()), Some("ybt 9; ICEKp3".into()), Some("KL25".into())));
+        assert_eq!(get("kleborate_species_match").as_deref(), Some("strong"));
+        let trimmed = t.path().join("escherichia_output.txt");
+        std::fs::write(&trimmed, "strain\tspecies\tST\ne1\tEscherichia coli\tST131\n").unwrap();
+        assert_eq!(kleborate(&trimmed).unwrap()[0].fields[1], ("kleborate_st", Value::Text("ST131".into())));
+        std::fs::write(&trimmed, "name\tspecies\n").unwrap();
+        assert!(kleborate(&trimmed).is_err());
     }
 }

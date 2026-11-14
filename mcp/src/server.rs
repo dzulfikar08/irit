@@ -16,11 +16,11 @@ use std::sync::{Arc, Mutex};
 
 const INSTRUCTIONS: &str = "Tools for sequencing-data housekeeping from the irit project: \
 sheetgen (sample sheets from FASTQ folders, checked against a pipeline's schema), leanqc (read QC), \
-isotable (one graded QC row per sample from tool outputs), seqplan (isolates per sequencing run at a target coverage) and \
+isotable (one graded QC row per sample from tool outputs), assembly_stats (QUAST-style statistics: N50, L50, N90, GC, Ns), seqplan (isolates per sequencing run at a target coverage) and \
 dblock_* (reference databases); \
 plus the microbial isolate path with third-party tools: fastp (trimming), shovill (Illumina assembly), flye and \
-medaka (nanopore/PacBio long-read assembly and polishing), bakta (annotation), checkm2 (completeness/contamination), gtdbprep_ani and gtdbtk_classify_wf (taxonomy), mlst (sequence type) and \
-amrfinder (AMRFinderPlus resistance genes); and metagenomes to MAGs: megahit (assembly), coverm_contig (depth) and \
+medaka (nanopore/PacBio long-read assembly and polishing), bakta (annotation), checkm2 (completeness/contamination), gtdbprep_ani and gtdbtk_classify_wf (taxonomy), mlst (sequence type), \
+amrfinder (AMRFinderPlus resistance genes), coverm_genome (isolate depth by read mapping) and kleborate (K. pneumoniae typing, virulence and resistance scores); and metagenomes to MAGs: megahit (assembly), coverm_contig (depth) and \
 metabat2 (bins), then checkm2, gtdbprep_ani/gtdbtk_classify_wf and isotable mode mag on the bins. Those need the program installed (Bioconda) and, for bakta, \
 checkm2, gtdbtk_classify_wf and amrfinder, a database (dblock_env shows dblock-managed paths); they can run for \
 hours. Their results list `warnings` when the installed version isn't the one irit-mcp was checked against, and for warnings the tool printed that matter (read them). \
@@ -284,21 +284,30 @@ impl Irit {
                 std::fs::create_dir_all(d).map_err(|e| format!("could not create {}: {e}", d.display()))?;
             }
             // It may run the program (mlst --help), so off the async threads.
+            let mut found = None;
             if let Some(bundled) = bundled {
-                inputs.extend(bundled(&prog, &ctx));
+                let data = bundled(&prog, &ctx);
+                found = Some(data.len());
+                inputs.extend(data);
             }
             let snap = record::snapshot(&outputs);
             // After the snapshot, so the links are recorded as outputs (and checked by replay.sh).
             for (link, target) in &links {
                 make_link(link, target)?;
             }
-            Ok::<_, String>((record::input_records(&inputs), snap))
+            Ok::<_, String>((record::input_records(&inputs), snap, found))
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
         let before = match prepared {
-            Ok((input_recs, before)) => {
+            Ok((input_recs, before, found)) => {
                 rec.inputs = input_recs;
+                if found == Some(0) {
+                    rec.warnings.push(format!(
+                        "could not find the data {} brings with it, so the record doesn't hash it; its version is all that identifies it",
+                        inv.tool
+                    ));
+                }
                 before
             }
             Err(e) => {
@@ -597,7 +606,9 @@ gave run_price: seqplan has no prices. Writes nothing.")]
     }
 
     #[tool(description = "Join QC, assembly and typing outputs (fastp, leanqc, QUAST, Shovill's contigs.fa, Flye's assembly.fasta, Medaka's consensus.fasta, BUSCO, CheckM2, GTDB-Tk, Kraken 2, \
-mlst, AMRFinderPlus) found under results folders into one graded row per sample; include the Shovill/Flye/Medaka outdirs' parent for contigs and N50. Status, worst first: conflict (files disagree), fail, incomplete (a required \
+CoverM genome, mlst, AMRFinderPlus, Kleborate) found under results folders into one graded row per sample; include the Shovill/Flye/Medaka outdirs' parent for QUAST-style \
+assembly statistics (contigs >= 500 bp, N50, L50, N90, largest contig, GC, Ns per 100 kbp) and Shovill's depth estimate. Mapped depth (coverm_genome) is graded with min_depth and \
+compared with Shovill's estimate. Status, worst first: conflict (files disagree), fail, incomplete (a required \
 measurement is missing), warn, pass. Returns each sample's status, reasons and values, and counts per status. Thresholds are starting \
 points, not a standard: say so when reporting grades.")]
     async fn isotable(&self, Parameters(params): Parameters<p::IsotableParams>) -> Result<CallToolResult, ErrorData> {
@@ -616,6 +627,26 @@ points, not a standard: say so when reporting grades.")]
             v["columns"] = t["columns"].clone();
             v["samples"] = t["samples"].clone();
         })
+    }
+
+    #[tool(description = "QUAST-style statistics of assembly FASTA files (plain or gzip), computed by isotable: contigs, total length, \
+largest contig, N50, L50, N90, L90, GC %, Ns per 100 kbp and contigs >= 1 kb, over contigs of min_contig bp or more (default 500, QUAST's \
+default), plus contigs_all and length_all over every contig. Seconds; recorded and replayed like any call. Returns one object per assembly.")]
+    async fn assembly_stats(&self, Parameters(params): Parameters<p::AssemblyStatsParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("assembly_stats", &params, p::assembly_stats(&self.cfg.ctx, &params)).await;
+        match serde_json::from_str::<Value>(&d.stdout_text()) {
+            Ok(list) => self.reply(d, |_, v| v["assemblies"] = list),
+            Err(e) => {
+                let mut v = match self.envelope(&d) {
+                    Ok(v) => v,
+                    Err(e) => return Ok(e),
+                };
+                v["error"] = json!("output_unreadable");
+                v["message"] = json!(format!("isotable exited 0 but its JSON could not be read: {e}"));
+                v["note"] = json!("do not report this as an empty result");
+                Ok(CallToolResult::structured_error(v))
+            }
+        }
     }
 
     #[tool(description = "List the reference databases dblock can fetch (GTDB-Tk, CheckM2, SILVA, Kraken 2, Bakta, CARD, AMRFinderPlus) with download \
@@ -757,6 +788,51 @@ help binning). Returns per sample the reads mapped and the percentage, from Cove
             v["output"] = json!(params.output);
             v["contigs_with_coverage"] = json!(results::table_rows(&table)?);
             v["mapped"] = json!(mapped);
+            Ok(())
+        })
+    }
+
+    #[tool(description = "CoverM 0.8.0 genome: depth of an isolate by read mapping. Maps the isolate's paired reads to its own \
+assembly (strobealign by default; all contigs are one genome) and writes `output` (name it `<sample>.coverm.tsv` for isotable). Returns \
+the mean depth (CoverM's mean, which leaves out 75 bp at each contig end) and the percentage of the assembly covered, and the reads \
+mapped. Shovill's own depth figure is read bases over its genome-size estimate and can be 3x off without gsize: when the assembly has \
+a shovill.log beside it, a warning says if the two differ by more than 1.5x. About half a minute for a 5.5 Mb genome at 50x.")]
+    async fn coverm_genome(&self, Parameters(params): Parameters<x::CovermGenomeParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("coverm_genome", &params, x::coverm_genome(&self.cfg.ctx, &params)).await;
+        let mapped = results::coverm_mapped(&d.stderr);
+        let table = self.cfg.ctx.cwd.join(&params.output);
+        self.external_reply(d, |v| {
+            v["output"] = json!(params.output);
+            v["genomes"] = json!(results::coverm_genome_summary(&table)?);
+            v["mapped"] = json!(mapped);
+            Ok(())
+        })
+    }
+
+    #[tool(description = "Kleborate 3.2.4: typing of Klebsiella (and Escherichia) assemblies. The default kpsc preset (K. pneumoniae \
+species complex) gives the species, MLST ST, virulence loci (yersiniabactin ybt, colibactin clb, aerobactin iuc, salmochelin iro, \
+rmpADC, rmpA2) with virulence and resistance scores, acquired resistance genes and mutations, and K/O loci (Kaptive). Needs mash and \
+minimap2 on PATH. Name the assemblies after the samples (shovill's link_as, e.g. genomes/s1.fna): Kleborate names rows after the file. \
+Kleborate writes each assembly to the table of its species (`<outdir>/klebsiella_pneumo_complex_output.txt` for the KpSC; isotable reads \
+these tables) and skips assemblies of species it doesn't type: warnings name those, and species outside the KpSC under the kpsc preset \
+(typing `Not Tested`). Kleborate's bundled databases are hashed into the record. About half a minute per assembly.")]
+    async fn kleborate(&self, Parameters(params): Parameters<x::KleborateParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("kleborate", &params, x::kleborate(&self.cfg.ctx, &params)).await;
+        let data_files = d.record.inputs.iter().filter(|i| i.path.contains("/site-packages/")).count();
+        // only the tables this call wrote
+        let written: Vec<PathBuf> = d.record.outputs.iter().map(|o| PathBuf::from(&o.path)).collect();
+        let tables = x::kleborate_tables(&written);
+        self.external_reply(d, |v| {
+            let mut rows = Vec::new();
+            for t in &tables {
+                for mut r in results::kleborate_summary(t)? {
+                    r["table"] = json!(t.file_name().map(|n| n.to_string_lossy().into_owned()));
+                    rows.push(r);
+                }
+            }
+            v["tables"] = json!(tables);
+            v["bundled_data_files_hashed"] = json!(data_files);
+            v["assemblies"] = json!(rows);
             Ok(())
         })
     }

@@ -1,4 +1,5 @@
-//! Third-party tools (fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst, AMRFinderPlus): typed
+//! Third-party tools (fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst, AMRFinderPlus,
+//! MEGAHIT, CoverM, MetaBAT2, Kleborate): typed
 //! parameters, checks before running, and their argument vectors.
 //!
 //! Every flag here exists in the pinned upstream version (see [`PINNED`]); the comment above each
@@ -21,7 +22,7 @@ pub struct Pinned {
     pub url: &'static str,
 }
 
-pub const PINNED: [Pinned; 12] = [
+pub const PINNED: [Pinned; 13] = [
     Pinned { tool: "fastp", version: "1.4.0", bioconda: "fastp=1.4.0", url: "https://github.com/OpenGene/fastp" },
     Pinned { tool: "shovill", version: "1.4.2", bioconda: "shovill=1.4.2", url: "https://github.com/tseemann/shovill" },
     // Flye's --version prints the build too: `2.9.6-b1802` for the 2.9.6 release (and Bioconda's).
@@ -37,6 +38,9 @@ pub const PINNED: [Pinned; 12] = [
     Pinned { tool: "megahit", version: "1.2.9", bioconda: "megahit=1.2.9", url: "https://github.com/voutcn/megahit" },
     Pinned { tool: "coverm", version: "0.8.0", bioconda: "coverm=0.8.0", url: "https://github.com/wwood/CoverM" },
     Pinned { tool: "metabat2", version: "2.18", bioconda: "metabat2=2.18", url: "https://bitbucket.org/berkeleylab/metabat" },
+    // `kleborate --version` prints `Kleborate v3.2.4`. Bioconda's package also pulls in ECTyper, whose
+    // install script downloads about 900 MB; pip's (with kaptive 3.2.2, see docs/tools/mcp.md) doesn't.
+    Pinned { tool: "kleborate", version: "3.2.4", bioconda: "kleborate=3.2.4", url: "https://github.com/klebgenomics/Kleborate" },
 ];
 
 /// Arguments that make a tool print its version, and whether it prints it on stderr. MetaBAT2
@@ -147,8 +151,81 @@ pub fn result_warnings(inv: &Invocation) -> Vec<String> {
             .and_then(|o| crate::results::mlst_summary(o).ok())
             .map(|rows| mlst_scheme_warnings(&rows))
             .unwrap_or_default(),
+        "kleborate" => {
+            let rows: Vec<serde_json::Value> =
+                kleborate_tables(&inv.outputs).iter().filter_map(|t| crate::results::kleborate_summary(t).ok()).flatten().collect();
+            let strains: Vec<String> =
+                inv.args.iter().skip_while(|a| *a != "--assemblies").skip(1).map(|a| kleborate_strain(a)).collect();
+            kleborate_warnings(&strains, given("--preset=kpsc"), &rows)
+        }
+        "coverm" if inv.args.first().is_some_and(|a| a == "genome") => {
+            let reference = inv.args.iter().find_map(|a| a.strip_prefix("--reference="));
+            let log = reference.and_then(|r| std::fs::read_to_string(inv.inputs[0].with_file_name("shovill.log")).ok().map(|l| (r, l)));
+            match (log, inv.outputs.first().and_then(|o| crate::results::coverm_genome_summary(o).ok())) {
+                (Some((r, log)), Some(rows)) => coverm_depth_warnings(r, &log, &rows),
+                _ => Vec::new(),
+            }
+        }
         _ => Vec::new(),
     }
+}
+
+/// Shovill's depth estimate is read bases over its own genome-size estimate unless `--gsize` was
+/// given; the depth experiment (docs/research/coverage-depth.md) saw it 3x too high. When the
+/// assembly CoverM mapped to has a shovill.log beside it, the two are compared.
+pub fn coverm_depth_warnings(reference: &str, shovill_log: &str, rows: &[serde_json::Value]) -> Vec<String> {
+    let Some(est) = isotable::parse::shovill_depth(shovill_log) else { return Vec::new() };
+    rows.iter()
+        .filter_map(|r| r["mapped_depth"].as_f64())
+        .filter(|&d| est > 0.0 && d > 0.0 && est.max(d) / est.min(d) > 1.5)
+        .map(|d| {
+            format!(
+                "{reference}: Shovill estimated {est:.0}x depth, mapping gives {d:.1}x; they differ by more than 1.5x. Shovill divides by its own genome-size estimate unless given gsize: report the mapped depth"
+            )
+        })
+        .collect()
+}
+
+/// Kleborate's tables among a call's outputs that exist: Kleborate 3.2.4 writes each assembly to
+/// the table of its species (KpSC, KoSC or Escherichia, whatever the preset; typing columns of a
+/// species the preset doesn't cover say `Not Tested`), or to none when its species check finds
+/// none of them (it prints "does not match any specified species" and skips the assembly).
+pub fn kleborate_tables(outputs: &[PathBuf]) -> Vec<PathBuf> {
+    outputs
+        .iter()
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().ends_with("_output.txt") && !n.to_string_lossy().contains("hAMRonization")))
+        .filter(|p| p.is_file())
+        .cloned()
+        .collect()
+}
+
+/// Per assembly: no row at all (a species Kleborate doesn't type), a species outside the
+/// K. pneumoniae species complex when the kpsc preset was asked for, a weak species match, and
+/// Kleborate's own QC warnings (too many or too small contigs, ambiguous bases).
+pub fn kleborate_warnings(strains: &[String], kpsc: bool, rows: &[serde_json::Value]) -> Vec<String> {
+    let mut out = Vec::new();
+    for s in strains.iter().filter(|s| !rows.iter().any(|r| r["strain"] == s.as_str())) {
+        out.push(format!(
+            "{s}: Kleborate wrote no row: its species check found no species it types (K. pneumoniae or K. oxytoca complex, Escherichia), and it skipped the assembly. Check the species (gtdbprep_ani)"
+        ));
+    }
+    for r in rows {
+        let strain = r["strain"].as_str().unwrap_or("");
+        let species = r["species"].as_str().unwrap_or("");
+        if kpsc && !isotable::parse::KPSC_SPECIES.iter().any(|k| species.starts_with(k)) {
+            out.push(format!(
+                "{strain}: Kleborate's species call is {species:?}, outside the K. pneumoniae species complex (KpSC), so the kpsc preset's typing was not run (Not Tested); its row is in {}",
+                r["table"].as_str().unwrap_or("another table")
+            ));
+        }
+        if r["species_match"] == "weak" {
+            out.push(format!("{strain}: Kleborate's species match for {species} is weak"));
+        }
+        if let Some(q) = r["QC_warnings"].as_str().filter(|q| !q.is_empty() && *q != "-") {
+            out.push(format!("{strain}: Kleborate QC warnings: {q}"));
+        }
+    }
+    out
 }
 
 /// Shovill 1.4.2 estimates the genome size from 21-mers seen more than 10 times. At 5-10x depth
@@ -2825,6 +2902,262 @@ pub fn metabat2_bins(outdir: &Path, prefix: &str) -> Vec<PathBuf> {
     bins.into_iter().map(|(_, p)| p).collect()
 }
 
+// ---------- CoverM genome ----------
+// Flags: CoverM v0.8.0 `coverm genome --full-help` (src/cli.rs), https://github.com/wwood/CoverM/tree/v0.8.0
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CovermGenomeParams {
+    /// One isolate's assembly (FASTA, plain or gzip), e.g. Shovill's `<outdir>/contigs.fa`. All its contigs count as one genome.
+    pub assembly: String,
+    /// The isolate's read 1 FASTQ (plain or gzip), e.g. fastp's trimmed reads.
+    pub r1: String,
+    /// Read 2 FASTQ.
+    pub r2: String,
+    /// Output table (TSV), inside the root. Name it `<sample>.coverm.tsv` so isotable joins it to the sample.
+    pub output: String,
+    /// Replace an existing output. Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    #[serde(default)]
+    pub mapper: Option<CovermMapper>,
+    /// Exclude reads below this percent identity (e.g. 95). Default 0.
+    #[serde(default)]
+    pub min_read_percent_identity: Option<f64>,
+    /// Exclude reads with less than this percent of their bases aligned (e.g. 75). Default 0.
+    #[serde(default)]
+    pub min_read_aligned_percent: Option<f64>,
+    /// Threads for mapping and sorting. CoverM's default is 1.
+    #[serde(default)]
+    pub threads: Option<u32>,
+}
+
+/// Mean depth and covered fraction of one isolate's reads mapped to its own assembly:
+/// `coverm genome --single-genome`. `--min-covered-fraction=0`, because CoverM's default (10%)
+/// reports a genome covered less than that as depth 0, which would hide a wrong read/assembly pair.
+pub fn coverm_genome(ctx: &Ctx, p: &CovermGenomeParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("coverm");
+    inv.args.push("genome".into());
+    let reference = v::existing_file(cwd, "assembly", &p.assembly)?;
+    v::sequence_file(&reference, "assembly", &p.assembly, Seq::Fasta)?;
+    inv.inputs.push(reference);
+    inv.opt("reference", &p.assembly);
+    inv.flag("single-genome", true);
+    let mut reads = Vec::new();
+    for (field, value) in [("r1", &p.r1), ("r2", &p.r2)] {
+        let path = v::existing_file(cwd, field, value)?;
+        v::sequence_file(&path, field, value, Seq::Fastq)?;
+        if inv.inputs.contains(&path) {
+            return v::invalid(field, format!("{value} is given twice"));
+        }
+        inv.inputs.push(path);
+        reads.push(list_item(value));
+    }
+    isotable_name("output", &p.output, "coverm", "s1.coverm.tsv")?;
+    let out = v::output_file(ctx, "output", &p.output, p.overwrite)?;
+    if inv.inputs.contains(&out) {
+        return v::invalid("output", "output is one of the inputs");
+    }
+    inv.outputs.push(out.clone());
+    inv.opt("output-file", &p.output);
+    inv.expect = vec![vec![out]];
+    inv.opt("min-covered-fraction", 0);
+    if let Some(m) = p.mapper {
+        inv.opt("mapper", match m {
+            CovermMapper::Strobealign => "strobealign",
+            CovermMapper::Minimap2Sr => "minimap2-sr",
+            CovermMapper::BwaMem => "bwa-mem",
+        });
+    }
+    for (field, val) in [("min_read_percent_identity", p.min_read_percent_identity), ("min_read_aligned_percent", p.min_read_aligned_percent)] {
+        if let Some(x) = val {
+            if !x.is_finite() || !(0.0..=100.0).contains(&x) {
+                return v::invalid(field, format!("{x} is not a percentage (0-100)"));
+            }
+            inv.opt(&field.replace('_', "-"), x);
+        }
+    }
+    if let Some(t) = p.threads {
+        v::range("threads", t, 1, 1024)?;
+        inv.opt("threads", t);
+    }
+    // Both take several values (clap num_args 1..), which end at the next option.
+    inv.args.extend(["--methods", "mean", "covered_fraction", "--coupled"].map(String::from));
+    inv.args.extend(reads);
+    Ok(inv)
+}
+
+// ---------- Kleborate ----------
+// Flags: Kleborate v3.2.4 `kleborate --help` and kleborate/__main__.py (argparse; `--outdir` must be
+// a separate word: main() looks for `-o`/`--outdir` in argv before parsing, so `--outdir=x` is
+// refused), https://github.com/klebgenomics/Kleborate/tree/v3.2.4. Not offered: --resume (appends
+// to an existing table), --trim_headers (isotable reads either; the full headers name the module),
+// the per-module options of --help_all.
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum KleboratePreset {
+    /// K. pneumoniae species complex: species, MLST, ybt/clb/iuc/iro/rmp loci, virulence and resistance scores, AMR, Kaptive K/O loci. Writes klebsiella_pneumo_complex_output.txt.
+    Kpsc,
+    /// K. oxytoca species complex: species, MLST and the virulence loci. Writes klebsiella_oxytoca_complex_output.txt.
+    Kosc,
+    /// Escherichia: species, MLST, pathotype, ECTyper serotype (its first run downloads about 900 MB), stx, AMR. Writes escherichia_output.txt.
+    Escherichia,
+}
+
+impl KleboratePreset {
+    pub fn name(self) -> &'static str {
+        match self {
+            KleboratePreset::Kpsc => "kpsc",
+            KleboratePreset::Kosc => "kosc",
+            KleboratePreset::Escherichia => "escherichia",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KleborateParams {
+    /// Assemblies (FASTA, plain or gzip). Kleborate names each row after the file name without its extension, which isotable joins on: give files named after the sample (shovill's link_as, e.g. genomes/s1.fna), not contigs.fa.
+    pub assemblies: Vec<String>,
+    /// Output folder, inside the root. Kleborate writes each assembly to the table of its species: `<outdir>/klebsiella_pneumo_complex_output.txt` for the K. pneumoniae complex.
+    pub outdir: String,
+    /// Allow an outdir that already has files (Kleborate replaces its tables there). Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// Module preset. Default kpsc, unless modules is given alone.
+    #[serde(default)]
+    pub preset: Option<KleboratePreset>,
+    /// Kleborate modules to run as well as the preset's (or alone, without preset), e.g. klebsiella__ybst; `kleborate --list_modules` lists them. With modules, Kleborate names its table `<first module>_output.txt`, which isotable doesn't read.
+    #[serde(default)]
+    pub modules: Vec<String>,
+}
+
+/// File names that are the same for every sample (assemblers' fixed outputs): a Kleborate row
+/// named after one can't be joined to a sample.
+const GENERIC_ASSEMBLY_NAMES: [&str; 6] = ["contigs", "assembly", "consensus", "final.contigs", "scaffolds", "spades"];
+
+/// Kleborate's row name for an assembly: the file name without `.gz` and its FASTA extension.
+fn kleborate_strain(value: &str) -> String {
+    let name = Path::new(value).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = name.strip_suffix(".gz").unwrap_or(&name);
+    [".fasta", ".fna", ".fas", ".fa"].iter().find_map(|e| name.strip_suffix(e)).unwrap_or(name).to_string()
+}
+
+pub fn kleborate(ctx: &Ctx, p: &KleborateParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("kleborate");
+    inv.bundled_data = Some(kleborate_data);
+    v::non_empty_list("assemblies", &p.assemblies)?;
+    let mut strains: Vec<String> = Vec::new();
+    for a in &p.assemblies {
+        let path = v::existing_file(cwd, "assemblies", a)?;
+        v::sequence_file(&path, "assemblies", a, Seq::Fasta)?;
+        let strain = kleborate_strain(a);
+        if GENERIC_ASSEMBLY_NAMES.contains(&strain.as_str()) {
+            return v::invalid(
+                "assemblies",
+                format!("{a}: Kleborate would name the row {strain:?}, which says nothing about the sample; give the assembly a sample name (shovill's link_as, e.g. genomes/s1.fna)"),
+            );
+        }
+        if strains.contains(&strain) {
+            return v::invalid("assemblies", format!("two assemblies would both be named {strain:?} in Kleborate's table"));
+        }
+        strains.push(strain);
+        inv.inputs.push(path);
+    }
+    let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(p.overwrite), true)?;
+    for m in &p.modules {
+        if m.is_empty() || !m.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            return v::invalid("modules", format!("{m:?} is not a Kleborate module name like klebsiella__ybst"));
+        }
+    }
+    let preset = match (p.preset, p.modules.is_empty()) {
+        (None, true) => Some(KleboratePreset::Kpsc),
+        (pr, _) => pr,
+    };
+    // No table is certain: Kleborate writes each assembly to its species' table, or skips it
+    // (see `kleborate_tables`); result_warnings names the assemblies without a row.
+    match p.modules.first() {
+        Some(m) => inv.outputs.push(outdir.join(format!("{m}_output.txt"))),
+        None => inv.outputs.extend(isotable::parse::KLEBORATE_OUTPUTS.iter().map(|t| outdir.join(t))),
+    }
+    inv.outputs.push(outdir);
+    inv.args.push("--outdir".into());
+    inv.args.push(list_item(&p.outdir));
+    if let Some(pr) = preset {
+        inv.opt("preset", pr.name());
+    }
+    if !p.modules.is_empty() {
+        inv.opt("modules", p.modules.join(","));
+    }
+    // nargs='+': last, one value per argument
+    inv.args.push("--assemblies".into());
+    inv.args.extend(p.assemblies.iter().map(|a| list_item(a)));
+    Ok(inv)
+}
+
+/// A shell wrapper that runs the real program (`exec /path/to/env/bin/kleborate "$@"`, as the
+/// real-tools workflow makes them): the path it runs.
+fn wrapped_program(program: &Path) -> Option<PathBuf> {
+    if std::fs::metadata(program).ok()?.len() > 4096 {
+        return None;
+    }
+    let text = std::fs::read_to_string(program).ok()?;
+    if !text.starts_with("#!") || !text.lines().next()?.contains("sh") {
+        return None;
+    }
+    text.lines().filter_map(|l| l.trim().strip_prefix("exec ")).find_map(|rest| {
+        let target = PathBuf::from(rest.split_whitespace().next()?.trim_matches(['"', '\'']));
+        (target.is_absolute() && target.is_file()).then_some(target)
+    })
+}
+
+/// The databases Kleborate 3 types with: they ship inside its Python package
+/// (`kleborate/modules/*/data`: Mash sketches, MLST alleles and profiles, AMR genes) and Kaptive's
+/// (`kaptive/data`: the K and O locus references), next to the program in
+/// `<prefix>/lib/python3.*/site-packages`. Kaptive's METADATA is hashed too, which records its
+/// version (Kleborate 3.2.4 doesn't run with Kaptive 3.3).
+pub fn kleborate_data(program: &Path, _ctx: &Ctx) -> Vec<PathBuf> {
+    let Ok(mut real) = std::fs::canonicalize(program) else { return Vec::new() };
+    if let Some(inner) = wrapped_program(&real).and_then(|p| std::fs::canonicalize(p).ok()) {
+        real = inner;
+    }
+    let Some(prefix) = real.parent().and_then(Path::parent) else { return Vec::new() };
+    let mut files = Vec::new();
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_none_or(|n| n != "__pycache__") {
+                    walk(&p, out);
+                }
+            } else if !p.extension().is_some_and(|x| x == "py" || x == "pyc") {
+                out.push(p);
+            }
+        }
+    }
+    for lib in std::fs::read_dir(prefix.join("lib")).into_iter().flatten().flatten() {
+        if !lib.file_name().to_string_lossy().starts_with("python3") {
+            continue;
+        }
+        let site = lib.path().join("site-packages");
+        walk(&site.join("kleborate/modules"), &mut files);
+        walk(&site.join("kaptive/data"), &mut files);
+        for e in std::fs::read_dir(&site).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with("kaptive-") && n.ends_with(".dist-info") {
+                files.push(e.path().join("METADATA"));
+            }
+        }
+    }
+    files.retain(|p| p.is_file());
+    files.sort();
+    files
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3836,5 +4169,84 @@ mod tests {
         std::fs::create_dir(d.path().join("bin")).unwrap();
         std::os::unix::fs::symlink(env.join("bin/amrfinder"), d.path().join("bin/amrfinder")).unwrap();
         assert_eq!(conda_prefix(&d.path().join("bin/amrfinder")), Some(env));
+    }
+
+    #[test]
+    fn coverm_genome_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        for f in ["trim/s1_R1.fq.gz", "trim/s1_R2.fq.gz"] {
+            write(d.path(), f, "@a\nACGT\n+\nIIII\n");
+        }
+        write(d.path(), "asm/s1/contigs.fa", ">c1\nACGT\n");
+        let base = json!({"assembly": "asm/s1/contigs.fa", "r1": "trim/s1_R1.fq.gz", "r2": "trim/s1_R2.fq.gz", "output": "cov/s1.coverm.tsv"});
+        let inv = coverm_genome(&cx, &parse(base.clone())).unwrap();
+        assert_eq!(
+            inv.args,
+            [
+                "genome",
+                "--reference=asm/s1/contigs.fa",
+                "--single-genome",
+                "--output-file=cov/s1.coverm.tsv",
+                "--min-covered-fraction=0",
+                "--methods",
+                "mean",
+                "covered_fraction",
+                "--coupled",
+                "trim/s1_R1.fq.gz",
+                "trim/s1_R2.fq.gz",
+            ]
+        );
+        let with = |k: &str, v: serde_json::Value| {
+            let mut j = base.clone();
+            j[k] = v;
+            j
+        };
+        let inv = coverm_genome(&cx, &parse(with("threads", json!(4)))).unwrap();
+        assert!(inv.args.contains(&"--threads=4".to_string()));
+        let bad = |j: serde_json::Value| coverm_genome(&cx, &parse(j)).unwrap_err();
+        assert_eq!(bad(with("output", json!("cov/s1.tsv"))).field, "output");
+        assert_eq!(bad(with("r2", json!("trim/s1_R1.fq.gz"))).field, "r2");
+        assert_eq!(bad(with("assembly", json!("trim/s1_R1.fq.gz"))).field, "assembly");
+        assert_eq!(bad(with("min_read_percent_identity", json!(101))).field, "min_read_percent_identity");
+    }
+
+    #[test]
+    fn kleborate_args_checks_and_data() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        for f in ["genomes/s1.fna", "-s2.fasta.gz", "asm/s1/contigs.fa", "other/s1.fa"] {
+            write(d.path(), f, ">c1\nACGT\n");
+        }
+        let inv = kleborate(&cx, &parse(json!({"assemblies": ["genomes/s1.fna", "-s2.fasta.gz"], "outdir": "kleb"}))).unwrap();
+        assert_eq!(inv.args, ["--outdir", "kleb", "--preset=kpsc", "--assemblies", "genomes/s1.fna", "./-s2.fasta.gz"]);
+        assert!(inv.expect.is_empty());
+        assert_eq!(inv.outputs.len(), 4);
+        assert!(inv.outputs[0].ends_with("kleb/klebsiella_pneumo_complex_output.txt"));
+        // modules alone: no preset, and Kleborate names the table after the first module
+        let inv = kleborate(&cx, &parse(json!({"assemblies": ["genomes/s1.fna"], "outdir": "-k", "modules": ["klebsiella__ybst", "klebsiella__cbst"]}))).unwrap();
+        assert_eq!(inv.args, ["--outdir", "./-k", "--modules=klebsiella__ybst,klebsiella__cbst", "--assemblies", "genomes/s1.fna"]);
+        assert!(inv.outputs[0].ends_with("-k/klebsiella__ybst_output.txt"));
+        let inv = kleborate(&cx, &parse(json!({"assemblies": ["genomes/s1.fna"], "outdir": "k", "preset": "escherichia"}))).unwrap();
+        assert!(inv.args.contains(&"--preset=escherichia".to_string()));
+        let bad = |j: serde_json::Value| kleborate(&cx, &parse(j)).unwrap_err();
+        assert!(bad(json!({"assemblies": ["asm/s1/contigs.fa"], "outdir": "k"})).message.contains("link_as"));
+        assert!(bad(json!({"assemblies": ["genomes/s1.fna", "other/s1.fa"], "outdir": "k"})).message.contains("both be named \"s1\""));
+        assert_eq!(bad(json!({"assemblies": ["genomes/s1.fna"], "outdir": "k", "modules": ["a,b"]})).field, "modules");
+        assert_eq!(bad(json!({"assemblies": [], "outdir": "k"})).field, "assemblies");
+        write(d.path(), "full/x.txt", "x");
+        assert_eq!(bad(json!({"assemblies": ["genomes/s1.fna"], "outdir": "full"})).field, "outdir");
+
+        // the bundled databases, found through a shell wrapper that execs the real script
+        let env = d.path().join("env");
+        write(&env, "bin/kleborate", "#!/usr/bin/env python3\n");
+        for f in ["kleborate/modules/klebsiella__ybst/data/ybt_alleles.fasta", "kleborate/modules/klebsiella__ybst/klebsiella__ybst.py", "kaptive/data/Klebsiella_k_locus_primary_reference.gbk", "kaptive-3.2.2.dist-info/METADATA"] {
+            write(&env, &format!("lib/python3.12/site-packages/{f}"), "x");
+        }
+        write(d.path(), "tool-bin/kleborate", &format!("#!/bin/sh\nPATH={0}/bin:$PATH\nexport PATH\nexec {0}/bin/kleborate \"$@\"\n", env.display()));
+        let names: Vec<String> = kleborate_data(&d.path().join("tool-bin/kleborate"), &cx).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["Klebsiella_k_locus_primary_reference.gbk", "METADATA", "ybt_alleles.fasta"]);
+        assert!(kleborate_data(&d.path().join("genomes/s1.fna"), &cx).is_empty());
+        assert_eq!(version_number("Kleborate v3.2.4"), Some("3.2.4"));
     }
 }

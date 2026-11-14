@@ -16,6 +16,7 @@ isotable results/ --sheet samplesheet.csv -o qc_table.tsv --mqc isotable_mqc.tsv
 isotable results/ --mode mag                     # MIMAG tiers from CheckM2
 isotable results/ --min-n50 20000 --max-contigs 200
 isotable results/ --require reads,q30,contigs,n50,completeness,kraken
+isotable assembly-stats asm/*/contigs.fa         # QUAST-style statistics, one row per assembly
 ```
 
 | Option | Effect |
@@ -26,7 +27,7 @@ isotable results/ --require reads,q30,contigs,n50,completeness,kraken
 | `--mqc FILE` | Also write a MultiQC custom-content table. |
 | `--require LIST` | Measurements a sample needs before it can pass (below). `--require none` turns this off. |
 | `--fastqc-grade LIST` | Failed FastQC modules (and the matching leanqc checks) that make a sample `warn`, by FastQC or leanqc name, or `all` / `none`. Default: Per base sequence quality, Per sequence quality scores, Per base N content, Adapter Content (below). |
-| `--min-reads`, `--min-q30`, `--min-read-q`, `--max-contigs`, `--min-n50`, `--min-busco`, `--min-completeness`, `--max-contamination` | Thresholds. `--min-read-q` is for long reads (median read quality, default Q10: basecallers' usual pass threshold). |
+| `--min-reads`, `--min-q30`, `--min-read-q`, `--max-contigs`, `--min-n50`, `--min-busco`, `--min-completeness`, `--max-contamination`, `--min-depth` | Thresholds. `--min-read-q` is for long reads (median read quality, default Q10: basecallers' usual pass threshold). `--min-depth` is the mean depth from read mapping (CoverM), default 20; 0 turns it off. |
 
 ## Outputs it reads
 
@@ -38,8 +39,8 @@ Found anywhere under the given folders, by file name:
 | leanqc | `*_leanqc.json` (one per read file) | failed checks (R1 and R2 merged) |
 | FastQC, [FastQC-Rust](https://github.com/ewels/FastQC-Rust) | `*_fastqc.zip`, or an extracted `*_fastqc/` folder (`fastqc_data.txt` and `summary.txt`), one per read file | sequences, %GC, failed and warned modules (R1 and R2 merged) |
 | Kraken 2 | `*kraken2*.txt`, `*.kreport`, `*.report` whose content is a Kraken 2 report | top species and its % |
-| QUAST | `transposed_report.tsv` | contigs, length, N50, GC |
-| Shovill | `contigs.fa` with `shovill.log` beside it; the sample is the folder's name | contigs, length, N50 and GC, counted as QUAST does (contigs of 500 bp or more), so the two agree |
+| QUAST | `transposed_report.tsv` | contigs, length, N50, GC, largest contig, L50, N90, Ns per 100 kbp, contigs ≥ 1 kb |
+| Shovill | `contigs.fa` with `shovill.log` beside it; the sample is the folder's name | the [assembly statistics](#assembly-statistics), counted as QUAST does (contigs of 500 bp or more), so the two agree; and Shovill's depth estimate from its log (`shovill_depth_est`) |
 | Flye | `assembly.fasta` with `flye.log` beside it; the sample is the folder's name | as Shovill. Left out when the same sample has a Medaka consensus |
 | Medaka | `consensus.fasta` with `consensus_probs.hdf` beside it; the sample is the folder's name | as Shovill (the polished long-read assembly) |
 | BUSCO | `short_summary.*.json` | complete %, lineage |
@@ -47,6 +48,8 @@ Found anywhere under the given folders, by file name:
 | GTDB-Tk | `*summary.tsv`, or the ANI screen's `classify/ani_screen/*.ani_summary.tsv` (from `gtdbprep ani`, or classify_wf when the screen assigned every genome) | classification |
 | mlst | `*mlst*.tsv` | scheme, sequence type |
 | AMRFinderPlus | `*amrfinder*.tsv` | AMR genes |
+| CoverM | `*coverm*.tsv` with a `Genome` column (`coverm genome`, methods mean and covered_fraction; irit-mcp's `coverm_genome`). A one-genome table is named after the file (`s1.coverm.tsv` → `s1`); with several genomes, each row after its genome | `mapped_depth` (mean depth from read mapping; several read sets add up), `covered_percent` (one read set only). `coverm contig` tables are skipped and listed |
+| Kleborate 3 | `klebsiella_pneumo_complex_output.txt`, `klebsiella_oxytoca_complex_output.txt`, `escherichia_output.txt`; rows named by `strain` (the assembly's file name) | `kleborate_species`, `kleborate_species_match`, `kleborate_st`, `virulence_score`, `resistance_score`, `k_locus`, `o_locus`, `ybt`, `clb`, `iuc`, `iro`, `rmpadc` (`-`: not found). Full or `--trim_headers` headers |
 
 Only columns with data appear in the output.
 
@@ -71,6 +74,48 @@ listed at the end, like a dangling link; the sample then lacks that read file's 
 Kraken 2 files are recognised by their content (six
 or eight tab-separated columns with a rank code), read line by line; per-read output such as
 `*.kraken2.classifiedreads.txt` is skipped (and listed) instead of being read into memory.
+
+## Assembly statistics
+
+From an assembly FASTA (Shovill's, Flye's, Medaka's, or any file with `isotable assembly-stats`),
+counted the way QUAST 5 does (`quast_libs/basic_stats.py`):
+
+| Column | Meaning |
+|---|---|
+| `contigs`, `assembly_length` | Contigs of 500 bp or more, and their total length (QUAST's `# contigs`, `Total length`). |
+| `n50`, `l50`, `n90` | The contig length at which the contigs, longest first, reach 50% (90%) of that length, and for L50 how many contigs it took. |
+| `largest_contig` | |
+| `gc_percent` | G+C over A+C+G+T of those contigs, two decimals. QUAST divides by the length without Ns; the two differ only when an assembly holds other IUPAC codes. |
+| `ns_per_100kbp` | N bases per 100,000 bp (QUAST's `# N's per 100 kbp`). |
+| `contigs_1kb` | Contigs of 1000 bp or more (QUAST's `# contigs (>= 1000 bp)`). |
+| `contigs_all` | Every contig, whatever its length. |
+
+**Why 500 bp.** It is QUAST's default `--min-contig`, so a QUAST report on the same assembly gives
+the same numbers (and isotable doesn't see a conflict when both are present), and it is what genome
+announcements usually report. Shovill keeps contigs down to 200 bp, so the count differs from
+Shovill's own: on the [paper redo](../research/paper-redo-kpn.md)'s three assemblies, 71, 128 and
+146 contigs in all against 38, 58 and 55 of 500 bp or more. `contigs_all` keeps the full count.
+
+`isotable assembly-stats FILE...` prints the same statistics as a table, one row per file (plain or
+gzip FASTA), or JSON with `--json`. `--min-contig N` changes the cut-off (0 counts everything);
+`contigs_all` and `length_all` are always over every contig. irit-mcp's `assembly_stats` runs it.
+
+```
+assembly                                 min_contig  contigs  total_length  largest_contig  n50     l50  n90     l90  gc_percent  ns_per_100kbp  contigs_1kb  contigs_all  length_all
+results/shovill/BfR-EC-20867/contigs.fa  500         38       5455238       1372303         661397  3    144094  10   57.04       0.00           33           71           5463998
+```
+
+## Depth
+
+`shovill_depth_est` is Shovill's "Estimated sequencing depth": read bases over the genome size it
+used, which is its own k-mer estimate unless `--gsize` was given. In the
+[depth experiment](../research/coverage-depth.md) that estimate was 0.5-1.9 Mb for a 5.5 Mb genome
+at 15-20×, so Shovill reported 58-67× for 20× of reads. `mapped_depth` is the mean depth of the
+reads mapped back to the assembly (CoverM), which doesn't depend on a genome-size estimate, and
+`covered_percent` the share of the assembly they cover.
+
+Only `mapped_depth` is graded (`--min-depth`, below). When both are there and one is more than 1.5×
+the other, the sample warns: report the mapped depth. On BfR-EC-20867 the two agreed (51× and 50.3×).
 
 ## Joining by sample
 
@@ -138,7 +183,8 @@ missing), `warn`, `pass`. A sample never passes on partial evidence.
 **Required measurements.** By default an isolate needs reads and Q30 (fastp), contigs and N50
 (QUAST, or a Shovill, Flye or Medaka assembly), and completeness (CheckM2 or BUSCO); a MAG needs CheckM2 completeness and contamination.
 `--require` replaces the list with any of `reads`, `q30`, `contigs`, `n50`, `completeness`,
-`contamination`, `kraken`, `gtdb`, `mlst`, `amr`; `--require none` turns the check off.
+`contamination`, `kraken`, `gtdb`, `depth` (CoverM), `mlst`, `amr`, `kleborate`; `--require none`
+turns the check off.
 
 **Long reads.** A long-read-only isolate (Nanopore assembled without short reads) has no fastp
 report. Its leanqc report has the long-read numbers instead (leanqc adds them when the median read is
@@ -166,6 +212,14 @@ failed three of them.
 | BUSCO complete | < 95% | < 90% |
 | CheckM2 completeness | < 95% | < 90% |
 | CheckM2 contamination | > 2% | > 5% |
+| Mean depth from read mapping (CoverM) | < 20× | < 10× |
+| Shovill's depth estimate against the mapped depth | differ by more than 1.5× | |
+| Kleborate typing | `Not Tested` (the species is one the preset Kleborate ran doesn't type) | |
+
+The depth thresholds come from the [depth experiment](../research/coverage-depth.md) on three
+*K. pneumoniae*: every Table 1 call held at 15× and above, resistance genes dropped out at 10×, and
+20× was the practical target given uneven pooling. They are for bacterial isolates assembled from
+Illumina reads; change them with `--min-depth`.
 
 **Which read-QC failures grade.** FastQC's thresholds were set for whole-genome shotgun libraries
 of a diverse genome, and several modules fail on healthy data:
@@ -249,6 +303,15 @@ added; the verdict is not changed. Evidence:
   not one; a truncated zip is skipped and listed; fastp and Trim Galore trimmed-read reports join
   the sample, in their own columns, and grade instead of the raw reads; lanes merge only with a
   sheet.
+- Assembly statistics: N50, L50, N90 and L90 of a made-up assembly worked out by hand, with 500 bp,
+  501 bp and no cut-off; gzip gives the same as plain; on the paper redo's three real Shovill
+  assemblies, contigs (all and ≥ 500 bp), length and N50 match the numbers in
+  [the paper redo](../research/paper-redo-kpn.md), and N50 matches Kleborate's own contig stats.
+  Not compared with a QUAST run (QUAST isn't installed on the test laptop).
+- CoverM genome tables (as CoverM 0.8.0 wrote one on the laptop, two read sets, a `coverm contig`
+  table skipped) and Kleborate 3.2.4 tables (full and trimmed headers); a sample with a mapped
+  depth below 20× warns, below 10× fails, and a Shovill estimate of 61× against 18× mapped warns;
+  a Kleborate row with `Not Tested` warns.
 - Synthetic CheckM2 and GTDB-Tk files (in `isotable/testdata/mag/`, made up for the test) in MAG
   mode: tiers as expected, including a 92%-complete bin failing on 12.5% contamination, and the
   note on both Patescibacteria bins.
@@ -264,3 +327,6 @@ added; the verdict is not changed. Evidence:
 - fastp reports split per mate (one fastp run per read file) would be read as two runs of a sample
   named after each file; nf-core pipelines don't produce them.
 - No per-species expected genome size check.
+- Mapped depth is CoverM's mean, which leaves out 75 bp at each contig end; on fragmented assemblies
+  of many short contigs that can matter a little.
+- Kleborate's columns are read as text; isotable doesn't grade the scores or loci.

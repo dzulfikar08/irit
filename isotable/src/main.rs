@@ -1,9 +1,11 @@
 //! isotable: one row per sample from the outputs of the usual QC, assembly and typing tools.
 //!
-//! Point it at a results folder; it finds fastp, leanqc, FastQC, QUAST, BUSCO, CheckM2, GTDB-Tk,
-//! Kraken 2, mlst and AMRFinderPlus outputs by name, joins them by sample, and grades each
-//! sample against thresholds you can change. Two files that disagree about one sample make a
-//! `conflict`; a sample missing a required measurement is `incomplete`, never `pass`.
+//! Point it at a results folder; it finds fastp, leanqc, FastQC, QUAST, Shovill/Flye/Medaka
+//! assemblies, BUSCO, CheckM2, GTDB-Tk, Kraken 2, CoverM, mlst, AMRFinderPlus and Kleborate outputs
+//! by name, joins them by sample, and grades each sample against thresholds you can change. Two
+//! files that disagree about one sample make a `conflict`; a sample missing a required measurement
+//! is `incomplete`, never `pass`. `isotable assembly-stats` prints QUAST-style statistics of
+//! assembly FASTA files.
 
 use isotable::parse;
 
@@ -14,8 +16,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(version, about = "One QC row per sample from fastp, leanqc, FastQC, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs")]
+#[command(
+    version,
+    about = "One QC row per sample from fastp, leanqc, FastQC, QUAST, assembly, BUSCO, CheckM2, GTDB-Tk, Kraken 2, CoverM, mlst, AMRFinderPlus and Kleborate outputs",
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true
+)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Folders to search (recursively) for tool outputs.
     #[arg(required = true)]
     dirs: Vec<PathBuf>,
@@ -37,7 +47,8 @@ struct Cli {
     mqc: Option<PathBuf>,
 
     /// Measurements a sample needs before it can pass, comma-separated, from: reads, q30,
-    /// contigs, n50, completeness (CheckM2 or BUSCO), contamination, kraken, gtdb, mlst, amr.
+    /// contigs, n50, completeness (CheckM2 or BUSCO), contamination, kraken, gtdb, depth (CoverM),
+    /// mlst, amr, kleborate.
     /// Default: reads,q30,contigs,n50,completeness (isolate); completeness,contamination (MAG).
     /// `--require none` turns the check off.
     #[arg(long, value_delimiter = ',')]
@@ -52,6 +63,31 @@ struct Cli {
 
     #[command(flatten)]
     limits: Limits,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// QUAST-style statistics of assembly FASTA files (plain or gzip): contigs, total length,
+    /// largest contig, N50, L50, N90, L90, GC %, Ns per 100 kbp, contigs >= 1 kb, and every contig
+    /// regardless of length. One row per file.
+    AssemblyStats(StatsArgs),
+}
+
+#[derive(clap::Args)]
+struct StatsArgs {
+    /// Assembly FASTA files.
+    #[arg(required = true)]
+    assemblies: Vec<PathBuf>,
+    /// Leave out contigs shorter than this from every statistic except contigs_all and
+    /// length_all. 500 is QUAST's default, so a QUAST report agrees.
+    #[arg(long, default_value_t = isotable::asm::QUAST_MIN_CONTIG)]
+    min_contig: u64,
+    /// JSON (an array of objects) instead of TSV.
+    #[arg(long)]
+    json: bool,
+    /// Output file (default: stdout).
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -89,7 +125,14 @@ struct Limits {
     /// Isolate mode: warn above this CheckM2 contamination; fail above 5.
     #[arg(long, default_value_t = 2.0)]
     max_contamination: f64,
+    /// Warn below this mean depth from read mapping (CoverM genome); fail below half of it.
+    /// Shovill's own depth estimate is shown but not graded. 0 turns it off.
+    #[arg(long, default_value_t = 20.0)]
+    min_depth: f64,
 }
+
+/// Shovill's depth estimate and the mapped depth disagree when one is more than this times the other.
+const DEPTH_DISAGREE: f64 = 1.5;
 
 /// Worst wins: a conflict hides everything, then fail, then missing evidence, then warn.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -123,8 +166,10 @@ const REQUIREMENTS: &[(&str, &[&str], &str)] = &[
     ("contamination", &["contamination"], "contamination (CheckM2)"),
     ("kraken", &["kraken_top"], "Kraken 2 report"),
     ("gtdb", &["gtdb"], "GTDB-Tk classification (or its ANI screen)"),
+    ("depth", &["mapped_depth"], "mean depth from read mapping (CoverM genome)"),
     ("mlst", &["mlst_st"], "mlst result"),
     ("amr", &["amr_genes"], "AMRFinderPlus result"),
+    ("kleborate", &["kleborate_species"], "Kleborate result"),
 ];
 
 /// FastQC modules and the leanqc check that looks at the same thing (`None`: leanqc has none).
@@ -255,6 +300,15 @@ const COLUMNS: &[(&str, &str)] = &[
     ("length", "assembly_length"),
     ("n50", "n50"),
     ("gc", "gc_percent"),
+    ("largest", "largest_contig"),
+    ("l50", "l50"),
+    ("n90", "n90"),
+    ("ns_per_100kbp", "ns_per_100kbp"),
+    ("contigs_1kb", "contigs_1kb"),
+    ("contigs_all", "contigs_all"),
+    ("shovill_depth", "shovill_depth_est"),
+    ("mapped_depth", "mapped_depth"),
+    ("covered_fraction", "covered_percent"),
     ("busco_complete", "busco_complete"),
     ("busco_lineage", "busco_lineage"),
     ("completeness", "checkm2_completeness"),
@@ -264,10 +318,75 @@ const COLUMNS: &[(&str, &str)] = &[
     ("mlst_scheme", "mlst_scheme"),
     ("mlst_st", "mlst_st"),
     ("amr_genes", "amr_genes"),
+    ("kleborate_species", "kleborate_species"),
+    ("kleborate_species_match", "kleborate_species_match"),
+    ("kleborate_st", "kleborate_st"),
+    ("virulence_score", "virulence_score"),
+    ("resistance_score", "resistance_score"),
+    ("k_locus", "k_locus"),
+    ("o_locus", "o_locus"),
+    ("ybt", "ybt"),
+    ("clb", "clb"),
+    ("iuc", "iuc"),
+    ("iro", "iro"),
+    ("rmpadc", "rmpadc"),
 ];
+
+/// `isotable assembly-stats`: one row (TSV) or object (JSON) per assembly, named as given.
+fn assembly_stats(a: &StatsArgs) -> Result<()> {
+    let mut rows = Vec::new();
+    for p in &a.assemblies {
+        let s = isotable::asm::stats(p, a.min_contig).map_err(|e| anyhow::anyhow!("{}: {e:#}", p.display()))?;
+        rows.push((p.display().to_string(), s));
+    }
+    let text = if a.json {
+        let list: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(name, s)| {
+                let mut m = serde_json::Map::new();
+                m.insert("assembly".into(), name.clone().into());
+                for (k, v) in s.columns() {
+                    let v = match (v.parse::<u64>(), v.parse::<f64>()) {
+                        (Ok(n), _) => n.into(),
+                        (_, Ok(x)) => x.into(),
+                        _ => serde_json::Value::Null,
+                    };
+                    m.insert(k.into(), v);
+                }
+                serde_json::Value::Object(m)
+            })
+            .collect();
+        serde_json::to_string_pretty(&list)? + "\n"
+    } else {
+        let mut out = String::from("assembly");
+        // clap requires at least one assembly
+        for (k, _) in rows[0].1.columns() {
+            out.push('\t');
+            out.push_str(k);
+        }
+        out.push('\n');
+        for (name, s) in &rows {
+            out.push_str(name);
+            for (_, v) in s.columns() {
+                out.push('\t');
+                out.push_str(&v);
+            }
+            out.push('\n');
+        }
+        out
+    };
+    match &a.output {
+        Some(p) => std::fs::write(p, text)?,
+        None => print!("{text}"),
+    }
+    Ok(())
+}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(Command::AssemblyStats(a)) = &cli.command {
+        return assembly_stats(a);
+    }
     let sheet = match &cli.sheet {
         Some(p) => parse::sheet_samples(p)?,
         None => Vec::new(),
@@ -858,6 +977,31 @@ fn grade(row: &Row, l: &Limits, mode: Mode, required: &[&str], graded: &Graded) 
             flag(Status::Warn, format!("N50 {n} < {}", l.min_n50));
         }
     }
+    if let Some(d) = num(row, "mapped_depth").filter(|_| l.min_depth > 0.0) {
+        if d < l.min_depth / 2.0 {
+            flag(Status::Fail, format!("mapped depth {d:.1}x < {:.0}x", l.min_depth / 2.0));
+        } else if d < l.min_depth {
+            flag(Status::Warn, format!("mapped depth {d:.1}x < {:.0}x", l.min_depth));
+        }
+    }
+    if let (Some(est), Some(d)) = (num(row, "shovill_depth"), num(row, "mapped_depth"))
+        && est > 0.0
+        && d > 0.0
+        && est.max(d) / est.min(d) > DEPTH_DISAGREE
+    {
+        flag(
+            Status::Warn,
+            format!(
+                "Shovill's depth estimate {est:.0}x and the mapped depth {d:.1}x differ by more than {DEPTH_DISAGREE}x; Shovill divides by its own genome-size estimate unless given gsize, so report the mapped depth"
+            ),
+        );
+    }
+    // Kleborate 3 writes an assembly whose species its preset doesn't cover (a kpsc run on E. coli)
+    // to that species' table, with the preset's typing columns `Not Tested`.
+    if row.cells.get("kleborate_st").map(Cell::show).as_deref() == Some("Not Tested") {
+        let sp = row.cells.get("kleborate_species").map(Cell::show).unwrap_or_default();
+        flag(Status::Warn, format!("Kleborate's species call is {sp}, which the preset it ran doesn't type, so its typing was not run (Not Tested)"));
+    }
     if let Some(b) = num(row, "busco_complete") {
         if b < l.min_busco - 5.0 {
             flag(Status::Fail, format!("BUSCO {b:.1}% < {:.0}%", l.min_busco - 5.0));
@@ -926,6 +1070,7 @@ mod tests {
             min_busco: 95.0,
             min_completeness: 95.0,
             max_contamination: 2.0,
+            min_depth: 20.0,
         }
     }
 
@@ -1459,5 +1604,37 @@ mod tests {
         assert_eq!(mimag(60.0, 9.9), "medium");
         assert_eq!(mimag(60.0, 10.0), "low");
         assert_eq!(mimag(40.0, 1.0), "low");
+    }
+
+    #[test]
+    fn mapped_depth_is_graded_and_compared_with_shovills_estimate() {
+        let t = tempfile::tempdir().unwrap();
+        let contigs = format!(">c1\n{}\n", "ACGT".repeat(5000));
+        for (s, est, mapped) in [("s1", 50, 50.3), ("s2", 61, 18.0), ("s3", 9, 8.5)] {
+            write(t.path(), &format!("asm/{s}/contigs.fa"), &contigs);
+            write(t.path(), &format!("asm/{s}/shovill.log"), &format!("[shovill] Estimated sequencing depth: {est} x\n"));
+            write(
+                t.path(),
+                &format!("cov/{s}.coverm.tsv"),
+                &format!("Genome\tcontigs.fa/{s}_R1.fq.gz Mean\tcontigs.fa/{s}_R1.fq.gz Covered Fraction\ngenome1\t{mapped}\t0.999\n"),
+            );
+        }
+        write(t.path(), "kleb/klebsiella_pneumo_complex_output.txt", "strain\tenterobacterales__species__species\tklebsiella_pneumo_complex__mlst__ST\ns1\tKlebsiella pneumoniae\tST716\n");
+        // a kpsc run on E. coli: its row goes to the Escherichia table, typing not run
+        write(t.path(), "kleb/escherichia_output.txt", "strain\tenterobacterales__species__species\tklebsiella_pneumo_complex__mlst__ST\ns2\tEscherichia coli\tNot Tested\n");
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["depth", "kleborate"]));
+        let (s1, why1, r1) = &rows["s1"];
+        assert_eq!(*s1, Status::Pass, "{why1:?}");
+        assert_eq!((cell(r1, "shovill_depth"), cell(r1, "mapped_depth"), cell(r1, "covered_fraction")), ("50".into(), "50.3".into(), "99.9".into()));
+        assert_eq!(cell(r1, "kleborate_st"), "ST716");
+        let (s2, why2, _) = &rows["s2"];
+        assert_eq!(*s2, Status::Warn);
+        assert!(why2.iter().any(|w| w.contains("mapped depth 18.0x < 20x")), "{why2:?}");
+        assert!(why2.iter().any(|w| w.contains("differ by more than 1.5x")), "{why2:?}");
+        assert!(why2.iter().any(|w| w.contains("Escherichia coli, which the preset it ran doesn't type")), "{why2:?}");
+        let (s3, why3, _) = &rows["s3"];
+        assert_eq!(*s3, Status::Fail, "{why3:?}");
+        assert!(why3.iter().any(|w| w.contains("no Kleborate result")), "{why3:?}");
+        assert!(!why3.iter().any(|w| w.contains("differ by")), "{why3:?}");
     }
 }

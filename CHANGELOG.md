@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### irit-mcp
+- **`assembly_stats`**: QUAST-style assembly statistics (contigs, total length, largest contig, N50,
+  L50, N90, L90, GC, Ns per 100 kbp, contigs >= 1 kb; contigs of 500 bp or more, QUAST's default),
+  computed by isotable and recorded like any call.
+- **`coverm_genome`** (CoverM 0.8.0): an isolate's depth by read mapping, and the fraction of the
+  assembly covered. Warns when Shovill's depth estimate differs by more than 1.5×.
+- **`kleborate`** (Kleborate 3.2.4): *Klebsiella* typing (ST, virulence and resistance scores,
+  ybt/clb/iuc/iro/rmpADC, K/O loci with Kaptive's confidence). Its bundled databases are hashed into
+  the record; warns about assemblies with no row or outside the KpSC.
+- A tool whose bundled data (mlst's schemes, Kleborate's databases) can't be found now gets a
+  warning that the record identifies it by version only.
+
+### isotable
+- **`isotable assembly-stats`**, and largest contig, L50, N90, Ns per 100 kbp, contigs >= 1 kb and
+  all contigs as table columns (from assemblies and QUAST reports).
+- Reads CoverM genome and Kleborate 3 tables. Shows Shovill's depth estimate next to the mapped
+  depth; `--min-depth` (default 20) grades the mapped depth (warn below it, fail below half), and a
+  warning says when the two differ by more than 1.5×. New requirements `depth` and `kleborate`.
+
 ### dblock
 - **Downloads side by side**: `fetch --jobs N` (default 4) downloads the parts or files of an entry,
   and several databases, under one shared limit; `--jobs 1` fetches one thing at a time as before.

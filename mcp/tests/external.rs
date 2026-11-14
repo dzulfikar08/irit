@@ -1,4 +1,4 @@
-//! fastp, Bakta, CheckM2 and GTDB-Tk through irit-mcp over stdio, with shell-script stand-ins
+//! fastp, Bakta, CheckM2, GTDB-Tk and the other third-party tools through irit-mcp over stdio, with shell-script stand-ins
 //! for the real programs on PATH (so no tool or database is needed), then replayed.
 //!
 //! The stand-ins check the flags they are given against the ones the wrappers may send, write
@@ -137,7 +137,7 @@ for a in "$@"; do
 done
 [ -d "$out" ] && [ $force = 0 ] && die "Folder '$out' already exists. Try using --force"
 mkdir -p "$out"
-echo "[shovill] started $(date +%s%N)" > "$out/shovill.log"
+{ echo "[shovill] started $(date +%s%N)"; echo "[shovill] Estimated sequencing depth: 61 x"; } > "$out/shovill.log"
 { echo '>contig00001 len=12000 cov=40.0'; printf '%12000s\n' '' | tr ' ' A; echo '>contig00002 len=8000 cov=38.0'; printf '%8000s\n' '' | tr ' ' C; } > "$out/contigs.fa"
 "#;
 
@@ -257,22 +257,29 @@ printf '>k141_1 flag=1 multi=5.0000 len=12\nACGTACGTACGT\n>k141_2 flag=1 multi=3
 
 const COVERM: &str = r#"
 [ "${1:-}" = --version ] && { echo "coverm 0.8.0"; exit 0; }
-[ "${1:-}" = contig ] || die "expected contig"
+case "${1:-}" in contig|genome) cmd=$1 ;; *) die "expected contig or genome" ;; esac
 shift
-out= ; ref= ; methods= ; mode=
+out= ; ref= ; methods= ; mode= ; r1=
 while [ $# -gt 0 ]; do
   case "$1" in
     --reference=*) ref=${1#--reference=} ;;
     --output-file=*) out=${1#--output-file=} ;;
     --mapper=*|--threads=*|--min-read-percent-identity=*|--min-read-aligned-percent=*) ;;
+    --single-genome|--min-covered-fraction=*) [ $cmd = genome ] || die "genome option $1 for contig" ;;
     --methods) mode=m ;;
     --coupled) mode=c ;;
     -*) die "unknown option $1" ;;
-    *) case "$mode" in m) methods="$methods $1" ;; c) [ -f "$1" ] || die "cannot open $1" ;; *) die "stray $1" ;; esac ;;
+    *) case "$mode" in m) methods="$methods $1" ;; c) [ -f "$1" ] || die "cannot open $1"; r1=${r1:-$(basename "$1")} ;; *) die "stray $1" ;; esac ;;
   esac
   shift
 done
 [ -f "$ref" ] || die "no reference"
+if [ $cmd = genome ]; then
+  s="$(basename "$ref")/$r1"
+  printf 'Genome\t%s Mean\t%s Covered Fraction\ngenome1\t20.5\t0.9987\n' "$s" "$s" > "$out"
+  echo "[2026-11-14T02:29:40Z INFO  coverm::genome] In sample '$s', found 99 reads mapped out of 100 total (99.00%)" >&2
+  exit 0
+fi
 case "$methods" in
   *metabat*) printf 'contigName\tcontigLen\ttotalAvgDepth\ts1.bam\ts1.bam-var\nk141_1\t12\t5\t5\t0.5\nk141_2\t8\t3\t3\t0.2\n' > "$out" ;;
   *) printf 'Contig\ts1 Mean\nk141_1\t5\nk141_2\t3\n' > "$out" ;;
@@ -299,6 +306,35 @@ done
 [ -d "$(dirname "$out")" ] || die "output folder missing"
 printf '>k141_1\nACGTACGTACGT\n' > "$out.1.fa"
 printf '>k141_2\nGGGGCCCC\n' > "$out.2.fa"
+"#;
+
+/// Kleborate 3.2.4's command line: `--outdir` as its own word, a preset, `--assemblies` last; one
+/// row per assembly named after the file. Installed as `<env>/bin/kleborate` with its bundled data in
+/// `<env>/lib/python3.12/site-packages`, and reached through a wrapper that execs it.
+const KLEBORATE: &str = r#"
+[ "${1:-}" = --version ] && { echo "Kleborate v3.2.4"; exit 0; }
+out= ; preset= ; files=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --outdir) shift; out=$1 ;;
+    --preset=*) preset=${1#--preset=} ;;
+    --modules=*) ;;
+    --assemblies) shift; files="$*"; break ;;
+    *) die "unknown option $1 (--outdir must be a word of its own)" ;;
+  esac
+  shift
+done
+[ -n "$out" ] || die "Error: The --outdir (-o) option is required."
+[ "$preset" = kpsc ] || die "expected kpsc"
+mkdir -p "$out"
+t="$out/klebsiella_pneumo_complex_output.txt"
+printf 'strain\tenterobacterales__species__species\tenterobacterales__species__species_match\tgeneral__contig_stats__QC_warnings\tklebsiella_pneumo_complex__mlst__ST\tklebsiella__ybst__Yersiniabactin\tklebsiella__cbst__Colibactin\tklebsiella_pneumo_complex__virulence_score__virulence_score\tklebsiella_pneumo_complex__resistance_score__resistance_score\tklebsiella_pneumo_complex__amr__Bla_ESBL_acquired\tklebsiella_pneumo_complex__kaptive__K_locus\tklebsiella_pneumo_complex__kaptive__O_locus\n' > "$t"
+for f in $files; do
+  [ -f "$f" ] || die "no $f"
+  b=$(basename "$f"); b=${b%.gz}; b=${b%.*}
+  printf '%s\tKlebsiella pneumoniae\tstrong\t-\tST716\tybt 14; ICEKp12\t-\t1\t1\tCTX-M-15\tKL110\tOL2\n' "$b" >> "$t"
+done
+echo "harmonized" > "$out/klebsiella_pneumo_complex_hAMRonization_output.txt"
 "#;
 
 /// The irit binaries (isotable): `$IRIT_BIN_DIR`, else the workspace's target/release or target/debug.
@@ -607,6 +643,120 @@ fn mag_path_with_stand_in_tools_is_recorded_and_replayable() {
     for (p, h) in &all {
         if p.ends_with("log") {
             assert!(p.is_file());
+            continue;
+        }
+        assert_eq!(&sha256(p), h, "{} differs after replay", p.display());
+    }
+}
+
+/// The paper-redo gaps with stand-ins: QUAST-style assembly statistics (isotable, an irit binary),
+/// depth by read mapping (CoverM genome) next to Shovill's estimate, and Kleborate typing with its
+/// bundled data hashed; isotable reports them per sample and warns when the depths disagree. Replayed.
+#[test]
+fn assembly_stats_depth_and_kleborate_with_stand_ins_join_in_isotable_and_replay() {
+    let s = setup();
+    let work = &s.work;
+    let bin = irit_bin_dir();
+    // Kleborate in its own environment, with its bundled data; fake-bin/kleborate execs it
+    let env = work.join("kleb-env");
+    std::fs::create_dir_all(env.join("bin")).unwrap();
+    script(&env.join("bin"), "kleborate", KLEBORATE);
+    for f in ["kleborate/modules/klebsiella__ybst/data/ybt.fasta", "kaptive/data/Klebsiella_k_locus_primary_reference.gbk", "kaptive-3.2.2.dist-info/METADATA"] {
+        write(&env, &format!("lib/python3.12/site-packages/{f}"), "data\n");
+    }
+    write(&work.join("fake-bin"), "kleborate", &format!("#!/bin/sh\nexec {}/bin/kleborate \"$@\"\n", env.display()));
+    std::fs::set_permissions(work.join("fake-bin/kleborate"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut c = Client::spawn(work, &["--bin-dir", bin.to_str().unwrap()], &[("PATH", &s.path)]);
+    let tools = c.request("tools/list", json!({}));
+    let list = tools["result"]["tools"].as_array().unwrap();
+    for want in ["assembly_stats", "coverm_genome", "kleborate"] {
+        let t = list.iter().find(|t| t["name"] == want).unwrap_or_else(|| panic!("{want} missing"));
+        assert_eq!(t["inputSchema"]["additionalProperties"], false, "{want}");
+    }
+    fn ok(c: &mut Client, tool: &str, args: Value) -> Value {
+        let r = c.call(tool, args);
+        assert_ne!(r["isError"], true, "{r}");
+        r["structuredContent"].clone()
+    }
+    ok(&mut c, "shovill", json!({"r1": "reads/s1_R1.fastq", "r2": "reads/s1_R2.fastq", "outdir": "asm/s1", "ram": 8, "link_as": "genomes/s1.fna"}));
+    // 1: assembly statistics; 12,000 bp of A and 8,000 of C
+    let v = ok(&mut c, "assembly_stats", json!({"assemblies": ["asm/s1/contigs.fa"]}));
+    let a = &v["assemblies"][0];
+    assert_eq!(a["assembly"], "asm/s1/contigs.fa", "{v}");
+    assert_eq!(
+        (&a["contigs"], &a["n50"], &a["l50"], &a["n90"], &a["l90"], &a["largest_contig"]),
+        (&json!(2), &json!(12000), &json!(1), &json!(8000), &json!(2), &json!(12000)),
+        "{v}"
+    );
+    assert_eq!((&a["gc_percent"], &a["min_contig"], &a["ns_per_100kbp"]), (&json!(40.0), &json!(500), &json!(0.0)), "{v}");
+    let v = ok(&mut c, "assembly_stats", json!({"assemblies": ["asm/s1/contigs.fa"], "min_contig": 10000}));
+    assert_eq!((&v["assemblies"][0]["contigs"], &v["assemblies"][0]["contigs_all"]), (&json!(1), &json!(2)), "{v}");
+    // 2: depth by mapping; Shovill logged 61x, mapping gives 20.5x
+    let v = ok(
+        &mut c,
+        "coverm_genome",
+        json!({"assembly": "asm/s1/contigs.fa", "r1": "reads/s1_R1.fastq", "r2": "reads/s1_R2.fastq", "output": "cov/s1.coverm.tsv", "threads": 2}),
+    );
+    assert_eq!(v["genomes"], json!([{"sample": "s1", "mapped_depth": 20.5, "covered_fraction": 99.87}]), "{v}");
+    assert_eq!(v["mapped"][0]["percent"], 99.0);
+    assert!(v["warnings"][0].as_str().unwrap().contains("Shovill estimated 61x depth, mapping gives 20.5x"), "{v}");
+    assert!(v["command"].as_str().unwrap().contains("--min-covered-fraction=0"), "{v}");
+    // 3: Kleborate on the sample-named link; contigs.fa itself is refused
+    let r = c.call("kleborate", json!({"assemblies": ["asm/s1/contigs.fa"], "outdir": "kleb"}));
+    assert_eq!(r["structuredContent"]["field"], "assemblies", "{r}");
+    let v = ok(&mut c, "kleborate", json!({"assemblies": ["genomes/s1.fna"], "outdir": "kleb"}));
+    let k = &v["assemblies"][0];
+    assert_eq!(
+        (&k["strain"], &k["species"], &k["ST"], &k["Yersiniabactin"], &k["K_locus"]),
+        (&json!("s1"), &json!("Klebsiella pneumoniae"), &json!("ST716"), &json!("ybt 14; ICEKp12"), &json!("KL110")),
+        "{v}"
+    );
+    assert_eq!(k["amr"], json!({"Bla_ESBL_acquired": "CTX-M-15"}));
+    assert_eq!((&v["version"], &v["warnings"], &v["bundled_data_files_hashed"]), (&json!("Kleborate v3.2.4"), &json!([]), &json!(3)), "{v}");
+    assert!(v["command"].as_str().unwrap().contains("--outdir kleb --preset=kpsc --assemblies genomes/s1.fna"), "{v}");
+    // 4: isotable: Shovill's estimate and the mapped depth side by side, and the disagreement
+    let v = ok(&mut c, "isotable", json!({"dirs": ["asm", "cov", "kleb"], "require": ["contigs", "depth", "kleborate"], "output": "s1.isotable.tsv"}));
+    assert_eq!(v["samples"].as_array().unwrap().len(), 1, "{v}");
+    let s1 = &v["samples"][0];
+    let val = |k: &str| s1["values"][k].as_str().unwrap_or("").to_string();
+    assert_eq!((val("shovill_depth_est"), val("mapped_depth"), val("covered_percent")), ("61".into(), "20.5".into(), "99.87".into()), "{s1}");
+    assert_eq!(
+        (val("kleborate_st"), val("ybt"), val("k_locus"), val("l50"), val("n90")),
+        ("ST716".into(), "ybt 14; ICEKp12".into(), "KL110".into(), "1".into(), "8000".into())
+    );
+    assert_eq!(s1["status"], "warn", "{s1}");
+    assert!(s1["reasons"].as_array().unwrap().iter().any(|r| r.as_str().unwrap().contains("differ by more than 1.5x")), "{s1}");
+    c.close();
+
+    // run record and replay
+    let run_dir = work.join("irit-runs/test-run");
+    let log: Value = serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
+    let ok_calls: Vec<&Value> = log["calls"].as_array().unwrap().iter().filter(|c| c["status"] == "ok").collect();
+    assert_eq!(
+        ok_calls.iter().map(|c| c["mcp_tool"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["shovill", "assembly_stats", "assembly_stats", "coverm_genome", "kleborate", "isotable"]
+    );
+    let stats = ok_calls[1];
+    assert_ne!(stats["external"], true);
+    assert_eq!(stats["argv"], json!(["isotable", "assembly-stats", "--json", "--min-contig=500", "--", "asm/s1/contigs.fa"]));
+    let kleb = ok_calls[4];
+    let inputs: Vec<&str> = kleb["inputs"].as_array().unwrap().iter().map(|i| i["path"].as_str().unwrap()).collect();
+    assert!(inputs.iter().any(|p| p.ends_with("site-packages/kaptive-3.2.2.dist-info/METADATA")), "{inputs:?}");
+    assert!(kleb["outputs"].as_array().unwrap().iter().any(|o| o["path"].as_str().unwrap().ends_with("hAMRonization_output.txt")));
+    let script = std::fs::read_to_string(run_dir.join("replay.sh")).unwrap();
+    assert!(script.contains("want_ext_version kleborate 'Kleborate v3.2.4'"), "{script}");
+    let all: Vec<(PathBuf, String)> = ok_calls.iter().flat_map(|c| outputs(c)).collect();
+    for d in ["asm", "cov", "kleb", "genomes"] {
+        std::fs::remove_dir_all(work.join(d)).unwrap();
+    }
+    std::fs::remove_file(work.join("s1.isotable.tsv")).unwrap();
+    let path = format!("{}:{}", bin.display(), s.path);
+    let out = Command::new("sh").arg(run_dir.join("replay.sh")).env("PATH", &path).current_dir(work).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "replay failed: {err}");
+    assert!(err.contains("outputs match"), "{err}");
+    for (p, h) in &all {
+        if p.ends_with("shovill.log") {
             continue;
         }
         assert_eq!(&sha256(p), h, "{} differs after replay", p.display());

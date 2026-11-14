@@ -222,45 +222,65 @@ pub fn table_rows(path: &Path) -> Result<usize, String> {
 }
 
 /// Contig count, total length, N50, longest contig and GC % of an assembly FASTA (Shovill's
-/// contigs.fa), computed here: Shovill prints its own stats only to its log.
+/// contigs.fa), over every contig whatever its length (replay.sh compares the same numbers):
+/// isotable's assembly statistics with no length cut-off.
 pub fn assembly_stats(path: &Path) -> Result<Value, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut lens: Vec<u64> = Vec::new();
-    let (mut gc, mut acgt) = (0u64, 0u64);
-    for line in text.lines() {
-        if line.starts_with('>') {
-            lens.push(0);
-            continue;
-        }
-        let Some(last) = lens.last_mut() else { return Err(format!("{}: not FASTA", path.display())) };
-        let line = line.trim_end();
-        *last += line.len() as u64;
-        for b in line.bytes() {
-            match b.to_ascii_uppercase() {
-                b'G' | b'C' => {
-                    gc += 1;
-                    acgt += 1;
-                }
-                b'A' | b'T' => acgt += 1,
-                _ => {}
-            }
-        }
-    }
-    let total: u64 = lens.iter().sum();
-    let mut sorted = lens.clone();
-    sorted.sort_unstable_by(|a, b| b.cmp(a));
-    let mut acc = 0;
-    let n50 = sorted.iter().find(|&&l| {
-        acc += l;
-        acc * 2 >= total
-    });
+    let s = isotable::asm::stats(path, 0).map_err(|e| format!("{}: {e:#}", path.display()))?;
     Ok(json!({
-        "contigs": lens.len(),
-        "total_length": total,
-        "n50": n50.copied().unwrap_or(0),
-        "longest": sorted.first().copied().unwrap_or(0),
-        "gc_percent": if acgt > 0 { (gc as f64 * 10000.0 / acgt as f64).round() / 100.0 } else { 0.0 },
+        "contigs": s.contigs,
+        "total_length": s.length,
+        "n50": s.n50,
+        "longest": s.largest,
+        "gc_percent": s.gc.unwrap_or(0.0),
     }))
+}
+
+/// `coverm genome`'s table, read by isotable's parser: per genome (named after the file for one
+/// genome, as isotable joins it) the mean depth and the percentage of the genome covered.
+pub fn coverm_genome_summary(path: &Path) -> Result<Vec<Value>, String> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    match isotable::parse::coverm_genome(path, &name) {
+        Ok(Some(recs)) => Ok(isotable_records(recs, "sample")),
+        Ok(None) => Err(format!("{}: not a `coverm genome` table with Mean and Covered Fraction columns", path.display())),
+        Err(e) => Err(format!("{}: {e:#}", path.display())),
+    }
+}
+
+/// Kleborate columns returned per assembly (the part of the header after the last `__`).
+const KLEBORATE_KEEP: [&str; 22] = [
+    "strain", "species", "species_match", "QC_warnings", "ST", "virulence_score", "resistance_score", "num_resistance_classes",
+    "num_resistance_genes", "Yersiniabactin", "YbST", "Colibactin", "CbST", "Aerobactin", "AbST", "Salmochelin", "SmST", "RmpADC",
+    "RmST", "rmpA2", "K_locus", "O_locus",
+];
+
+/// Kleborate's columns that say how sure Kaptive is, and what the loci mean.
+const KLEBORATE_KAPTIVE: [&str; 6] = ["K_type", "K_locus_confidence", "K_locus_identity", "O_type", "O_locus_confidence", "O_locus_identity"];
+
+/// Kleborate 3's table, one object per assembly: species, ST, scores, the virulence loci, K/O loci
+/// (with Kaptive's confidence), and the AMR columns that found something (`amr`, e.g.
+/// `Bla_ESBL_acquired: CTX-M-15`). isotable's parser must read the file too.
+pub fn kleborate_summary(path: &Path) -> Result<Vec<Value>, String> {
+    isotable::parse::kleborate(path).map_err(|e| format!("{}: {e:#}", path.display()))?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (header, rows) = parse_table(&text);
+    let short: Vec<&str> = header.iter().map(|h| h.rsplit("__").next().unwrap_or(h)).collect();
+    Ok(rows
+        .iter()
+        .filter(|r| r.len() == header.len())
+        .map(|r| {
+            let mut o = Map::new();
+            let mut amr = Map::new();
+            for ((h, k), cell) in header.iter().zip(&short).zip(r) {
+                if KLEBORATE_KEEP.contains(k) || KLEBORATE_KAPTIVE.contains(k) {
+                    o.insert(k.to_string(), json!(cell));
+                } else if h.contains("__amr__") && cell != "-" && !cell.is_empty() {
+                    amr.insert(k.to_string(), json!(cell));
+                }
+            }
+            o.insert("amr".into(), Value::Object(amr));
+            Value::Object(o)
+        })
+        .collect())
 }
 
 /// Flye's `assembly_info.txt` (Flye 2.9.6 `flye/assembly/scaffolder.py` header `#seq_name length
@@ -544,5 +564,41 @@ mod tests {
         assert!(g[1].get("screened").is_none());
         assert_eq!((&g[2]["screened"], &g[2]["assigned_by_ani"]), (&json!(false), &json!(false)));
         assert!(gtdbprep_ani_summary("nothing\n", d.path()).is_err());
+    }
+
+    #[test]
+    fn kleborate_and_coverm_genome_tables() {
+        let d = tempfile::tempdir().unwrap();
+        let k = d.path().join("klebsiella_pneumo_complex_output.txt");
+        // columns as Kleborate 3.2.4 wrote them for BfR-EC-20867 (shortened)
+        std::fs::write(
+            &k,
+            "strain\tenterobacterales__species__species\tenterobacterales__species__species_match\tgeneral__contig_stats__QC_warnings\tklebsiella_pneumo_complex__mlst__ST\tklebsiella__ybst__Yersiniabactin\tklebsiella_pneumo_complex__amr__Sul_acquired\tklebsiella_pneumo_complex__amr__Tet_acquired\tklebsiella_pneumo_complex__kaptive__K_locus\tklebsiella_pneumo_complex__kaptive__K_locus_confidence\n\
+             BfR-EC-20867\tKlebsiella pneumoniae\tstrong\t-\tST716\tybt 14; ICEKp12\tsul2\t-\tKL110\tTypeable\n\
+             x\tEscherichia coli\tweak\tN50\t-\t-\t-\t-\t-\t-\n",
+        )
+        .unwrap();
+        let rows = kleborate_summary(&k).unwrap();
+        assert_eq!(rows[0]["ST"], "ST716");
+        assert_eq!(rows[0]["Yersiniabactin"], "ybt 14; ICEKp12");
+        assert_eq!(rows[0]["K_locus_confidence"], "Typeable");
+        assert_eq!(rows[0]["amr"], json!({"Sul_acquired": "sul2"}));
+        let strains = ["BfR-EC-20867".to_string(), "x".to_string(), "mg".to_string()];
+        let w = crate::external::kleborate_warnings(&strains, true, &rows);
+        assert_eq!(w.len(), 4, "{w:?}");
+        assert!(w[0].starts_with("mg: Kleborate wrote no row"), "{w:?}");
+        assert!(w[1].starts_with("x: Kleborate's species call is \"Escherichia coli\", outside"), "{w:?}");
+        // another preset: no KpSC warning
+        assert!(crate::external::kleborate_warnings(&strains[..1], false, &rows[..1]).is_empty());
+
+        let c = d.path().join("s1.coverm.tsv");
+        std::fs::write(&c, "Genome\tcontigs.fa/s1_R1.fq.gz Mean\tcontigs.fa/s1_R1.fq.gz Covered Fraction\ngenome1\t50.337517\t0.9999248\n").unwrap();
+        let g = coverm_genome_summary(&c).unwrap();
+        assert_eq!(g, [json!({"sample": "s1", "mapped_depth": 50.34, "covered_fraction": 99.99})]);
+        assert!(crate::external::coverm_depth_warnings("asm/s1/contigs.fa", "[shovill] Estimated sequencing depth: 52 x\n", &g).is_empty());
+        let w = crate::external::coverm_depth_warnings("asm/s1/contigs.fa", "[shovill] Estimated sequencing depth: 160 x\n", &g);
+        assert!(w[0].contains("Shovill estimated 160x depth, mapping gives 50.3x"), "{w:?}");
+        std::fs::write(&c, "Contig\ts1 Mean\nk1\t5\n").unwrap();
+        assert!(coverm_genome_summary(&c).is_err());
     }
 }

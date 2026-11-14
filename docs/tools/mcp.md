@@ -5,9 +5,12 @@ agents (Claude Code, Claude Desktop and other MCP clients) the irit tools as typ
 runs the real `sheetgen`, `leanqc`, `isotable`, `seqplan` or `dblock` binary, and is written to a run record
 with a `replay.sh` that repeats the same commands without any AI.
 
-It also wraps twelve third-party tools, so a whole run is recorded and replayable the same way.
+It also wraps thirteen third-party tools, so a whole run is recorded and replayable the same way.
 For the microbial isolate path (trim, assemble, annotate, check quality, classify, type, find
-resistance genes): fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus.
+resistance genes): fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus,
+plus CoverM for the depth of an isolate by read mapping and Kleborate for *Klebsiella* typing,
+virulence and resistance scores. `assembly_stats` gives QUAST-style assembly statistics (N50, L50,
+N90, GC, Ns), computed by isotable.
 For metagenomes, from reads to metagenome-assembled genomes (MAGs): MEGAHIT, CoverM and MetaBAT2,
 then CheckM2 and GTDB-Tk on the bins. See [Third-party tools](#third-party-tools).
 
@@ -64,7 +67,7 @@ Any client that takes a JSON config (Claude Desktop's `claude_desktop_config.jso
 | Option | Effect |
 |---|---|
 | `--bin-dir DIR` | Folder holding the irit binaries (env `IRIT_BIN_DIR`). Default: search `PATH`. |
-| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `flye`, `medaka_consensus`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`, `megahit`, `coverm`, `metabat2`). Repeatable. Default: search `PATH`. |
+| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `flye`, `medaka_consensus`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`, `megahit`, `coverm`, `metabat2`, `kleborate`). Repeatable. Default: search `PATH`. |
 | `--runs-dir DIR` | Where run records go (env `IRIT_RUNS_DIR`). Default `./irit-runs`. |
 | `--run-id ID` | Name of this session's run folder. Default `<UTC time>-<pid>`. The server refuses to start when that folder already holds a record, so a second session can't overwrite the first one's. |
 | `--root DIR` | Folder the tools may write in. Default: the server's working folder. |
@@ -172,17 +175,37 @@ One graded row per sample ([isotable](isotable.md)).
 
 | Parameter | Type | Meaning |
 |---|---|---|
-| `dirs` | list of folders (required) | Results folders. Include the folder holding Shovill's `outdir`s: contigs and N50 come from each `contigs.fa`. |
+| `dirs` | list of folders (required) | Results folders. Include the folder holding Shovill's `outdir`s: the assembly statistics come from each `contigs.fa`, and Shovill's depth estimate from its `shovill.log`. |
 | `sheet` | file | Sample sheet to join on (recommended). |
 | `mode` | `isolate` \| `mag` | Grading rules. |
 | `output`, `mqc` | files | Also write the TSV / MultiQC table (inside the root). |
 | `overwrite` | boolean | Replace `output` / `mqc` if they exist. Default `false`. |
-| `require` | list of `reads`, `q30`, `contigs`, `n50`, `completeness`, `contamination`, `kraken`, `gtdb`, `mlst`, `amr` | Required measurements; `[]` turns the check off. |
+| `require` | list of `reads`, `q30`, `contigs`, `n50`, `completeness`, `contamination`, `kraken`, `gtdb`, `depth`, `mlst`, `amr`, `kleborate` | Required measurements; `[]` turns the check off. |
 | `min_reads`, `max_contigs`, `min_n50` | integers | Thresholds. |
 | `min_q30`, `min_busco`, `min_completeness`, `max_contamination` | 0-100 | Thresholds (%). |
+| `min_depth` | number | Warn below this mean depth from read mapping (`coverm_genome`), fail below half. Default 20; 0 turns it off. |
 
 Returns `counts` per status and `samples`, each with `status`, `reasons` (a list) and `values`
 (the other columns).
+
+### `assembly_stats`
+
+QUAST-style statistics of assembly FASTA files (plain or gzip), computed by isotable
+(`isotable assembly-stats --json`, see [isotable](isotable.md#assembly-statistics)). Takes seconds,
+and is recorded and replayed like any call (its stdout, the JSON, is hash-checked).
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `assemblies` | list of files (required) | Shovill's `contigs.fa`, Flye's `assembly.fasta`, a reference genome, ... |
+| `min_contig` | integer | Contigs shorter than this are left out of every statistic except `contigs_all` and `length_all`. Default 500, QUAST's default, so the numbers match a QUAST report on the same file. Always passed explicitly, so the record says which cut-off was used. |
+
+Returns `assemblies`, one object per file: `assembly` (the path as given), `min_contig`,
+`contigs`, `total_length`, `largest_contig`, `n50`, `l50`, `n90`, `l90`, `gc_percent` (G+C over
+A+C+G+T), `ns_per_100kbp`, `contigs_1kb` (contigs of 1000 bp or more), `contigs_all` and
+`length_all` (every contig). On the paper redo's three *K. pneumoniae* Shovill assemblies it gave
+71, 128 and 146 contigs in all and 38, 58 and 55 of 500 bp or more, N50 661,397, 364,313 and
+304,235, as reported in [the paper redo](../research/paper-redo-kpn.md); Kleborate's own contig
+statistics give the same N50.
 
 ### `seqplan`
 
@@ -218,7 +241,7 @@ and `catalog` (extra catalog JSON).
 
 ### Third-party tools
 
-Twelve tools wrap programs irit doesn't ship. Each one is pinned to an upstream version: its
+Fourteen tools wrap thirteen programs irit doesn't ship. Each one is pinned to an upstream version: its
 parameters are exactly the flags that version has, read from its source at that release tag (for
 Shovill, mlst and AMRFinderPlus also compared with `--help` of the Bioconda package).
 Nothing else is offered, so an agent can't pass a flag the program doesn't know.
@@ -236,6 +259,8 @@ Nothing else is offered, so an agent can't pass a flag the program doesn't know.
 | `amrfinder` | AMRFinderPlus `amrfinder` | 4.2.7 | [`amrfinder.cpp`](https://github.com/ncbi/amr/blob/amrfinder_v4.2.7/amrfinder.cpp), DB files from [`amrfinder_update.cpp`](https://github.com/ncbi/amr/blob/amrfinder_v4.2.7/amrfinder_update.cpp) and [`amrfinder_index.cpp`](https://github.com/ncbi/amr/blob/amrfinder_v4.2.7/amrfinder_index.cpp) | `ncbi-amrfinderplus=4.2.7` |
 | `megahit` | MEGAHIT | 1.2.9 | [`src/megahit`](https://github.com/voutcn/megahit/blob/v1.2.9/src/megahit) (`parse_option`) | `megahit=1.2.9` |
 | `coverm_contig` | CoverM `contig` | 0.8.0 | [`src/cli.rs`](https://github.com/wwood/CoverM/blob/v0.8.0/src/cli.rs) and `coverm contig --full-help` | `coverm=0.8.0` |
+| `coverm_genome` | CoverM `genome` | 0.8.0 | [`src/cli.rs`](https://github.com/wwood/CoverM/blob/v0.8.0/src/cli.rs) and `coverm genome --full-help` | `coverm=0.8.0` |
+| `kleborate` | Kleborate | 3.2.4 | [`kleborate/__main__.py`](https://github.com/klebgenomics/Kleborate/blob/v3.2.4/kleborate/__main__.py) and `kleborate --help` of the pip package | `kleborate=3.2.4` (but see [`kleborate`](#kleborate): pip is lighter) |
 | `metabat2` | MetaBAT 2 | 2.18 | `metabat2 --help` of the Bioconda package ([MetaBAT](https://bitbucket.org/berkeleylab/metabat)) | `metabat2=2.18` |
 
 Bioconda's current Shovill is 1.4.2, not the older 1.1.0: 1.4.x added `--plasmid`, changed
@@ -270,6 +295,12 @@ How they work:
     ST, the scheme may be another species' (a fragmented *K. pneumoniae* got `ecoli_achtman_4`).
   - **CheckM2.** A call with more than 20 genomes warns before running. 48 genomes peaked at
     7.7 GiB on an 8 GB laptop.
+  - **CoverM genome.** When the assembly has a `shovill.log` beside it, Shovill's depth estimate is
+    compared with the mapped depth; a difference of more than 1.5× is a warning (Shovill divides
+    by its own genome-size estimate unless given `gsize`).
+  - **Kleborate.** An assembly with no row (its species check found no species Kleborate types),
+    a species outside the *K. pneumoniae* species complex under the `kpsc` preset, a weak species
+    match, and Kleborate's own QC warnings (e.g. `ambiguous_bases`).
 - **Checks before running.** Inputs must exist and look right: FASTQ for fastp and Shovill, FASTA
   for Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus (plain or gzip; bzip2, xz and zstd are
   refused, and so is an empty file). Databases are checked for the files the program itself needs
@@ -294,7 +325,10 @@ How they work:
   `outfile` must contain `mlst` and end in `.tsv`, and with one assembly the sample part of the name
   (`s1.mlst.tsv` → `s1`) becomes mlst's `--label`, the name in its FILE column; AMRFinderPlus's
   `output` must contain `amrfinder` and end in `.tsv`, and isotable takes the sample from it
-  (`s1.amrfinder.tsv` → `s1`). Other names are refused with a message saying why. isotable reads
+  (`s1.amrfinder.tsv` → `s1`); `coverm_genome`'s `output` must contain `coverm` and end in `.tsv`
+  (`s1.coverm.tsv` → `s1`); Kleborate names its rows after the assembly file, so `kleborate` refuses
+  `contigs.fa` and other fixed assembler names (use Shovill's `link_as`, e.g. `genomes/s1.fna`).
+  Other names are refused with a message saying why. isotable reads
   Shovill's `contigs.fa` (when `shovill.log` is beside it) as the sample named after its folder
   (`asm/s1` → `s1`), so name each `outdir` after its sample.
 
@@ -660,6 +694,59 @@ a pinned one with dblock instead), `--blast_bin`, `--hmmer_bin`, `--pgap`, `--gp
 (NCBI's testing options), `--debug`, `--log`, `--quiet`, `--list_organisms`, `--database_version`
 and `--nucleotide_flank5_output` / `_size`.
 
+#### `kleborate`
+
+Typing of *Klebsiella* (and *Escherichia*) assemblies with Kleborate 3. The default `kpsc` preset
+(*K. pneumoniae* species complex) runs Kleborate's species check (Mash), then MLST, the
+yersiniabactin (ybt), colibactin (clb), aerobactin (iuc), salmochelin (iro) and rmpADC loci, rmpA2,
+the virulence and resistance scores, acquired resistance genes and mutations, a ciprofloxacin
+prediction, wzi and Kaptive's K and O loci. Needs `mash` and `minimap2` on `PATH`.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `assemblies` | list of files (required) | FASTA (plain or gzip), named after the samples: Kleborate names each row after the file without its extension. `contigs.fa`, `assembly.fasta` and the like are refused; two files with the same name too. |
+| `outdir` | folder (required) | Output folder; an existing one with files needs `overwrite`. |
+| `preset` | `kpsc`, `kosc`, `escherichia` | Default `kpsc` (unless `modules` is given alone). `escherichia` runs ECTyper, whose first run downloads about 900 MB. |
+| `modules` | list of module names | More modules, or (without `preset`) only these; `kleborate --list_modules` lists them. Kleborate then names its table `<first module>_output.txt`, which isotable doesn't read. |
+| `overwrite` | boolean | Default `false`. |
+
+Kleborate 3.2.4 writes each assembly to the table of its **species**, whatever the preset:
+`klebsiella_pneumo_complex_output.txt` (KpSC), `klebsiella_oxytoca_complex_output.txt` or
+`escherichia_output.txt`; typing columns of a species the preset doesn't cover say `Not Tested`.
+An assembly of any other species gets no row (Kleborate prints "does not match any specified
+species" and skips it). So no table is required of a call; the result's `warnings` name the
+assemblies without a row, and those outside the KpSC under `kpsc`.
+
+Returns `tables` (the ones the call wrote) and `assemblies`, one object per row: `strain`, `table`,
+`species`, `species_match`, `QC_warnings`, `ST`, `virulence_score`, `resistance_score`,
+`num_resistance_classes`, `num_resistance_genes`, `Yersiniabactin`/`YbST`, `Colibactin`/`CbST`,
+`Aerobactin`/`AbST`, `Salmochelin`/`SmST`, `RmpADC`/`RmST`, `rmpA2`, `K_locus`, `K_type`,
+`K_locus_confidence`, `K_locus_identity`, the same four for the O locus, and `amr`: the resistance
+columns that found something (e.g. `Bla_ESBL_acquired: CTX-M-15`). `-` means not found.
+
+Kleborate's databases ship inside its Python package (`kleborate/modules/*/data`: Mash sketches,
+MLST alleles and profiles, AMR genes) and Kaptive's (`kaptive/data`, the K and O locus references).
+The server finds them from the program's path (`<prefix>/lib/python3.*/site-packages`, following a
+shell wrapper that `exec`s the real script) and hashes them into the record with Kaptive's
+`METADATA` (its version): 117 files for the pip install. `bundled_data_files_hashed` says how many;
+when none are found, a warning says so.
+
+Install: Bioconda's `kleborate=3.2.4` also installs ECTyper, whose post-link script downloads a
+900 MB Mash sketch. pip's (`pip install kleborate==3.2.4`) doesn't, but needs `pandas` added and
+Kaptive 3.2.x: Kleborate 3.2.4 imports `kaptive.database`, which Kaptive 3.3 no longer has
+(`pip install kleborate==3.2.4 kaptive==3.2.2 pandas`, with `mash` and `minimap2` from Bioconda), as
+the real-tools workflow does. `--outdir` is passed as a word of its own: Kleborate looks for
+`--outdir` in its arguments before parsing them and refuses `--outdir=x`.
+
+Measured on the laptop (2026-11-14, pip install, 4 GB cap): 34-40 s per *K. pneumoniae* assembly.
+BfR-EC-20867 from [the paper redo](../research/paper-redo-kpn.md): *K. pneumoniae* (strong match),
+ST716 (the paper's), ybt 14 on ICEKp12 (the paper reports ybt in this isolate) and no clb, iuc, iro
+or rmpADC, virulence score 1, resistance score 1, K locus KL110 and O locus OL2α.1 (both
+"Typeable"). Its resistance genes match Table 1 except blaTEM-1, which Kleborate didn't report.
+Two runs gave byte-identical tables (`replay.sh` matched them). Not offered: `--resume`,
+`--trim_headers` (isotable reads either; full headers name the module) and the per-module options
+of `--help_all`.
+
 #### `megahit`
 
 Assembles a metagenome (one sample, or several as a co-assembly) for binning. Writes
@@ -711,6 +798,36 @@ MetaBAT's own `jgi_summarize_bam_contig_depths` does.
 Returns the number of contigs in the table and, per sample, the reads mapped and their percentage
 from CoverM's log. Not offered: BAM input or caching (`--bam-files`, `--cache-unfiltered-bam-*`),
 the `--*-params` options (free text passed to the aligner), sharding and pre-built indexes.
+
+#### `coverm_genome`
+
+The depth of an isolate by read mapping: maps the isolate's paired reads to its own assembly
+(`coverm genome --single-genome`, all contigs one genome) and writes a table of the mean depth and
+the fraction of the assembly covered. Shovill's own figure ("Estimated sequencing depth") is read
+bases over the genome size it used, its own k-mer estimate unless `gsize` was given; in the
+[depth experiment](../research/coverage-depth.md) it was about 3× too high at 20× without `gsize`.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `assembly` | file (required) | The isolate's assembly, e.g. Shovill's `contigs.fa`. |
+| `r1`, `r2` | files (required) | The isolate's reads (FASTQ, plain or gzip), e.g. fastp's trimmed reads. |
+| `output` | file (required) | The table (TSV). Must contain `coverm` and end in `.tsv`; name it `<sample>.coverm.tsv`. |
+| `mapper` | `strobealign` (default), `minimap2-sr`, `bwa-mem` | The aligner CoverM runs. |
+| `min_read_percent_identity`, `min_read_aligned_percent` | percentages | Read filters. Default 0. |
+| `threads` | integer | CoverM's default is 1. |
+| `overwrite` | boolean | Default `false`. |
+
+The methods are fixed: `mean` (CoverM's mean leaves out 75 bp at each contig end) and
+`covered_fraction`. `--min-covered-fraction=0` is always passed: CoverM's default (10%) reports a
+genome covered less than that as depth 0, which would hide a wrong pairing of reads and assembly.
+Returns `genomes` (per genome: `sample`, the name isotable joins on, `mapped_depth` and
+`covered_fraction` in %) and `mapped` (reads mapped and their percentage, from CoverM's log), and
+a warning when a `shovill.log` beside the assembly gives a depth more than 1.5× off.
+
+Measured on the laptop (2026-11-14): BfR-EC-20867's trimmed MiSeq reads (1.4 million) on its
+Shovill assembly in 26 s, 4 threads, under a 4 GB cap: 50.34× mean depth, 99.99% of the assembly
+covered, 99.99% of reads mapped. Shovill had estimated 51×; the paper reports 49.0×. Two runs gave
+the same table.
 
 #### `metabat2`
 
@@ -912,7 +1029,7 @@ sh irit-runs/<run-id>/replay.sh                            # binaries from PATH
 IRIT_BIN_DIR=/opt/irit/bin sh irit-runs/<run-id>/replay.sh # or from a folder
 ```
 
-Third-party tools (fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder, megahit, coverm, metabat2) are always taken from
+Third-party tools (fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder, megahit, coverm, metabat2, kleborate) are always taken from
 `PATH`, so activate their conda environment first. `IRIT_BIN_DIR` applies to the irit tools only.
 
 Some third-party outputs differ between two identical runs. They are recorded with
@@ -931,6 +1048,8 @@ inputs and paths in the real-tools workflow (below) and comparing every file:
 | gtdbtk | `.log`, `gtdbtk.json`, `.gz` | Timestamps (in `gtdbtk.json` only each step's start and end); gzip headers carry a time. |
 | megahit | everything | The log has times; `final.contigs.fa` differed between two identical runs in the real-tools workflow (same 92 contigs, 3,384,504 bp and N50 both times), and so did the intermediate contigs. Replay compares the assembly's contig count, length and N50, as for Shovill. |
 | coverm_contig | none | Three runs on the same assembly and reads gave identical depth tables ([MAG laptop test](../research/mag-laptop.md)); it differs on replay only when the assembly it reads did. |
+| coverm_genome | none | Byte-identical table on replay on the laptop (BfR-EC-20867, 4 threads). |
+| kleborate | none | Byte-identical tables on replay on the laptop (BfR-EC-20867). Not yet checked by the real-tools workflow. |
 | metabat2 | none | With the seed irit-mcp passes (1 unless set), a second run gave identical bins and `bin.BinMembers.txt`; `bin.BinInfo.txt` names the output folder. MetaBAT2's own default seed is random. |
 
 The script warns when a tool's `--version` (its first line) differs from the recorded one (a tool whose version
@@ -1079,8 +1198,21 @@ run but does not carry the data.
   `mlst --help` behind the workflow's wrapper script; `dblock_verify` with `deep` re-hashed every
   file of the four databases, including the 162 of the AMRFinderPlus folder with dblock's indexes,
   and all matched ([run](https://github.com/dzulfikar08/irit/actions/runs/43203640701)).
+  The workflow now also runs `coverm_genome` on the *S. aureus* SKESA assembly, `kleborate` on
+  *K. pneumoniae* HS11286's RefSeq genome (expected: ST11, KPC-2) with *M. genitalium* as an
+  assembly Kleborate gives no row, and `assembly_stats` on *M. genitalium* (one 580,076 bp contig);
+  not yet run.
+- Stand-ins for the paper-redo gaps (2026-11-14): Shovill → `assembly_stats` (N50, L50, N90, L90 of
+  a known assembly, and `min_contig`) → `coverm_genome` (Shovill logged 61×, mapping 20.5×: the
+  warning) → `kleborate` through a wrapper script that `exec`s it, with stand-in bundled data in
+  `lib/python3.12/site-packages` (hashed into the record) → isotable with `depth` and `kleborate`
+  required, then replay.
 - By hand: a session with sheetgen → leanqc → isotable → dblock_catalog replayed with all 7 outputs
-  matching; dblock_add, plan, verify, env and check against a local project.
+  matching; dblock_add, plan, verify, env and check against a local project. On 2026-11-14, the
+  real CoverM 0.8.0 and Kleborate 3.2.4 on BfR-EC-20867 from the paper redo: `assembly_stats`,
+  `coverm_genome`, `kleborate` and isotable through irit-mcp, then `replay.sh` from a folder with
+  their outputs deleted ("4 commands re-run, 5 outputs match"); and `kleborate` on HS11286 (ST11,
+  KPC-2, QC warning `ambiguous_bases`) with *M. genitalium* (no row, and a warning naming it).
 
 ## Known gaps
 
@@ -1112,5 +1244,10 @@ run but does not carry the data.
 - CheckM2 1.1.0 from Bioconda can fail to load TensorFlow on newer glibc ("cannot enable
   executable stack"). Setting `GLIBC_TUNABLES=glibc.rtld.execstack=2` for CheckM2 works around it
   (the workflow does this in a wrapper script).
+- Kleborate from pip needs `pandas` and Kaptive 3.2.x besides what pip installs (see
+  [`kleborate`](#kleborate)); Bioconda's package works without that but downloads about 900 MB for
+  ECTyper when installed.
+- `assembly_stats` has not been compared with a QUAST run (QUAST isn't installed on the laptop); it
+  follows QUAST 5's `basic_stats.py` and matches hand counts and Kleborate's contig statistics.
 - A long Bakta or GTDB-Tk call blocks until it ends; there is no progress reporting or
   cancellation beyond the client closing the connection.

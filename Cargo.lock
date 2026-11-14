@@ -3543,6 +3543,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
+ "flate2",
  "regex",
  "serde_json",
  "tempfile",
