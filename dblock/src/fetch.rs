@@ -21,6 +21,11 @@
 //! mode every part is downloaded and checked first (each resumable on its own, kept under
 //! `.partial/` until all are good), then all are unpacked; in stream mode they are streamed one
 //! after another. Either way the folder takes its final name only once every part has passed.
+//!
+//! Downloads run up to `--jobs` at a time (`Slots`): the parts of one entry, and the entries of
+//! one `dblock fetch`. Each download streams to its own file under `.partial/` through a 1 MiB
+//! buffer. Messages and progress go through `say` and `Progress`, which keep one live line on
+//! a terminal and never write into the middle of another line.
 
 use crate::catalog::{Entry, Format, Source, human};
 use crate::project::{self, Locked, LockedPart};
@@ -28,10 +33,13 @@ use anyhow::{Context, Result, bail};
 use md5::{Digest, Md5};
 use sha1::Sha1;
 use sha2::Sha256;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Free space kept in reserve on top of what a database needs.
@@ -56,7 +64,94 @@ pub struct Opts {
     pub keep_archive: bool,
     /// Hard-link byte-identical files inside the database (see `dedupe`).
     pub dedupe: bool,
+    /// Downloads at a time, over every database fetched with these options (`--jobs`).
+    pub slots: Slots,
+    /// Free space claimed by the databases being fetched with these options right now.
+    space: Space,
 }
+
+impl Opts {
+    pub fn new(force_stream: bool, keep_archive: bool, dedupe: bool, jobs: usize) -> Opts {
+        Opts { force_stream, keep_archive, dedupe, slots: Slots::new(jobs), space: Space::default() }
+    }
+}
+
+/// A counting semaphore: at most `limit` downloads hold a slot at once.
+pub struct Slots {
+    limit: usize,
+    free: Mutex<usize>,
+    freed: Condvar,
+}
+
+impl Slots {
+    pub fn new(limit: usize) -> Slots {
+        let limit = limit.max(1);
+        Slots { limit, free: Mutex::new(limit), freed: Condvar::new() }
+    }
+
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Wait for a free slot; it is given back when the guard drops.
+    fn take(&self) -> Slot<'_> {
+        let mut free = relock(self.free.lock());
+        while *free == 0 {
+            free = relock(self.freed.wait(free));
+        }
+        *free -= 1;
+        Slot(self)
+    }
+}
+
+struct Slot<'a>(&'a Slots);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        *relock(self.0.free.lock()) += 1;
+        self.0.freed.notify_one();
+    }
+}
+
+/// A panic in another download doesn't make a counter or the screen unusable.
+fn relock<T>(r: std::sync::LockResult<MutexGuard<'_, T>>) -> MutexGuard<'_, T> {
+    r.unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Space claimed by fetches running side by side: (bytes, fetches).
+#[derive(Default)]
+struct Space {
+    claimed: Mutex<(u64, usize)>,
+    released: Condvar,
+}
+
+/// One fetch's share of `Space`, given back when it drops (once the database is in place or
+/// the fetch failed).
+struct Claim<'a> {
+    space: &'a Space,
+    bytes: u64,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        let mut c = relock(self.space.claimed.lock());
+        c.0 -= self.bytes;
+        c.1 -= 1;
+        self.space.released.notify_all();
+    }
+}
+
+/// Raised inside a download that stopped because another part of the same entry failed.
+#[derive(Debug)]
+struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("stopped because another part failed")
+    }
+}
+
+impl std::error::Error for Cancelled {}
 
 pub fn target_dir(store: &Path, e: &Entry) -> PathBuf {
     store.join(&e.id)
@@ -148,7 +243,7 @@ pub fn lock_database(store: &Path, id: &str) -> Result<File> {
     match lock.try_lock() {
         Ok(()) => {}
         Err(fs::TryLockError::WouldBlock) => {
-            eprintln!("  another dblock is working on {id} in this store; waiting for it");
+            say(format!("another dblock is working on {id} in this store; waiting for it"));
             lock.lock().with_context(|| format!("locking {}", lock_path.display()))?;
         }
         Err(fs::TryLockError::Error(err)) => return Err(err).with_context(|| format!("locking {}", lock_path.display())),
@@ -214,7 +309,8 @@ pub fn obtain(store: &Path, e: &Entry, opts: &Opts) -> Result<(Locked, bool)> {
     }
     // Temporary folders left by a crashed run (nobody else can be using them: we hold the lock).
     clean_tmp(store, &e.id)?;
-    let fetched = plan(store, e, opts).and_then(|plan| fetch(store, e, &plan, opts));
+    // The claim is held until the database is in place.
+    let fetched = plan_claim(store, e, opts).and_then(|(plan, _claim)| fetch(store, e, &plan, opts));
     prune_tmp(store, &e.id);
     drop(lock);
     Ok((fetched?, false))
@@ -232,8 +328,44 @@ pub fn prune_tmp(store: &Path, id: &str) {
 
 /// Decide how to fetch, or explain why it won't fit.
 pub fn plan(store: &Path, e: &Entry, opts: &Opts) -> Result<Plan> {
+    plan_with(store, e, opts, 0)
+}
+
+/// `plan` for a fetch that may run beside others started with the same options, and claim the
+/// space it needs. Space the others claimed counts as taken (it is, or soon will be, although
+/// what they have already written is then counted twice). When that changes the plan (it
+/// wouldn't fit, or would have to stream), wait for one of them to finish and plan again, so
+/// the result is what fetching one at a time would give.
+fn plan_claim<'a>(store: &Path, e: &Entry, opts: &'a Opts) -> Result<(Plan, Claim<'a>)> {
+    let space = &opts.space;
+    let mut claimed = relock(space.claimed.lock());
+    let mut said = false;
+    loop {
+        let alone = plan_with(store, e, opts, 0);
+        if claimed.1 > 0 {
+            let shared = plan_with(store, e, opts, claimed.0);
+            if !matches!((&alone, &shared), (Ok(a), Ok(s)) if a.mode == s.mode) {
+                if !said {
+                    say("not enough free space to fetch this beside the databases being fetched now; waiting for them");
+                    said = true;
+                }
+                claimed = relock(space.released.wait(claimed));
+                continue;
+            }
+        }
+        let plan = alone?;
+        let bytes = plan.need;
+        claimed.0 += bytes;
+        claimed.1 += 1;
+        return Ok((plan, Claim { space, bytes }));
+    }
+}
+
+/// `plan`, with `claimed` bytes of the free space taken by other fetches.
+fn plan_with(store: &Path, e: &Entry, opts: &Opts, claimed: u64) -> Result<Plan> {
     fs::create_dir_all(store).with_context(|| format!("creating {}", store.display()))?;
     let free = fs4::available_space(store).with_context(|| format!("checking free space on {}", store.display()))?;
+    let free = free.saturating_sub(claimed);
     // Per part, at most its size counts (a bigger leftover is emptied before downloading).
     let resumable: u64 =
         e.sources().iter().map(|src| fs::metadata(partial_path(store, e, src)).map(|m| m.len().min(src.size)).unwrap_or(0)).sum();
@@ -285,22 +417,16 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
     match plan.mode {
         Mode::DownloadThenExtract => {
             // Every archive first, so a failure in one part leaves the others resumable.
-            let mut downloaded = Vec::with_capacity(sources.len());
-            for src in &sources {
-                if sources.len() > 1 {
-                    eprintln!("  part {} of {}: {} ({})", used.len() + 1, sources.len(), src.name, human(src.size));
-                }
-                let url = with_mirrors(src, |url| download_verify(store, e, src, url))?;
-                downloaded.push(partial_path(store, e, src));
-                used.push(url);
-            }
+            used = download_all(store, e, &sources, opts)?;
+            let downloaded: Vec<PathBuf> = sources.iter().map(|src| partial_path(store, e, src)).collect();
+            // In order, one at a time: parts may share folders.
             for (src, part) in sources.iter().zip(&downloaded) {
                 if e.format == Format::File {
                     fs::rename(part, tmp.join(&src.name)).or_else(|_| fs::copy(part, tmp.join(&src.name)).map(|_| ()))?;
                     let _ = fs::remove_file(part);
                     continue;
                 }
-                eprintln!("  unpacking {}", src.name);
+                say(format!("unpacking {}", src.name));
                 unpack(e.format, File::open(part)?, tmp, &e.keep)?;
             }
             if e.format != Format::File {
@@ -316,9 +442,11 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
             }
         }
         Mode::Stream => {
+            // One part after another, each unpacked as it arrives: they go into one folder.
             for (i, src) in sources.iter().enumerate() {
+                let _slot = opts.slots.take();
                 if sources.len() > 1 {
-                    eprintln!("  part {} of {}: {} ({})", i + 1, sources.len(), src.name, human(src.size));
+                    say(format!("part {} of {}: {} ({})", i + 1, sources.len(), src.name, human(src.size)));
                 }
                 let mut last_err = None;
                 let mut ok = None;
@@ -329,7 +457,7 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
                             break;
                         }
                         Err(err) => {
-                            eprintln!("  {url}: {err:#}");
+                            say(format!("{url}: {err:#}"));
                             // A checksum mismatch is the data, not the mirror. And once earlier
                             // parts are unpacked, a half-streamed part can't be taken back out.
                             if err.to_string().contains("checksum") || sources.len() > 1 {
@@ -372,7 +500,7 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
         }
     }
     if !e.verify_dirs.is_empty() {
-        eprintln!("  checking GTDB-Tk folder hashes");
+        say("checking GTDB-Tk folder hashes");
         let bad = check_dirs(tmp, &e.verify_dirs)?;
         if !bad.is_empty() {
             bail!("folder hash mismatch for {}: {}. Nothing was kept.", e.id, bad.join("; "));
@@ -388,17 +516,17 @@ fn fetch(store: &Path, e: &Entry, plan: &Plan, opts: &Opts) -> Result<Locked> {
     if target.symlink_metadata().is_ok() {
         bail!("{} appeared while downloading; move or delete it, then fetch again", target.display());
     }
-    eprintln!("  recording file sizes and SHA-256 sums");
+    say("recording file sizes and SHA-256 sums");
     let (files, bytes, manifest_md5) = manifest(tmp)?;
     let items = hashed(tmp, Some(MANIFEST_FORMAT))?;
     let sums = sums_text(&items);
     let deduped = if opts.dedupe {
         let (d, err) = dedupe(tmp, &items);
         if d.linked > 0 {
-            eprintln!("  hard-linked {} identical file(s), saving {}", d.linked, human(d.saved));
+            say(format!("hard-linked {} identical file(s), saving {}", d.linked, human(d.saved)));
         }
         if let Some(err) = err {
-            eprintln!("  kept {} identical file(s) as copies: this file system refused a hard link ({err})", d.kept);
+            say(format!("kept {} identical file(s) as copies: this file system refused a hard link ({err})", d.kept));
         }
         d
     } else {
@@ -477,7 +605,7 @@ pub fn prepare(program: &Path, dir: &Path) -> Result<String> {
              environment dblock runs from (e.g. `conda install -c conda-forge -c bioconda ncbi-amrfinderplus`), then fetch again"
         ),
     };
-    eprintln!("  running {name} {} (version {version})", dir.display());
+    say(format!("running {name} {} (version {version})", dir.display()));
     let out = std::process::Command::new(program).arg(dir).stdin(std::process::Stdio::null()).output()?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -510,8 +638,10 @@ fn with_mirrors(src: &Source, mut f: impl FnMut(&str) -> Result<()>) -> Result<S
     for url in &src.urls {
         match f(url) {
             Ok(()) => return Ok(url.clone()),
+            // Stopped on purpose: no other mirror either.
+            Err(err) if err.is::<Cancelled>() => return Err(err),
             Err(err) => {
-                eprintln!("  {url}: {err:#}");
+                say(format!("{url}: {err:#}"));
                 if err.to_string().contains("checksum") {
                     return Err(err);
                 }
@@ -565,9 +695,79 @@ fn label(e: &Entry, src: &Source) -> String {
     if e.is_multi_part() { format!("{} (part {})", e.id, src.name) } else { e.id.clone() }
 }
 
+/// Download every source of an entry to `.partial/` and check each, up to `--jobs` at a time;
+/// returns the URL each came from, in the order of `sources`. With one job they go one after
+/// another, as `dblock fetch --jobs 1` always did. On the first failure no further source is
+/// started and the downloads still running stop where they are; what they got stays under
+/// `.partial/` to resume next time, like any interrupted download.
+fn download_all(store: &Path, e: &Entry, sources: &[Source], opts: &Opts) -> Result<Vec<String>> {
+    let n = sources.len();
+    let workers = opts.slots.limit().min(n).max(1);
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let results: Mutex<Vec<Option<Result<String>>>> = Mutex::new((0..n).map(|_| None).collect());
+    let outer = tag();
+    let work = || {
+        while !stop.load(Ordering::SeqCst) {
+            let i = next.fetch_add(1, Ordering::SeqCst);
+            let Some(src) = sources.get(i) else { break };
+            let got = {
+                let _slot = opts.slots.take();
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                if n > 1 {
+                    say(format!("part {} of {n}: {} ({})", i + 1, src.name, human(src.size)));
+                }
+                // Side by side, each line says which part it is about.
+                if workers > 1 {
+                    set_tag(format!("{outer}{}: ", src.name));
+                }
+                let got = with_mirrors(src, |url| download_verify(store, e, src, url, &stop));
+                match &got {
+                    Err(err) if err.is::<Cancelled>() => say("stopped, as another part failed; what it got is kept for the next run"),
+                    Err(_) => stop.store(true, Ordering::SeqCst),
+                    Ok(_) => {}
+                }
+                set_tag(outer.clone());
+                got
+            };
+            relock(results.lock())[i] = Some(got);
+        }
+    };
+    if workers == 1 {
+        work();
+    } else {
+        std::thread::scope(|s| {
+            for _ in 0..workers {
+                s.spawn(|| {
+                    set_tag(outer.clone());
+                    work()
+                });
+            }
+        });
+    }
+    // The failure that stopped the others, not the downloads it stopped; the first in part
+    // order if several failed on their own.
+    let mut urls = Vec::with_capacity(n);
+    for got in relock(results.lock()).drain(..) {
+        match got {
+            Some(Ok(url)) => urls.push(url),
+            Some(Err(err)) if err.is::<Cancelled>() => {}
+            Some(Err(err)) => return Err(err),
+            None => {}
+        }
+    }
+    if urls.len() != n {
+        bail!("{}: {} of {n} parts were downloaded", e.id, urls.len());
+    }
+    Ok(urls)
+}
+
 /// Download one archive to `.partial/` (resuming what an earlier run left) and check it.
-/// On success the checked file stays there for the caller to unpack.
-fn download_verify(store: &Path, e: &Entry, src: &Source, url: &str) -> Result<()> {
+/// On success the checked file stays there for the caller to unpack. Stops early, keeping what
+/// it has, once `stop` is set.
+fn download_verify(store: &Path, e: &Entry, src: &Source, url: &str, stop: &AtomicBool) -> Result<()> {
     let part = partial_path(store, e, src);
     fs::create_dir_all(part.parent().unwrap())?;
     let mut have = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
@@ -581,7 +781,7 @@ fn download_verify(store: &Path, e: &Entry, src: &Source, url: &str) -> Result<(
     let mut hasher = Hashes::new(src);
     if have > 0 {
         let what = if have == src.size { "already downloaded" } else { "resuming" };
-        eprintln!("  {what}: {} of {}; re-reading what's there to keep the checksum honest", human(have), human(src.size));
+        say(format!("{what}: {} of {}; re-reading what's there to keep the checksum honest", human(have), human(src.size)));
         let mut f = File::open(&part)?;
         hash_reader(&mut (&mut f).take(have), &mut hasher)?;
     }
@@ -589,7 +789,7 @@ fn download_verify(store: &Path, e: &Entry, src: &Source, url: &str) -> Result<(
         let (resp, partial) = get(url, have)?;
         let mut file = fs::OpenOptions::new().create(true).write(true).truncate(false).open(&part)?;
         if have > 0 && !partial {
-            eprintln!("  server ignored the resume request; starting over");
+            say("server ignored the resume request; starting over");
             have = 0;
             hasher = Hashes::new(src);
             file.set_len(0)?;
@@ -599,6 +799,10 @@ fn download_verify(store: &Path, e: &Entry, src: &Source, url: &str) -> Result<(
         let mut progress = Progress::new(src.size, have);
         let mut buf = vec![0u8; 1 << 20];
         loop {
+            if stop.load(Ordering::SeqCst) {
+                file.flush()?;
+                return Err(Cancelled.into());
+            }
             let n = body.read(&mut buf).context("download interrupted; run `dblock fetch` again to resume")?;
             if n == 0 {
                 break;
@@ -615,15 +819,15 @@ fn download_verify(store: &Path, e: &Entry, src: &Source, url: &str) -> Result<(
     match hasher.check(src, got) {
         Ok(md5) => {
             let sha = if src.sha256.is_some() { " and sha256" } else { "" };
-            eprintln!("  checksum ok (md5 {md5}{sha})");
+            say(format!("checksum ok (md5 {md5}{sha})"));
             Ok(())
         }
         Err(wrong) => {
             let _ = fs::remove_file(&part);
             if resumed {
                 // Likely left by an earlier release of the same file name: one fresh try.
-                eprintln!("  the partial file left by an earlier run didn't match ({wrong}); downloading it again from the start");
-                return download_verify(store, e, src, url);
+                say(format!("the partial file left by an earlier run didn't match ({wrong}); downloading it again from the start"));
+                return download_verify(store, e, src, url, stop);
             }
             bail!(
                 "checksum mismatch for {}: got {wrong} ({}). \
@@ -636,7 +840,7 @@ fn download_verify(store: &Path, e: &Entry, src: &Source, url: &str) -> Result<(
 }
 
 fn stream_extract(e: &Entry, src: &Source, url: &str, tmp: &Path) -> Result<()> {
-    eprintln!("  streaming: unpacking while downloading, so the archive never touches the disk (not resumable)");
+    say("streaming: unpacking while downloading, so the archive never touches the disk (not resumable)");
     let (resp, _) = get(url, 0)?;
     let mut reader = HashingReader { inner: resp.into_body().into_reader(), hasher: Hashes::new(src), progress: Progress::new(src.size, 0) };
     // A corrupt stream usually fails here, in the decoder, before the checksum can be compared.
@@ -646,9 +850,9 @@ fn stream_extract(e: &Entry, src: &Source, url: &str, tmp: &Path) -> Result<()> 
     io::copy(&mut reader, &mut io::sink())?;
     let HashingReader { hasher, progress, .. } = reader;
     progress.done();
-    match hasher.check(src, progress.done_bytes) {
+    match hasher.check(src, progress.bytes()) {
         Ok(md5) => {
-            eprintln!("  checksum ok ({md5})");
+            say(format!("checksum ok ({md5})"));
             Ok(())
         }
         Err(wrong) => bail!("checksum mismatch for {}: streamed {wrong}. Nothing was kept.", label(e, src)),
@@ -880,61 +1084,172 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Progress on stderr: a live line on a terminal, a line per 10% in logs.
-struct Progress {
-    total: u64,
-    done_bytes: u64,
-    start_bytes: u64,
-    started: Instant,
-    last: Instant,
-    last_decile: u64,
-    tty: bool,
+thread_local! {
+    /// What this thread's messages are about when several things run at once: `"<id>: "` for a
+    /// database, plus `"<part>: "` for a part. Empty when one thing runs, so the report reads as
+    /// it always did.
+    static TAG: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
-impl Progress {
-    fn new(total: u64, already: u64) -> Self {
-        let now = Instant::now();
-        Progress {
-            total,
-            done_bytes: already,
-            start_bytes: already,
-            started: now,
-            last: now,
-            last_decile: already * 10 / total.max(1),
-            tty: io::stderr().is_terminal(),
+/// Set the tag this thread's `say` lines and progress lines start with.
+pub fn set_tag(tag: String) {
+    TAG.with(|t| *t.borrow_mut() = tag);
+}
+
+fn tag() -> String {
+    TAG.with(|t| t.borrow().clone())
+}
+
+/// One line of the fetch report on stderr: `"  <tag><msg>"`.
+pub fn say(msg: impl std::fmt::Display) {
+    print_line(&format!("  {}{msg}", tag()));
+}
+
+/// A whole line on stderr. The live progress line is cleared first, so nothing is written into
+/// the middle of it.
+pub fn print_line(line: &str) {
+    let mut s = screen();
+    s.clear_live();
+    eprintln!("{line}");
+}
+
+/// stderr, shared by every download: the progress of those running, and whether a live
+/// progress line (no newline yet) is showing.
+struct Screen {
+    meters: Vec<Meter>,
+    next_id: u64,
+    live: bool,
+    last_draw: Option<Instant>,
+}
+
+static SCREEN: Mutex<Screen> = Mutex::new(Screen { meters: Vec::new(), next_id: 0, live: false, last_draw: None });
+
+fn screen() -> MutexGuard<'static, Screen> {
+    relock(SCREEN.lock())
+}
+
+fn tty() -> bool {
+    static TTY: OnceLock<bool> = OnceLock::new();
+    *TTY.get_or_init(|| io::stderr().is_terminal())
+}
+
+impl Screen {
+    fn clear_live(&mut self) {
+        if self.live {
+            eprint!("\r\x1b[K");
+            self.live = false;
         }
     }
 
-    fn add(&mut self, n: u64) {
-        self.done_bytes += n;
-        let decile = self.done_bytes * 10 / self.total.max(1);
-        if self.tty && self.last.elapsed() >= Duration::from_millis(500) {
-            self.last = Instant::now();
-            eprint!("\r  {}\x1b[K", self.line());
-        } else if !self.tty && decile > self.last_decile {
-            self.last_decile = decile;
-            eprintln!("  {}", self.line());
-        }
+    /// The live line: one download as before, several as one sum.
+    fn draw(&mut self) {
+        let line = match self.meters.as_slice() {
+            [] => return,
+            [m] => format!("{}{}", m.label, m.line()),
+            ms => {
+                let sum = Meter {
+                    id: 0,
+                    label: String::new(),
+                    total: ms.iter().map(|m| m.total).sum(),
+                    done: ms.iter().map(|m| m.done).sum(),
+                    start: ms.iter().map(|m| m.start).sum(),
+                    started: ms.iter().map(|m| m.started).min().unwrap_or_else(Instant::now),
+                    last_decile: 0,
+                };
+                format!("{} downloads: {}", ms.len(), sum.line())
+            }
+        };
+        eprint!("\r  {line}\x1b[K");
+        self.live = true;
+        self.last_draw = Some(Instant::now());
     }
+}
 
+struct Meter {
+    id: u64,
+    label: String,
+    total: u64,
+    done: u64,
+    /// Bytes already there when it started, left out of the rate.
+    start: u64,
+    started: Instant,
+    last_decile: u64,
+}
+
+impl Meter {
     fn line(&self) -> String {
         let secs = self.started.elapsed().as_secs_f64().max(0.001);
-        let rate = (self.done_bytes - self.start_bytes) as f64 / secs;
-        let pct = self.done_bytes as f64 * 100.0 / self.total.max(1) as f64;
-        let left = if rate > 0.0 { (self.total.saturating_sub(self.done_bytes)) as f64 / rate } else { 0.0 };
+        let rate = self.done.saturating_sub(self.start) as f64 / secs;
+        let pct = self.done as f64 * 100.0 / self.total.max(1) as f64;
+        let left = if rate > 0.0 { (self.total.saturating_sub(self.done)) as f64 / rate } else { 0.0 };
         format!(
             "{} / {} ({pct:.0}%), {}/s, about {} left",
-            human(self.done_bytes),
+            human(self.done),
             human(self.total),
             human(rate as u64),
             humantime::format_duration(Duration::from_secs(left as u64))
         )
     }
+}
 
-    fn done(&self) {
-        if self.tty {
-            eprintln!("\r  {}\x1b[K", self.line());
+/// Progress of one download on stderr: on a terminal one live line (for all downloads running
+/// at once, their sum), in logs a line per 10% of each download.
+struct Progress {
+    id: u64,
+    bytes: u64,
+}
+
+impl Progress {
+    fn new(total: u64, already: u64) -> Self {
+        let mut s = screen();
+        let id = s.next_id;
+        s.next_id += 1;
+        let now = Instant::now();
+        s.meters.push(Meter { id, label: tag(), total, done: already, start: already, started: now, last_decile: already * 10 / total.max(1) });
+        // The first live line comes half a second in.
+        s.last_draw = Some(now);
+        Progress { id, bytes: already }
+    }
+
+    fn add(&mut self, n: u64) {
+        self.bytes += n;
+        let tty = tty();
+        let mut s = screen();
+        let Some(m) = s.meters.iter_mut().find(|m| m.id == self.id) else { return };
+        m.done += n;
+        let decile = m.done * 10 / m.total.max(1);
+        let log_line = (!tty && decile > m.last_decile).then(|| {
+            m.last_decile = decile;
+            format!("  {}{}", m.label, m.line())
+        });
+        if let Some(line) = log_line {
+            eprintln!("{line}");
+        } else if tty && s.last_draw.is_none_or(|t| t.elapsed() >= Duration::from_millis(500)) {
+            s.draw();
         }
+    }
+
+    /// Bytes seen, counting those already there when it started.
+    fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// On a terminal, leave this download's final figures on a line of their own.
+    fn done(&self) {
+        if !tty() {
+            return;
+        }
+        let mut s = screen();
+        if let Some(line) = s.meters.iter().find(|m| m.id == self.id).map(|m| format!("  {}{}", m.label, m.line())) {
+            s.clear_live();
+            eprintln!("{line}");
+        }
+    }
+}
+
+impl Drop for Progress {
+    fn drop(&mut self) {
+        screen().meters.retain(|m| m.id != self.id);
     }
 }
 
@@ -1215,7 +1530,7 @@ fn upgrade_marker(dir: &Path, mut l: Locked) -> Result<Locked> {
     on_disk.contents_sha256 = l.contents_sha256.clone();
     on_disk.manifest_format = l.manifest_format;
     project::write_marker(dir, &on_disk)?;
-    eprintln!("  upgraded its marker to record symlinks (it was written by dblock 0.1.0)");
+    say("upgraded its marker to record symlinks (it was written by dblock 0.1.0)");
     Ok(l)
 }
 
@@ -1253,7 +1568,7 @@ fn data_path(target: &Path, points_to: &str) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
@@ -1312,7 +1627,7 @@ mod tests {
     }
 
     fn opts() -> Opts {
-        Opts { force_stream: false, keep_archive: false, dedupe: true }
+        Opts::new(false, false, true, 1)
     }
 
     #[test]
@@ -1590,7 +1905,7 @@ mod tests {
             let (url, _) = serve(body.clone());
             let e = kept_entry(&url, &md5, body.len());
             let store = tempfile::tempdir().unwrap();
-            let (l, _) = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true }).unwrap();
+            let (l, _) = obtain(store.path(), &e, &Opts::new(stream, false, true, 1)).unwrap();
             assert_eq!(listing(&target_dir(store.path(), &e)), want, "stream={stream}");
             // Manifest and sums cover the kept files only.
             assert_eq!((l.files, l.bytes), (3, 7), "stream={stream}");
@@ -1608,7 +1923,7 @@ mod tests {
             let (url, _) = serve(body.clone());
             let e = kept_entry(&url, &other_md5, body.len());
             let store = tempfile::tempdir().unwrap();
-            let err = format!("{:#}", obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true }).unwrap_err());
+            let err = format!("{:#}", obtain(store.path(), &e, &Opts::new(stream, false, true, 1)).unwrap_err());
             assert!(err.contains("checksum mismatch"), "{err}");
             assert!(!store.path().join("mydb").exists());
         }
@@ -1664,7 +1979,7 @@ mod tests {
             let mut e = entry(&url, &md5, body.len(), "dir");
             e.keep = vec!["db/markers".into()];
             let store = tempfile::tempdir().unwrap();
-            let r = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true });
+            let r = obtain(store.path(), &e, &Opts::new(stream, false, true, 1));
             let dir = target_dir(store.path(), &e);
             let markers = dir.join("db/markers");
             let mode = markers.metadata().map(|m| m.permissions().mode() & 0o777);
@@ -1695,7 +2010,7 @@ mod tests {
                 let mut e = entry(&url, &md5, body.len(), "dir");
                 e.keep = vec!["db/markers".into()];
                 let store = tempfile::tempdir().unwrap();
-                let r = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true });
+                let r = obtain(store.path(), &e, &Opts::new(stream, false, true, 1));
                 if ok {
                     r.unwrap_or_else(|err| panic!("{link}: {err:#}"));
                 } else {
@@ -1825,7 +2140,7 @@ mod tests {
             let mut e = kept_entry(&url, &md5, body.len());
             e.verify_dirs = BTreeMap::from([("db/markers".to_string(), markers.clone()), ("db/masks".to_string(), "0".repeat(40))]);
             let store = tempfile::tempdir().unwrap();
-            let err = format!("{:#}", obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true }).unwrap_err());
+            let err = format!("{:#}", obtain(store.path(), &e, &Opts::new(stream, false, true, 1)).unwrap_err());
             assert!(err.contains("folder hash mismatch") && err.contains("db/masks hashes to"), "{err}");
             assert!(!err.contains("db/markers"), "{err}");
             assert!(!store.path().join("mydb").exists());
@@ -2026,7 +2341,7 @@ mod tests {
             let mut e = entry(&url, &md5, body.len(), "dir");
             e.format = Format::TarZst;
             let store = tempfile::tempdir().unwrap();
-            let (l, _) = obtain(store.path(), &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true })
+            let (l, _) = obtain(store.path(), &e, &Opts::new(stream, false, true, 1))
                 .unwrap_or_else(|err| panic!("stream={stream}: {err:#}"));
             assert_eq!(listing(&target_dir(store.path(), &e)), ["db/a.txt", "db/b.txt"], "stream={stream}");
             assert_eq!((l.files, l.bytes), (2, 10));
@@ -2036,14 +2351,30 @@ mod tests {
     /// HTTP server for several files by path, honouring `Range: bytes=N-`. Records each request
     /// as `path` or `path@N` for a range request.
     fn serve_files(files: Vec<(String, Vec<u8>)>) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        let srv = serve_paced(files, Vec::new());
+        (srv.base, srv.log)
+    }
+
+    pub(crate) struct Server {
+        pub base: String,
+        pub log: Arc<std::sync::Mutex<Vec<String>>>,
+        /// Most requests that were being answered at the same time.
+        pub peak: Arc<AtomicUsize>,
+    }
+
+    /// `serve_files`, sending the files named in `pause` in three pieces with that many
+    /// milliseconds between them, so downloads overlap (or are still running) when a test needs it.
+    pub(crate) fn serve_paced(files: Vec<(String, Vec<u8>)>, pause: Vec<(String, u64)>) -> Server {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/rel", listener.local_addr().unwrap());
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let seen = log.clone();
+        let (active, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let srv = Server { base, log: log.clone(), peak: peak.clone() };
         let files = Arc::new(files);
+        let pause = Arc::new(pause);
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let (files, seen) = (files.clone(), seen.clone());
+                let (files, pause, seen, active, peak) = (files.clone(), pause.clone(), log.clone(), active.clone(), peak.clone());
                 std::thread::spawn(move || {
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     let mut first = String::new();
@@ -2063,6 +2394,8 @@ mod tests {
                         let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                         return;
                     };
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
                     let head = if from > 0 {
                         format!(
                             "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {from}-{}/{}\r\nConnection: close\r\n\r\n",
@@ -2074,15 +2407,32 @@ mod tests {
                         format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
                     };
                     stream.write_all(head.as_bytes()).unwrap();
-                    let _ = stream.write_all(&body[from..]);
+                    let rest = &body[from..];
+                    match pause.iter().find(|(n, _)| *n == path) {
+                        Some((_, ms)) => {
+                            let third = rest.len().div_ceil(3).max(1);
+                            for (i, piece) in rest.chunks(third).enumerate() {
+                                if i > 0 {
+                                    std::thread::sleep(Duration::from_millis(*ms));
+                                }
+                                if stream.write_all(piece).and_then(|()| stream.flush()).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        None => {
+                            let _ = stream.write_all(rest);
+                        }
+                    }
+                    active.fetch_sub(1, Ordering::SeqCst);
                 });
             }
         });
-        (base, log)
+        srv
     }
 
     /// Three `.tar.zst` parts that all unpack under `rel/`, like the GTDB placement mirror.
-    fn three_parts() -> Vec<(String, Vec<u8>)> {
+    pub(crate) fn three_parts() -> Vec<(String, Vec<u8>)> {
         vec![
             ("p-core.tar.zst".into(), zst_archive(&[("rel/markers/a.hmm", b"AAA"), ("rel/masks/m.txt", b"MM")])),
             ("p-split.tar.zst".into(), zst_archive(&[("rel/split/s1", &[b's'; 3000][..]), ("rel/split/s2", b"S2")])),
@@ -2093,6 +2443,10 @@ mod tests {
     /// A multi-part catalog entry for `parts` (as served at `base`), loaded through the catalog
     /// so URLs, size and the combined MD5 are filled in the way `dblock` does it.
     fn multi_entry(dir: &Path, base: &str, parts: &[(String, Vec<u8>)], sha256: bool) -> Entry {
+        multi_entry_id(dir, "mydb", base, parts, sha256)
+    }
+
+    fn multi_entry_id(dir: &Path, id: &str, base: &str, parts: &[(String, Vec<u8>)], sha256: bool) -> Entry {
         let parts: Vec<_> = parts
             .iter()
             .map(|(name, body)| {
@@ -2104,14 +2458,14 @@ mod tests {
             })
             .collect();
         let json = serde_json::json!([{
-            "id": "mydb", "name": "t", "version": "1", "tool": "t", "format": "tar.zst", "base_url": base,
+            "id": id, "name": "t", "version": "1", "tool": "t", "format": "tar.zst", "base_url": base,
             "parts": parts, "extracted": 100, "md5_source": "test", "env": "MYDB", "compat": null,
             "licence": "x", "verify_dirs": {"rel/markers": hex(&Sha1::digest(b"AAA"))}
         }]);
         let cat = dir.join("cat.json");
         fs::write(&cat, json.to_string()).unwrap();
         let entries = crate::catalog::load(Some(&cat)).unwrap();
-        crate::catalog::find(&entries, "mydb").unwrap().clone()
+        crate::catalog::find(&entries, id).unwrap().clone()
     }
 
     #[test]
@@ -2124,7 +2478,7 @@ mod tests {
             let e = multi_entry(dir.path(), &base, &files, true);
             assert_eq!(e.size, files.iter().map(|(_, b)| b.len() as u64).sum::<u64>());
             let store = dir.path().join("store");
-            let (l, _) = obtain(&store, &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true })
+            let (l, _) = obtain(&store, &e, &Opts::new(stream, false, true, 1))
                 .unwrap_or_else(|err| panic!("stream={stream}: {err:#}"));
             assert_eq!(listing(&target_dir(&store, &e)), want, "stream={stream}");
             assert_eq!(l.files, 5);
@@ -2172,7 +2526,7 @@ mod tests {
             assert!(!partial_path(&store, &e, &sources[1]).exists());
 
             // Streamed: also nothing kept.
-            let err = format!("{:#}", obtain(&store, &e, &Opts { force_stream: true, keep_archive: false, dedupe: true }).unwrap_err());
+            let err = format!("{:#}", obtain(&store, &e, &Opts::new(true, false, true, 1)).unwrap_err());
             assert!(err.contains("part p-split.tar.zst") && err.contains("Nothing was kept"), "{err}");
             assert!(!target_dir(&store, &e).exists());
         }
@@ -2269,7 +2623,7 @@ mod tests {
             let e = loose_entry(dir.path(), &base, &files, None);
             assert_eq!((e.size, e.on_disk()), (21, 50));
             let store = dir.path().join("store");
-            let (l, _) = obtain(&store, &e, &Opts { force_stream: stream, keep_archive: false, dedupe: true })
+            let (l, _) = obtain(&store, &e, &Opts::new(stream, false, true, 1))
                 .unwrap_or_else(|err| panic!("stream={stream}: {err:#}"));
             let db = target_dir(&store, &e);
             assert_eq!(listing(&db), ["AMRProt.fa", "version.txt"]);
@@ -2335,5 +2689,135 @@ mod tests {
         fs::write(&prog, "").unwrap();
         assert_eq!(find_program(prog.to_str().unwrap()), Some(prog));
         assert!(find_program(dir.path().join("absent").to_str().unwrap()).is_none());
+    }
+
+    fn paced(files: &[(String, Vec<u8>)], ms: u64) -> Vec<(String, u64)> {
+        files.iter().map(|(n, _)| (n.clone(), ms)).collect()
+    }
+
+    #[test]
+    fn parts_download_side_by_side_up_to_the_job_limit() {
+        let files = three_parts();
+        let want = ["rel/markers/a.hmm", "rel/masks/m.txt", "rel/pplacer/tree", "rel/split/s1", "rel/split/s2"];
+        // (jobs, stream, most downloads at once): streamed parts go one after another.
+        for (jobs, stream, most) in [(1, false, 1), (2, false, 2), (4, false, 3), (4, true, 1)] {
+            let srv = serve_paced(files.clone(), paced(&files, 150));
+            let dir = tempfile::tempdir().unwrap();
+            let e = multi_entry(dir.path(), &srv.base, &files, true);
+            let store = dir.path().join("store");
+            let (l, _) = obtain(&store, &e, &Opts::new(stream, false, true, jobs)).unwrap_or_else(|err| panic!("jobs={jobs}: {err:#}"));
+            assert_eq!(listing(&target_dir(&store, &e)), want, "jobs={jobs} stream={stream}");
+            assert_eq!(srv.peak.load(Ordering::SeqCst), most, "jobs={jobs} stream={stream}");
+            assert_eq!(srv.log.lock().unwrap().len(), 3, "one request per part");
+            // The lock lists the parts in catalog order, whatever order they finished in.
+            let names: Vec<_> = l.parts.iter().map(|p| p.file.as_str()).collect();
+            assert_eq!(names, ["p-core.tar.zst", "p-split.tar.zst", "p-tree.tar.zst"]);
+            assert!(l.parts.iter().all(|p| p.url == format!("{}/{}", srv.base, p.file)));
+            assert!(check_dirs(&target_dir(&store, &e), &e.verify_dirs).unwrap().is_empty());
+            assert!(fs::read_dir(store.join(".partial")).map(|d| d.count() == 0).unwrap_or(true));
+        }
+    }
+
+    #[test]
+    fn loose_files_download_side_by_side() {
+        let files: Vec<(String, Vec<u8>)> = (0..6).map(|i| (format!("f{i}.txt"), format!("file {i}\n").repeat(50).into_bytes())).collect();
+        let srv = serve_paced(files.clone(), paced(&files, 100));
+        let dir = tempfile::tempdir().unwrap();
+        let e = loose_entry(dir.path(), &srv.base, &files, None);
+        let store = dir.path().join("store");
+        let (l, _) = obtain(&store, &e, &Opts::new(false, false, true, 4)).unwrap_or_else(|err| panic!("{err:#}"));
+        assert_eq!(srv.peak.load(Ordering::SeqCst), 4, "four at a time, never more");
+        assert_eq!(listing(&target_dir(&store, &e)).len(), 6);
+        assert_eq!(fs::read(target_dir(&store, &e).join("f5.txt")).unwrap(), files[5].1);
+        assert_eq!(l.parts.len(), 6);
+    }
+
+    #[test]
+    fn corrupt_part_among_parallel_downloads_keeps_nothing_and_the_rest_resumes() {
+        let good = three_parts();
+        let mut bad = good.clone();
+        let last = bad[1].1.len() - 1;
+        bad[1].1[last] ^= 0xff;
+        // Part 1 arrives at once; part 2 (corrupt) takes ~300 ms; part 3 is slower and still
+        // coming when part 2 fails.
+        let srv = serve_paced(bad, vec![("p-split.tar.zst".into(), 150), ("p-tree.tar.zst".into(), 400)]);
+        let dir = tempfile::tempdir().unwrap();
+        let e = multi_entry(dir.path(), &srv.base, &good, true);
+        let store = dir.path().join("store");
+        let err = format!("{:#}", obtain(&store, &e, &Opts::new(false, false, true, 3)).unwrap_err());
+        assert!(err.contains("checksum mismatch for mydb (part p-split.tar.zst)"), "{err}");
+        assert!(!err.contains("another part failed"), "reported the stopped download, not the failure: {err}");
+        assert!(!target_dir(&store, &e).exists(), "kept a database with a corrupt part");
+        assert!(!store.join(".tmp").exists(), "temporary folder left behind");
+        assert_eq!(srv.log.lock().unwrap().len(), 3, "all three started");
+        let sources = e.sources();
+        // Part 1 is all there, the corrupt part is gone, and part 3 stopped part way.
+        assert_eq!(fs::metadata(partial_path(&store, &e, &sources[0])).unwrap().len(), good[0].1.len() as u64);
+        assert!(!partial_path(&store, &e, &sources[1]).exists());
+        let tree = fs::metadata(partial_path(&store, &e, &sources[2])).unwrap().len();
+        assert!(tree > 0 && tree < good[2].1.len() as u64, "part 3 has {tree} of {} bytes", good[2].1.len());
+
+        // Fixed upstream: part 1 is re-read from disk, part 2 downloaded again, part 3 resumed.
+        let srv = serve_paced(good.clone(), paced(&good, 50));
+        let e = multi_entry(dir.path(), &srv.base, &good, true);
+        let (l, _) = obtain(&store, &e, &Opts::new(false, false, true, 3)).unwrap_or_else(|err| panic!("{err:#}"));
+        let mut log = srv.log.lock().unwrap().clone();
+        log.sort();
+        assert_eq!(log, ["p-split.tar.zst".to_string(), format!("p-tree.tar.zst@{tree}")]);
+        assert_eq!(l.files, 5);
+        assert!(check_dirs(&target_dir(&store, &e), &e.verify_dirs).unwrap().is_empty());
+        assert!(fs::read_dir(store.join(".partial")).map(|d| d.count() == 0).unwrap_or(true));
+    }
+
+    #[test]
+    fn databases_fetched_side_by_side_share_the_job_limit() {
+        let files = three_parts();
+        let srv = serve_paced(files.clone(), paced(&files, 150));
+        let dir = tempfile::tempdir().unwrap();
+        let (da, db) = (dir.path().join("a"), dir.path().join("b"));
+        fs::create_dir_all(&da).unwrap();
+        fs::create_dir_all(&db).unwrap();
+        let a = multi_entry_id(&da, "dba", &srv.base, &files, true);
+        let b = multi_entry_id(&db, "dbb", &srv.base, &files, true);
+        let store = dir.path().join("store");
+        let opts = Opts::new(false, false, true, 2);
+        std::thread::scope(|s| {
+            let ha = s.spawn(|| obtain(&store, &a, &opts));
+            let hb = s.spawn(|| obtain(&store, &b, &opts));
+            for h in [ha, hb] {
+                let (l, reused) = h.join().unwrap().unwrap_or_else(|err| panic!("{err:#}"));
+                assert!(!reused && l.files == 5);
+            }
+        });
+        assert_eq!(srv.log.lock().unwrap().len(), 6);
+        assert_eq!(srv.peak.load(Ordering::SeqCst), 2, "two downloads at a time over both databases");
+        assert_eq!(*opts.space.claimed.lock().unwrap(), (0, 0), "space claims given back");
+    }
+
+    #[test]
+    fn a_fetch_waits_while_others_have_claimed_the_space_it_needs() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = three_parts();
+        let e = multi_entry(dir.path(), "http://127.0.0.1:9/x", &files, false);
+        let store = dir.path().join("store");
+        let opts = Opts::new(false, false, true, 2);
+        // A little claimed by another fetch: the plan doesn't change, so no waiting.
+        *opts.space.claimed.lock().unwrap() = (1_000, 1);
+        let (p, claim) = plan_claim(&store, &e, &opts).unwrap();
+        assert_eq!(p.mode, Mode::DownloadThenExtract);
+        assert_eq!(*opts.space.claimed.lock().unwrap(), (1_000 + p.need, 2));
+        drop(claim);
+        // All of it claimed: wait until the other fetch is done, then plan as if alone.
+        *opts.space.claimed.lock().unwrap() = (u64::MAX / 2, 1);
+        std::thread::scope(|s| {
+            let h = s.spawn(|| plan_claim(&store, &e, &opts).map(|(p, c)| (p.mode, c.bytes)));
+            std::thread::sleep(Duration::from_millis(300));
+            assert!(!h.is_finished(), "planned against space another fetch had claimed");
+            *opts.space.claimed.lock().unwrap() = (0, 0);
+            opts.space.released.notify_all();
+            let (mode, bytes) = h.join().unwrap().unwrap();
+            assert_eq!((mode, bytes), (Mode::DownloadThenExtract, plan(&store, &e, &opts).unwrap().need));
+        });
+        assert_eq!(*opts.space.claimed.lock().unwrap(), (0, 0));
     }
 }

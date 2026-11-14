@@ -15,6 +15,8 @@ use catalog::{Entry, human};
 use clap::{Parser, Subcommand};
 use project::{Lock, Project};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[derive(Parser)]
 #[command(version, about = "Download, verify and pin bioinformatics reference databases")]
@@ -73,6 +75,10 @@ enum Cmd {
         /// Keep byte-identical files as separate copies instead of hard-linking them.
         #[arg(long)]
         no_dedupe: bool,
+        /// Downloads at a time: the parts or files of one database, and several databases.
+        /// 1 fetches one thing after another.
+        #[arg(short, long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=64))]
+        jobs: u16,
     },
     /// Check that the locked databases are still on disk, unchanged (file names and sizes).
     Verify {
@@ -94,8 +100,8 @@ fn main() -> Result<()> {
         Cmd::Add { ids, store } => cmd_add(&cli.dir, &entries, &ids, store),
         Cmd::Remove { ids, delete_data, force } => cmd_remove(&cli.dir, &ids, delete_data, force),
         Cmd::Plan => cmd_plan(&cli.dir, &entries),
-        Cmd::Fetch { ids, stream, keep_archive, no_dedupe } => {
-            cmd_fetch(&cli.dir, &entries, &ids, &fetch::Opts { force_stream: stream, keep_archive, dedupe: !no_dedupe })
+        Cmd::Fetch { ids, stream, keep_archive, no_dedupe, jobs } => {
+            cmd_fetch(&cli.dir, &entries, &ids, &fetch::Opts::new(stream, keep_archive, !no_dedupe, jobs.into()))
         }
         Cmd::Verify { deep } => cmd_verify(&cli.dir, deep),
         Cmd::Check => cmd_check(&cli.dir, &entries),
@@ -228,7 +234,7 @@ fn cmd_plan(dir: &Path, entries: &[Entry]) -> Result<()> {
     let p = require_project(dir)?;
     let store = p.store_dir()?;
     println!("store: {}", store.display());
-    let opts = fetch::Opts { force_stream: false, keep_archive: false, dedupe: true };
+    let opts = fetch::Opts::new(false, false, true, 1);
     let mut total = 0;
     for id in &p.databases {
         let e = catalog::find(entries, id)?;
@@ -277,7 +283,7 @@ fn cmd_plan(dir: &Path, entries: &[Entry]) -> Result<()> {
 fn cmd_fetch(dir: &Path, entries: &[Entry], only: &[String], opts: &fetch::Opts) -> Result<()> {
     let p = require_project(dir)?;
     let store = p.store_dir()?;
-    let mut lock = Lock::load(dir)?;
+    let lock = Lock::load(dir)?;
     let ids: Vec<&String> = if only.is_empty() {
         p.databases.iter().collect()
     } else {
@@ -288,46 +294,81 @@ fn cmd_fetch(dir: &Path, entries: &[Entry], only: &[String], opts: &fetch::Opts)
         }
         only.iter().collect()
     };
-    let mut failed = Vec::new();
-    for id in ids {
-        let e = catalog::find(entries, id)?;
-        eprintln!("{id}: {} ({})", e.name, human(e.size));
-        match fetch::obtain(&store, e, opts) {
+    // Every id looked up before anything is fetched.
+    let todo = ids.iter().map(|id| Ok((*id, catalog::find(entries, id)?))).collect::<Result<Vec<_>>>()?;
+    let lock = Mutex::new(lock);
+    let failed = Mutex::new(Vec::new());
+    let one = |i: usize, id: &String, e: &Entry| -> Result<()> {
+        fetch::print_line(&format!("{id}: {} ({})", e.name, human(e.size)));
+        let got = fetch::obtain(&store, e, opts);
+        let mut lock = lock.lock().unwrap_or_else(|p| p.into_inner());
+        match got {
             Ok((found, true)) => {
-                eprintln!(
-                    "  already in {}, reusing it (file names and sizes match; `dblock verify --deep` re-hashes every file)",
+                fetch::say(format!(
+                    "already in {}, reusing it (file names and sizes match; `dblock verify --deep` re-hashes every file)",
                     found.path
-                );
+                ));
                 lock.upsert(found);
             }
             Ok((l, false)) => {
                 if l.linked_files > 0 {
-                    eprintln!(
-                        "  done: {} files, {} ({} on disk: {} hard-linked) at {}",
+                    fetch::say(format!(
+                        "done: {} files, {} ({} on disk: {} hard-linked) at {}",
                         l.files,
                         human(l.bytes),
                         human(l.bytes - l.linked_bytes),
                         l.linked_files,
                         l.data_path
-                    );
+                    ));
                 } else {
-                    eprintln!("  done: {} files, {} at {}", l.files, human(l.bytes), l.data_path);
+                    fetch::say(format!("done: {} files, {} at {}", l.files, human(l.bytes), l.data_path));
                 }
                 if e.non_commercial {
-                    eprintln!("  licence: {}", e.licence);
+                    fetch::say(format!("licence: {}", e.licence));
                 }
                 lock.upsert(l);
             }
             Err(err) => {
-                eprintln!("  failed: {err:#}");
-                failed.push(id.clone());
+                fetch::say(format!("failed: {err:#}"));
+                failed.lock().unwrap_or_else(|p| p.into_inner()).push((i, id.clone()));
             }
         }
-        lock.save(dir)?;
+        lock.save(dir)
+    };
+    // Up to --jobs databases at once; their downloads share the same --jobs slots.
+    let workers = opts.slots.limit().min(todo.len()).max(1);
+    if workers == 1 {
+        for (i, (id, e)) in todo.iter().enumerate() {
+            one(i, id, e)?;
+        }
+    } else {
+        let next = AtomicUsize::new(0);
+        let stop = AtomicBool::new(false);
+        let errors: Vec<Result<()>> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..workers)
+                .map(|_| {
+                    s.spawn(|| -> Result<()> {
+                        while !stop.load(Ordering::SeqCst) {
+                            let i = next.fetch_add(1, Ordering::SeqCst);
+                            let Some((id, e)) = todo.get(i) else { break };
+                            fetch::set_tag(format!("{id}: "));
+                            // Writing dblock.lock failed: stop starting new databases.
+                            one(i, id, e).inspect_err(|_| stop.store(true, Ordering::SeqCst))?;
+                        }
+                        Ok(())
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("a fetch thread panicked")))).collect()
+        });
+        errors.into_iter().collect::<Result<Vec<_>>>()?;
     }
+    let lock = lock.into_inner().unwrap_or_else(|p| p.into_inner());
     lock.save(dir)?;
+    let mut failed = failed.into_inner().unwrap_or_else(|p| p.into_inner());
     if !failed.is_empty() {
-        bail!("could not fetch: {}", failed.join(", "));
+        failed.sort();
+        bail!("could not fetch: {}", failed.into_iter().map(|(_, id)| id).collect::<Vec<_>>().join(", "));
     }
     Ok(())
 }
@@ -642,5 +683,58 @@ mod remove_tests {
         save();
         cmd_remove(&proj, &["mydb".into()], true, true).unwrap();
         assert!(!db.exists() && !store.join(".tmp").exists());
+    }
+}
+
+#[cfg(test)]
+mod fetch_tests {
+    use super::*;
+    use md5::{Digest, Md5};
+    use std::sync::atomic::Ordering;
+
+    /// Three single-archive databases fetched side by side: the corrupt one fails alone, the
+    /// others are locked, and no more than --jobs downloads run at once.
+    #[test]
+    fn databases_are_fetched_side_by_side_and_one_failing_stops_only_itself() {
+        let files = fetch::tests::three_parts();
+        let mut served = files.clone();
+        let last = served[1].1.len() - 1;
+        served[1].1[last] ^= 0xff;
+        let srv = fetch::tests::serve_paced(served, files.iter().map(|(n, _)| (n.clone(), 150)).collect());
+        let ids = ["db-a", "db-b", "db-c"];
+        let entries: Vec<Entry> = ids
+            .iter()
+            .zip(&files)
+            .map(|(id, (name, body))| {
+                serde_json::from_value(serde_json::json!({
+                    "id": id, "name": "t", "version": "1", "tool": "t", "urls": [format!("{}/{name}", srv.base)],
+                    "format": "tar.zst", "size": body.len(), "extracted": 100, "md5": fetch::hex(&Md5::digest(body)),
+                    "md5_source": "test", "env": "X", "env_points_to": "rel", "compat": null, "licence": "x"
+                }))
+                .unwrap()
+            })
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        let p = Project { store: Some(store.display().to_string()), databases: ids.iter().map(|s| s.to_string()).collect() };
+        p.save(dir.path()).unwrap();
+        for jobs in [1, 2] {
+            let err = cmd_fetch(dir.path(), &entries, &[], &fetch::Opts::new(false, false, true, jobs)).unwrap_err();
+            assert_eq!(err.to_string(), "could not fetch: db-b");
+            let lock = Lock::load(dir.path()).unwrap();
+            assert_eq!(lock.databases.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["db-a", "db-c"]);
+            assert!(!store.join("db-b").exists());
+            if jobs == 1 {
+                assert_eq!(srv.peak.load(Ordering::SeqCst), 1);
+                // Fetch again side by side, from scratch.
+                fs_reset(&store, dir.path());
+            }
+        }
+        assert_eq!(srv.peak.load(Ordering::SeqCst), 2);
+    }
+
+    fn fs_reset(store: &Path, dir: &Path) {
+        std::fs::remove_dir_all(store).unwrap();
+        std::fs::remove_file(dir.join(project::LOCK_FILE)).unwrap();
     }
 }

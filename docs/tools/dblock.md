@@ -20,6 +20,7 @@ dblock add checkm2-db-v3 kraken2-standard-8gb-20261022
 dblock plan                        # will it fit, and how will it be fetched?
 dblock fetch                       # download, verify, unpack; writes dblock.lock
 dblock fetch --no-dedupe           # same, but keep identical files as separate copies
+dblock fetch --jobs 1              # one download at a time (default: 4 side by side)
 dblock verify                      # same file names and sizes as locked? (seconds)
 dblock verify --deep               # same contents? re-hashes every file (minutes to hours)
 dblock check                       # do installed tool versions accept these databases?
@@ -71,6 +72,54 @@ it prints what it would delete and stops unless `--force` is given.
 
 If neither fits, it stops before downloading and says how much space is needed. A 2 GB reserve is
 always kept free.
+
+### Downloads side by side (`--jobs`)
+
+`dblock fetch` runs up to `--jobs N` downloads at once (default 4, `-j`, 1 to 64): the parts or
+files of one multi-part entry, and, when it fetches several databases, those databases too. The
+limit is shared, so `--jobs 4` with three multi-part databases still means at most four downloads
+in flight. `--jobs 1` fetches one thing after another, as dblock did before the option existed.
+
+What stays the same with more than one job:
+
+- Each download streams to its own file under `.partial/` through a 1 MiB buffer, so memory grows
+  by about 1 MiB per job, not with the size of a part. Each part is resumable on its own and is
+  checked against its MD5 (and SHA-256) as before.
+- Parts are unpacked one at a time, in catalog order, once every part has passed its checksum.
+  `--stream` still streams the parts of one entry one after another (they unpack into one folder);
+  only separate databases stream side by side.
+- When a part fails (a checksum mismatch, a broken connection), no further part of that entry is
+  started and the downloads of its other parts stop where they are. What they got stays under
+  `.partial/` and is resumed by the next `dblock fetch`, like any interrupted download; the error
+  shown is the part that failed, not the ones it stopped. Nothing is kept in the store, as before.
+  Other databases fetched in the same run go on.
+- Each database keeps its own lock, temporary folder, marker and lock entry; `dblock.lock` is
+  written after each database finishes and lists parts in catalog order, whatever order they
+  arrived in.
+- Free space: each database's plan counts the space claimed by the databases being fetched beside
+  it as taken. If that changes the plan (it would no longer fit, or would have to stream), the
+  database waits until the others finish and plans again, so it gets the mode it would have got
+  fetching one at a time. The count is cautious: bytes another download has already written are
+  counted twice, which can make a database wait when it would have fit.
+
+Measured once on 2026-11-14, on this project's laptop (home connection that day, about 1 MB/s per
+download from GitHub), with a release build. To time only the downloads, the entries were copied
+into a `--catalog` file with `"format": "file"`, so the same files were downloaded and checked
+(MD5 and SHA-256) but not unpacked or indexed:
+
+| Files | `--jobs 1` | `--jobs 4` (default) |
+|---|---|---|
+| `gtdbtk-r232-placement-lite`'s 11 parts from the GitHub mirror, 175 MB | 132.7 s | 68.1 s |
+| `amrfinderplus-db-4.2-2026-10-29.1`'s 38 files from NCBI, 126 MB | 414.2 s | 161.0 s |
+
+One run each, on a shared home line; treat the numbers as rough. The gain comes from servers that
+cap each connection's speed and from the per-file wait on many small files; a line that one
+download already fills gains nothing.
+
+Output: lines are prefixed with the database id when several databases run at once, and with the
+part's file name when its parts run at once. On a terminal one live progress line shows the sum of
+the downloads running ("3 downloads: ..."); in a log file each download gets a line per 10%.
+Nothing is printed in the middle of the live line.
 
 `plan` also notes a database whose tool isn't installed here (the version command in its catalog
 entry isn't found), since that download would be of no use outside a container.
@@ -144,9 +193,10 @@ MD5, SHA-256).
 
 The whole entry is one database: one folder, one lock, one marker, one manifest and SHA-256 list,
 and `verify_dirs` checked once over the combined folder. In download mode every part is
-downloaded and checked before any is unpacked. Each part resumes on its own, and a part that is
+downloaded and checked before any is unpacked, up to `--jobs` parts at a time (see
+[Downloads side by side](#downloads-side-by-side---jobs)). Each part resumes on its own, and a part that is
 already complete is re-read from disk instead of downloaded again, so a fetch that fails on part 7
-keeps parts 1–6 under `.partial/` for the next run. A part whose checksum doesn't match is
+keeps the parts that finished, and what the stopped ones got, under `.partial/` for the next run. A part whose checksum doesn't match is
 deleted; if it had been resumed from an earlier run's file (say, one left from an older release
 with the same file name), it is downloaded once more from the start in the same run. In stream mode the parts are streamed one after another into the same temporary folder.
 Either way the folder takes its final name only after every part has passed, and the folder
@@ -456,7 +506,14 @@ keeps copies; a link the file system refuses keeps the copy and leaves nothing b
 and multi-part entries: three parts into one folder in both modes, a corrupt part (same size, one
 byte changed; nothing kept, with MD5 alone and with MD5 + SHA-256), resuming after it (a complete
 part re-read from disk, a partial one resumed with a `Range` request), a folder hash mismatch
-across parts, and the catalog's checks on parts. Loose-file entries: each file kept under its name
+across parts, and the catalog's checks on parts. With more than one job: parts and loose files
+downloaded side by side (the server sees at most `--jobs` requests at once, `--stream` one at a
+time), two databases sharing one job limit, a corrupt part among parts still downloading (the
+error names the corrupt part, nothing is kept, the slow part stops with its bytes kept), the next
+run after it (the finished part re-read from disk, the corrupt one downloaded again, the stopped
+one resumed with a `Range` request), a database that waits while others have claimed the space it
+needs, and `dblock fetch` of three databases side by side where one fails (the other two are
+locked, the error names only the failed one). Loose-file entries: each file kept under its name
 in both modes, a corrupt file keeping nothing; `prepare` with a stand-in `amrfinder_index` (its
 version recorded, a failure reported with its stderr) and without the program on `PATH` (nothing
 kept, no temporary folder left).
@@ -471,7 +528,8 @@ the measured figure.
 - Plain `verify` checks names and sizes only; use `verify --deep` to check contents.
 - Locking uses OS file locks (`flock` / `LockFileEx`), which some network file systems don't honour.
 - Tool version rules exist only where the publisher states one (none for Kraken 2 or CARD).
-- No parallel downloads; one database at a time.
+- With `--jobs` above 1, the free-space check counts another database's download twice (claimed,
+  and already written), so a database may wait for others where it would have fit.
 - On Windows dblock can't tell whether two names are already one file (Rust has no stable API for
   the file id there), so an archive that itself contains hard links has them linked again and
   counted in `linked_bytes` although nothing more is saved.

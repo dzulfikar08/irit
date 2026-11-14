@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### dblock
+- **Downloads side by side**: `fetch --jobs N` (default 4) downloads the parts or files of an entry,
+  and several databases, under one shared limit; `--jobs 1` fetches one thing at a time as before.
+  Measured: placement-lite (11 parts, 175 MB) 133 s → 68 s, AMRFinderPlus (38 files, 126 MB)
+  414 s → 161 s. When a part fails, the parts still downloading stop and keep their partial files
+  for the next run; the error names the part that failed. Progress stays on one live line.
+
 ## 0.4.0 (2026-11-14)
 
 New: `seqplan` (plan a sequencing run), long-read isolates (`flye`, `medaka`) and metagenomes to
