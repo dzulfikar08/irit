@@ -1,5 +1,5 @@
-"""Drives irit-mcp over stdio against the real fastp, Shovill, Bakta, CheckM2, GTDB-Tk, mlst and
-AMRFinderPlus.
+"""Drives irit-mcp over stdio against the real fastp, Shovill, Bakta, CheckM2, GTDB-Tk, mlst,
+AMRFinderPlus, MEGAHIT, CoverM, MetaBAT2 and Kleborate.
 
 Used by .github/workflows/mcp-real-tools.yml. Standard library only. The run:
 
@@ -9,8 +9,10 @@ Used by .github/workflows/mcp-real-tools.yml. Standard library only. The run:
 2. Two samples. mg: Mycoplasma genitalium G37 (simulated reads, the published assembly) through
    fastp, bakta, checkm2, gtdbtk_classify_wf and amrfinder on Bakta's proteins. sa: real Illumina reads
    of Staphylococcus aureus (ERR044595, as nf-core/bacass tests with) through fastp, shovill (SKESA),
-   mlst and amrfinder, and shovill with SPAdes and its default correction steps, typed again. Then
-   isotable over all results, with mlst and AMR required.
+   mlst, amrfinder and coverm_genome (depth by mapping), and shovill with SPAdes and its default
+   correction steps, typed again. kp: K. pneumoniae HS11286's published genome through kleborate,
+   with M. genitalium as an assembly Kleborate doesn't type; assembly_stats on the M. genitalium
+   genome. Then isotable over all results, with mlst and AMR required.
 3. Moves those outputs aside and runs the tools again with the same paths: any output whose
    SHA-256 differs between the two identical runs is listed (the "volatile" outputs replay.sh
    can't hash-check). For JSON files, the fields that differ are listed too.
@@ -250,6 +252,30 @@ def main():
         )
         longest = max((b.get("total_length", 0) for b in bins.get("bins", [])), default=0)
         expect(f"metabat2{suffix}", 2_000_000 < longest < 3_200_000, f"{bins.get('bin_count')} bins, largest {longest} bp; S. aureus is about 2.8 Mb")
+        # Depth by mapping the trimmed reads to the SKESA assembly (about 53x of raw reads; Shovill
+        # logs the depth it estimated before subsampling to 30x).
+        cov = call(
+            "coverm_genome",
+            {"assembly": "shovill/sa/contigs.fa", "r1": "trim/sa_R1.fastq.gz", "r2": "trim/sa_R2.fastq.gz", "output": "typing/sa.coverm.tsv", "threads": 4},
+            f"coverm_genome sa{suffix}",
+        )
+        g = (cov.get("genomes") or [{}])[0]
+        expect(f"coverm_genome sa{suffix}", 30 < g.get("mapped_depth", 0) < 80 and g.get("covered_fraction", 0) > 95, json.dumps(cov.get("genomes"))[:300])
+        # Kleborate: HS11286 is ST11 with KPC-2; M. genitalium is no species Kleborate types, so it gets no row
+        kl = call("kleborate", {"assemblies": ["kp/HS11286.fna", "asm/mg.fna"], "outdir": "kleb"}, f"kleborate{suffix}")
+        rows = {r.get("strain"): r for r in kl.get("assemblies", [])}
+        hs = rows.get("HS11286", {})
+        expect(
+            f"kleborate{suffix}",
+            (hs.get("species"), hs.get("ST"), hs.get("amr", {}).get("Bla_Carb_acquired")) == ("Klebsiella pneumoniae", "ST11", "KPC-2") and "mg" not in rows,
+            json.dumps(hs)[:400],
+        )
+        expect(f"kleborate{suffix} warns about mg", any(w.startswith("mg: Kleborate wrote no row") for w in kl.get("warnings", [])), json.dumps(kl.get("warnings"))[:400])
+        expect(f"kleborate{suffix} data hashed", kl.get("bundled_data_files_hashed", 0) > 50, str(kl.get("bundled_data_files_hashed")))
+        # M. genitalium G37 is one 580,076 bp chromosome
+        st = call("assembly_stats", {"assemblies": ["asm/mg.fna"]}, f"assembly_stats{suffix}")
+        a = (st.get("assemblies") or [{}])[0]
+        expect(f"assembly_stats{suffix}", (a.get("contigs"), a.get("n50"), a.get("l50"), a.get("total_length")) == (1, 580076, 1, 580076), json.dumps(a)[:300])
         amr = call(
             "amrfinder",
             {
@@ -313,19 +339,20 @@ def main():
             f"gtdbtk_classify_wf{suffix}",
         )
 
-    dirs = ["trim", "shovill", "typing", "bakta", "checkm2", "gtdbtk", "mag"]
+    dirs = ["trim", "shovill", "typing", "bakta", "checkm2", "gtdbtk", "mag", "kleb"]
     run_all()
     table = call(
         "isotable",
-        {"dirs": [d for d in ["trim", "checkm2", "gtdbtk", "typing"] if (work / d).is_dir()], "require": ["reads", "q30", "mlst", "amr"]},
+        {"dirs": [d for d in ["trim", "checkm2", "gtdbtk", "typing", "kleb"] if (work / d).is_dir()], "require": ["reads", "q30", "mlst", "amr"]},
     )
     rows = {s.get("sample"): s for s in table.get("samples", [])}
     sa = rows.get("sa", {}).get("values", {})
     expect(
         "isotable sa",
-        sa.get("mlst_st") == "22" and "mecA" in sa.get("amr_genes", "").split(",") and sa.get("reads_trimmed", "") != "",
+        sa.get("mlst_st") == "22" and "mecA" in sa.get("amr_genes", "").split(",") and sa.get("reads_trimmed", "") != "" and sa.get("mapped_depth", "") != "",
         json.dumps(rows.get("sa"))[:600],
     )
+    expect("isotable HS11286", rows.get("HS11286", {}).get("values", {}).get("kleborate_st") == "ST11", json.dumps(rows.get("HS11286"))[:600])
     # AMRFinderPlus on Bakta's proteins joined to mg (`none` when it found nothing).
     expect("isotable mg", rows.get("mg", {}).get("values", {}).get("amr_genes", "") != "", json.dumps(rows.get("mg"))[:600])
     # Bakta's own AMRFinderPlus step ran on dblock's database (Bakta 1.12.2 stops if amrfinder fails).

@@ -1,7 +1,8 @@
 # Opt-in check of irit-mcp's third-party wrappers against the real programs: fastp 1.4.0,
 # Shovill 1.4.2, Bakta 1.12.2 (light database), CheckM2 1.1.0, GTDB-Tk 2.8.0 (GTDB's mock database),
-# mlst 2.35.0 and AMRFinderPlus 4.2.7 (dblock's pinned database), on a small genome and on real
-# S. aureus reads, then isotable. Downloads about 3 GB of databases and takes about an hour, so it
+# mlst 2.35.0, AMRFinderPlus 4.2.7 (dblock's pinned database), CoverM 0.8.0 (also for isolate depth)
+# and Kleborate 3.2.4, on a small genome, on real S. aureus reads and on a K. pneumoniae reference
+# genome, then isotable (and its assembly statistics). Downloads about 3 GB of databases and takes about an hour, so it
 # only runs by hand:
 #   gh workflow run mcp-real-tools.yml --ref <branch>
 name: irit-mcp real tools
@@ -48,12 +49,16 @@ jobs:
             name=$1; shift
             micromamba create -y -n "$name" -c conda-forge -c bioconda "$@"
           done
+          # Kleborate 3.2.4 from pip: Bioconda's package also installs ECTyper, whose install script downloads
+          # about 900 MB. pip's needs pandas, and Kaptive 3.2.x (3.3 dropped kaptive.database, which it imports).
+          micromamba create -y -n kleborate -c conda-forge -c bioconda python=3.12 mash minimap2 pip
+          "$MAMBA_ROOT_PREFIX/envs/kleborate/bin/pip" install kleborate==3.2.4 kaptive==3.2.2 pandas
           "$MAMBA_ROOT_PREFIX/envs/shovill/bin/spades.py" --version
           mkdir -p "$HOME/tool-bin"
           root=${MAMBA_ROOT_PREFIX:?setup-micromamba sets MAMBA_ROOT_PREFIX}
           # program:environment. amrfinder_index is what dblock runs to index the AMRFinderPlus database.
           for pe in fastp:fastp bakta:bakta checkm2:checkm2 gtdbtk:gtdbtk shovill:shovill mlst:mlst amrfinder:amrfinder amrfinder_index:amrfinder \
-                    megahit:megahit coverm:coverm metabat2:metabat2; do
+                    megahit:megahit coverm:coverm metabat2:metabat2 kleborate:kleborate; do
             t=${pe%%:*}; e=${pe#*:}
             # CheckM2's TensorFlow library asks for an executable stack, which newer glibc refuses
             # ("cannot enable executable stack"); this tunable allows it for that process only.
@@ -88,6 +93,9 @@ jobs:
           # The test genome for GTDB's mock GTDB-Tk database (the database itself comes through
           # dblock_fetch as gtdbtk-r232-mockup, now that GTDB corrected its MD5, GTDBTk#726).
           curl -fsSL -o gtdb_genomes/test_genome_G021783475.fna.gz https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/mockup_db/test_genome_G021783475.fna.gz
+          # Klebsiella pneumoniae HS11286 (ST11, KPC-2), the complete RefSeq genome, for Kleborate
+          mkdir -p kp
+          curl -fsSL https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/240/185/GCF_000240185.1_ASM24018v2/GCF_000240185.1_ASM24018v2_genomic.fna.gz | gunzip > kp/HS11286.fna
           # Real Illumina reads of an EMRSA-15 Staphylococcus aureus (ENA ERR044595, HiSeq 2000 2x75),
           # 1M pairs, as nf-core/bacass tests with: for Shovill, mlst (ST22) and AMRFinderPlus (mecA).
           for m in 1 2; do
@@ -114,6 +122,7 @@ jobs:
             work/checkm2_first/quality_report.tsv
             work/gtdbtk_first/classify/*.summary.tsv
             work/typing_first/*
+            work/kleb_first/*
             work/shovill_first/sa/shovill.log
             work/mag_first/depth.tsv
             work/mag_first/asm/log
