@@ -32,6 +32,12 @@
   and one-member gzip 7.2 → 6.3 s (medians of 9), fastest runs 3.0 → 1.4 s and 3.1 → 2.6 s; peak
   memory unchanged. Tests cover plain, multi-member and BGZF gzip, progress and cancel.
 
+- **Read QC named after the sheet's read files joins their sample**: with `--sheet`, a leanqc or
+  FastQC report of `reads/SRR30733615_1.fastq.gz` joins the sample the sheet lists that file for,
+  instead of getting a row of its own (found by the second paper redo).
+- **`--min-contig`** (and irit-mcp's `min_contig`): the contig cut-off for assembly statistics,
+  500 bp by default as QUAST; 200 bp compares with papers that report GenBank's assemblies.
+
 ### dblock
 - **Downloads side by side**: `fetch --jobs N` (default 4) downloads the parts or files of an entry,
   and several databases, under one shared limit; `--jobs 1` fetches one thing at a time as before.

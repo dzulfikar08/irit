@@ -21,7 +21,8 @@ isotable assembly-stats asm/*/contigs.fa         # QUAST-style statistics, one r
 
 | Option | Effect |
 |---|---|
-| `--sheet FILE` | Sample sheet (e.g. from [`sheetgen`](sheetgen.md)) with the real sample names to join on. Recommended. |
+| `--sheet FILE` | Sample sheet (e.g. from [`sheetgen`](sheetgen.md)) with the real sample names to join on. Recommended. Its FASTQ columns also join QC reports named after the read files (below). |
+| `--min-contig N` | Count assembly statistics over contigs of N bp or more. Default 500 (QUAST's); 200 is what GenBank accepts and what many papers report. A QUAST report made at another cut-off then disagrees and the row is a `conflict`. |
 | `--mode isolate\|mag` | Grading rules (below). Default `isolate`. |
 | `-o FILE` | Output TSV (default stdout). |
 | `--mqc FILE` | Also write a MultiQC custom-content table. |
@@ -82,7 +83,7 @@ counted the way QUAST 5 does (`quast_libs/basic_stats.py`):
 
 | Column | Meaning |
 |---|---|
-| `contigs`, `assembly_length` | Contigs of 500 bp or more, and their total length (QUAST's `# contigs`, `Total length`). |
+| `contigs`, `assembly_length` | Contigs of 500 bp or more (`--min-contig`), and their total length (QUAST's `# contigs`, `Total length`). |
 | `n50`, `l50`, `n90` | The contig length at which the contigs, longest first, reach 50% (90%) of that length, and for L50 how many contigs it took. |
 | `largest_contig` | |
 | `gc_percent` | G+C over A+C+G+T of those contigs, two decimals. QUAST divides by the length without Ns; the two differ only when an assembly holds other IUPAC codes. |
@@ -127,8 +128,11 @@ Each tool names things differently (`ERR044595.fastp.json`, `ERR044595-unicycler
   recognised suffix: file extensions (`.fa`, `.fastq.gz`, `.scaffolds`, `.contigs`), assembler tags
   (`-unicycler`, `-spades`, ...), subsampling tags (`_1M`, `_500k`) and, for read files only, mate,
   lane and index tags (`_R1`, `_1`, `_R1_001`, `_L001`, `_S3`). So `patient_1` does **not** join
-  sample `patient`: it is reported as unmatched and gets its own row. Every join that isn't an exact
-  name match is printed as a note.
+  sample `patient`: it is reported as unmatched and gets its own row. A record that matches no
+  sheet name but is named after a read file in one of the sheet's FASTQ columns (`fastq_1`,
+  `fastq_2`, or any column of `.fastq`/`.fq` paths) joins that row's sample: read QC of
+  `reads/SRR30733615_1.fastq.gz` joins sample BAE-1 when the sheet lists that file for BAE-1.
+  Every join that isn't an exact name match is printed as a note.
 - **Without a sheet**: extensions and assembler tags are stripped. A mate suffix is stripped only
   from per-file read QC (leanqc, FastQC), and only when the other mate's report is there too and no other
   tool uses the unstripped name; fastp reports, assemblies, bins and genomes keep their names. So

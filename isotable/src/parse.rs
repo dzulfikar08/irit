@@ -388,13 +388,17 @@ fn quast(path: &Path) -> Result<Vec<Record>> {
 /// more; GC over A, C, G and T), so a QUAST report on the same assembly agrees. With Shovill's log,
 /// also the sequencing depth Shovill estimated: read bases over the genome size it used, which is
 /// its own k-mer estimate unless `--gsize` was given (docs/research/coverage-depth.md: up to 3x off).
+/// The contig length cut-off for assembly statistics (`isotable --min-contig`); QUAST's 500 bp
+/// unless set.
+pub static MIN_CONTIG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(crate::asm::QUAST_MIN_CONTIG);
+
 fn assembly(path: &Path, shovill_log: Option<&Path>) -> Result<Vec<Record>> {
     let name = path
         .parent()
         .and_then(Path::file_name)
         .map(|n| n.to_string_lossy().into_owned())
         .context("the assembly has no folder to name the sample")?;
-    let s = crate::asm::stats(path, crate::asm::QUAST_MIN_CONTIG)?;
+    let s = crate::asm::stats(path, MIN_CONTIG.load(std::sync::atomic::Ordering::Relaxed))?;
     let mut fields = vec![("contigs", Value::Int(s.contigs)), ("length", Value::Int(s.length))];
     if s.contigs > 0 {
         fields.push(("n50", Value::Int(s.n50)));
@@ -653,6 +657,33 @@ pub fn sheet_samples(path: &Path) -> Result<Vec<String>> {
     names.sort();
     names.dedup();
     Ok(names)
+}
+
+/// Read files a sample sheet names (columns such as `fastq_1`/`fastq_2` of nf-core and sheetgen
+/// sheets): each FASTQ file's name without folders and extensions, mapped to its row's sample. QC
+/// reports are named after the read file, which need not start with the sample name
+/// (`SRR30733615_1.fastq.gz` for sample BAE-1).
+pub fn sheet_read_files(path: &Path) -> Result<BTreeMap<String, String>> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#'));
+    let header = lines.next().context("empty sample sheet")?;
+    let sep = if header.contains('\t') { '\t' } else { ',' };
+    let cols: Vec<String> = header.split(sep).map(|c| c.trim().to_ascii_lowercase()).collect();
+    let idx = cols.iter().position(|c| matches!(c.as_str(), "sample" | "id" | "sample-id" | "sample_id")).unwrap_or(0);
+    let fastq = Regex::new(r"(?i)\.(fastq|fq)(\.(gz|bz2|zst))?$").unwrap();
+    let mut out = BTreeMap::new();
+    for line in lines {
+        let cells: Vec<&str> = line.split(sep).map(str::trim).collect();
+        let Some(sample) = cells.get(idx).filter(|s| !s.is_empty()) else { continue };
+        for (i, cell) in cells.iter().enumerate() {
+            if i == idx || !fastq.is_match(cell) {
+                continue;
+            }
+            let file = cell.rsplit(['/', '\\']).next().unwrap_or(cell);
+            out.insert(base_name(file), sample.to_string());
+        }
+    }
+    Ok(out)
 }
 
 /// File extensions and assembler tags: stripped from any record's name.

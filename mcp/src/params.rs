@@ -407,7 +407,7 @@ pub enum Requirement {
 pub struct IsotableParams {
     /// Results folders to search recursively for fastp, leanqc, QUAST, Shovill (`contigs.fa` beside `shovill.log`), Flye, Medaka, BUSCO, CheckM2, GTDB-Tk, Kraken 2, CoverM genome (`<sample>.coverm.tsv`), mlst, AMRFinderPlus and Kleborate outputs.
     pub dirs: Vec<String>,
-    /// Sample sheet (CSV/TSV, e.g. from sheetgen) with the real sample names to join on. Strongly recommended: without it, joins are by file name only.
+    /// Sample sheet (CSV/TSV, e.g. from sheetgen) with the real sample names to join on. Strongly recommended: without it, joins are by file name only. Its FASTQ columns (fastq_1, fastq_2) also join QC reports named after the read files, e.g. SRA run names.
     #[serde(default)]
     pub sheet: Option<String>,
     /// Grading rules. Default isolate.
@@ -449,6 +449,9 @@ pub struct IsotableParams {
     /// Warn below this mean depth from read mapping (coverm_genome); fail below half of it. Default 20 (docs/research/coverage-depth.md); 0 turns it off. Shovill's own depth estimate is shown but never graded.
     #[serde(default)]
     pub min_depth: Option<f64>,
+    /// Count assembly statistics over contigs of this length or more. Default 500 (QUAST's); 200 matches what GenBank accepts and what many papers report. A QUAST report made at another cut-off then conflicts.
+    #[serde(default)]
+    pub min_contig: Option<u64>,
 }
 
 pub fn isotable(ctx: &Ctx, p: &IsotableParams) -> Check<Invocation> {
@@ -495,6 +498,10 @@ pub fn isotable(ctx: &Ctx, p: &IsotableParams) -> Check<Invocation> {
             v::percent(field, x)?;
             inv.opt(name, x);
         }
+    }
+    if let Some(x) = p.min_contig {
+        v::range("min_contig", x, 1, 1_000_000)?;
+        inv.opt("min-contig", x);
     }
     if let Some(x) = p.max_contigs {
         v::range("max_contigs", x, 1, u64::MAX / 2)?;

@@ -30,9 +30,16 @@ struct Cli {
     #[arg(required = true)]
     dirs: Vec<PathBuf>,
 
-    /// Sample sheet (CSV/TSV, e.g. from sheetgen) giving the real sample names to join on.
+    /// Sample sheet (CSV/TSV, e.g. from sheetgen) giving the real sample names to join on. Its
+    /// FASTQ columns join QC reports named after the read files too.
     #[arg(long)]
     sheet: Option<PathBuf>,
+
+    /// Count assembly statistics over contigs of this length or more (QUAST's default 500; 200
+    /// matches what GenBank accepts and many papers report). A QUAST report made at another
+    /// cut-off then disagrees with the assembly and the row is a conflict.
+    #[arg(long, default_value_t = isotable::asm::QUAST_MIN_CONTIG)]
+    min_contig: u64,
 
     /// Isolates (single-genome assemblies) or MAGs (metagenome-assembled genomes).
     #[arg(long, value_enum, default_value_t = Mode::Isolate)]
@@ -387,9 +394,10 @@ fn main() -> Result<()> {
     if let Some(Command::AssemblyStats(a)) = &cli.command {
         return assembly_stats(a);
     }
-    let sheet = match &cli.sheet {
-        Some(p) => parse::sheet_samples(p)?,
-        None => Vec::new(),
+    parse::MIN_CONTIG.store(cli.min_contig, std::sync::atomic::Ordering::Relaxed);
+    let (sheet, sheet_files) = match &cli.sheet {
+        Some(p) => (parse::sheet_samples(p)?, parse::sheet_read_files(p)?),
+        None => (Vec::new(), BTreeMap::new()),
     };
     let required = requirements(cli.require.as_deref(), cli.mode)?;
     let grade_list = graded(cli.fastqc_grade.as_deref())?;
@@ -397,7 +405,7 @@ fn main() -> Result<()> {
     if records.is_empty() {
         bail!("no recognised tool outputs under the given folders");
     }
-    let (rows, joins, unmatched) = join(records, &sheet);
+    let (rows, joins, unmatched) = join(records, &sheet, &sheet_files);
     let rows = finish(rows, cli.mode);
 
     let present: Vec<_> = COLUMNS.iter().filter(|(k, _)| rows.values().any(|r| r.cells.contains_key(k))).collect();
@@ -477,7 +485,9 @@ fn requirements(given: Option<&[String]>, mode: Mode) -> Result<Vec<&'static str
 type Joined = (BTreeMap<String, Row>, BTreeSet<(String, String)>, BTreeSet<String>);
 
 /// Assign every record to a sample and collect its values, keeping track of where each came from.
-fn join(records: Vec<Record>, sheet: &[String]) -> Joined {
+/// `files`: read-file names the sheet lists, by sample, for QC reports named after a read file
+/// that doesn't start with the sample name.
+fn join(records: Vec<Record>, sheet: &[String], files: &BTreeMap<String, String>) -> Joined {
     // Without a sheet, a read file's mate suffix goes only if the other mate's report is there
     // and no other tool uses the unstripped name as a sample.
     // Trimmed read files (`x_1.fastp.fastq.gz`, `x_1_val_1.fq.gz`) are matched under the name of
@@ -502,7 +512,12 @@ fn join(records: Vec<Record>, sheet: &[String]) -> Joined {
         let trimmed = untrimmed(&r);
         let name = trimmed.clone().unwrap_or_else(|| r.raw_name.clone());
         let t = usize::from(trimmed.is_some());
-        let (sample, how) = parse::match_sample(&name, r.kind, sheet, strip_mate(&name));
+        let (mut sample, mut how) = parse::match_sample(&name, r.kind, sheet, strip_mate(&name));
+        if how == How::Unmatched
+            && let Some(s) = files.get(&parse::base_name(&name))
+        {
+            (sample, how) = (s.clone(), How::Prefix);
+        }
         match how {
             How::Exact => {}
             How::Unmatched => {
@@ -1091,7 +1106,7 @@ mod tests {
         let grade_list: Option<Vec<String>> = grade_list.map(|g| g.iter().map(|s| s.to_string()).collect());
         let graded = graded(grade_list.as_deref()).unwrap();
         let (records, _, _) = parse::scan(&[root.to_path_buf()]).unwrap();
-        let (rows, _, _) = join(records, &sheet);
+        let (rows, _, _) = join(records, &sheet, &BTreeMap::new());
         finish(rows, mode)
             .into_iter()
             .map(|(k, row)| {
@@ -1127,7 +1142,7 @@ mod tests {
         write(t.path(), "b/transposed_report.tsv", QUAST);
         let sheet = ["patient"];
         let records = parse::scan(&[t.path().to_path_buf()]).unwrap().0;
-        let (rows, _, unmatched) = join(records, &sheet.map(String::from));
+        let (rows, _, unmatched) = join(records, &sheet.map(String::from), &BTreeMap::new());
         assert!(rows["patient"].cells.is_empty() && rows["patient"].fastp.is_empty());
         assert_eq!(unmatched.into_iter().collect::<Vec<_>>(), ["patient_1", "patient_2"]);
         let rows = table(t.path(), &sheet, Mode::Isolate, None);
@@ -1391,6 +1406,26 @@ mod tests {
         write(t.path(), "solo_1_leanqc.json", &lq("solo_1.fastq.gz"));
         let rows = table(t.path(), &[], Mode::Isolate, Some(&["none"]));
         assert_eq!(rows.keys().collect::<Vec<_>>(), ["iso", "solo_1"]);
+    }
+
+    /// QC reports named after read files the sheet lists (SRA run names, not the sample's) join
+    /// that sample instead of getting rows of their own (found by the second paper redo).
+    #[test]
+    fn reports_named_after_the_sheets_read_files_join_its_sample() {
+        let t = tempfile::tempdir().unwrap();
+        let lq = |f: &str| format!(r#"{{"file":"{f}","checks":[{{"name":"Duplication","status":"fail"}}]}}"#);
+        write(t.path(), "qc/SRR30733615_1_leanqc.json", &lq("SRR30733615_1.fastq.gz"));
+        write(t.path(), "qc/SRR30733615_2_leanqc.json", &lq("SRR30733615_2.fastq.gz"));
+        write(t.path(), "qc/other_1_leanqc.json", &lq("other_1.fastq.gz"));
+        write(t.path(), "sheet.csv", "sample,fastq_1,fastq_2\nBAE-1,reads/SRR30733615_1.fastq.gz,reads/SRR30733615_2.fastq.gz\n");
+        let files = parse::sheet_read_files(&t.path().join("sheet.csv")).unwrap();
+        assert_eq!(files.get("SRR30733615_2").map(String::as_str), Some("BAE-1"));
+        let records = parse::scan(&[t.path().join("qc")]).unwrap().0;
+        let (rows, joins, unmatched) = join(records, &["BAE-1".to_string()], &files);
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["BAE-1", "other_1"]);
+        assert_eq!(rows["BAE-1"].leanqc[0].len(), 2);
+        assert!(joins.iter().any(|(raw, s)| raw.starts_with("SRR30733615_1") && s == "BAE-1"), "{joins:?}");
+        assert_eq!(unmatched.len(), 1, "{unmatched:?}");
     }
 
     /// The FastQC fixtures: R1 as `_fastqc.zip`, R2 as an extracted `_fastqc/` folder.
