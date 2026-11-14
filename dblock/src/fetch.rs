@@ -2738,9 +2738,9 @@ pub(crate) mod tests {
         let mut bad = good.clone();
         let last = bad[1].1.len() - 1;
         bad[1].1[last] ^= 0xff;
-        // Part 1 arrives at once; part 2 (corrupt) takes ~300 ms; part 3 is slower and still
-        // coming when part 2 fails.
-        let srv = serve_paced(bad, vec![("p-split.tar.zst".into(), 150), ("p-tree.tar.zst".into(), 400)]);
+        // Part 1 arrives at once; part 2 (corrupt) takes ~300 ms; part 3 sends its first third,
+        // then waits 3 s per third, so it is still coming when part 2 fails even on a slow runner.
+        let srv = serve_paced(bad, vec![("p-split.tar.zst".into(), 150), ("p-tree.tar.zst".into(), 3000)]);
         let dir = tempfile::tempdir().unwrap();
         let e = multi_entry(dir.path(), &srv.base, &good, true);
         let store = dir.path().join("store");
