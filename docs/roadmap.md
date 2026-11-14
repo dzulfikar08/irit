@@ -123,12 +123,16 @@ What's done, what's next, and what's further out. Items move up as evidence come
       agent. Second data point: an agent with only `irit-mcp` (no shell, no web) redid Table 1 of a
       December 2025 *K. pneumoniae* genome announcement on the laptop. AMR genes and MLST matched
       exactly, GTDB confirmed the species, and it found six irit bugs (#14–#19)
-      ([write-up](research/paper-redo-kpn.md)). Still to do: more papers and lineages, and the
+      ([write-up](research/paper-redo-kpn.md)). Third data point: a second paper, three *E. coli*
+      and three *Salmonella* Kentucky from chickens in Bangladesh. All six STs matched, genome size
+      within 0.13 %, and the agent caught twelve *blaTEM* alleles listed for one truncated gene
+      ([write-up](research/paper-redo-bd.md)). Still to do: more papers and lineages, and the
       hand-built comparison.
 - [ ] **Gaps the paper redo showed**: QUAST-style assembly stats (`assembly_stats`), coverage by
       read mapping (`coverm_genome`) and *Klebsiella* typing (`kleborate`) are built (unreleased).
-      Still missing: virulence genes for other species (VirulenceFinder/VFDB) and plasmid replicons
-      (PlasmidFinder).
+      Still missing (both redos): virulence genes for other species (VirulenceFinder/VFDB), plasmid
+      replicons (PlasmidFinder), ResFinder, *Salmonella* serotyping (SISTR/SeqSero2), a Kraken2
+      tool, clonal complexes, and checking read files against ENA/SRA MD5s.
 - [x] **How much depth is enough** ([write-up](research/coverage-depth.md)): on the paper's three
       *K. pneumoniae*, every Table 1 call held down to 15× (20× is a practical target, 2.5 times as
       many isolates per run as 50×); below that Shovill needs `gsize`, and irit-mcp warns when it didn't get one (#22).
