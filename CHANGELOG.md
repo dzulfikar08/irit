@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### sheetgen
+- **`sheetgen verify`** checks read files before analysis: full gzip decompression (every member,
+  CRC-32 and length) and FASTQ structure, with MD5 and SHA-256 in the same pass, compared with an
+  `md5sum` file (`--md5`) or ENA's published MD5s and sizes (`--ena`, opt-in network). Each file is
+  ok, mismatch, corrupt (with the byte offset, record and line) or not listed; exit 1 on any
+  problem; `--json` for irit-mcp. Constant memory; 163–174 MB/s on a 568 MB file on a loaded laptop.
+
 ### cooccur (new)
 - **Which genomes rise and fall together across samples**, from a `coverm genome` table: CLR
   proportionality rho (Lovell et al. 2015) or Spearman on CLR values, seeded sequential permutation

@@ -6,7 +6,7 @@ Issues and pull requests are welcome: https://github.com/dzulfikar08/irit
 
 `cargo test --workspace` runs the tests of every tool except msascope's GUI; msascope needs the
 system libraries listed in [its guide](docs/tools/msascope.md#building). `cargo clippy --all-targets
--- -D warnings` and `cargo fmt --check` must pass.
+-- -D warnings` must pass. The code isn't rustfmt-formatted; match the style of the file you edit.
 
 ## Licence of contributions
 

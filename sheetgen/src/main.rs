@@ -4,8 +4,11 @@
 //! lanes and runs as separate rows (nf-core pipelines merge rows that share a sample name),
 //! and, given a pipeline's `schema_input.json`, writes the exact columns that pipeline
 //! expects and checks the rows against the schema before you launch.
+//!
+//! `sheetgen verify` checks the read files themselves (see `verify.rs`).
 
 mod schema;
+mod verify;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
@@ -15,9 +18,17 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 #[derive(Parser)]
-#[command(version, about = "Build a pipeline sample sheet from a folder of FASTQ files")]
+#[command(
+    version,
+    about = "Build a pipeline sample sheet from a folder of FASTQ files",
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true
+)]
 struct Cli {
-    /// Folders to scan (recursively) for FASTQ files.
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    /// Folders to scan (recursively) for FASTQ files. (A folder named `verify`: write `./verify`.)
     #[arg(required = true)]
     dirs: Vec<PathBuf>,
 
@@ -81,6 +92,13 @@ struct Cli {
     /// a `fastq_fail/` folder, Guppy `fastq_runid_*` files under `fail/`) instead of skipping them.
     #[arg(long)]
     include_fail: bool,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Check read files: gzip and FASTQ integrity, MD5 and SHA-256, and expected MD5s from an
+    /// md5sum file or ENA.
+    Verify(verify::VerifyArgs),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -185,6 +203,12 @@ static UNDETERMINED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^undete
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(Command::Verify(args)) = cli.command {
+        if !verify::run(args)? {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let fixed = parse_sets(&cli.set)?;
 
     let opts = ScanOpts {
