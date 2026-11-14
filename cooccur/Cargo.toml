@@ -1,0 +1,13 @@
+[package]
+name = "cooccur"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+
+[dev-dependencies]
+tempfile = "3.27"

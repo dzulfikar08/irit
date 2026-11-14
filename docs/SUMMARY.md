@@ -13,6 +13,7 @@
 - [seqplan: isolates per sequencing run](tools/seqplan.md)
 - [irit-mcp: tools for AI agents](tools/mcp.md)
 - [gtdbprep: GTDB-Tk without the 100 GB download](tools/gtdbprep.md)
+- [cooccur: genomes that rise and fall together](tools/cooccur.md)
 - [msascope: large alignment viewer](tools/msascope.md)
 - [fieldsheet: sample worksheet for the field](tools/fieldsheet.md)
 

@@ -1077,6 +1077,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cooccur"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

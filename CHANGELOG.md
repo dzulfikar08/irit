@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### cooccur (new)
+- **Which genomes rise and fall together across samples**, from a `coverm genome` table: CLR
+  proportionality rho (Lovell et al. 2015) or Spearman on CLR values, seeded sequential permutation
+  p-values and Benjamini-Hochberg q-values, CPR / non-CPR labels from a GTDB-Tk summary. rho and
+  Spearman match the R package propr 5.1.8 and R. The permutation null's calibration and the power
+  were measured by simulation; 500 genomes × 60 samples run in about 6 s and 20 MiB.
+
 ### gtdbprep
 - **`gtdbprep place`**: GTDB-Tk tree placement on the placement-only data dblock fetches
   (identify, align `--skip_gtdb_refs`, classify without the ANI screen), with gPlace as the placer

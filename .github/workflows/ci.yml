@@ -8,7 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CLIS: -p sheetgen -p leanqc -p isotable -p dblock -p seqplan
+  CLIS: -p sheetgen -p leanqc -p isotable -p dblock -p seqplan -p cooccur
 
 jobs:
   # Linux: every crate, including msascope's GPUI viewer.
@@ -42,7 +42,7 @@ jobs:
       - run: cargo test --workspace --exclude msascope
       - run: cargo test -p msascope --no-default-features
 
-  # Windows: the five command-line tools (irit-mcp and gtdbprep use Unix-only APIs for now) and
+  # Windows: the six command-line tools (irit-mcp and gtdbprep use Unix-only APIs for now) and
   # msascope's core; msascope.yml builds the viewer itself.
   windows:
     runs-on: windows-latest
@@ -52,7 +52,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p sheetgen -p leanqc -p isotable -p dblock -p seqplan --all-targets -- -D warnings
-      - run: cargo test -p sheetgen -p leanqc -p isotable -p dblock -p seqplan
+      - run: cargo clippy -p sheetgen -p leanqc -p isotable -p dblock -p seqplan -p cooccur --all-targets -- -D warnings
+      - run: cargo test -p sheetgen -p leanqc -p isotable -p dblock -p seqplan -p cooccur
       - run: cargo clippy -p msascope --no-default-features --all-targets -- -D warnings
       - run: cargo test -p msascope --no-default-features
