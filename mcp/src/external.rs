@@ -3814,7 +3814,7 @@ mod tests {
         let p: RasusaParams = parse(json!({"reads": ["reads/ont.fastq"], "outputs": ["sub/ont.fq.gz"], "coverage": 100, "genome_size": "5.7mb"}));
         let inv = rasusa(&cx, &p).unwrap();
         assert_eq!(inv.args, ["reads", "--genome-size=5.7mb", "--coverage=100", "--seed=1", "--output=sub/ont.fq.gz", "reads/ont.fastq"]);
-        assert_eq!(inv.expect, [vec![d.path().join("sub/ont.fq.gz")]]);
+        assert_eq!(inv.expect, [vec![cx.cwd.join("sub/ont.fq.gz")]]);
         let pair: RasusaParams = parse(json!({"reads": ["reads/r1.fq", "-r2.fq"], "outputs": ["s_1.fq.gz", "s_2.fq.gz"], "num": 1000, "seed": 7}));
         assert_eq!(rasusa(&cx, &pair).unwrap().args, ["reads", "--num=1000", "--seed=7", "--output=s_1.fq.gz", "--output=s_2.fq.gz", "reads/r1.fq", "./-r2.fq"]);
 
