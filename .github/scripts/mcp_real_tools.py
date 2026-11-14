@@ -278,7 +278,7 @@ def main():
         expect(f"galah{suffix}", 0 < clusters <= given, f"{given} bins in {clusters} clusters")
         ab = call(
             "coverm_abundance",
-            {"genome_dirs": ["mag/derep/representatives"], **pairs, "output": "mag/abundance.tsv", "threads": 4},
+            {"genome_list": "mag/derep/representatives.txt", **pairs, "output": "mag/abundance.tsv", "threads": 4},
             f"coverm_abundance{suffix}",
         )
         a = ab.get("abundance", {})

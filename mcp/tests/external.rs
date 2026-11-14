@@ -271,6 +271,7 @@ while [ $# -gt 0 ]; do
     --genome-fasta-files) [ $cmd = genome ] || die "genome option $1 for contig"; mode=g ;;
     --genome-fasta-directory=*) gdir=${1#--genome-fasta-directory=} ;;
     --genome-fasta-extension=*) gext=${1#--genome-fasta-extension=} ;;
+    --genome-fasta-list=*) glist=${1#--genome-fasta-list=}; [ -f "$glist" ] || die "cannot open $glist" ;;
     --methods) mode=m ;;
     --coupled) mode=c ;;
     -*) die "unknown option $1" ;;
@@ -294,6 +295,9 @@ fi
 if [ -n "${gdir:-}" ]; then
   for g in "$gdir"/*."${gext:-fna}"; do [ -f "$g" ] && genomes="$genomes $g"; done
   [ -n "$genomes" ] || die "no genomes in $gdir"
+fi
+if [ -n "${glist:-}" ]; then
+  while read -r g; do [ -n "$g" ] && { [ -f "$g" ] || die "cannot open $g"; genomes="$genomes $g"; }; done < "$glist"
 fi
 if [ $cmd = genome ] && [ -n "$genomes" ]; then
   case "$methods" in *count*) [ "$mcf" = 0 ] || die "The 'counts' coverage estimator cannot be used when --min-covered-fraction is > 0" ;; esac
@@ -384,7 +388,7 @@ printf 'contig\tbin\nk141_1\t0\nk141_2\t1\n' > "$out/contig_bins.tsv"
 "#;
 
 /// galah 0.6.3's cluster: genomes with the same sequence cluster, the first given represents them;
-/// a CheckM2 report must list every genome; the representatives' folder must be empty.
+/// a CheckM2 report must list every genome; a representatives' copy folder, if given, must be empty.
 const GALAH: &str = r#"
 [ "${1:-}" = --version ] && { echo "galah 0.6.3"; exit 0; }
 [ "${1:-}" = cluster ] || die "expected cluster"
@@ -408,15 +412,17 @@ done
 if [ -n "${gdir:-}" ]; then
   for g in "$gdir"/*."${gext:-fna}"; do [ -f "$g" ] && files="$files $g"; done
 fi
-if [ -d "$rdir" ] && [ -n "$(ls -A "$rdir")" ]; then echo "ERROR The output-representative-fasta-directory-copy specified ($rdir) exists and is not empty" >&2; exit 1; fi
-mkdir -p "$rdir"
+if [ -n "$rdir" ]; then
+  if [ -d "$rdir" ] && [ -n "$(ls -A "$rdir")" ]; then echo "ERROR The output-representative-fasta-directory-copy specified ($rdir) exists and is not empty" >&2; exit 1; fi
+  mkdir -p "$rdir"
+fi
 : > "$cdef"; : > "$rlist"; seen=
 for f in $files; do
   b=$(basename "$f"); b=${b%.*}
   [ -z "$report" ] || grep -q "$(printf '^%s\t' "$b")" "$report" || die "Failed to find CheckM statistics for $f"
   key=$(grep -v '>' "$f" | cksum | cut -d' ' -f1)
   rep=$(printf '%s\n' $seen | grep "^$key=" | head -n 1 | cut -d= -f2)
-  if [ -z "$rep" ]; then rep=$f; seen="$seen $key=$f"; echo "$f" >> "$rlist"; cp "$f" "$rdir/"; fi
+  if [ -z "$rep" ]; then rep=$f; seen="$seen $key=$f"; echo "$f" >> "$rlist"; [ -z "$rdir" ] || cp "$f" "$rdir/"; fi
   printf '%s\t%s\n' "$rep" "$f" >> "$cdef"
 done
 "#;
@@ -954,19 +960,19 @@ fn multi_sample_binning_dereplication_and_abundance_with_stand_ins_replay() {
     assert_eq!(v["left_out"], json!([]), "{v}");
     assert_eq!(v["version"], "galah 0.6.3");
     assert!(v["command"].as_str().unwrap().contains("--threads=1"), "{v}");
-    // galah won't copy into a folder of representatives that has files
+    // the same outdir again with overwrite: allowed (no copy folder for galah to refuse), as a replay does
     let r = c.call("galah", json!({"genome_dirs": bin_dirs, "outdir": "derep", "overwrite": true}));
-    assert_eq!(r["structuredContent"]["field"], "outdir", "{r}");
+    assert_ne!(r["isError"], true, "{r}");
     // 5: abundance of the representatives in both samples
     let both = json!({"r1": ["reads/s1_R1.fastq", "reads/s2_R1.fastq"], "r2": ["reads/s1_R2.fastq", "reads/s2_R2.fastq"]});
-    let r = c.call("coverm_abundance", with(both.clone(), json!({"genome_dirs": ["derep/representatives"], "output": "abundance.tsv", "min_covered_fraction": 0.5})));
+    let r = c.call("coverm_abundance", with(both.clone(), json!({"genome_list": "derep/representatives.txt", "output": "abundance.tsv", "min_covered_fraction": 0.5})));
     assert_eq!(r["structuredContent"]["field"], "min_covered_fraction", "{r}");
     let r = c.call(
         "coverm_abundance",
-        json!({"genome_dirs": ["derep/representatives"], "r1": ["reads/s1_R1.fastq", "other/s1_R1.fastq"], "r2": ["reads/s1_R2.fastq", "reads/s2_R2.fastq"], "output": "abundance.tsv"}),
+        json!({"genome_list": "derep/representatives.txt", "r1": ["reads/s1_R1.fastq", "other/s1_R1.fastq"], "r2": ["reads/s1_R2.fastq", "reads/s2_R2.fastq"], "output": "abundance.tsv"}),
     );
     assert_eq!(r["structuredContent"]["field"], "r1", "{r}");
-    let r = c.call("coverm_abundance", with(both, json!({"genome_dirs": ["derep/representatives"], "output": "abundance.tsv", "threads": 2})));
+    let r = c.call("coverm_abundance", with(both, json!({"genome_list": "derep/representatives.txt", "output": "abundance.tsv", "threads": 2})));
     assert_ne!(r["isError"], true, "{r}");
     let v = &r["structuredContent"];
     let a = &v["abundance"];
@@ -987,7 +993,7 @@ fn multi_sample_binning_dereplication_and_abundance_with_stand_ins_replay() {
     let ok: Vec<&Value> = log["calls"].as_array().unwrap().iter().filter(|c| c["status"] == "ok").collect();
     assert_eq!(
         ok.iter().map(|c| c["mcp_tool"].as_str().unwrap()).collect::<Vec<_>>(),
-        ["coverm_contig", "semibin2", "coverm_contig", "semibin2", "checkm2", "galah", "coverm_abundance"]
+        ["coverm_contig", "semibin2", "coverm_contig", "semibin2", "checkm2", "galah", "galah", "coverm_abundance"]
     );
     // the cached BAM and SemiBin2's log are volatile; the bins are not
     assert!(ok[2]["outputs"].as_array().unwrap().iter().any(|o| o["path"].as_str().unwrap().ends_with(".bam") && o["volatile"] == true), "{}", ok[2]["outputs"]);

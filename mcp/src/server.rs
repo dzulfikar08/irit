@@ -875,13 +875,21 @@ and GC %.")]
 species) with skani, keeping one representative per cluster. With `checkm2_report` (one checkm2 quality_report.tsv covering every \
 genome) the best genome by quality_formula represents each cluster, and min_completeness / max_contamination leave genomes out. Genomes \
 are named after their files, so bins of different samples need different names (metabat2 prefix, semibin2 tag). Writes \
-`<outdir>/clusters.tsv`, `<outdir>/representatives.txt` and copies of the representatives in `<outdir>/representatives/` (the genomes \
-for coverm_abundance). Returns the clusters, their sizes and the genomes left out.")]
+`<outdir>/clusters.tsv` and `<outdir>/representatives.txt` (pass it to coverm_abundance as genome_list). Returns the clusters, their sizes and the genomes left out.")]
     async fn galah(&self, Parameters(params): Parameters<x::GalahParams>) -> Result<CallToolResult, ErrorData> {
         let inv = x::galah(&self.cfg.ctx, &params);
+        // the genome files given or found in the folder (the CheckM2 report is an input too)
+        let cwd = self.cfg.ctx.cwd.clone();
+        let report = params.checkm2_report.as_ref().map(|r| cwd.join(r));
         let given: Vec<String> = inv
             .as_ref()
-            .map(|i| i.args.iter().skip_while(|a| *a != "--genome-fasta-files").skip(1).map(|a| a.trim_start_matches("./").to_string()).collect())
+            .map(|i| {
+                i.inputs
+                    .iter()
+                    .filter(|p| Some(*p) != report.as_ref())
+                    .map(|p| p.strip_prefix(&cwd).unwrap_or(p).to_string_lossy().into_owned())
+                    .collect()
+            })
             .unwrap_or_default();
         let d = self.execute("galah", &params, inv).await;
         let outdir = self.cfg.ctx.cwd.join(&params.outdir);
@@ -892,7 +900,7 @@ for coverm_abundance). Returns the clusters, their sizes and the genomes left ou
             v["genomes_given"] = json!(given.len());
             v["cluster_count"] = json!(clusters.len());
             v["left_out"] = json!(left_out);
-            v["representatives_dir"] = json!(outdir.join("representatives"));
+            v["representatives_list"] = json!(outdir.join("representatives.txt"));
             v["clusters"] = json!(clusters);
             Ok(())
         })

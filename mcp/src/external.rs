@@ -3678,10 +3678,6 @@ pub fn galah(ctx: &Ctx, p: &GalahParams) -> Check<Invocation> {
         inv.volatile = &["clusters.tsv", "representatives.txt"];
     }
     let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(p.overwrite), true)?;
-    let reps = outdir.join("representatives");
-    if std::fs::read_dir(&reps).is_ok_and(|mut rd| rd.next().is_some()) {
-        return v::invalid("outdir", format!("{}/representatives already has files, and galah refuses to copy into it; remove it or pick another outdir", p.outdir.trim_end_matches('/')));
-    }
     let base = p.outdir.trim_end_matches('/');
     let (clusters, list) = (outdir.join("clusters.tsv"), outdir.join("representatives.txt"));
     for (out, flag, name) in
@@ -3692,8 +3688,9 @@ pub fn galah(ctx: &Ctx, p: &GalahParams) -> Check<Invocation> {
         }
         inv.opt(flag, format!("{base}/{name}"));
     }
-    inv.opt("output-representative-fasta-directory-copy", format!("{base}/representatives"));
-    inv.outputs.extend([clusters.clone(), list.clone(), reps]);
+    // No copies of the representatives: galah refuses a copy folder that isn't empty, which a replay
+    // in the same folder would hit. representatives.txt lists the files; coverm_abundance reads it.
+    inv.outputs.extend([clusters.clone(), list.clone()]);
     inv.expect = vec![vec![clusters], vec![list]];
     for (path, _, _) in &genomes {
         inv.inputs.push(path.clone());
@@ -3727,7 +3724,10 @@ pub struct CovermAbundanceParams {
     /// Genome FASTA files, e.g. galah's representatives. Give this and/or genome_dirs. Give all the genomes at once (a dereplicated set): reads are shared out among the genomes given, and relative abundance is a share of all reads.
     #[serde(default)]
     pub genomes: Vec<String>,
-    /// Folders of genome FASTA files matched by extension, e.g. galah's `<outdir>/representatives`.
+    /// A file listing genome FASTA paths, one per line: galah's `<outdir>/representatives.txt`. Read again on replay, so the genomes follow a re-run galah.
+    #[serde(default)]
+    pub genome_list: Option<String>,
+    /// Folders of genome FASTA files matched by extension, e.g. a bin folder.
     #[serde(default)]
     pub genome_dirs: Vec<String>,
     /// With genome_dirs: file extension to match. Default fa (MetaBAT2's and SemiBin2's bins).
@@ -3771,7 +3771,22 @@ pub fn coverm_abundance(ctx: &Ctx, p: &CovermAbundanceParams) -> Check<Invocatio
     let cwd = ctx.cwd.as_path();
     let mut inv = external("coverm");
     inv.args.push("genome".into());
-    let genomes = genome_files(ctx, &p.genomes, &p.genome_dirs, &p.extension)?;
+    let genomes = match &p.genome_list {
+        Some(l) => {
+            if !p.genomes.is_empty() || !p.genome_dirs.is_empty() {
+                return v::invalid("genome_list", "give genome_list alone, or genomes/genome_dirs");
+            }
+            let list = v::existing_file(cwd, "genome_list", l)?;
+            let text = std::fs::read_to_string(&list).map_err(|e| v::Invalid { field: "genome_list".into(), message: format!("{l}: {e}") })?;
+            let named: Vec<String> = text.lines().map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect();
+            if named.is_empty() {
+                return v::invalid("genome_list", format!("{l} lists no genomes"));
+            }
+            inv.inputs.push(list);
+            genome_files(ctx, &named, &[], &None)?
+        }
+        None => genome_files(ctx, &p.genomes, &p.genome_dirs, &p.extension)?,
+    };
     for (path, _, _) in &genomes {
         inv.inputs.push(path.clone());
     }
@@ -3834,7 +3849,10 @@ pub fn coverm_abundance(ctx: &Ctx, p: &CovermAbundanceParams) -> Check<Invocatio
         inv.opt("threads", t);
     }
     // Each takes several values (clap num_args 1..), which end at the next option.
-    genome_args(&mut inv, &p.genomes, &p.genome_dirs, &p.extension, &genomes);
+    match &p.genome_list {
+        Some(l) => inv.opt("genome-fasta-list", l),
+        None => genome_args(&mut inv, &p.genomes, &p.genome_dirs, &p.extension, &genomes),
+    }
     inv.args.push("--methods".into());
     inv.args.extend(coverm_abundance_methods(p).iter().map(|m| m.to_string()));
     inv.args.push("--coupled".into());
@@ -4516,7 +4534,6 @@ mod tests {
                 "--threads=1",
                 "--output-cluster-definition=derep/clusters.tsv",
                 "--output-representative-list=derep/representatives.txt",
-                "--output-representative-fasta-directory-copy=derep/representatives",
                 "--genome-fasta-files",
                 "bins/s1/s1.1.fa",
                 "bins/s1/s1.2.fa",
@@ -4545,9 +4562,19 @@ mod tests {
         write(d.path(), "notcheckm.tsv", "genome\tquality\n");
         assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "outdir": "o", "checkm2_report": "notcheckm.tsv"})), "checkm2_report");
         assert!(serde_json::from_value::<GalahParams>(json!({"genome_dirs": ["bins/s1"], "outdir": "o", "quality_formula": "dRep"})).is_err());
-        // representatives/ with files: galah refuses, so irit-mcp does first, even with overwrite
-        write(d.path(), "derep/representatives/s1.1.fa", ">c\nA\n");
-        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "outdir": "derep", "overwrite": true})), "outdir");
+        // no copy folder: a used outdir is fine with overwrite (as on replay)
+        write(d.path(), "derep/representatives.txt", "bins/s1/s1.1.fa\n");
+        assert!(galah(&cx, &parse(json!({"genome_dirs": ["bins/s1"], "outdir": "derep", "overwrite": true}))).is_ok());
+        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "outdir": "derep"})), "outdir");
+
+        // coverm_abundance reads galah's list
+        write(d.path(), "reads/x_R1.fq.gz", "@a\nACGT\n+\nIIII\n");
+        write(d.path(), "reads/x_R2.fq.gz", "@a\nACGT\n+\nIIII\n");
+        let a = coverm_abundance(&cx, &parse(json!({"genome_list": "derep/representatives.txt", "r1": ["reads/x_R1.fq.gz"], "r2": ["reads/x_R2.fq.gz"], "output": "ab.tsv"}))).unwrap();
+        assert!(a.args.contains(&"--genome-fasta-list=derep/representatives.txt".to_string()), "{:?}", a.args);
+        assert!(a.inputs.iter().any(|i| i.ends_with("bins/s1/s1.1.fa")));
+        let e = coverm_abundance(&cx, &parse(json!({"genome_list": "derep/representatives.txt", "genome_dirs": ["bins/s1"], "r1": ["reads/x_R1.fq.gz"], "r2": ["reads/x_R2.fq.gz"], "output": "ab.tsv"}))).unwrap_err();
+        assert_eq!(e.field, "genome_list");
     }
 
     #[test]

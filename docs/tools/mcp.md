@@ -994,14 +994,15 @@ each step under an 8 GB no-swap cap, 6 threads, on the Crystal Geyser sample of
 Dereplicates genomes, typically the bins of several samples, with galah (`galah cluster`): genomes
 within an ANI (default 95%, a species) and aligned fraction of each other form a cluster, and one
 genome represents it. skani does the comparisons. Writes `<outdir>/clusters.tsv`
-(`representative<TAB>member` lines, paths as given), `<outdir>/representatives.txt` and copies of
-the representatives in `<outdir>/representatives/`, which is what `coverm_abundance` then maps to.
+(`representative<TAB>member` lines, paths as given) and `<outdir>/representatives.txt`, one path per
+line, which `coverm_abundance` takes as `genome_list`. No copies are made: galah refuses a copy
+folder that has files, which a replay in the same folder would hit.
 
 | Parameter | Type | Meaning |
 |---|---|---|
 | `genomes` | list of files | Genome FASTA files. |
 | `genome_dirs` | list of folders | Folders of genomes, matched by `extension` (default `fa`, MetaBAT2's and SemiBin2's). Give this and/or `genomes`. |
-| `outdir` | folder (required) | Its `representatives/` must be missing or empty (galah refuses otherwise, and so does the server first, even with `overwrite`). |
+| `outdir` | folder (required) | Where `clusters.tsv` and `representatives.txt` go; an existing one needs `overwrite`. |
 | `ani` | percent, 80-100 | Default 95. |
 | `min_aligned_fraction` | percent | galah's default 15. |
 | `precluster_ani` | percent, at most `ani` | galah's default 90. |
@@ -1046,7 +1047,8 @@ table a co-occurrence analysis across samples takes.
 
 | Parameter | Type | Meaning |
 |---|---|---|
-| `genomes`, `genome_dirs`, `extension` | as for `galah` | The genomes, e.g. `galah`'s `<outdir>/representatives`. Names must be unique. |
+| `genome_list` | file | A list of genome paths, one per line: `galah`'s `<outdir>/representatives.txt`. Read again on replay, so the genomes follow a re-run galah. |
+| `genomes`, `genome_dirs`, `extension` | as for `galah` | Instead of `genome_list`: genome files, or folders of them. One folder alone is passed to CoverM as a folder (`-d`), so a replay takes whatever it then holds. Names must be unique. |
 | `r1`, `r2` | lists of files (required) | One read pair per sample. Columns are named after the read 1 file, so name the files after the samples; two read 1 files with one name are refused. |
 | `output` | file (required) | The table (TSV). |
 | `min_covered_fraction` | percent: 0, or 1-100 | Default **0** here (CoverM's own is 10). |
@@ -1094,7 +1096,7 @@ real run checks the layout and the time and memory, not biology (both halves are
 {"name": "checkm2", "arguments": {"genomes": ["bins/s1/output_bins/s1_0.fa", "..."], "outdir": "checkm2", "lowmem": true}}
 {"name": "galah", "arguments": {"genome_dirs": ["bins/s1/output_bins", "bins/s2/output_bins"],
   "checkm2_report": "checkm2/quality_report.tsv", "min_completeness": 50, "max_contamination": 10, "outdir": "derep"}}
-{"name": "coverm_abundance", "arguments": {"genome_dirs": ["derep/representatives"],
+{"name": "coverm_abundance", "arguments": {"genome_list": "derep/representatives.txt",
   "r1": ["trim/s1_1.fastq.gz", "trim/s2_1.fastq.gz"], "r2": ["trim/s1_2.fastq.gz", "trim/s2_2.fastq.gz"],
   "output": "abundance.tsv", "threads": 6}}
 ```
@@ -1460,8 +1462,8 @@ run but does not carry the data.
   required, then replay.
 - Stand-ins for several samples (2026-11-14): `coverm_contig` (depth for one sample, a cached BAM for
   the other) → `semibin2` with a pretrained model and with the BAM → `checkm2` over all bins →
-  `galah` (refusing a report that misses genomes, two genomes with one name, and a representatives
-  folder with files) → `coverm_abundance` over two samples → replay from a clean folder. The
+  `galah` (refusing a report that misses genomes and two genomes with one name; run again over the
+  same outdir) → `coverm_abundance` from galah's list over two samples → replay from a clean folder. The
   stand-in BAM's header changes every run, as CoverM's does; the replay says the next call read a
   BAM that differs and still passes.
 - With the real programs on the laptop (2026-11-14, each step under an 8 GB cap, the Crystal
