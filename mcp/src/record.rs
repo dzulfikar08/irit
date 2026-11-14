@@ -447,12 +447,21 @@ check_in() {
 }
 # Like check, for the outputs of a call that reads files an earlier call wrote: if the call read
 # a file that differed (check_in), a different output follows from it and is reported, but does
-# not fail the replay. A missing output still does.
+# not fail the replay. So does a missing output then: a binner given other contigs can make other
+# bins (SemiBin2 numbers them by cluster). Without such an input, a missing output fails.
 check_from() {
   checked=$((checked + 1))
-  if [ ! -f "$3" ]; then echo "replay: missing $3" >&2; failed=1; return; fi
-  [ "$(sha "$3")" = "$2" ] && return
   eval "d=\${drift_$1:-0}"
+  if [ ! -f "$3" ]; then
+    if [ "$d" = 1 ]; then
+      followed=$((followed + 1))
+      echo "replay: missing, made by call $1 from an input that differs: $3" >&2
+    else
+      echo "replay: missing $3" >&2; failed=1
+    fi
+    return
+  fi
+  [ "$(sha "$3")" = "$2" ] && return
   if [ "$d" = 1 ]; then
     followed=$((followed + 1))
     echo "replay: differs, made by call $1 from an input that differs: $3" >&2
@@ -1094,6 +1103,9 @@ mod tests {
         assert!(err.contains("replay: differs: out.txt") && err.contains("failed=1 followed=0"), "{err}");
         let err = run("check_from 004 aa missing.txt");
         assert!(err.contains("missing missing.txt") && err.contains("failed=1"), "{err}");
+        // after an input that differs, a missing output is reported but doesn't fail
+        let err = run(&format!("check_in 005 {} in.txt\ncheck_from 005 aa gone.txt", hash_bytes(b"old")));
+        assert!(err.contains("missing, made by call 005") && err.contains("failed=0"), "{err}");
         let err = run("assembly_note 001 asm.fa 2 6 4");
         assert!(err.contains("has the run's 2 contigs, 6 bp, N50 4"), "{err}");
         let err = run("assembly_note 001 asm.fa 3 7 4");

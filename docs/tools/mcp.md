@@ -1319,8 +1319,10 @@ different one, those outputs differ too, and that is not a fault of theirs. So b
 call, `replay.sh` checks every input of it that an earlier call of the run wrote (`check_in`). If
 one differs from what the call read in the run, the call's outputs are checked with `check_from`:
 a different one is printed as `differs, made by call NNN from an input that differs` and counted,
-but does not fail the replay. An output that is missing, or that differs although every input it
-was made from matched, still fails it. The last line then says how many outputs matched and how
+but does not fail the replay. A missing one is treated the same way (`missing, made by call NNN
+...`): a binner given other contigs can make other bins, and SemiBin2 numbers its bins by cluster,
+so the run's `sb_1.fa` may not exist after a replay. An output that is missing, or that differs,
+although every input it was made from matched, still fails the replay. The last line then says how many outputs matched and how
 many differ only because of such an input. For an assembly, `replay.sh` also prints its contig
 count, length and N50 against the run's (`assembly_note`), e.g.
 
