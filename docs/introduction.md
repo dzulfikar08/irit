@@ -37,4 +37,8 @@ established tool it replaces or feeds.
 ## Status
 
 Early. The tools work and are tested on real data (see [benchmarks](benchmarks.md)), but
-they have one test machine so far. The [roadmap](roadmap.md) lists what comes next.
+they have one test machine so far. Real-data runs on that laptop, each in an 8 GB memory cap: an AI
+agent redoing two published genome papers through irit-mcp alone ([first](research/paper-redo-kpn.md),
+[second](research/paper-redo-bd.md)), [nanopore isolates](research/nanopore-laptop.md),
+[metagenome to MAGs](research/mag-laptop.md) and [how much sequencing depth is
+enough](research/coverage-depth.md). The [roadmap](roadmap.md) lists what comes next.

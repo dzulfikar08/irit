@@ -30,28 +30,50 @@ none differed from FastQC. How each number was taken is in the [benchmarks](/iri
 
 <section class="irit-section irit-tools">
 
-## Four tools, one manual step each
+## Eight tools, one job each
+
+Sizes are the Linux x86_64 binaries of 0.5.0.
 
 <dl class="irit-toollist">
 <div>
 <dt>[`sheetgen`](/irit/tools/sheetgen/)</dt>
 <dd>Builds a pipeline's sample sheet from a folder of FASTQ files and checks it against the pipeline's own schema.</dd>
-<dd class="size">2.4 MB</dd>
+<dd class="size">6.4 MB</dd>
 </div>
 <div>
 <dt>[`leanqc`](/irit/tools/leanqc/)</dt>
-<dd>Read quality control with an offline HTML report, giving the verdicts FastQC gives.</dd>
-<dd class="size">1.6 MB</dd>
+<dd>Read quality control with an offline HTML report, giving the verdicts FastQC gives; long-read views too.</dd>
+<dd class="size">1.8 MB</dd>
 </div>
 <div>
 <dt>[`isotable`](/irit/tools/isotable/)</dt>
-<dd>Joins fastp, leanqc, QUAST, BUSCO, CheckM2, GTDB-Tk, Kraken 2, mlst and AMRFinderPlus outputs into one graded row per sample.</dd>
-<dd class="size">2.5 MB</dd>
+<dd>Joins QC, assembly, typing and classification outputs (fastp, leanqc, QUAST, Shovill, Flye, CheckM2, GTDB-Tk, CoverM, mlst, AMRFinderPlus, Kleborate and more) into one graded row per isolate or MAG.</dd>
+<dd class="size">3.1 MB</dd>
 </div>
 <div>
 <dt>[`dblock`](/irit/tools/dblock/)</dt>
-<dd>Downloads, verifies and pins reference databases such as GTDB-Tk, CheckM2, Kraken 2 and Bakta, with a lock file.</dd>
-<dd class="size">5.1 MB</dd>
+<dd>Downloads in parallel, verifies and pins reference databases such as GTDB-Tk, CheckM2, Kraken 2, Bakta and AMRFinderPlus, with a lock file.</dd>
+<dd class="size">5.8 MB</dd>
+</div>
+<div>
+<dt>[`seqplan`](/irit/tools/seqplan/)</dt>
+<dd>Plans a sequencing run: isolates per run and cost per isolate at a target coverage, from cited kit outputs.</dd>
+<dd class="size">1.0 MB</dd>
+</div>
+<div>
+<dt>[`gtdbprep`](/irit/tools/gtdbprep/)</dt>
+<dd>GTDB-Tk's ANI species check on a laptop, without the 85 GB skani database.</dd>
+<dd class="size">4.0 MB</dd>
+</div>
+<div>
+<dt>[`irit-mcp`](/irit/tools/mcp/)</dt>
+<dd>Gives AI agents these tools and wrapped ones (Shovill, Flye, Medaka, MEGAHIT, MetaBAT2, CheckM2, GTDB-Tk, AMRFinderPlus, Kleborate, ...) as checked tools, and records every call in a replayable run record.</dd>
+<dd class="size">6.9 MB</dd>
+</div>
+<div>
+<dt>[`msascope`](/irit/tools/msascope/)</dt>
+<dd>GPU-drawn desktop viewer for very large multiple sequence alignments.</dd>
+<dd class="size">desktop app</dd>
 </div>
 </dl>
 
@@ -63,6 +85,14 @@ none differed from FastQC. How each number was taken is in the [benchmarks](/iri
 
 <div class="irit-install-grid">
 <div>
+
+### One command
+
+Linux and macOS, no sudo (into `~/.local/bin`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dzulfikar08/irit/main/scripts/install.sh | sh
+```
 
 ### Download a release
 
@@ -78,7 +108,7 @@ your `PATH`. The Linux builds are statically linked, so they run on old distribu
 ```sh
 cargo install \
   --git https://github.com/dzulfikar08/irit \
-  sheetgen leanqc isotable dblock
+  sheetgen leanqc isotable dblock seqplan irit-mcp gtdbprep
 ```
 
 Or run `cargo build --release` in a checkout; the binaries land in `target/release/`.
@@ -96,6 +126,7 @@ Or run `cargo build --release` in a checkout; the binaries land in `target/relea
 <li>[Introduction](/irit/introduction/): why these tools exist and the rules they follow.</li>
 <li>[Benchmarks](/irit/benchmarks/): every measurement, the machine and the test data.</li>
 <li>[Roadmap](/irit/roadmap/): what is done, what is next, and what is further out.</li>
+<li>Tested on real data: [an AI agent redoes published genome papers](/irit/research/paper-redo-kpn/) ([and a second](/irit/research/paper-redo-bd/)), [nanopore isolates in 8 GB](/irit/research/nanopore-laptop/), [metagenome to MAGs in 8 GB](/irit/research/mag-laptop/) and [how much sequencing depth is enough](/irit/research/coverage-depth/).</li>
 <li>[Two microbes, one dish](/irit/demos/competition/): an interactive teaching toy on how two species compete for one resource.</li>
 </ul>
 
