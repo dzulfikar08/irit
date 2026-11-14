@@ -938,7 +938,7 @@ pub struct FlyeParams {
     /// Estimated genome size, e.g. 5.5m. Needed for asm_coverage. Default: Flye estimates it.
     #[serde(default)]
     pub genome_size: Option<String>,
-    /// Use only the longest reads up to this coverage for the first (disjointig) stage, which caps memory on deep data; all reads are still used later. Needs genome_size. E.g. 50.
+    /// Use only the longest reads up to this coverage for the first (disjointig) stage, which caps memory on deep data; all reads are still used later. Needs genome_size; not with meta. E.g. 50.
     #[serde(default)]
     pub asm_coverage: Option<u32>,
     /// Threads (Flye's default is 1).
@@ -1009,6 +1009,9 @@ pub fn flye(ctx: &Ctx, p: &FlyeParams) -> Check<Invocation> {
     if let Some(c) = p.asm_coverage {
         if p.genome_size.is_none() {
             return v::invalid("asm_coverage", "needs genome_size (Flye refuses --asm-coverage without --genome-size)");
+        }
+        if p.meta {
+            return v::invalid("asm_coverage", "can't be combined with meta (Flye refuses --asm-coverage with --meta); leave it out");
         }
         v::range("asm_coverage", c, 1, 10_000)?;
         inv.opt("asm-coverage", c);
@@ -3716,6 +3719,7 @@ mod tests {
         assert_eq!(bad(json!({"reads": ["reads/notes.txt"]})).field, "reads");
         assert_eq!(bad(json!({"reads": ["reads/missing.fq"]})).field, "reads");
         assert_eq!(bad(json!({"asm_coverage": 50})).field, "asm_coverage"); // needs genome_size
+        assert_eq!(bad(json!({"asm_coverage": 50, "genome_size": "5m", "meta": true})).field, "asm_coverage");
         assert_eq!(bad(json!({"genome_size": "big"})).field, "genome_size");
         assert_eq!(bad(json!({"genome_size": "5mm"})).field, "genome_size");
         assert_eq!(bad(json!({"read_error": 3.0})).field, "read_error");
