@@ -61,6 +61,8 @@ What's done, what's next, and what's further out. Items move up as evidence come
       tool ([#4](https://github.com/dzulfikar08/irit/issues/4)), Shovill and leanqc outputs that change
       between runs ([#5](https://github.com/dzulfikar08/irit/issues/5), [#6](https://github.com/dzulfikar08/irit/issues/6)),
       so `replay.sh` reruns the isolate path from reads to species on its own.
+- [x] **fieldsheet**: an offline phone worksheet for sample metadata ([guide](tools/fieldsheet.md),
+      unreleased). Next: try it on a low-end Android phone in the field.
 
 ## Next
 
@@ -104,7 +106,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
       same consensus (#21). Three more isolates with small resistance plasmids: same STs and every
       resistance element, once Flye's `--meta` caught a 5 kb plasmid default mode missed; deep reads
       subsampled with `rasusa`; irit-mcp warns about plasmids Flye closed as several copies.
-      Next: a ligation-kit dataset, and a way to check read files against ENA/SRA MD5s.
+      Next: a ligation-kit dataset. Read files can now be checked against ENA's MD5s (`sheetgen verify`, unreleased).
 - [ ] **`dblock` additions**: GTDB-Tk split download (waits for GTDB-Tk's gPlace layout). Parallel
       downloads are built (0.5.0, `fetch --jobs`).
 - [ ] **Check the `irit-mcp` wrappers on a large machine**: Bakta with the full database, SPAdes
@@ -135,7 +137,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
       read mapping (`coverm_genome`) and *Klebsiella* typing (`kleborate`) are built (0.5.0).
       Still missing (both redos): virulence genes for other species (VirulenceFinder/VFDB), plasmid
       replicons (PlasmidFinder), ResFinder, *Salmonella* serotyping (SISTR/SeqSero2), a Kraken2
-      tool, clonal complexes, and checking read files against ENA/SRA MD5s.
+      tool and clonal complexes. (Checking read files against ENA MD5s: `sheetgen verify`, unreleased.)
 - [x] **How much depth is enough** ([write-up](research/coverage-depth.md)): on the paper's three
       *K. pneumoniae*, every Table 1 call held down to 15× (20× is a practical target, 2.5 times as
       many isolates per run as 50×); below that Shovill needs `gsize`, and irit-mcp warns when it didn't get one (#22).
@@ -143,9 +145,12 @@ What's done, what's next, and what's further out. Items move up as evidence come
       CoverM and MetaBAT2 in irit-mcp, then CheckM2 (`lowmem`), the GTDB ANI screen and isotable's
       MAG mode. A CPR-rich groundwater sample gave 23 bins (4 `high*`, 13 medium), 8 of them
       Patescibacteria, every step within 8 GB.
-- [ ] **Next for MAGs**: tree placement of unassigned bins on placement-lite (`classify_wf` needs
-      GTDB's reference MSA, which placement-lite leaves out); SemiBin2's pretrained models;
-      co-assembly within 8 GB for diverse, shallow samples; dereplication (galah) across samples.
+- [ ] **Next for MAGs**: built (unreleased): tree placement of unassigned bins on placement-lite
+      (`gtdbprep place`, with gPlace), SemiBin2 (`semibin2`: pretrained models fit 1.5 GiB, its
+      self-supervised training doesn't fit 8 GB), dereplication (`galah`), one genome × sample
+      abundance table (`coverm_abundance`) and co-occurrence statistics ([`cooccur`](tools/cooccur.md)).
+      Still open: co-assembly within 8 GB for diverse, shallow samples; SemiBin2's multi-sample mode;
+      a real multi-sample CPR series for `cooccur`.
 - [ ] **Instrument connection**: lab instruments run vendor software on dedicated (often older Windows)
       PCs, and labs usually connect them through a LIMS, which parses instrument exports or uses vendor
       drivers. So the practical route is the LIMS or the files instruments drop for it. Open standards exist (SiLA 2; LADS, an OPC UA companion specification for lab devices).
