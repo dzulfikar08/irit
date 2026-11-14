@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-11-14)
+
+New in irit-mcp: `assembly_stats`, `coverm_genome` (depth by read mapping), `kleborate` and `rasusa`
+(subsampling), and a warning for Flye contigs that hold a small plasmid several times. dblock
+downloads in parallel (`fetch --jobs`), and msascope reads gzip faster. Fixes from a second AI-agent
+paper redo (Amena et al. 2026, *E. coli* and *Salmonella* Kentucky, MRA e01429-25) and from three
+more nanopore isolates.
 
 ### irit-mcp
 - **`assembly_stats`**: QUAST-style assembly statistics (contigs, total length, largest contig, N50,

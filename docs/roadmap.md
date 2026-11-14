@@ -94,7 +94,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [ ] **`msascope` after the redesign** (built in 0.3.0–0.3.2: themes, names, hover card, colour
       schemes, hidden insert and gappy columns, tree panel, selection, export, sort and filter,
       motif search, annotation tracks, reference row, remembered between sessions, and annotation
-      tracks and the pinned row in figures; unreleased: gzip decoded on its own thread, BGZF in
+      tracks and the pinned row in figures; 0.5.0: gzip decoded on its own thread, BGZF in
       parallel): alignments larger than RAM.
 - [ ] **Nanopore isolates on a laptop**: `flye` and `medaka` tools in `irit-mcp` (0.4.0). One
       carbapenemase-producing *K. pneumoniae* gave the same ST, the same 49 AMRFinderPlus elements,
@@ -106,7 +106,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
       subsampled with `rasusa`; irit-mcp warns about plasmids Flye closed as several copies.
       Next: a ligation-kit dataset, and a way to check read files against ENA/SRA MD5s.
 - [ ] **`dblock` additions**: GTDB-Tk split download (waits for GTDB-Tk's gPlace layout). Parallel
-      downloads are built (unreleased, `fetch --jobs`).
+      downloads are built (0.5.0, `fetch --jobs`).
 - [ ] **Check the `irit-mcp` wrappers on a large machine**: Bakta with the full database, SPAdes
       through Shovill (the real-tools workflow uses SKESA). GTDB-Tk `classify_wf` has now run with
       R232 data for a genome the ANI screen assigns, through the small data folder `gtdbprep ani`
@@ -132,7 +132,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
       ([write-up](research/paper-redo-bd.md)). Still to do: more papers and lineages, and the
       hand-built comparison.
 - [ ] **Gaps the paper redo showed**: QUAST-style assembly stats (`assembly_stats`), coverage by
-      read mapping (`coverm_genome`) and *Klebsiella* typing (`kleborate`) are built (unreleased).
+      read mapping (`coverm_genome`) and *Klebsiella* typing (`kleborate`) are built (0.5.0).
       Still missing (both redos): virulence genes for other species (VirulenceFinder/VFDB), plasmid
       replicons (PlasmidFinder), ResFinder, *Salmonella* serotyping (SISTR/SeqSero2), a Kraken2
       tool, clonal complexes, and checking read files against ENA/SRA MD5s.
