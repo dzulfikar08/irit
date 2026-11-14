@@ -224,3 +224,68 @@ fn seqplan_over_stdio() {
     let out = Command::new("sh").arg(run_dir.join("replay.sh")).env("IRIT_BIN_DIR", &bin).current_dir(&work).output().unwrap();
     assert!(out.status.success(), "replay failed: {}", String::from_utf8_lossy(&out.stderr));
 }
+
+/// sheetgen verify and cooccur over MCP with the real binaries, then replay.
+#[test]
+fn reads_verify_and_cooccur_over_stdio() {
+    use std::io::Write;
+    let bin = bin_dir();
+    for b in ["sheetgen", "cooccur"] {
+        assert!(bin.join(format!("{b}{}", std::env::consts::EXE_SUFFIX)).is_file(), "build {b} too (cargo build -p {b})");
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let work = std::fs::canonicalize(tmp.path()).unwrap();
+    std::fs::create_dir_all(work.join("reads")).unwrap();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(b"@r1\nACGT\n+\nIIII\n@r2\nGGCC\n+\nIIII\n").unwrap();
+    let good = gz.finish().unwrap();
+    std::fs::write(work.join("reads/a_1.fastq.gz"), &good).unwrap();
+    let mut bad = good.clone();
+    let n = bad.len();
+    bad[n - 6] ^= 0xff; // the CRC
+    std::fs::write(work.join("reads/b_1.fastq.gz"), &bad).unwrap();
+
+    // eight samples, two genomes kept proportional
+    let mut t = String::from("Genome");
+    for s in 1..=8 {
+        t.push_str(&format!("\ts{s} Relative Abundance (%)"));
+    }
+    t.push('\n');
+    let x = [3.0, 9.0, 1.0, 7.0, 2.0, 12.0, 5.0, 4.0];
+    let other = [5.0, 1.0, 8.0, 2.0, 9.0, 3.0, 4.0, 6.0];
+    for (name, f) in [("g1", 1.0), ("g2", 2.0)] {
+        t.push_str(name);
+        for v in x {
+            t.push_str(&format!("\t{}", v * f));
+        }
+        t.push('\n');
+    }
+    for (i, name) in ["g3", "g4"].iter().enumerate() {
+        t.push_str(name);
+        for (j, v) in other.iter().enumerate() {
+            t.push_str(&format!("\t{}", v + ((i + j) % 3) as f64));
+        }
+        t.push('\n');
+    }
+    std::fs::write(work.join("abundance.tsv"), t).unwrap();
+
+    let mut c = Client::start(&work, &bin);
+    let r = c.call("reads_verify", json!({"paths": ["reads/a_1.fastq.gz"]}));
+    assert_eq!(r["isError"], false, "{r}");
+    assert_eq!(r["structuredContent"]["report"]["files"][0]["status"], "ok", "{r}");
+    let r = c.call("reads_verify", json!({"paths": ["reads"]}));
+    assert_eq!(r["isError"], true, "{r}");
+    assert_eq!(r["structuredContent"]["error"], "reads_have_problems", "{r}");
+    let statuses: Vec<&str> = r["structuredContent"]["report"]["files"].as_array().unwrap().iter().map(|f| f["status"].as_str().unwrap()).collect();
+    assert!(statuses.contains(&"corrupt"), "{statuses:?}");
+    let r = c.call("cooccur", json!({"table": "abundance.tsv", "output": "cooc/edges.tsv", "fdr": 0.5}));
+    assert_eq!(r["isError"], false, "{r}");
+    assert!(r["structuredContent"]["summary"].is_object(), "{r}");
+    assert!(std::fs::read_to_string(work.join("cooc/edges.tsv")).unwrap().contains("g1"), "{r}");
+    c.close();
+    let run_dir = work.join("irit-runs/test-run");
+    let out = Command::new("sh").arg(run_dir.join("replay.sh")).env("IRIT_BIN_DIR", &bin).current_dir(&work).output().unwrap();
+    // the second verify call failed on purpose; replay re-runs the ok calls
+    assert!(out.status.success(), "replay failed: {}\n{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
+}
+

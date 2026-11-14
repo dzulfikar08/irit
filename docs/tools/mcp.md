@@ -239,6 +239,31 @@ and `catalog` (extra catalog JSON).
 | `dblock_check` | | `report` |
 | `dblock_env` | | `env` (variable → path) and `shell` (export lines) |
 
+### `reads_verify`
+
+Runs [`sheetgen verify`](sheetgen.md) on read files or folders. It checks gzip integrity (every
+member, CRC and length), FASTQ structure, and MD5/SHA-256 against `md5` files or ENA (`ena`, network,
+opt-in; `runs` names the accession for files whose name has none). The result has the per-file
+report. The call is an error (`reads_have_problems`) when any file is corrupt, doesn't match, or is
+not listed, and the report is still there. The JSON report has timings, so `replay.sh` re-runs the
+check without comparing its output.
+
+### `cooccur`
+
+Runs [`cooccur`](cooccur.md) on a genome × sample table ([`coverm_abundance`](#coverm_abundance)'s
+output). Parameters: `table`, `output` (edge list TSV), `summary` (JSON; default next to the output),
+`measure`, `taxonomy` (GTDB-Tk summaries, for CPR labels), `method` (`rho` or `spearman`),
+`min_prevalence`, `fdr`, `min_stat`, `positive_only`, `seed` (default 1, so a replay matches). The
+result includes the summary, with the CPR–non-CPR pairs that pass.
+
+### `gtdbprep_place`
+
+Runs [`gtdbprep place`](gtdbprep.md): GTDB-Tk tree placement on the laptop data for genomes
+[`gtdbprep_ani`](#gtdbprep_ani) didn't assign. Parameters: `genome_dir`, `extension`, `work`,
+`skip_assigned` (gtdbprep_ani's work folder), `data_path` (or `$GTDBTK_DATA_PATH`), `env` (GTDB-Tk
+2.8.0 with gPlace, or `$GTDBPREP_ENV`), `max_memory` (default 6G), `cpus`. The result lists
+`place.tsv`'s rows. GTDB-Tk's logs and the gPlace call log are volatile.
+
 ### Third-party tools
 
 Eighteen tools wrap sixteen programs irit doesn't ship. Each one is pinned to an upstream version: its

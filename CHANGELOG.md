@@ -11,6 +11,8 @@
   by CheckM2 quality. 48 bins made 24 clusters in under a second.
 - **`coverm_abundance`**: several samples mapped to a set of genomes, one genome × sample table
   (relative abundance, mean depth, covered fraction, read count) for `cooccur`.
+- **`reads_verify`, `cooccur` and `gtdbprep_place`**: irit-mcp tools for `sheetgen verify`, `cooccur`
+  and `gtdbprep place`, with a stdio test that runs the first two with the real binaries and replays.
 - `coverm_contig` gains `bam_cache_dir`, to keep each sample's sorted BAM for SemiBin2.
 
 ### sheetgen

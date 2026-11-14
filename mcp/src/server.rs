@@ -21,8 +21,8 @@ dblock_* (reference databases); \
 plus the microbial isolate path with third-party tools: fastp (trimming), shovill (Illumina assembly), flye and \
 medaka (nanopore/PacBio long-read assembly and polishing), bakta (annotation), checkm2 (completeness/contamination), gtdbprep_ani and gtdbtk_classify_wf (taxonomy), mlst (sequence type), \
 amrfinder (AMRFinderPlus resistance genes), coverm_genome (isolate depth by read mapping) and kleborate (K. pneumoniae typing, virulence and resistance scores); and metagenomes to MAGs: megahit (assembly), coverm_contig (depth) and \
-metabat2 or semibin2 (bins), then checkm2, gtdbprep_ani/gtdbtk_classify_wf and isotable mode mag on the bins; across samples, galah (dereplication) \
-and coverm_abundance (each genome's abundance in each sample). Those need the program installed (Bioconda) and, for bakta, \
+metabat2 or semibin2 (bins), then checkm2, gtdbprep_ani (species) and gtdbprep_place (tree placement for the rest) and isotable mode mag on the bins; across samples, galah (dereplication), \
+coverm_abundance (each genome's abundance in each sample) and cooccur (genomes that rise and fall together). Check downloaded reads first with reads_verify. Those need the program installed (Bioconda) and, for bakta, \
 checkm2, gtdbtk_classify_wf and amrfinder, a database (dblock_env shows dblock-managed paths); they can run for \
 hours. Their results list `warnings` when the installed version isn't the one irit-mcp was checked against, and for warnings the tool printed that matter (read them). \
 Parameters are checked before anything runs; unknown parameters are refused, so read each tool's schema \
@@ -1100,6 +1100,80 @@ GTDB's server: ask the user). Returns per genome: whether the screen assigned it
         }
         v["data_path_for_classify"] = json!(work.join("gtdbtk_data"));
         Ok(CallToolResult::structured(v))
+    }
+
+    #[tool(description = "sheetgen verify (irit): check read files before analysis. Fully decompresses each gzip file (every member, \
+CRC and length), checks the FASTQ records, computes MD5 and SHA-256, and compares them with expected MD5s from md5sum files (md5) or \
+ENA (ena: network, ask the user first). Each file is ok, mismatch, corrupt (with the byte offset and record of the first problem) or \
+not_listed. Run it on downloaded reads before assembly: corrupt downloads can arrive without any download error. About 3-4 s per \
+500 MB file. Returns the per-file report; the call is an error when any file has a problem.")]
+    async fn reads_verify(&self, Parameters(params): Parameters<p::ReadsVerifyParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("reads_verify", &params, p::reads_verify(&self.cfg.ctx, &params)).await;
+        let report: Option<Value> = serde_json::from_str(&d.stdout_text()).ok();
+        match (self.envelope(&d), report) {
+            (Ok(mut v), Some(r)) => {
+                v["report"] = r;
+                Ok(CallToolResult::structured(v))
+            }
+            // sheetgen verify exits 1 when a file has a problem; its report is still the answer
+            (Err(_), Some(r)) if d.record.exit_status == Some(1) => {
+                let mut v = json!({"call_id": d.record.id, "run_id": self.cfg.run_id, "error": "reads_have_problems"});
+                v["message"] = json!("some read files are corrupt, don't match their expected MD5, or are not listed: see report.files[].status and problem");
+                v["report"] = r;
+                Ok(CallToolResult::structured_error(v))
+            }
+            (Ok(mut v), None) => {
+                v["error"] = json!("output_unreadable");
+                v["message"] = json!("sheetgen verify exited 0 but its JSON report could not be read");
+                v["note"] = json!("do not report the files as checked");
+                Ok(CallToolResult::structured_error(v))
+            }
+            (Err(e), None) => Ok(e),
+            (Err(e), Some(_)) => Ok(e),
+        }
+    }
+
+    #[tool(description = "cooccur (irit): which genomes rise and fall together across samples, from coverm_abundance's genome x sample \
+table. Centred log-ratio, then proportionality rho (default) or Spearman, seeded permutation p-values and Benjamini-Hochberg q-values; \
+with a GTDB-Tk taxonomy, Patescibacteria (CPR) are labelled and CPR-non-CPR pairs listed as host candidates. Needs at least 5 samples; \
+strong pairs need about 10-20 samples and weaker ones 20-40 (docs/tools/cooccur.md). Association only: not proof of interaction. \
+Seconds for hundreds of genomes. Returns the summary and the edge-list path.")]
+    async fn cooccur(&self, Parameters(params): Parameters<p::CooccurParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("cooccur", &params, p::cooccur(&self.cfg.ctx, &params)).await;
+        let summary_path = self.cfg.ctx.cwd.join(params.summary.clone().unwrap_or_else(|| format!("{}.summary.json", params.output.trim_end_matches(".tsv"))));
+        let edges = self.cfg.ctx.cwd.join(&params.output);
+        self.reply(d, |_, v| {
+            v["edges_file"] = json!(edges);
+            match std::fs::read_to_string(&summary_path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+                Some(s) => v["summary"] = s,
+                None => v["summary_unreadable"] = json!(summary_path),
+            }
+        })
+    }
+
+    #[tool(description = "gtdbprep place (irit): GTDB tree placement on the laptop data (dblock gtdbtk-r232-placement-lite), for genomes \
+gtdbprep_ani could not assign to a species. Runs GTDB-Tk 2.8.0 identify, align --skip_gtdb_refs and classify without the ANI screen, with \
+gPlace as the placer under max_memory (6G kept every R232 tree at about 5 GiB), and checks that gPlace made every placement. Needs GTDB-Tk \
+2.8.0 with gPlace (env or $GTDBPREP_ENV). Pass gtdbprep_ani's work folder as skip_assigned so assigned genomes keep the screen's call. \
+Minutes per genome. Returns place.tsv's rows (genome, classification, method).")]
+    async fn gtdbprep_place(&self, Parameters(params): Parameters<p::GtdbprepPlaceParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("gtdbprep_place", &params, p::gtdbprep_place(&self.cfg.ctx, &params)).await;
+        let table = self.cfg.ctx.cwd.join(&params.work).join("place.tsv");
+        self.reply(d, |_, v| {
+            v["place_tsv"] = json!(table);
+            if let Ok(text) = std::fs::read_to_string(&table) {
+                let mut lines = text.lines();
+                let head: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
+                let rows: Vec<Value> = lines
+                    .filter(|l| !l.is_empty())
+                    .map(|l| {
+                        let m: serde_json::Map<String, Value> = head.iter().zip(l.split('\t')).map(|(k, x)| (k.to_string(), json!(x))).collect();
+                        Value::Object(m)
+                    })
+                    .collect();
+                v["genomes"] = json!(rows);
+            }
+        })
     }
 
     #[tool(description = "Show a run record: by default a summary of every call (tool, status, version, error, warnings, \

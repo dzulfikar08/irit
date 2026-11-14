@@ -550,6 +550,261 @@ pub fn assembly_stats(ctx: &Ctx, p: &AssemblyStatsParams) -> Check<Invocation> {
     Ok(inv)
 }
 
+// ---------- sheetgen verify ----------
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadsVerifyParams {
+    /// Read files, or folders to scan (recursively) for FASTQ files.
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Sample sheets whose FASTQ columns name files to check too.
+    #[serde(default)]
+    pub sheets: Vec<String>,
+    /// Expected MD5s in `md5sum` format (`<md5>  <file>`), e.g. a provider's MD5SUMS.
+    #[serde(default)]
+    pub md5: Vec<String>,
+    /// Look up expected MD5s and sizes at ENA for the run accession (ERR/SRR/DRR) in each file name. Network use: ask the user first.
+    #[serde(default)]
+    pub ena: bool,
+    /// Run accession for files whose name has none, as `file=accession`, e.g. `reads/AHB29_ont.fastq.gz=ERR15424439`.
+    #[serde(default)]
+    pub runs: Vec<String>,
+    /// Files checked at the same time (each uses about four threads). Default 1.
+    #[serde(default)]
+    pub jobs: Option<u32>,
+}
+
+/// `sheetgen verify --json`: gzip and FASTQ integrity plus MD5/SHA-256 against expected sums
+/// (sheetgen/src/verify.rs). Exits 1 when any file has a problem; the report is still on stdout.
+pub fn reads_verify(ctx: &Ctx, p: &ReadsVerifyParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = Invocation::new("sheetgen");
+    inv.args.push("verify".into());
+    if p.paths.is_empty() && p.sheets.is_empty() {
+        return v::invalid("paths", "give read files or folders (paths), or sample sheets (sheets)");
+    }
+    for s in &p.sheets {
+        inv.inputs.push(v::existing_file(cwd, "sheets", s)?);
+        inv.opt("sheet", s);
+    }
+    for m in &p.md5 {
+        inv.inputs.push(v::existing_file(cwd, "md5", m)?);
+        inv.opt("md5", m);
+    }
+    for r in &p.runs {
+        let Some((file, acc)) = r.split_once('=') else {
+            return v::invalid("runs", format!("{r}: write it as file=accession"));
+        };
+        let ok = acc.len() > 3 && ["ERR", "SRR", "DRR"].iter().any(|x| acc.starts_with(x)) && acc[3..].chars().all(|c| c.is_ascii_digit());
+        if file.is_empty() || !ok {
+            return v::invalid("runs", format!("{r}: write it as file=accession, with an ERR/SRR/DRR run accession"));
+        }
+        inv.opt("run", r);
+    }
+    inv.flag("ena", p.ena);
+    if let Some(j) = p.jobs {
+        v::range("jobs", j, 1, 64)?;
+        inv.opt("jobs", j);
+    }
+    inv.flag("json", true);
+    for path in &p.paths {
+        let full = cwd.join(path);
+        if !full.exists() {
+            return v::invalid("paths", format!("{path} does not exist"));
+        }
+        inv.inputs.push(full);
+    }
+    // The JSON report has timings, so replay doesn't compare it; it re-runs the check (exit status).
+    inv.positionals(&p.paths);
+    Ok(inv)
+}
+
+// ---------- cooccur ----------
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum CooccurMethod {
+    /// Proportionality on CLR values (Lovell et al. 2015). The default.
+    Rho,
+    /// Rank correlation of CLR values (about 10 times slower).
+    Spearman,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CooccurParams {
+    /// Genome x sample table: coverm_abundance's output (or a plain TSV, genome first, one column per sample). Needs at least 5 samples; finding anything needs many more (about 20-40, docs/tools/cooccur.md).
+    pub table: String,
+    /// Which CoverM measure to use when the table has several: relative_abundance, count, mean, trimmed_mean, reads_per_base, rpkm or tpm.
+    #[serde(default)]
+    pub measure: Option<String>,
+    /// Taxonomy tables: GTDB-Tk summaries (user_genome, classification) or two columns (genome, lineage); Patescibacteria are labelled CPR.
+    #[serde(default)]
+    pub taxonomy: Vec<String>,
+    /// Statistic. Default rho.
+    #[serde(default)]
+    pub method: Option<CooccurMethod>,
+    /// Keep genomes present in at least this fraction of samples. Default 0.5.
+    #[serde(default)]
+    pub min_prevalence: Option<f64>,
+    /// Pairs with q at or below this pass. Default 0.05.
+    #[serde(default)]
+    pub fdr: Option<f64>,
+    /// Pairs must also reach this statistic (absolute value), e.g. 0.6. Default 0.
+    #[serde(default)]
+    pub min_stat: Option<f64>,
+    /// Only positive association (two-sided by default).
+    #[serde(default)]
+    pub positive_only: bool,
+    /// Random seed. Default 1: the same call gives the same output.
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// Edge list TSV to write, inside the root.
+    pub output: String,
+    /// Summary JSON to write, inside the root. Default: the output name with .summary.json.
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// Replace existing outputs. Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// `cooccur`: co-occurrence of genome abundances (cooccur/src/main.rs).
+pub fn cooccur(ctx: &Ctx, p: &CooccurParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = Invocation::new("cooccur");
+    inv.inputs.push(v::existing_file(cwd, "table", &p.table)?);
+    if let Some(m) = &p.measure {
+        v::text("measure", m)?;
+        inv.opt("measure", m);
+    }
+    for t in &p.taxonomy {
+        inv.inputs.push(v::existing_file(cwd, "taxonomy", t)?);
+        inv.opt("taxonomy", t);
+    }
+    if let Some(m) = p.method {
+        inv.opt("method", if m == CooccurMethod::Rho { "rho" } else { "spearman" });
+    }
+    for (name, field, val) in [("min-prevalence", "min_prevalence", p.min_prevalence), ("fdr", "fdr", p.fdr)] {
+        if let Some(x) = val {
+            if !x.is_finite() || !(0.0..=1.0).contains(&x) {
+                return v::invalid(field, "a fraction between 0 and 1");
+            }
+            inv.opt(name, x);
+        }
+    }
+    if let Some(x) = p.min_stat {
+        if !x.is_finite() || !(0.0..=1.0).contains(&x) {
+            return v::invalid("min_stat", "between 0 and 1");
+        }
+        inv.opt("min-stat", x);
+    }
+    if p.positive_only {
+        inv.opt("alternative", "greater");
+    }
+    inv.opt("seed", p.seed.unwrap_or(1));
+    let out = v::output_file(ctx, "output", &p.output, p.overwrite)?;
+    let summary_text = p.summary.clone().unwrap_or_else(|| format!("{}.summary.json", p.output.trim_end_matches(".tsv")));
+    let summary = v::output_file(ctx, "summary", &summary_text, p.overwrite)?;
+    inv.opt("output", &p.output);
+    inv.opt("summary", &summary_text);
+    inv.expect = vec![vec![out.clone()], vec![summary.clone()]];
+    inv.outputs.extend([out, summary]);
+    inv.positionals(std::slice::from_ref(&p.table));
+    Ok(inv)
+}
+
+// ---------- gtdbprep place ----------
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GtdbprepPlaceParams {
+    /// Folder of genome FASTA files (e.g. bins). The file name is the genome's name.
+    pub genome_dir: String,
+    /// Extension of the genome files. Default fna.
+    #[serde(default)]
+    pub extension: Option<String>,
+    /// Work folder, inside the root: GTDB-Tk's identify/, align/, classify/, plus place.tsv and place.json. Must be new or empty, or an earlier place run's (with overwrite).
+    pub work: String,
+    /// Allow a work folder from an earlier place run (its files are replaced). Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// gtdbprep_ani's work folder: genomes its screen assigned are not placed and keep the screen's call.
+    #[serde(default)]
+    pub skip_assigned: Option<String>,
+    /// GTDB-Tk reference data with the placement trees: dblock's gtdbtk-r232-placement-lite. Default: $GTDBTK_DATA_PATH as the server started with.
+    #[serde(default)]
+    pub data_path: Option<String>,
+    /// Environment with GTDB-Tk 2.8.0 and gPlace. Default: $GTDBPREP_ENV as the server started with.
+    #[serde(default)]
+    pub env: Option<String>,
+    /// gPlace's memory cap, e.g. 6G (kept every R232 tree at about 5 GiB). Default 6G.
+    #[serde(default)]
+    pub max_memory: Option<String>,
+    /// CPUs. Default 4.
+    #[serde(default)]
+    pub cpus: Option<u32>,
+}
+
+/// `gtdbprep place`: identify, align --skip_gtdb_refs and classify without the ANI screen, with
+/// gPlace as the placer (gtdbprep/src/place.rs).
+pub fn gtdbprep_place(ctx: &Ctx, p: &GtdbprepPlaceParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = Invocation::new("gtdbprep");
+    // GTDB-Tk's logs and gPlace's call log carry times.
+    inv.volatile = &[".log", ".json", ".gz"];
+    inv.args.push("place".into());
+    let dir = v::existing_dir(cwd, "genome_dir", &p.genome_dir)?;
+    let ext = p.extension.as_deref().unwrap_or("fna");
+    v::extension("extension", ext)?;
+    let files = v::files_with_extension(&dir, ext);
+    if files.is_empty() {
+        return v::invalid("genome_dir", format!("no *.{} files in {}; set extension (e.g. fa)", ext.trim_start_matches('.'), p.genome_dir));
+    }
+    inv.inputs.extend(files);
+    inv.opt("genomes", &p.genome_dir);
+    inv.opt("extension", ext);
+    if let Some(a) = &p.skip_assigned {
+        let d = v::existing_dir(cwd, "skip_assigned", a)?;
+        if !d.join("assigned.json").is_file() {
+            return v::invalid("skip_assigned", format!("{a} has no assigned.json; give gtdbprep_ani's work folder"));
+        }
+        inv.inputs.push(d.join("assigned.json"));
+        inv.opt("skip-assigned", a);
+    }
+    let data = match (&p.data_path, ctx.var("GTDBTK_DATA_PATH")) {
+        (Some(d), _) => d.clone(),
+        (None, Some(d)) => d.to_string_lossy().into_owned(),
+        (None, None) => return v::invalid("data_path", "give data_path (dblock's gtdbtk-r232-placement-lite) or start the server with GTDBTK_DATA_PATH"),
+    };
+    v::existing_dir(cwd, "data_path", &data)?;
+    inv.opt("data", &data);
+    if let Some(e) = &p.env {
+        v::existing_dir(cwd, "env", e)?;
+        inv.opt("env", e);
+    } else if let Some(e) = ctx.var("GTDBPREP_ENV").filter(|x| !x.is_empty()) {
+        // given as a flag so the command says which environment
+        inv.opt("env", e.to_string_lossy());
+    }
+    if let Some(m) = &p.max_memory {
+        let ok = m.len() > 1 && m.ends_with(['G', 'M', 'g', 'm']) && m[..m.len() - 1].parse::<u32>().is_ok_and(|n| n > 0);
+        if !ok {
+            return v::invalid("max_memory", format!("{m:?}: give it like 6G or 5000M"));
+        }
+        inv.opt("max-memory", m);
+    }
+    if let Some(c) = p.cpus {
+        v::range("cpus", c, 1, 1024)?;
+        inv.opt("cpus", c);
+    }
+    let work = v::output_dir(ctx, "work", &p.work, Some(p.overwrite), true)?;
+    inv.outputs.push(work.clone());
+    inv.opt("work", &p.work);
+    inv.expect = vec![vec![work.join("place.tsv")]];
+    Ok(inv)
+}
+
 // ---------- dblock ----------
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -788,6 +1043,32 @@ mod tests {
 
     fn parse<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> T {
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn verify_cooccur_and_place_args() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        std::fs::create_dir_all(cx.cwd.join("reads")).unwrap();
+        std::fs::write(cx.cwd.join("reads/a_1.fastq.gz"), b"x").unwrap();
+        std::fs::write(cx.cwd.join("MD5SUMS"), b"x").unwrap();
+        let v = reads_verify(&cx, &parse(serde_json::json!({"paths": ["reads"], "md5": ["MD5SUMS"], "runs": ["reads/a_1.fastq.gz=ERR15424439"], "ena": true}))).unwrap();
+        assert_eq!(v.args, ["verify", "--md5=MD5SUMS", "--run=reads/a_1.fastq.gz=ERR15424439", "--ena", "--json", "--", "reads"]);
+        assert_eq!(reads_verify(&cx, &parse(serde_json::json!({}))).unwrap_err().field, "paths");
+        assert_eq!(reads_verify(&cx, &parse(serde_json::json!({"paths": ["reads"], "runs": ["a=XYZ1"]}))).unwrap_err().field, "runs");
+
+        std::fs::write(cx.cwd.join("ab.tsv"), b"Genome\ts1\n").unwrap();
+        let c = cooccur(&cx, &parse(serde_json::json!({"table": "ab.tsv", "output": "cooc/edges.tsv", "positive_only": true}))).unwrap();
+        assert_eq!(c.args, ["--alternative=greater", "--seed=1", "--output=cooc/edges.tsv", "--summary=cooc/edges.summary.json", "--", "ab.tsv"]);
+        assert_eq!(cooccur(&cx, &parse(serde_json::json!({"table": "ab.tsv", "output": "e.tsv", "fdr": 2.0}))).unwrap_err().field, "fdr");
+
+        std::fs::create_dir_all(cx.cwd.join("bins")).unwrap();
+        std::fs::write(cx.cwd.join("bins/b1.fa"), b">c\nACGT\n").unwrap();
+        std::fs::create_dir_all(cx.cwd.join("gtdb")).unwrap();
+        let pl = gtdbprep_place(&cx, &parse(serde_json::json!({"genome_dir": "bins", "extension": "fa", "work": "place", "data_path": "gtdb", "max_memory": "6G"}))).unwrap();
+        assert_eq!(pl.args, ["place", "--genomes=bins", "--extension=fa", "--data=gtdb", "--max-memory=6G", "--work=place"]);
+        assert_eq!(gtdbprep_place(&cx, &parse(serde_json::json!({"genome_dir": "bins", "extension": "fa", "work": "p", "data_path": "gtdb", "max_memory": "lots"}))).unwrap_err().field, "max_memory");
+        assert_eq!(gtdbprep_place(&cx, &parse(serde_json::json!({"genome_dir": "bins", "extension": "fa", "work": "p"}))).unwrap_err().field, "data_path");
     }
 
     #[test]
