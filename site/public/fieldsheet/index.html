@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fieldsheet</title>
+<meta name="description" content="Offline worksheet for recording sample metadata in the field. Data stays on the device.">
+<meta name="theme-color" content="#f6f4ef" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#151a26" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <button id="back" class="icon" type="button" hidden>&larr;</button>
+  <h1 id="title">fieldsheet</h1>
+  <button id="lang" class="chip" type="button">ID</button>
+</header>
+<main id="app" tabindex="-1"></main>
+<div id="toast" role="status" aria-live="polite"></div>
+<noscript><p class="pad">fieldsheet needs JavaScript.</p></noscript>
+<script src="app.js"></script>
+</body>
+</html>

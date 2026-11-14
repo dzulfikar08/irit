@@ -14,6 +14,7 @@
 - [irit-mcp: tools for AI agents](tools/mcp.md)
 - [gtdbprep: GTDB-Tk without the 100 GB download](tools/gtdbprep.md)
 - [msascope: large alignment viewer](tools/msascope.md)
+- [fieldsheet: sample worksheet for the field](tools/fieldsheet.md)
 
 # Results
 

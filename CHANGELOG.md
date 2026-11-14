@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### fieldsheet (new)
+- An offline web app, installable on a phone, for recording sample metadata in the field:
+  projects, automatic sample IDs, range checks, GPS with a coarse or off option, photos kept on the
+  device, CSV export with `sample` first for sheetgen and isotable, JSON backup and import, English
+  and Bahasa Indonesia. At https://dzulfikar08.github.io/irit/fieldsheet/.
+
 ## 0.5.0 (2026-11-14)
 
 New in irit-mcp: `assembly_stats`, `coverm_genome` (depth by read mapping), `kleborate` and `rasusa`
