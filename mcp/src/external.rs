@@ -2935,9 +2935,14 @@ pub struct CovermContigParams {
     /// Contigs FASTA (plain or gzip), e.g. MEGAHIT's final.contigs.fa.
     pub reference: String,
     /// Read 1 FASTQ files (plain or gzip), one per sample, paired with r2 in order. Each pair is a column of coverage.
+    #[serde(default)]
     pub r1: Vec<String>,
     /// Read 2 FASTQ files, as many as r1.
+    #[serde(default)]
     pub r2: Vec<String>,
+    /// Single-end FASTQ files, one per sample (ENA serves some runs only as single-end). Each is a column of coverage, after the paired samples.
+    #[serde(default)]
+    pub single: Vec<String>,
     /// Output table (TSV), inside the root. For binning, name it e.g. `<sample>.depth.tsv` and use methods ["metabat"].
     pub output: String,
     /// Replace an existing output. Default false.
@@ -2977,7 +2982,9 @@ pub fn coverm_contig(ctx: &Ctx, p: &CovermContigParams) -> Check<Invocation> {
     v::sequence_file(&reference, "reference", &p.reference, Seq::Fasta)?;
     inv.inputs.push(reference.clone());
     inv.opt("reference", &p.reference);
-    v::non_empty_list("r1", &p.r1)?;
+    if p.r1.is_empty() && p.single.is_empty() {
+        return v::invalid("r1", "give paired reads (r1 and r2) and/or single-end reads (single)");
+    }
     read_pairs(&p.r1, &p.r2)?;
     let mut reads = Vec::new();
     for (a, b) in p.r1.iter().zip(&p.r2) {
@@ -2990,6 +2997,16 @@ pub fn coverm_contig(ctx: &Ctx, p: &CovermContigParams) -> Check<Invocation> {
             inv.inputs.push(path);
             reads.push(list_item(value));
         }
+    }
+    let mut singles = Vec::new();
+    for value in &p.single {
+        let path = v::existing_file(cwd, "single", value)?;
+        v::sequence_file(&path, "single", value, Seq::Fastq)?;
+        if inv.inputs.contains(&path) {
+            return v::invalid("single", format!("{value} is given twice"));
+        }
+        inv.inputs.push(path);
+        singles.push(list_item(value));
     }
     let out = v::output_file(ctx, "output", &p.output, p.overwrite)?;
     if inv.inputs.contains(&out) {
@@ -3023,7 +3040,7 @@ pub fn coverm_contig(ctx: &Ctx, p: &CovermContigParams) -> Check<Invocation> {
     if let Some(d) = &p.bam_cache_dir {
         let dir = v::output_dir(ctx, "bam_cache_dir", d, None, true)?;
         let mut bams: Vec<PathBuf> = Vec::new();
-        for r1 in &p.r1 {
+        for r1 in p.r1.iter().chain(&p.single) {
             let bam = coverm_cached_bam(&dir, &p.reference, r1);
             if bams.contains(&bam) {
                 return v::invalid("bam_cache_dir", format!("two read 1 files are named {:?}; CoverM would cache both samples' BAMs as one file", bam.file_name().unwrap_or_default()));
@@ -3046,8 +3063,14 @@ pub fn coverm_contig(ctx: &Ctx, p: &CovermContigParams) -> Check<Invocation> {
         inv.args.push("--methods".into());
         inv.args.extend(p.methods.iter().map(|m| m.name().to_string()));
     }
-    inv.args.push("--coupled".into());
-    inv.args.extend(reads);
+    if !reads.is_empty() {
+        inv.args.push("--coupled".into());
+        inv.args.extend(reads);
+    }
+    if !singles.is_empty() {
+        inv.args.push("--single".into());
+        inv.args.extend(singles);
+    }
     Ok(inv)
 }
 
@@ -4544,6 +4567,13 @@ mod tests {
                 "reads/-b_2.fq",
             ]
         );
+        // single-end samples, alone or after paired ones
+        write(d.path(), "reads/se.fq", "@a\nACGT\n+\nIIII\n");
+        let se = coverm_contig(&cx, &parse(json!({"reference": "asm/final.contigs.fa", "single": ["reads/se.fq"], "output": "depth/se.tsv"}))).unwrap();
+        assert_eq!(&se.args[se.args.len() - 2..], ["--single", "reads/se.fq"]);
+        let both = coverm_contig(&cx, &parse(json!({"reference": "asm/final.contigs.fa", "r1": ["reads/a_1.fq"], "r2": ["reads/a_2.fq"], "single": ["reads/se.fq"], "output": "depth/b.tsv"}))).unwrap();
+        assert!(both.args.ends_with(&["--coupled".into(), "reads/a_1.fq".into(), "reads/a_2.fq".into(), "--single".into(), "reads/se.fq".into()]), "{:?}", both.args);
+        assert_eq!(coverm_contig(&cx, &parse(json!({"reference": "asm/final.contigs.fa", "output": "depth/n.tsv"}))).unwrap_err().field, "r1");
         let bad = |j: serde_json::Value| coverm_contig(&cx, &parse(j)).unwrap_err();
         let base = json!({"reference": "asm/final.contigs.fa", "r1": ["reads/a_1.fq"], "r2": ["reads/a_2.fq"], "output": "d.tsv"});
         let with = |k: &str, v: serde_json::Value| {

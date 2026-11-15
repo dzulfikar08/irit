@@ -8,6 +8,7 @@
   CheckM2 and galah. On three 0.5 Gb Crystal Geyser time-series samples it fitted in 8 GB (4.3 GiB,
   48 min) and binned as well as the pretrained `global` model, which takes about 20 s per sample.
   The real-tools workflow runs it on the mock.
+- `coverm_contig` takes single-end reads (`single`), for runs ENA serves unpaired.
 
 ### cooccur
 - **Tested on real data** ([write-up](docs/research/cooccur-real.md)): on 128 supragingival-plaque and

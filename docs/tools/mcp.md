@@ -853,7 +853,8 @@ MetaBAT's own `jgi_summarize_bam_contig_depths` does.
 | Parameter | Type | Meaning |
 |---|---|---|
 | `reference` | file (required) | Contigs, FASTA: MEGAHIT's `final.contigs.fa`. |
-| `r1`, `r2` | lists of files (required) | One read pair per sample. Each pair is a column; more samples help binning (differential coverage). |
+| `r1`, `r2` | lists of files | One read pair per sample. Each pair is a column; more samples help binning (differential coverage). |
+| `single` | list of files | Single-end FASTQ, one per sample (ENA serves some runs only that way); a column each, after the pairs. Give `r1`/`r2`, `single`, or both. |
 | `output` | file (required) | The table (TSV). |
 | `mapper` | `strobealign` (default), `minimap2-sr`, `bwa-mem` | The aligner CoverM runs. |
 | `methods` | list | `mean` (CoverM's default), `trimmed_mean`, `covered_fraction`, `covered_bases`, `variance`, `length`, `count`, `reads_per_base`, `rpkm`, `tpm`, or `metabat` on its own. |
@@ -1043,8 +1044,9 @@ each step under an 8 GB no-swap cap, 6 threads, on three filtrate samples of one
 Geyser time series, BioProject PRJNA297582 (SRR2638367, SRR2638368, SRR2638369: "filtrate 05", "06"
 and "07"). Each run was read from ENA with its MD5 checked and cut to 0.5 Gb with `rasusa` (seed 1):
 3.49-3.51 million reads per sample. ENA serves these runs as unpaired reads (every read `/1`), and
-`coverm_contig` takes pairs, so CoverM 0.8.0 was run by hand with `--single` for the depths and BAMs
-(the same `contig` subcommand, methods and BAM cache); everything else went through irit-mcp.
+`coverm_contig` then took pairs only, so CoverM 0.8.0 was run by hand with `--single` for the depths
+and BAMs (the same `contig` subcommand, methods and BAM cache); everything else went through
+irit-mcp. `coverm_contig` has taken `single` since.
 
 | Step | Wall | Peak (cgroup) | Result |
 |---|---|---|---|
@@ -1626,8 +1628,6 @@ run but does not carry the data.
   pretrained models and multi-sample binning of three 0.5 Gb samples did (see
   [Multi-sample binning](#multi-sample-binning-semibin2_concatenate-and-multi)). Its training
   settings are not offered.
-- `coverm_contig` takes read pairs only, so unpaired reads (ENA serves some older runs that way)
-  need CoverM run by hand (`--single`) for depths and the BAMs of `semibin2`.
 - galah takes one CheckM2 report; bins checked in several CheckM2 batches need their reports joined
   by hand first.
 - A long Bakta or GTDB-Tk call blocks until it ends; there is no progress reporting or
