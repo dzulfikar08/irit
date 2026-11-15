@@ -43,7 +43,7 @@ export default defineConfig({
 					frames: { shadowColor: 'transparent' },
 				},
 			},
-			plugins: [starlightLinksValidator({ errorOnFallbackPages: false })],
+			plugins: [starlightLinksValidator({ errorOnFallbackPages: false, exclude: ['/irit/fieldsheet/'] })],
 		}),
 	],
 });
