@@ -42,11 +42,11 @@ fn coverm_table_edges_and_summary() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let e = std::fs::read_to_string(&edges).unwrap();
     let mut lines = e.lines();
-    assert_eq!(lines.next().unwrap(), "genome_a\tgenome_b\trho\tp\tq\tpermutations\tn_both\tlabel_a\tlabel_b\tphylum_a\tphylum_b");
+    assert_eq!(lines.next().unwrap(), "genome_a\tgenome_b\trho\tp\tq\tpermutations\tn_both\tlabel_a\tlabel_b\tphylum_a\tphylum_b\tpasses");
     let top: Vec<&str> = lines.next().unwrap().split('\t').collect();
     assert_eq!(&top[..2], ["bin.1", "bin.2"]);
     assert!(top[2].parse::<f64>().unwrap() > 0.99);
-    assert_eq!(&top[6..], ["6", "CPR", "non-CPR", "p__Patescibacteriota", "p__Pseudomonadota"]);
+    assert_eq!(&top[6..], ["6", "CPR", "non-CPR", "p__Patescibacteriota", "p__Pseudomonadota", "yes"]);
 
     let s: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&summary).unwrap()).unwrap();
     assert_eq!(s["measure"], "Read Count");

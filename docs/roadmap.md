@@ -150,7 +150,9 @@ What's done, what's next, and what's further out. Items move up as evidence come
       self-supervised training doesn't fit 8 GB), dereplication (`galah`), one genome × sample
       abundance table (`coverm_abundance`) and co-occurrence statistics ([`cooccur`](tools/cooccur.md)).
       Still open: co-assembly within 8 GB for diverse, shallow samples; SemiBin2's multi-sample mode;
-      a real multi-sample CPR series for `cooccur`.
+      a MAG-based, strain-level oral or water series for `cooccur`. A first real test
+      ([write-up](research/cooccur-real.md)) on 128 plaque and 136 tongue profiles did not recover
+      TM7's cultured host: the association came out negative (rho −0.25), partly through uneven zeros.
 - [ ] **Instrument connection**: lab instruments run vendor software on dedicated (often older Windows)
       PCs, and labs usually connect them through a LIMS, which parses instrument exports or uses vendor
       drivers. So the practical route is the LIMS or the files instruments drop for it. Open standards exist (SiLA 2; LADS, an OPC UA companion specification for lab devices).

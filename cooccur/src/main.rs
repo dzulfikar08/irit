@@ -249,6 +249,19 @@ fn analyse(t: &Table, o: &Opts, lineages: Option<&HashMap<String, String>>) -> R
     if n < 20 {
         warnings.push(format!("only {n} samples: with fewer than 20, only very strong associations pass (see the guide's simulation)"));
     }
+    // How unevenly the zeros fall across samples. Each log-ratio is taken against a sample's mean
+    // log, which falls as its zeros (replaced by the pseudocount) rise; on HMP oral profiles that
+    // reference followed the zero count at r = -0.95 and turned a near-zero association negative
+    // (docs/research/cooccur-real.md).
+    let zero_share: Vec<f64> = (0..n).map(|s| present.iter().filter(|row| !row[s]).count() as f64 / present.len().max(1) as f64).collect();
+    let (zmin, zmax) = zero_share.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &x| (a.min(x), b.max(x)));
+    if !present.is_empty() && zmax - zmin > 0.3 {
+        warnings.push(format!(
+            "the share of kept genomes absent per sample ranges from {:.0}% to {:.0}%: log-ratios then partly follow each sample's zero count (often sequencing depth or community type), which can make pairs look associated or anti-associated; compare with a run on samples of similar depth",
+            100.0 * zmin,
+            100.0 * zmax
+        ));
+    }
     if lineages.is_some() {
         let missing = labels.iter().filter(|l| l.0 == "unclassified").count();
         if missing > 0 {
@@ -278,20 +291,22 @@ fn ordered<'a>(a: &'a Analysis, o: &Opts, all: bool) -> Vec<&'a Pair> {
 }
 
 fn write_edges(w: &mut dyn Write, t: &Table, a: &Analysis, o: &Opts, all: bool) -> Result<()> {
-    writeln!(w, "genome_a\tgenome_b\t{}\tp\tq\tpermutations\tn_both\tlabel_a\tlabel_b\tphylum_a\tphylum_b", method_name(o.test.method))?;
+    writeln!(w, "genome_a\tgenome_b\t{}\tp\tq\tpermutations\tn_both\tlabel_a\tlabel_b\tphylum_a\tphylum_b\tpasses", method_name(o.test.method))?;
     for p in ordered(a, o, all) {
         let (la, pa) = &a.labels[p.i];
         let (lb, pb) = &a.labels[p.j];
         writeln!(
             w,
-            "{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t{la}\t{lb}\t{pa}\t{pb}",
+            "{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t{la}\t{lb}\t{pa}\t{pb}\t{}",
             t.genomes[a.kept[p.i]],
             t.genomes[a.kept[p.j]],
             p.stat,
             num(p.p),
             num(p.q),
             p.perms,
-            a.n_both(p)
+            a.n_both(p),
+            // q is printed rounded, so a pair at q 0.05003 would read as passing at 0.05
+            if a.passes(p, o) { "yes" } else { "no" }
         )?;
     }
     Ok(())

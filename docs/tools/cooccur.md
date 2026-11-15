@@ -128,6 +128,13 @@ by the strength of the statistic:
 | `n_both` | Samples where both genomes are present (raw value above zero and at least `--min-abundance`). |
 | `label_a`, `label_b` | `CPR`, `non-CPR` or `unclassified` (no lineage or no phylum), with a taxonomy; empty without one. |
 | `phylum_a`, `phylum_b` | The `p__` rank of each lineage. |
+| `passes` | `yes` when the pair passes `--fdr` and `--min-stat`. Use it rather than the printed `q`, which is rounded: with `--all-pairs`, a pair at q 0.05003 prints as `0.0500`. |
+
+**On real data, read the warnings.** A warning says when the share of genomes absent per sample
+varies a lot (by more than 30 points). Each log-ratio is taken against a sample's mean log, which
+falls as its zeros rise. On human oral profiles that reference followed each sample's zero count at
+r = −0.95, and a known CPR–host pair came out negatively associated
+([cooccur on real data](../research/cooccur-real.md)).
 
 The summary (standard error, and `--summary` as JSON) gives the samples, genomes kept and dropped,
 the pseudocount and how many zeros it replaced, the settings, pairs tested and passing (positive and

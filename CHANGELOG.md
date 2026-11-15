@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### cooccur
+- **Tested on real data** ([write-up](docs/research/cooccur-real.md)): on 128 supragingival-plaque and
+  136 tongue HMP MetaPhlAn2 profiles, Saccharibacteria (TM7) and their cultured host *Actinomyces
+  odontolyticus* came out negatively associated (rho −0.25 in plaque), not positively; the
+  shuffled-sample control was nominal (4.86–5.00 % of null pairs at p ≤ 0.05). Co-occurrence alone
+  doesn't find this host.
+- A `passes` column in the edge list (the printed q is rounded), and a warning when the share of
+  absent genomes differs a lot between samples, which pushes log-ratio associations around.
+
 ## 0.6.0 (2026-11-15)
 
 New: the rest of a metagenome-to-MAG study on a laptop: SemiBin2 binning, galah dereplication, a

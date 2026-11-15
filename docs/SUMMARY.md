@@ -38,6 +38,7 @@
 - [How much sequencing is enough?](research/coverage-depth.md)
 - [Metagenome to MAGs in 8 GB](research/mag-laptop.md)
 - [Problems reported upstream](research/upstream-reports.md)
+- [cooccur on real data: a known CPR–host pair](research/cooccur-real.md)
 
 # Plans
 
