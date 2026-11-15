@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-11-15)
+
+New: the rest of a metagenome-to-MAG study on a laptop: SemiBin2 binning, galah dereplication, a
+genome × sample abundance table, GTDB tree placement for genomes the ANI screen can't name
+(`gtdbprep place`), and co-occurrence statistics (`cooccur`, a new tool). `sheetgen verify` checks
+read files against their MD5s before analysis, and fieldsheet is an offline phone worksheet for
+sample metadata. A replay now tolerates bins a binner names differently after a changed assembly.
 
 ### irit-mcp
 - **`semibin2`** (SemiBin 2.6.0, single sample): pretrained environment models from CoverM's depth
