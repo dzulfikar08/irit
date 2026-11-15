@@ -149,7 +149,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
       (`gtdbprep place`, with gPlace), SemiBin2 (`semibin2`: pretrained models fit 1.5 GiB, its
       self-supervised training doesn't fit 8 GB), dereplication (`galah`), one genome × sample
       abundance table (`coverm_abundance`) and co-occurrence statistics ([`cooccur`](tools/cooccur.md)).
-      SemiBin2's multi-sample mode is built too (unreleased; 4.3 GiB on three samples, no better than
+      SemiBin2's multi-sample mode is built too (0.6.1; 4.3 GiB on three samples, no better than
       the pretrained model there). Still open: co-assembly within 8 GB for diverse, shallow samples;
       a MAG-based, strain-level oral or water series for `cooccur`. A first real test
       ([write-up](research/cooccur-real.md)) on 128 plaque and 136 tongue profiles did not recover

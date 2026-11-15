@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 (2026-11-15)
+
+SemiBin2 multi-sample binning, single-end reads for contig coverage, and cooccur tested on real
+data (it did not find TM7's known host).
 
 ### irit-mcp
 - **SemiBin2 multi-sample binning**: `semibin2_concatenate` (SemiBin2's `concatenate_fasta`, each sample
