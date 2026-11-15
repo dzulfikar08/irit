@@ -290,6 +290,35 @@ def main():
             and any(s.get("sample", "").startswith("sa") and s.get("percent_mapped", 0) > 90 for s in a.get("samples", [])),
             json.dumps(a)[:400],
         )
+        # Multi-sample binning: each sample's own assembly (the SKESA one of sa; MEGAHIT of mg alone),
+        # joined under sample names, both samples mapped to that with their BAMs kept, then SemiBin2
+        # multi_easy_bin: a model per sample, each sample's genome in one bin. About 4 minutes here
+        # on the laptop (2026-11-15).
+        call("megahit", {"r1": ["trim/mg_R1.fastq.gz"], "r2": ["trim/mg_R2.fastq.gz"], "outdir": "mag/asm_mg", "memory_gb": 4, "threads": 4}, f"megahit mg{suffix}")
+        cat = call(
+            "semibin2_concatenate",
+            {"contigs": ["shovill/sa/contigs.fa", "mag/asm_mg/final.contigs.fa"], "samples": ["sa", "mg"], "outdir": "mag/concat"},
+            f"semibin2_concatenate{suffix}",
+        )
+        expect(f"semibin2_concatenate{suffix}", [s.get("sample") for s in cat.get("samples", [])] == ["sa", "mg"], json.dumps(cat.get("samples"))[:300])
+        cached = call(
+            "coverm_contig",
+            {"reference": "mag/concat/concatenated.fa", **pairs, "output": "mag/concat_mean.tsv", "bam_cache_dir": "mag/concat_bams", "threads": 4},
+            f"coverm_contig concatenated{suffix}",
+        )
+        multi = call(
+            "semibin2",
+            {"contigs": "mag/concat/concatenated.fa", "bams": cached.get("bams", []), "outdir": "mag/semibin_multi", "multi": True, "threads": 4},
+            f"semibin2 multi{suffix}",
+        )
+        largest = {}
+        for b in multi.get("bins", []):
+            largest[b.get("sample")] = max(largest.get(b.get("sample"), 0), b.get("total_length", 0))
+        expect(
+            f"semibin2 multi{suffix}",
+            2_000_000 < largest.get("sa", 0) < 3_200_000 and 450_000 < largest.get("mg", 0) < 650_000,
+            f"largest bin per sample {largest}; S. aureus is about 2.8 Mb, M. genitalium 0.58 Mb",
+        )
         # Depth by mapping the trimmed reads to the SKESA assembly (about 53x of raw reads; Shovill
         # logs the depth it estimated before subsampling to 30x).
         cov = call(

@@ -351,12 +351,16 @@ printf '>k141_2\nGGGGCCCC\n' > "$out.2.fa"
 "#;
 
 /// SemiBin 2.6.0's single_easy_bin: a MetaBAT depth table only with a pretrained model, else BAMs;
-/// two bins named `<tag>_<n>.fa` in `<output>/output_bins`.
+/// two bins named `<tag>_<n>.fa` in `<output>/output_bins`. concatenate_fasta: `<sample>:<contig>`
+/// with the sample cut from the file name at the first dot, into `<output>/concatenated.fa`.
+/// multi_easy_bin: per sample (from the headers) two bins in `<output>/samples/<sample>/output_bins`,
+/// copied to `<output>/bins/<sample>_<tag>_<n>.fa`.
 const SEMIBIN2: &str = r#"
 [ "${1:-}" = --version ] && { echo "2.6.0"; exit 0; }
-[ "${1:-}" = single_easy_bin ] || die "expected single_easy_bin"
+cmd=${1:-}
+case "$cmd" in single_easy_bin|multi_easy_bin|concatenate_fasta) ;; *) die "unknown subcommand $cmd" ;; esac
 shift
-in= ; out= ; tag=SemiBin ; env= ; depth= ; bams= ; mode=
+in= ; out= ; tag=SemiBin ; env= ; depth= ; bams= ; mode= ; fastas= ; minlen=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --input-fasta=*) in=${1#--input-fasta=} ;;
@@ -365,14 +369,44 @@ while [ $# -gt 0 ]; do
     --environment=*) env=${1#--environment=} ;;
     --depth-metabat2=*) depth=${1#--depth-metabat2=} ;;
     --compression=none|--engine=cpu) ;;
-    --random-seed=*|--threads=*|--min-len=*|--minfasta-kbs=*) ;;
+    --min-len=*) minlen=${1#--min-len=} ;;
+    --random-seed=*|--threads=*|--minfasta-kbs=*) ;;
     --input-bam) mode=b ;;
+    --input-fasta) mode=f ;;
     -*) die "unknown option $1" ;;
-    *) [ "$mode" = b ] || die "stray $1"; [ -f "$1" ] || die "cannot open $1"; bams="$bams $1" ;;
+    *) [ -f "$1" ] || die "cannot open $1"
+       case "$mode" in b) bams="$bams $1" ;; f) fastas="$fastas $1" ;; *) die "stray $1" ;; esac ;;
   esac
   shift
 done
+if [ "$cmd" = concatenate_fasta ]; then
+  mkdir -p "$out"
+  for f in $fastas; do
+    s=$(basename "$f"); s=${s%%.*}
+    awk -v s="$s" -v m="$minlen" '/^>/ { if (id != "" && length(seq) >= m) printf ">%s:%s\n%s\n", s, id, seq; id = substr($1, 2); seq = ""; next }
+      { seq = seq $0 } END { if (id != "" && length(seq) >= m) printf ">%s:%s\n%s\n", s, id, seq }' "$f"
+  done > "$out/concatenated.fa"
+  echo "started $(date +%s%N)" > "$out/SemiBinRun.log"
+  exit 0
+fi
 [ -f "$in" ] || die "no contigs"
+if [ "$cmd" = multi_easy_bin ]; then
+  [ -n "$bams" ] || die "You need to specify input BAM files or abundance files."
+  mkdir -p "$out/bins"
+  echo "started $(date +%s%N)" > "$out/SemiBinRun.log"
+  for s in $(grep '>' "$in" | cut -c2- | cut -d: -f1 | uniq); do
+    grep -q : "$in" || die "Expected contigs to contain separator character"
+    o="$out/samples/$s"
+    mkdir -p "$o/output_bins"
+    grep -A1 "^>$s:" "$in" | grep -v '^--$' | sed "s/^>$s:/>/" > "$out/samples/$s.fa"
+    printf '>k141_1\nACGTACGTACGT\n' > "$o/output_bins/${tag}_0.fa"
+    printf '>k141_2\nGGGGCCCC\n' > "$o/output_bins/${tag}_1.fa"
+    printf 'contig\tbin\nk141_1\t0\nk141_2\t1\n' > "$o/contig_bins.tsv"
+    echo "model $s" > "$o/model.pt"
+    for b in "$o"/output_bins/*; do cp "$b" "$out/bins/${s}_$(basename "$b")"; done
+  done
+  exit 0
+fi
 if [ -n "$depth" ]; then
   [ -n "$env" ] || die "You need to use one of our provided models if you provide a depth file from Metabat2."
   [ -f "$depth" ] || die "no depth file"
@@ -1008,6 +1042,105 @@ fn multi_sample_binning_dereplication_and_abundance_with_stand_ins_replay() {
     assert!(out.status.success(), "replay failed: {err}");
     assert!(err.contains("outputs match"), "{err}");
     assert!(err.contains(&format!("reads {}", work.join(bam).display())), "{err}");
+    for (p, h) in &all {
+        if p.ends_with("SemiBinRun.log") || p.extension().is_some_and(|e| e == "bam") {
+            assert!(p.is_file(), "{}", p.display());
+            continue;
+        }
+        assert_eq!(&sha256(p), h, "{} differs after replay", p.display());
+    }
+}
+
+/// Multi-sample binning: two samples' assemblies (both called final.contigs.fa) concatenated under
+/// names given, both samples mapped to that with their BAMs kept, SemiBin2 multi_easy_bin, CheckM2
+/// and galah on the one bins folder; then replayed from a clean folder (the links to the
+/// assemblies are made again).
+#[test]
+fn semibin2_multi_sample_route_with_stand_ins_replays() {
+    let s = setup();
+    let work = &s.work;
+    for f in ["reads/s2_R1.fastq", "reads/s2_R2.fastq"] {
+        write(work, f, "@r1\nACGT\n+\nIIII\n");
+    }
+    write(work, "asm/m1/final.contigs.fa", ">k141_1\nACGTACGTACGT\n>k141_2\nGGGGCCCC\n>k141_3\nAC\n");
+    write(work, "asm/m2/final.contigs.fa", ">k141_1\nACGTACGTACGT\n>k141_2\nGGGGCCCC\n");
+    let mut c = Client::spawn(work, &[], &[("PATH", &s.path)]);
+    let tools = c.request("tools/list", json!({}));
+    let t = tools["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "semibin2_concatenate").expect("semibin2_concatenate missing");
+    assert_eq!(t["inputSchema"]["additionalProperties"], false);
+    let asm = json!(["asm/m1/final.contigs.fa", "asm/m2/final.contigs.fa"]);
+    // 1: concatenate; a name per file, distinct, without dots
+    for (samples, field) in [(json!(["s1"]), "samples"), (json!(["s1", "s1"]), "samples"), (json!(["s1", "s.2"]), "samples")] {
+        let r = c.call("semibin2_concatenate", json!({"contigs": asm, "samples": samples, "outdir": "concat"}));
+        assert_eq!(r["structuredContent"]["field"], field, "{r}");
+    }
+    let r = c.call("semibin2_concatenate", json!({"contigs": ["asm/m1/final.contigs.fa", "asm/m1/final.contigs.fa"], "samples": ["s1", "s2"], "outdir": "concat"}));
+    assert_eq!(r["structuredContent"]["field"], "contigs", "{r}");
+    let r = c.call("semibin2_concatenate", json!({"contigs": asm, "samples": ["s1", "s2"], "outdir": "concat", "min_len": 5}));
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    assert_eq!(v["samples"], json!([{"sample": "s1", "contigs": 2, "total_length": 20}, {"sample": "s2", "contigs": 2, "total_length": 20}]), "{v}");
+    let cmd = v["command"].as_str().unwrap();
+    assert!(cmd.contains("concatenate_fasta") && cmd.ends_with("--input-fasta concat/inputs/s1.fa concat/inputs/s2.fa"), "{cmd}");
+    let concat = std::fs::read_to_string(work.join("concat/concatenated.fa")).unwrap();
+    assert!(concat.starts_with(">s1:k141_1\n") && concat.contains(">s2:k141_2\n"), "{concat}");
+    // 2: both samples mapped to the concatenated contigs, BAMs kept
+    let both = json!({"r1": ["reads/s1_R1.fastq", "reads/s2_R1.fastq"], "r2": ["reads/s1_R2.fastq", "reads/s2_R2.fastq"]});
+    let mut cc = both.clone();
+    cc.as_object_mut().unwrap().extend(json!({"reference": "concat/concatenated.fa", "output": "depth/all.tsv", "bam_cache_dir": "bams"}).as_object().unwrap().clone());
+    let r = c.call("coverm_contig", cc);
+    assert_ne!(r["isError"], true, "{r}");
+    let bams = r["structuredContent"]["bams"].clone();
+    assert_eq!(bams, json!(["bams/concatenated.fa.s1_R1.fastq.bam", "bams/concatenated.fa.s2_R1.fastq.bam"]), "{r}");
+    // 3: multi-sample binning; refused without the concatenated contigs, with an environment or one BAM
+    let multi = |extra: Value| {
+        let mut j = json!({"contigs": "concat/concatenated.fa", "bams": bams, "outdir": "bins", "multi": true});
+        j.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        j
+    };
+    let r = c.call("semibin2", multi(json!({"contigs": "asm/m1/final.contigs.fa"})));
+    assert_eq!(r["structuredContent"]["field"], "contigs", "{r}");
+    assert!(r["structuredContent"]["message"].as_str().unwrap().contains("semibin2_concatenate"), "{r}");
+    let r = c.call("semibin2", multi(json!({"environment": "global"})));
+    assert_eq!(r["structuredContent"]["field"], "environment", "{r}");
+    let r = c.call("semibin2", multi(json!({"bams": [bams[0]]})));
+    assert_eq!(r["structuredContent"]["field"], "bams", "{r}");
+    let r = c.call("semibin2", multi(json!({"threads": 2})));
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    assert_eq!(v["bin_count"], 4, "{v}");
+    assert_eq!(v["bins"][2]["bin"], "s2_SemiBin_0", "{v}");
+    assert_eq!(v["bins"][2]["sample"], "s2", "{v}");
+    assert_eq!(v["bins_dir"], json!(work.join("bins/bins")), "{v}");
+    let w = v["warnings"].as_array().unwrap();
+    assert!(w.len() == 1 && w[0].as_str().unwrap().starts_with("multi:"), "{v}");
+    let cmd = v["command"].as_str().unwrap();
+    assert!(cmd.contains("multi_easy_bin") && cmd.contains("--random-seed=1") && cmd.contains("--engine=cpu"), "{cmd}");
+    // 4: CheckM2 and galah on the one folder of all samples' bins
+    let r = c.call("checkm2", json!({"genome_dir": "bins/bins", "extension": "fa", "outdir": "checkm2", "db": "db/checkm2"}));
+    assert_ne!(r["isError"], true, "{r}");
+    let r = c.call("galah", json!({"genome_dirs": ["bins/bins"], "checkm2_report": "checkm2/quality_report.tsv", "outdir": "derep"}));
+    assert_ne!(r["isError"], true, "{r}");
+    assert_eq!(r["structuredContent"]["cluster_count"], 2, "{r}");
+    c.close();
+
+    let run_dir = work.join("irit-runs/test-run");
+    let log: Value = serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
+    let ok: Vec<&Value> = log["calls"].as_array().unwrap().iter().filter(|c| c["status"] == "ok").collect();
+    assert_eq!(ok.iter().map(|c| c["mcp_tool"].as_str().unwrap()).collect::<Vec<_>>(), ["semibin2_concatenate", "coverm_contig", "semibin2", "checkm2", "galah"]);
+    assert_eq!(ok[0]["links"].as_array().unwrap().len(), 2, "{}", ok[0]);
+    for call in [ok[0], ok[2]] {
+        let outs = call["outputs"].as_array().unwrap();
+        assert!(outs.iter().all(|o| (o["volatile"] == true) == o["path"].as_str().unwrap().ends_with("SemiBinRun.log")), "{outs:?}");
+    }
+    let all: Vec<(PathBuf, String)> = ok.iter().flat_map(|c| outputs(c)).collect();
+    for d in ["concat", "depth", "bins", "bams", "checkm2", "derep"] {
+        std::fs::remove_dir_all(work.join(d)).unwrap();
+    }
+    let out = Command::new("sh").arg(run_dir.join("replay.sh")).env("PATH", &s.path).current_dir(work).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "replay failed: {err}");
+    assert!(err.contains("outputs match"), "{err}");
     for (p, h) in &all {
         if p.ends_with("SemiBinRun.log") || p.extension().is_some_and(|e| e == "bam") {
             assert!(p.is_file(), "{}", p.display());

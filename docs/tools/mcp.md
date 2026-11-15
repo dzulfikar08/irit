@@ -266,7 +266,7 @@ Runs [`gtdbprep place`](gtdbprep.md): GTDB-Tk tree placement on the laptop data 
 
 ### Third-party tools
 
-Eighteen tools wrap sixteen programs irit doesn't ship. Each one is pinned to an upstream version: its
+Nineteen tools wrap sixteen programs irit doesn't ship. Each one is pinned to an upstream version: its
 parameters are exactly the flags that version has, read from its source at that release tag (for
 Shovill, mlst and AMRFinderPlus also compared with `--help` of the Bioconda package).
 Nothing else is offered, so an agent can't pass a flag the program doesn't know.
@@ -286,7 +286,8 @@ Nothing else is offered, so an agent can't pass a flag the program doesn't know.
 | `coverm_contig` | CoverM `contig` | 0.8.0 | [`src/cli.rs`](https://github.com/wwood/CoverM/blob/v0.8.0/src/cli.rs) and `coverm contig --full-help` | `coverm=0.8.0` |
 | `coverm_genome` | CoverM `genome` | 0.8.0 | [`src/cli.rs`](https://github.com/wwood/CoverM/blob/v0.8.0/src/cli.rs) and `coverm genome --full-help` | `coverm=0.8.0` |
 | `coverm_abundance` | CoverM `genome` | 0.8.0 | as `coverm_genome` | `coverm=0.8.0` |
-| `semibin2` | SemiBin2 `single_easy_bin` | 2.6.0 | `SemiBin2 single_easy_bin --help` and [`SemiBin/main.py`](https://github.com/BigDataBiology/SemiBin/blob/v2.6.0/SemiBin/main.py) of the Bioconda package | `semibin=2.6.0` |
+| `semibin2` | SemiBin2 `single_easy_bin`, and `multi_easy_bin` with `multi` | 2.6.0 | `SemiBin2 single_easy_bin --help`, `SemiBin2 multi_easy_bin --help` and [`SemiBin/main.py`](https://github.com/BigDataBiology/SemiBin/blob/v2.6.0/SemiBin/main.py) of the Bioconda package | `semibin=2.6.0` |
+| `semibin2_concatenate` | SemiBin2 `concatenate_fasta` | 2.6.0 | `SemiBin2 concatenate_fasta --help` and `concatenate_fasta` in [`SemiBin/utils.py`](https://github.com/BigDataBiology/SemiBin/blob/v2.6.0/SemiBin/utils.py) | `semibin=2.6.0` |
 | `galah` | galah `cluster` | 0.6.3 | `galah cluster --full-help` of the Bioconda package ([src/cluster_argument_parsing.rs](https://github.com/wwood/galah)) | `galah=0.6.3` with `skani=0.4.0` (but see [`galah`](#galah)) |
 | `kleborate` | Kleborate | 3.2.4 | [`kleborate/__main__.py`](https://github.com/klebgenomics/Kleborate/blob/v3.2.4/kleborate/__main__.py) and `kleborate --help` of the pip package | `kleborate=3.2.4` (but see [`kleborate`](#kleborate): pip is lighter) |
 | `metabat2` | MetaBAT 2 | 2.18 | `metabat2 --help` of the Bioconda package ([MetaBAT](https://bitbucket.org/berkeleylab/metabat)) | `metabat2=2.18` |
@@ -939,11 +940,14 @@ FASTA) and `<outdir>/contig_bins.tsv`. Two ways to run it:
 - **Its own model**, trained on this sample (self-supervised), from `bams`: one sorted BAM per
   sample, all mapped to these contigs, which `coverm_contig` keeps with `bam_cache_dir`. This did
   not fit in 8 GB (below).
+- **Several samples binned together** (`multi`, SemiBin2 `multi_easy_bin`): see
+  [Multi-sample binning](#multi-sample-binning-semibin2_concatenate-and-multi) below.
 
 | Parameter | Type | Meaning |
 |---|---|---|
-| `contigs` | file (required) | One sample's assembly, FASTA. |
+| `contigs` | file (required) | One sample's assembly, FASTA. With `multi`, `semibin2_concatenate`'s `concatenated.fa`. |
 | `outdir` | folder (required) | Output folder; one with files needs `overwrite` (SemiBin2 replaces `output_bins/` and its tables). |
+| `multi` | boolean | Multi-sample binning (`multi_easy_bin`). Default `false`. |
 | `environment` | one of the twelve above | Use that pretrained model. Needed with `depth`; with `bams`, exactly one BAM. |
 | `depth` | file | `coverm_contig`'s metabat table with one sample (its header is checked: five columns). |
 | `bams` | list of files | Coordinate-sorted BAMs (checked: `SO:coordinate` in the header; SemiBin2 runs `bedtools genomecov` on them). |
@@ -957,11 +961,9 @@ The server always passes `--compression=none` (SemiBin2's default is gzip; plain
 `checkm2` with `extension: fa` and `galah` read here) and `--engine=cpu` (the same bins on a
 machine with a GPU). Returns each bin's contigs, length, N50 and GC, the bin count and the binned
 length. `SemiBinRun.log` is volatile; `recluster_bins_info.tsv` names the output folder, so it only
-matches when replayed into the same path, as `replay.sh` does. Not offered: `multi_easy_bin` (it
-needs the samples' contigs concatenated with `SemiBin2 concatenate_fasta` and every sample mapped to
-that, a route of its own), `--semi-supervised` (mmseqs2 and GTDB, over 100 GB), `--abundance`
-(strobealign-aemb files, which SemiBin2 only takes from five samples on), long-read mode, CRAM, and
-the training and graph settings.
+matches when replayed into the same path, as `replay.sh` does. Not offered: `--semi-supervised`
+(mmseqs2 and GTDB, over 100 GB), `--abundance` (strobealign-aemb files, which SemiBin2 only takes
+from five samples on), long-read mode, CRAM, `--separator`, and the training and graph settings.
 
 Measured on 2026-11-14 on this project's laptop (12 cores, 30 GB, shared: 1-minute load 8-29),
 each step under an 8 GB no-swap cap, 6 threads, on the Crystal Geyser sample of
@@ -988,6 +990,97 @@ each step under an 8 GB no-swap cap, 6 threads, on the Crystal Geyser sample of
   call without `environment` therefore carries a warning before it runs, and a SemiBin2 killed in
   training gets a hint to use a pretrained environment. On 32 GB or more it should run.
 - CheckM2 (`lowmem`) on the 25-27 bins: 356-461 s, 3.5-4.4 GiB.
+
+#### Multi-sample binning: `semibin2_concatenate` and `multi`
+
+SemiBin2's multi-sample mode bins each sample's own assembly, but with the coverage of every sample
+as features, which separates genomes that one sample's coverage can't. Three calls:
+
+1. **`semibin2_concatenate`** (`SemiBin2 concatenate_fasta`) joins the samples' contigs into
+   `<outdir>/concatenated.fa`, each contig renamed `<sample>:<contig>`. SemiBin2 takes the sample
+   name from the file name up to its first dot, and every MEGAHIT assembly is `final.contigs.fa`, so
+   the server links each file as `<outdir>/inputs/<sample>.fa` (recorded, and made again by
+   `replay.sh`) under the name given in `samples`.
+2. **`coverm_contig`** with `concatenated.fa` as `reference`, every sample's reads and
+   `bam_cache_dir`: one BAM per sample, all against the same contigs.
+3. **`semibin2`** with `multi: true`, `contigs` the concatenated file and `bams` those BAMs
+   (`SemiBin2 multi_easy_bin`). It trains a model for each sample in turn (self-supervised; there
+   are no pretrained models for this mode) and bins each sample's contigs with it.
+
+```json
+{"name": "semibin2_concatenate", "arguments": {"contigs": ["asm/s1/final.contigs.fa", "asm/s2/final.contigs.fa",
+  "asm/s3/final.contigs.fa"], "samples": ["s1", "s2", "s3"], "outdir": "multi/concat"}}
+{"name": "coverm_contig", "arguments": {"reference": "multi/concat/concatenated.fa",
+  "r1": ["trim/s1_1.fastq.gz", "trim/s2_1.fastq.gz", "trim/s3_1.fastq.gz"],
+  "r2": ["trim/s1_2.fastq.gz", "trim/s2_2.fastq.gz", "trim/s3_2.fastq.gz"],
+  "output": "multi/mean.tsv", "bam_cache_dir": "multi/bams", "threads": 6}}
+{"name": "semibin2", "arguments": {"contigs": "multi/concat/concatenated.fa", "multi": true, "outdir": "multi/sb",
+  "bams": ["multi/bams/concatenated.fa.s1_1.fastq.gz.bam", "multi/bams/concatenated.fa.s2_1.fastq.gz.bam",
+  "multi/bams/concatenated.fa.s3_1.fastq.gz.bam"], "threads": 6}}
+{"name": "checkm2", "arguments": {"genome_dir": "multi/sb/bins", "extension": "fa", "outdir": "checkm2", "lowmem": true}}
+```
+
+| Parameter (`semibin2_concatenate`) | Type | Meaning |
+|---|---|---|
+| `contigs` | list of files (required) | Each sample's assembly, FASTA (plain or gzip); two or more, each file once. |
+| `samples` | list of names (required) | One per file, same order: letters, digits, `_`, `-` (no dot, which SemiBin2 cuts at, nor `:`, its separator). |
+| `outdir` | folder (required) | Output folder; one with files needs `overwrite`. |
+| `min_len` | integer | Leave out shorter contigs (`--min-len`). Default: none left out. |
+
+`semibin2` with `multi` checks that every contig name has a sample in front and that each sample's
+contigs are together (as `semibin2_concatenate` writes them), and refuses `environment`, `depth` and
+fewer than two BAMs; it warns when the BAMs and samples differ in number. Bins are written per sample
+to `<outdir>/samples/<sample>/output_bins/<tag>_<n>.fa`, and SemiBin2 copies all of them to
+`<outdir>/bins/<sample>_<tag>_<n>.fa`: run `checkm2` and `galah` on that one folder (the sample in
+each name keeps them apart), and `isotable` mode `mag` on the CheckM2 report. The result lists each
+bin with its `sample`. `SemiBinRun.log` of both tools is volatile; the bins, features
+(`samples/<sample>/data.csv`) and models (`model.pt`) were byte-identical between two runs with
+seed 1 (on the two-genome mock below), and `recluster_bins_info.tsv` names the output folder, as in
+single-sample mode.
+
+Measured on 2026-11-15 on this project's laptop (12 cores, 30 GB, shared: 1-minute load 3-25),
+each step under an 8 GB no-swap cap, 6 threads, on three filtrate samples of one site: the Crystal
+Geyser time series, BioProject PRJNA297582 (SRR2638367, SRR2638368, SRR2638369: "filtrate 05", "06"
+and "07"). Each run was read from ENA with its MD5 checked and cut to 0.5 Gb with `rasusa` (seed 1):
+3.49-3.51 million reads per sample. ENA serves these runs as unpaired reads (every read `/1`), and
+`coverm_contig` takes pairs, so CoverM 0.8.0 was run by hand with `--single` for the depths and BAMs
+(the same `contig` subcommand, methods and BAM cache); everything else went through irit-mcp.
+
+| Step | Wall | Peak (cgroup) | Result |
+|---|---|---|---|
+| `megahit` (`single`), per sample | 13-19 min | 1.2-1.3 GiB | 24.3-28.5 Mb, N50 851-1,106 bp; 544-718 contigs of 4 kb or more |
+| `semibin2_concatenate` | 0.9 s | 0.09 GiB | 101,916 contigs |
+| CoverM, the three samples to `concatenated.fa`, BAMs kept | 152 s | 2.59 GiB | 71-73% of reads mapped; BAMs of 304-314 MB |
+| `semibin2` `multi` | 48 min (training 13-18 min per sample) | 4.33 GiB | 14 bins, 19.6 Mb |
+| `checkm2` `lowmem`, the 50 bins below | 458 s | 5.47 GiB | |
+
+The same three assemblies binned four ways, graded by `isotable` mode `mag` on one CheckM2 report:
+
+| Binning | Wall | Bins | Mb binned | `high*` / medium / low | ≥ 50% complete, < 10% contamination | Contamination ≥ 10% |
+|---|---|---|---|---|---|---|
+| MetaBAT2, the sample's own depth | under 1 s per sample | 11 | 18.7 | 4 / 5 / 2 | 9 | 1 |
+| MetaBAT2, depth of all three samples | under 1 s per sample | 11 | 21.0 | 5 / 4 / 2 | 9 | 0 |
+| SemiBin2 `global`, the sample's own depth | 17-21 s per sample | 14 | 20.3 | 5 / 5 / 4 | 10 | 0 |
+| SemiBin2 `multi` | 48 min for the three | 14 | 19.6 | 5 / 5 / 4 | 10 | 0 |
+
+- **Multi-sample binning fitted in 8 GB here**, at 4.3 GiB. Its training holds 1,000 random contig
+  pairs per contig of 4 kb or more as feature rows each epoch (`train_self`; such contigs are split
+  in two for must-link pairs), so the peak follows the sample with the most of them: 718 here
+  (718,000 pairs). Single-sample training of the deeper sample above (about 2,200 such contigs, 2.2
+  million pairs) was killed at the cap; where between the two the limit lies was not measured. A
+  `multi` call carries a warning with these numbers before it runs.
+- **Training is the slow part**: 13-18 minutes per sample at 15 epochs, against about 20 seconds
+  per sample for a pretrained model. The epochs and batch size don't change the peak (the pair
+  arrays are built whole each epoch); `--ml-threshold` would (fewer contigs split, fewer pairs), but
+  wasn't needed here, so the training settings are still not offered.
+- **On these samples it binned no better than the pretrained `global` model**: the same bin count
+  and tiers, and nearly the same bins: 13 of the 14 had 93-100% of their length in one `global` bin
+  of the same sample. These are three filtrates of one site, at 0.5 Gb each; other data may differ.
+  Giving MetaBAT2 all three samples' depth removed its one contaminated bin.
+- On the two-genome mock of the real-tools workflow (the SKESA assembly of the *S. aureus* reads and
+  a MEGAHIT assembly of the *M. genitalium* pairs), `semibin2` `multi` took 179-201 s at 0.74-0.79
+  GiB and put each genome in one bin (2.77 and 0.57 Mb); two runs gave byte-identical bins,
+  features and models. The workflow runs this route. The real run above was not repeated.
 
 #### `galah`
 
@@ -1468,6 +1561,16 @@ run but does not carry the data.
   same outdir) → `coverm_abundance` from galah's list over two samples → replay from a clean folder. The
   stand-in BAM's header changes every run, as CoverM's does; the replay says the next call read a
   BAM that differs and still passes.
+- Stand-ins for multi-sample binning (2026-11-15): `semibin2_concatenate` (refusing a missing,
+  repeated or dotted name and a file given twice) of two assemblies both called `final.contigs.fa`
+  → `coverm_contig` of both samples to the concatenated contigs with `bam_cache_dir` → `semibin2`
+  `multi` (refusing a file without sample names, an environment and one BAM) → `checkm2` and
+  `galah` on its one bins folder → replay from a clean folder, the links remade.
+- With the real programs on the laptop (2026-11-15, 8 GB cap): the multi-sample route on the
+  two-genome mock and on three Crystal Geyser samples, with MetaBAT2 and SemiBin2 `global` on the
+  same assemblies, CheckM2 and isotable (numbers in
+  [Multi-sample binning](#multi-sample-binning-semibin2_concatenate-and-multi)). Not replayed (the
+  run took about 2 hours); the stand-in test replays the route.
 - With the real programs on the laptop (2026-11-14, each step under an 8 GB cap, the Crystal
   Geyser sample): fastp → `coverm_contig` with `bam_cache_dir` (depth table identical to the
   earlier run's) → `semibin2` trained on the BAM (killed at the cap, twice) → `galah` →
@@ -1519,9 +1622,12 @@ run but does not carry the data.
   ECTyper when installed.
 - `assembly_stats` has not been compared with a QUAST run (QUAST isn't installed on the laptop); it
   follows QUAST 5's `basic_stats.py` and matches hand counts and Kleborate's contig statistics.
-- SemiBin2: only single-sample binning (`single_easy_bin`) is wrapped; multi-sample binning
-  (`multi_easy_bin`, contigs of all samples concatenated and every sample mapped to them) is not.
-  Its self-supervised training did not fit in 8 GB on a real sample; the pretrained models did.
+- SemiBin2: single-sample self-supervised training did not fit in 8 GB on a real sample; the
+  pretrained models and multi-sample binning of three 0.5 Gb samples did (see
+  [Multi-sample binning](#multi-sample-binning-semibin2_concatenate-and-multi)). Its training
+  settings are not offered.
+- `coverm_contig` takes read pairs only, so unpaired reads (ENA serves some older runs that way)
+  need CoverM run by hand (`--single`) for depths and the BAMs of `semibin2`.
 - galah takes one CheckM2 report; bins checked in several CheckM2 batches need their reports joined
   by hand first.
 - A long Bakta or GTDB-Tk call blocks until it ends; there is no progress reporting or

@@ -215,6 +215,26 @@ pub fn coverm_mapped(stderr: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Contig count and length per sample in a concatenated FASTA, in file order.
+pub fn concatenated_samples(path: &Path) -> Vec<Value> {
+    use std::io::BufRead;
+    let Ok(f) = std::fs::File::open(path) else { return Vec::new() };
+    let mut out: Vec<(String, u64, u64)> = Vec::new();
+    for line in std::io::BufReader::new(f).split(b'\n').map_while(Result::ok) {
+        if let Some(h) = line.strip_prefix(b">") {
+            let h = String::from_utf8_lossy(h);
+            let sample = h.split_once(':').map(|(s, _)| s).unwrap_or("").to_string();
+            if out.last().map(|o| &o.0) != Some(&sample) {
+                out.push((sample, 0, 0));
+            }
+            out.last_mut().unwrap().1 += 1;
+        } else if let Some(o) = out.last_mut() {
+            o.2 += line.iter().filter(|b| !b.is_ascii_whitespace()).count() as u64;
+        }
+    }
+    out.into_iter().map(|(s, n, l)| json!({"sample": s, "contigs": n, "total_length": l})).collect()
+}
+
 /// Data rows of a table with a header line.
 pub fn table_rows(path: &Path) -> Result<usize, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;

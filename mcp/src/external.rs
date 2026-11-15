@@ -3249,9 +3249,10 @@ pub fn coverm_genome(ctx: &Ctx, p: &CovermGenomeParams) -> Check<Invocation> {
 // ---------- SemiBin2 ----------
 // Flags: SemiBin 2.6.0 `SemiBin2 single_easy_bin --help` (argparse, SemiBin/main.py `parse_args`; the
 // environments are `get_model_path` in SemiBin/utils.py, the models in SemiBin/models/),
-// https://github.com/BigDataBiology/SemiBin/tree/v2.6.0. Not offered: multi_easy_bin (it needs the
-// samples' contigs concatenated with SemiBin2 concatenate_fasta and every sample mapped to that,
-// a route of its own), --semi-supervised (needs mmseqs2 and GTDB, over 100 GB), --abundance
+// https://github.com/BigDataBiology/SemiBin/tree/v2.6.0. multi_easy_bin (`multi`) and
+// concatenate_fasta (`semibin2_concatenate`) from `SemiBin2 multi_easy_bin --help` and
+// `SemiBin2 concatenate_fasta --help`, `multi_easy_binning` and `generate_sequence_features_multi` in
+// main.py and `concatenate_fasta` in utils.py. Not offered: --separator (`:` is kept), --semi-supervised (needs mmseqs2 and GTDB, over 100 GB), --abundance
 // (strobealign-aemb files, which SemiBin2 only takes from 5 samples on), --sequencing-type
 // long_read, CRAM input, --write-pre-reclustering-bins, --no-recluster, the training and graph
 // knobs (--epochs, --batch-size, --max-edges, --max-node, --ml-threshold, --ratio).
@@ -3296,10 +3297,13 @@ impl SemibinEnvironment {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Semibin2Params {
-    /// Contigs FASTA (plain or gzip): one sample's metagenome assembly, e.g. MEGAHIT's final.contigs.fa.
+    /// Contigs FASTA (plain or gzip): one sample's metagenome assembly, e.g. MEGAHIT's final.contigs.fa. With multi, semibin2_concatenate's concatenated.fa.
     pub contigs: String,
-    /// Output folder, inside the root. Bins go to `<outdir>/output_bins/<tag>_<n>.fa` (plain FASTA, ready for checkm2 with extension fa); contig_bins.tsv lists each binned contig's bin.
+    /// Output folder, inside the root. Bins go to `<outdir>/output_bins/<tag>_<n>.fa` (plain FASTA, ready for checkm2 with extension fa); contig_bins.tsv lists each binned contig's bin. With multi: `<outdir>/samples/<sample>/output_bins/<tag>_<n>.fa` per sample, and all of them in `<outdir>/bins/<sample>_<tag>_<n>.fa`.
     pub outdir: String,
+    /// Multi-sample binning (SemiBin2 multi_easy_bin): contigs is semibin2_concatenate's concatenated.fa and bams has every sample's reads mapped to it (coverm_contig with bam_cache_dir, reference that file). A model is trained per sample (no environment). Default false.
+    #[serde(default)]
+    pub multi: bool,
     /// Allow an outdir that already has files (SemiBin2 replaces output_bins/ and its tables). Default false.
     #[serde(default)]
     pub overwrite: bool,
@@ -3338,9 +3342,122 @@ pub const SEMIBIN2_DEFAULT_SEED: u64 = 1;
 /// cap in the first of 15 epochs (3 min each); the pretrained global model took 1.2 GiB.
 const SEMIBIN2_TRAINING_MEMORY: &str = "no environment: SemiBin2 trains its own model (self-supervised), which holds up to 4 million contig pairs in memory; on an 8 GB laptop one sample with 4,842 contigs was killed at the cap after an epoch of 3 minutes (of 15). Under 8-16 GB use a pretrained environment (global when none matches), which took 1.2 GiB and 2 minutes";
 
+/// multi_easy_bin trains one model per sample, the same way (`multi_easy_binning` calls `training`
+/// with each sample's features), so its peak is the largest sample's: 1,000 cannot-link pairs per
+/// contig of 4 kb or more (the must-link threshold, which splits such contigs in two). Measured 2026-11-15: three Crystal Geyser
+/// samples of 0.5 Gb, at most 718 such contigs (718,000 pairs), 4.3 GiB and 48 minutes at 6 threads.
+const SEMIBIN2_MULTI_TRAINING_MEMORY: &str = "multi: SemiBin2 trains a model for each sample in turn (self-supervised), holding 1,000 contig pairs per contig of 4 kb or more (up to 4 million) in memory, so time and peak follow the sample with the most such contigs. On an 8 GB laptop three samples with up to 718 of them peaked at 4.3 GiB and took 48 minutes (13-18 per sample, 6 threads); single-sample training with about 2,200 (2.2 million pairs) was killed at the cap";
+
 pub fn semibin2_tag(p: &Semibin2Params) -> &str {
     p.tag.as_deref().unwrap_or("SemiBin")
 }
+
+/// Sample names of a concatenated FASTA (`<sample>:<contig>` headers, as SemiBin2 concatenate_fasta
+/// writes), in order. SemiBin2's multi_easy_bin needs every header to have the separator and each
+/// sample's contigs together.
+fn concatenated_samples(path: &Path, value: &str) -> Check<Vec<String>> {
+    use std::io::{BufRead, Read};
+    let mut magic = [0u8; 2];
+    let gz = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && magic == [0x1f, 0x8b];
+    let file = std::fs::File::open(path).map_err(|e| v::Invalid { field: "contigs".into(), message: format!("{value}: {e}") })?;
+    let reader: Box<dyn BufRead> =
+        if gz { Box::new(std::io::BufReader::new(flate2::read::MultiGzDecoder::new(file))) } else { Box::new(std::io::BufReader::new(file)) };
+    let mut samples: Vec<String> = Vec::new();
+    for line in reader.split(b'\n') {
+        let Ok(line) = line else { return v::invalid("contigs", format!("{value} could not be read to the end")) };
+        let Some(header) = line.strip_prefix(b">") else { continue };
+        let header = String::from_utf8_lossy(header);
+        let id = header.split_whitespace().next().unwrap_or("");
+        let Some((sample, _)) = id.split_once(':') else {
+            return v::invalid(
+                "contigs",
+                format!("{value} has a contig without a sample name ({id:?}, not <sample>:<contig>); make the file with semibin2_concatenate"),
+            );
+        };
+        if samples.last().map(String::as_str) != Some(sample) {
+            if samples.iter().any(|s| s == sample) {
+                return v::invalid("contigs", format!("{value} has sample {sample}'s contigs in more than one place; SemiBin2 needs each sample's contigs together, as semibin2_concatenate writes them"));
+            }
+            samples.push(sample.to_string());
+        }
+    }
+    if samples.len() < 2 {
+        return v::invalid("contigs", format!("{value} holds {} sample(s); multi-sample binning needs the contigs of two or more, from semibin2_concatenate", samples.len()));
+    }
+    Ok(samples)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Semibin2ConcatenateParams {
+    /// Each sample's contigs FASTA (plain or gzip), e.g. its MEGAHIT final.contigs.fa. Two or more.
+    pub contigs: Vec<String>,
+    /// A name per sample, in the order of contigs (letters, digits, _ -): contigs are renamed `<name>:<contig>`, and multi-sample binning names each sample's output folder and bins after it.
+    pub samples: Vec<String>,
+    /// Output folder, inside the root: `<outdir>/concatenated.fa` (plain FASTA), the contigs input of semibin2 with multi and the reference of coverm_contig.
+    pub outdir: String,
+    /// Allow an outdir that already has files (concatenated.fa is replaced). Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// Leave out contigs shorter than this, in bp. Default: none left out. SemiBin2 bins contigs of 1000 or 2500 bp and more, and shorter ones make the mapping slower.
+    #[serde(default)]
+    pub min_len: Option<u32>,
+}
+
+/// SemiBin2 concatenate_fasta names a sample after its file's name up to the first dot, so each
+/// sample's contigs are reached through a link named after the sample (`<outdir>/inputs/<name>.fa`):
+/// every MEGAHIT assembly is called final.contigs.fa.
+pub fn semibin2_concatenate(ctx: &Ctx, p: &Semibin2ConcatenateParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("SemiBin2");
+    // It writes its log into the output folder too.
+    inv.volatile = &["SemiBinRun.log"];
+    inv.args.push("concatenate_fasta".into());
+    if p.contigs.len() < 2 {
+        return v::invalid("contigs", "give the contigs of two or more samples");
+    }
+    if p.samples.len() != p.contigs.len() {
+        return v::invalid("samples", format!("{} names for {} contigs files; give one name per file, in the same order", p.samples.len(), p.contigs.len()));
+    }
+    let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(p.overwrite), true)?;
+    inv.outputs.push(outdir.clone());
+    inv.opt("output", &p.outdir);
+    inv.expect = vec![vec![outdir.join("concatenated.fa")]];
+    // Plain, as the bins are; SemiBin2's default here is gzip.
+    inv.opt("compression", "none");
+    if let Some(m) = p.min_len {
+        v::range("min_len", m, 1, u32::MAX)?;
+        inv.opt("min-len", m);
+    }
+    let mut links = Vec::new();
+    for (i, (c, s)) in p.contigs.iter().zip(&p.samples).enumerate() {
+        if s.is_empty() || !s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')) || s.starts_with('-') {
+            return v::invalid("samples", format!("{s:?} must be letters, digits, _ - (not starting with -): SemiBin2 cuts names at the first dot and splits contig names at ':'"));
+        }
+        if p.samples[..i].contains(s) {
+            return v::invalid("samples", format!("{s} is given twice"));
+        }
+        let path = v::existing_file(cwd, "contigs", c)?;
+        v::sequence_file(&path, "contigs", c, Seq::Fasta)?;
+        if inv.inputs.iter().any(|q| v::resolve(q) == v::resolve(&path)) {
+            return v::invalid("contigs", format!("{c} is given twice"));
+        }
+        // SemiBin2 reads gzip by the file name's extension.
+        let ext = if c.ends_with(".gz") { "fa.gz" } else { "fa" };
+        let link = outdir.join("inputs").join(format!("{s}.{ext}"));
+        let target = relative_to(&v::resolve(&outdir).join("inputs"), &v::resolve(&path));
+        inv.inputs.push(path);
+        links.push(format!("{}/inputs/{s}.{ext}", p.outdir.trim_end_matches('/')));
+        // an output too, so that its folder is made first
+        inv.outputs.push(link.clone());
+        inv.links.push((link, target));
+    }
+    // -i takes several values (nargs='*'): last.
+    inv.args.push("--input-fasta".into());
+    inv.args.extend(links.iter().map(|l| list_item(l)));
+    Ok(inv)
+}
+
 
 /// A BAM file sorted by coordinate: BGZF, `BAM\1`, and `SO:coordinate` in the header text.
 /// SemiBin2 2.6.0 computes coverage with `bedtools genomecov`, which needs that order.
@@ -3377,11 +3494,31 @@ pub fn semibin2(ctx: &Ctx, p: &Semibin2Params) -> Check<Invocation> {
     let mut inv = external("SemiBin2");
     // Its log carries times and the process id.
     inv.volatile = &["SemiBinRun.log"];
-    inv.args.push("single_easy_bin".into());
+    inv.args.push(if p.multi { "multi_easy_bin" } else { "single_easy_bin" }.into());
     let contigs = v::existing_file(cwd, "contigs", &p.contigs)?;
     v::sequence_file(&contigs, "contigs", &p.contigs, Seq::Fasta)?;
+    let samples = if p.multi { concatenated_samples(&contigs, &p.contigs)? } else { Vec::new() };
     inv.inputs.push(contigs);
     inv.opt("input-fasta", &p.contigs);
+    if p.multi {
+        if p.depth.is_some() {
+            return v::invalid("depth", "multi-sample binning takes bams (every sample's reads mapped to the concatenated contigs), not a depth table");
+        }
+        if p.environment.is_some() {
+            return v::invalid("environment", "multi-sample binning always trains a model per sample; leave environment out (or bin each sample with semibin2 and an environment)");
+        }
+        if p.bams.len() < 2 {
+            return v::invalid("bams", "multi-sample binning needs each sample's reads mapped to the concatenated contigs: one BAM per sample, from coverm_contig with bam_cache_dir and this file as reference");
+        }
+        if p.bams.len() != samples.len() {
+            inv.warnings.push(format!(
+                "{} BAMs for {} samples in {}: usually each sample's reads are mapped to the concatenated contigs, one BAM per sample",
+                p.bams.len(),
+                samples.len(),
+                p.contigs
+            ));
+        }
+    }
     match (&p.depth, p.bams.is_empty()) {
         (Some(_), false) | (None, true) => {
             return v::invalid("depth", "give either depth (coverm_contig's metabat table, with environment) or bams (coverm_contig's bam_cache_dir)");
@@ -3421,6 +3558,7 @@ pub fn semibin2(ctx: &Ctx, p: &Semibin2Params) -> Check<Invocation> {
     }
     match p.environment {
         Some(e) => inv.opt("environment", e.name()),
+        None if p.multi => inv.warnings.push(SEMIBIN2_MULTI_TRAINING_MEMORY.into()),
         None => inv.warnings.push(SEMIBIN2_TRAINING_MEMORY.into()),
     }
     let tag = semibin2_tag(p);
@@ -3428,7 +3566,12 @@ pub fn semibin2(ctx: &Ctx, p: &Semibin2Params) -> Check<Invocation> {
     let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(p.overwrite), true)?;
     inv.outputs.push(outdir.clone());
     inv.opt("output", &p.outdir);
-    inv.expect = vec![vec![outdir.join("contig_bins.tsv")]];
+    inv.expect = if p.multi {
+        // every sample is binned (SemiBin2 stops at the first that fails)
+        samples.iter().map(|s| vec![outdir.join("samples").join(s).join("contig_bins.tsv")]).collect()
+    } else {
+        vec![vec![outdir.join("contig_bins.tsv")]]
+    };
     if p.tag.is_some() {
         inv.opt("tag-output", tag);
     }
@@ -3459,13 +3602,25 @@ pub fn semibin2(ctx: &Ctx, p: &Semibin2Params) -> Check<Invocation> {
 
 /// SemiBin2's bins: `<outdir>/output_bins/<tag>_<n>.fa`, in bin-number order.
 pub fn semibin2_bins(outdir: &Path, tag: &str) -> Vec<PathBuf> {
-    let mut bins: Vec<(u64, PathBuf)> = std::fs::read_dir(outdir.join("output_bins"))
+    numbered_bins(&outdir.join("output_bins"), tag)
+}
+
+/// multi_easy_bin's bins, sample by sample: the copies in `<outdir>/bins/<sample>_<tag>_<n>.fa`
+/// (each sample's own are in `<outdir>/samples/<sample>/output_bins/`).
+pub fn semibin2_multi_bins(outdir: &Path, contigs: &Path, tag: &str) -> Vec<(String, PathBuf)> {
+    let samples = concatenated_samples(contigs, "contigs").unwrap_or_default();
+    samples.into_iter().flat_map(|s| numbered_bins(&outdir.join("bins"), &format!("{s}_{tag}")).into_iter().map(move |b| (s.clone(), b))).collect()
+}
+
+/// Files `<prefix>_<n>.fa` in `dir`, in number order.
+fn numbered_bins(dir: &Path, prefix: &str) -> Vec<PathBuf> {
+    let mut bins: Vec<(u64, PathBuf)> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            let n = name.strip_prefix(tag)?.strip_prefix('_')?.strip_suffix(".fa")?.parse().ok()?;
+            let n = name.strip_prefix(prefix)?.strip_prefix('_')?.strip_suffix(".fa")?.parse().ok()?;
             Some((n, e.path()))
         })
         .collect();
@@ -4408,6 +4563,13 @@ mod tests {
     }
 
     /// A coordinate-sorted BAM's start (gzip of `BAM\1`, the header length and text), as CoverM caches it.
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(data).unwrap();
+        gz.finish().unwrap()
+    }
+
     fn fake_bam(dir: &Path, name: &str, header: &str) {
         use std::io::Write;
         let mut raw = b"BAM\x01".to_vec();
@@ -4509,6 +4671,101 @@ mod tests {
         let names: Vec<String> =
             semibin2_bins(&d.path().join("out"), "SemiBin").iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["SemiBin_0.fa", "SemiBin_2.fa", "SemiBin_10.fa"]);
+    }
+
+    #[test]
+    fn semibin2_multi_and_concatenate_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        write(d.path(), "asm/s1/final.contigs.fa", ">k141_1\nACGT\n");
+        write(d.path(), "asm/s2/final.contigs.fa.gz", "");
+        std::fs::write(d.path().join("asm/s2/final.contigs.fa.gz"), gzip(b">k141_1\nACGT\n")).unwrap();
+        write(d.path(), "c/concatenated.fa", ">s1:k141_1\nACGT\n>s1:k141_2\nAC\n>s2:k141_1 flag=1\nACGT\n");
+        write(d.path(), "c/split.fa", ">s1:k141_1\nACGT\n>s2:k141_1\nACGT\n>s1:k141_2\nAC\n");
+        write(d.path(), "c/one.fa", ">s1:k141_1\nACGT\n");
+        write(d.path(), "c/plain.fa", ">s1:k141_1\nACGT\n>k141_2\nAC\n");
+        std::fs::write(d.path().join("c/concatenated.fa.gz"), gzip(b">s1:k141_1\nACGT\n>s2:k141_1\nACGT\n")).unwrap();
+        for b in ["bams/s1.bam", "bams/s2.bam", "bams/s3.bam"] {
+            fake_bam(d.path(), b, "@HD\tVN:1.6\tSO:coordinate\n");
+        }
+
+        // concatenate: links named after the samples, the files last
+        let p: Semibin2ConcatenateParams =
+            parse(json!({"contigs": ["asm/s1/final.contigs.fa", "asm/s2/final.contigs.fa.gz"], "samples": ["s1", "s_2"], "outdir": "c2", "min_len": 1000}));
+        let inv = semibin2_concatenate(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            ["concatenate_fasta", "--output=c2", "--compression=none", "--min-len=1000", "--input-fasta", "c2/inputs/s1.fa", "c2/inputs/s_2.fa.gz"]
+        );
+        assert_eq!(
+            inv.links,
+            [
+                (cx.cwd.join("c2/inputs/s1.fa"), PathBuf::from("../../asm/s1/final.contigs.fa")),
+                (cx.cwd.join("c2/inputs/s_2.fa.gz"), PathBuf::from("../../asm/s2/final.contigs.fa.gz"))
+            ]
+        );
+        assert_eq!(inv.expect, [vec![cx.cwd.join("c2/concatenated.fa")]]);
+        let bad = |j: serde_json::Value| semibin2_concatenate(&cx, &parse(j)).unwrap_err().field;
+        let two = json!(["asm/s1/final.contigs.fa", "asm/s2/final.contigs.fa.gz"]);
+        assert_eq!(bad(json!({"contigs": ["asm/s1/final.contigs.fa"], "samples": ["s1"], "outdir": "c2"})), "contigs");
+        assert_eq!(bad(json!({"contigs": two, "samples": ["s1"], "outdir": "c2"})), "samples");
+        for name in ["s.1", "s:1", "-s", "", "s/1"] {
+            assert_eq!(bad(json!({"contigs": two, "samples": ["s0", name], "outdir": "c2"})), "samples", "{name}");
+        }
+        assert_eq!(bad(json!({"contigs": two, "samples": ["s1", "s1"], "outdir": "c2"})), "samples");
+        assert_eq!(bad(json!({"contigs": ["asm/s1/final.contigs.fa", "asm/s1/../s1/final.contigs.fa"], "samples": ["a", "b"], "outdir": "c2"})), "contigs");
+        assert_eq!(bad(json!({"contigs": two, "samples": ["a", "b"], "outdir": "c2", "min_len": 0})), "min_len");
+        assert_eq!(bad(json!({"contigs": two, "samples": ["a", "b"], "outdir": "c"})), "outdir"); // has files
+
+        // multi_easy_bin
+        let p: Semibin2Params =
+            parse(json!({"contigs": "c/concatenated.fa", "bams": ["bams/s1.bam", "bams/s2.bam"], "outdir": "b", "multi": true, "threads": 4, "tag": "x"}));
+        let inv = semibin2(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            [
+                "multi_easy_bin",
+                "--input-fasta=c/concatenated.fa",
+                "--output=b",
+                "--tag-output=x",
+                "--compression=none",
+                "--engine=cpu",
+                "--random-seed=1",
+                "--threads=4",
+                "--input-bam",
+                "bams/s1.bam",
+                "bams/s2.bam"
+            ]
+        );
+        assert_eq!(inv.expect, [vec![cx.cwd.join("b/samples/s1/contig_bins.tsv")], vec![cx.cwd.join("b/samples/s2/contig_bins.tsv")]]);
+        assert_eq!(inv.warnings.len(), 1);
+        assert!(inv.warnings[0].starts_with("multi:"), "{:?}", inv.warnings);
+        let p: Semibin2Params = parse(json!({"contigs": "c/concatenated.fa.gz", "bams": ["bams/s1.bam", "bams/s2.bam", "bams/s3.bam"], "outdir": "b", "multi": true}));
+        let inv = semibin2(&cx, &p).unwrap();
+        assert!(inv.warnings.iter().any(|w| w.contains("3 BAMs for 2 samples")), "{:?}", inv.warnings);
+        let bad = |j: serde_json::Value| semibin2(&cx, &parse(j)).unwrap_err().field;
+        let multi = |extra: serde_json::Value| {
+            let mut j = json!({"contigs": "c/concatenated.fa", "bams": ["bams/s1.bam", "bams/s2.bam"], "outdir": "b", "multi": true});
+            j.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            j
+        };
+        assert_eq!(bad(multi(json!({"contigs": "asm/s1/final.contigs.fa"}))), "contigs"); // no sample names
+        assert_eq!(bad(multi(json!({"contigs": "c/plain.fa"}))), "contigs");
+        assert_eq!(bad(multi(json!({"contigs": "c/split.fa"}))), "contigs"); // s1 in two places
+        assert_eq!(bad(multi(json!({"contigs": "c/one.fa"}))), "contigs"); // one sample
+        assert_eq!(bad(multi(json!({"environment": "global"}))), "environment");
+        assert_eq!(bad(multi(json!({"bams": ["bams/s1.bam"]}))), "bams");
+        assert_eq!(bad(multi(json!({"bams": [], "depth": "c/one.fa"}))), "depth");
+
+        // bins sample by sample, in number order
+        for f in ["s1_x_1.fa", "s1_x_0.fa", "s2_x_0.fa", "s2_other_0.fa", "s3_x_0.fa"] {
+            write(d.path(), &format!("b/bins/{f}"), ">c\nA\n");
+        }
+        let found: Vec<(String, String)> = semibin2_multi_bins(&d.path().join("b"), &d.path().join("c/concatenated.fa"), "x")
+            .into_iter()
+            .map(|(s, p)| (s, p.file_name().unwrap().to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(found, [("s1".into(), "s1_x_0.fa".into()), ("s1".into(), "s1_x_1.fa".into()), ("s2".into(), "s2_x_0.fa".into())]);
     }
 
     #[test]

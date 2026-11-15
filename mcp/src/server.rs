@@ -21,7 +21,7 @@ dblock_* (reference databases); \
 plus the microbial isolate path with third-party tools: fastp (trimming), shovill (Illumina assembly), flye and \
 medaka (nanopore/PacBio long-read assembly and polishing), bakta (annotation), checkm2 (completeness/contamination), gtdbprep_ani and gtdbtk_classify_wf (taxonomy), mlst (sequence type), \
 amrfinder (AMRFinderPlus resistance genes), coverm_genome (isolate depth by read mapping) and kleborate (K. pneumoniae typing, virulence and resistance scores); and metagenomes to MAGs: megahit (assembly), coverm_contig (depth) and \
-metabat2 or semibin2 (bins), then checkm2, gtdbprep_ani (species) and gtdbprep_place (tree placement for the rest) and isotable mode mag on the bins; across samples, galah (dereplication), \
+metabat2 or semibin2 (bins; several samples binned together: semibin2_concatenate, coverm_contig, semibin2 with multi), then checkm2, gtdbprep_ani (species) and gtdbprep_place (tree placement for the rest) and isotable mode mag on the bins; across samples, galah (dereplication), \
 coverm_abundance (each genome's abundance in each sample) and cooccur (genomes that rise and fall together). Check downloaded reads first with reads_verify. Those need the program installed (Bioconda) and, for bakta, \
 checkm2, gtdbtk_classify_wf and amrfinder, a database (dblock_env shows dblock-managed paths); they can run for \
 hours. Their results list `warnings` when the installed version isn't the one irit-mcp was checked against, and for warnings the tool printed that matter (read them). \
@@ -849,24 +849,49 @@ neural network. Either a pretrained model (`environment`: human_gut, dog_gut, ca
 ocean, soil, built_environment, wastewater, or global when none matches) with `depth` (coverm_contig's metabat table of this sample) or \
 `bams` (one); or, without environment, a model trained on this sample (self-supervised) from `bams` (coverm_contig's bam_cache_dir, one \
 per sample mapped to these contigs). Writes `<outdir>/output_bins/<tag>_<n>.fa`: run checkm2 on `<outdir>/output_bins` with extension \
-fa. Seed 1 unless set. Give each sample its own tag when bins of several samples go to galah. Returns each bin's contigs, length, N50 \
+fa. Seed 1 unless set. Give each sample its own tag when bins of several samples go to galah. \
+With `multi` (SemiBin2 multi_easy_bin): `contigs` is semibin2_concatenate's concatenated.fa and `bams` every sample's reads mapped \
+to it; a model is trained per sample, and the bins are in `<outdir>/samples/<sample>/output_bins/` and, all together with the sample \
+in front of their names, in `<outdir>/bins` (one checkm2 call and galah on that folder). Returns each bin's contigs, length, N50 \
 and GC %.")]
     async fn semibin2(&self, Parameters(params): Parameters<x::Semibin2Params>) -> Result<CallToolResult, ErrorData> {
         let d = self.execute("semibin2", &params, x::semibin2(&self.cfg.ctx, &params)).await;
         let outdir = self.cfg.ctx.cwd.join(&params.outdir);
         let tag = x::semibin2_tag(&params).to_string();
+        let found: Vec<(Option<String>, PathBuf)> = if params.multi {
+            x::semibin2_multi_bins(&outdir, &self.cfg.ctx.cwd.join(&params.contigs), &tag).into_iter().map(|(s, b)| (Some(s), b)).collect()
+        } else {
+            x::semibin2_bins(&outdir, &tag).into_iter().map(|b| (None, b)).collect()
+        };
         self.external_reply(d, |v| {
             let mut bins = Vec::new();
-            for b in x::semibin2_bins(&outdir, &tag) {
+            for (sample, b) in found {
                 let mut s = results::assembly_stats(&b)?;
                 s["bin"] = json!(b.file_stem().map(|n| n.to_string_lossy().into_owned()));
+                if let Some(sample) = sample {
+                    s["sample"] = json!(sample);
+                }
                 s["file"] = json!(b);
                 bins.push(s);
             }
-            v["bins_dir"] = json!(outdir.join("output_bins"));
+            v["bins_dir"] = json!(outdir.join(if params.multi { "bins" } else { "output_bins" }));
             v["bin_count"] = json!(bins.len());
             v["binned_length"] = json!(bins.iter().map(|b| b["total_length"].as_u64().unwrap_or(0)).sum::<u64>());
             v["bins"] = json!(bins);
+            Ok(())
+        })
+    }
+
+    #[tool(description = "SemiBin 2.6.0 (SemiBin2 concatenate_fasta): the first step of multi-sample binning. Joins the contigs of \
+several samples (each sample's own assembly, e.g. MEGAHIT's final.contigs.fa) into `<outdir>/concatenated.fa`, each contig renamed \
+`<sample>:<contig>` after the name given in `samples`. Next: coverm_contig with this file as reference, every sample's reads and \
+bam_cache_dir, then semibin2 with multi, this file as contigs and those BAMs. Returns the contigs and length per sample.")]
+    async fn semibin2_concatenate(&self, Parameters(params): Parameters<x::Semibin2ConcatenateParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("semibin2_concatenate", &params, x::semibin2_concatenate(&self.cfg.ctx, &params)).await;
+        let out = self.cfg.ctx.cwd.join(&params.outdir).join("concatenated.fa");
+        self.external_reply(d, |v| {
+            v["concatenated"] = json!(out);
+            v["samples"] = json!(results::concatenated_samples(&out));
             Ok(())
         })
     }

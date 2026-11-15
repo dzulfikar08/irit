@@ -1,7 +1,8 @@
 # Opt-in check of irit-mcp's third-party wrappers against the real programs: fastp 1.4.0,
 # Shovill 1.4.2, Bakta 1.12.2 (light database), CheckM2 1.1.0, GTDB-Tk 2.8.0 (GTDB's mock database),
 # mlst 2.35.0, AMRFinderPlus 4.2.7 (dblock's pinned database), CoverM 0.8.0 (also for isolate depth
-# and multi-genome abundance), MEGAHIT 1.2.9, MetaBAT 2.18, SemiBin 2.6.0, galah 0.6.3 and
+# and multi-genome abundance), MEGAHIT 1.2.9, MetaBAT 2.18, SemiBin 2.6.0 (one sample and
+# several), galah 0.6.3 and
 # Kleborate 3.2.4, on a small genome, on real S. aureus reads and on a K. pneumoniae reference
 # genome, then isotable (and its assembly statistics). Downloads about 3 GB of databases and takes about an hour, so it
 # only runs by hand:
@@ -132,6 +133,7 @@ jobs:
             work/mag_first/depth.tsv
             work/mag_first/derep/clusters.tsv
             work/mag_first/abundance.tsv
+            work/mag_first/semibin_multi/samples/*/contig_bins.tsv
             work/mag_first/asm/log
             work/dblock.lock
           if-no-files-found: warn

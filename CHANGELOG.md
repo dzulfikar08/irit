@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### irit-mcp
+- **SemiBin2 multi-sample binning**: `semibin2_concatenate` (SemiBin2's `concatenate_fasta`, each sample
+  named per file) and `multi` on `semibin2` (`multi_easy_bin`); bins per sample and in one folder for
+  CheckM2 and galah. On three 0.5 Gb Crystal Geyser time-series samples it fitted in 8 GB (4.3 GiB,
+  48 min) and binned as well as the pretrained `global` model, which takes about 20 s per sample.
+  The real-tools workflow runs it on the mock.
+
 ### cooccur
 - **Tested on real data** ([write-up](docs/research/cooccur-real.md)): on 128 supragingival-plaque and
   136 tongue HMP MetaPhlAn2 profiles, Saccharibacteria (TM7) and their cultured host *Actinomyces
