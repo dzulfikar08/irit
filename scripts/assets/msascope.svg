@@ -1,43 +1,111 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- msascope app icon (irit project, GPL-3.0-or-later): rows of an alignment, one column
-     highlighted. Rendered to msascope.icns by scripts/macos-app.sh. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <rect x="100" y="100" width="824" height="824" rx="184" fill="#14202b"/>
-  <g transform="translate(203 258)">
-    <!-- A #3aa65a, C #3b82d6, G #e0a526, T #d9534f, gap #2c3a47 -->
-    <g>
-      <rect x="0"   y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
-      <rect x="106" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
-      <rect x="212" y="0" width="88" height="88" rx="16" fill="#e0a526"/>
-      <rect x="318" y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
-      <rect x="424" y="0" width="88" height="88" rx="16" fill="#d9534f"/>
-      <rect x="530" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
+<!-- msascope app icon (irit project, GPL-3.0-or-later): an alignment, its conserved column seen
+     through a lens. No text, so it renders the same everywhere. Rendered to msascope.icns by
+     scripts/macos-app.sh (1024 px canvas, 824 px body as in Apple's macOS icon grid). -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#26324f"/>
+      <stop offset="1" stop-color="#0d1322"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.12"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f6f3ea"/>
+      <stop offset="1" stop-color="#b9b4a6"/>
+    </linearGradient>
+    <linearGradient id="handle" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e9e4d6"/>
+      <stop offset="1" stop-color="#9c9688"/>
+    </linearGradient>
+    <radialGradient id="glass" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="0.6" stop-color="#ffffff" stop-opacity="0.03"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14"/>
+      <feOffset dy="12"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.45"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="lensShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="16"/>
+      <feOffset dx="6" dy="16"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="lens"><circle cx="593.0" cy="459.0" r="178"/></clipPath>
+    <g id="grid">
+    <rect x="196" y="232" width="74" height="74" rx="16" fill="#4a8fe7"/>
+    <rect x="286" y="232" width="74" height="74" rx="16" fill="#3fb868"/>
+    <rect x="376" y="232" width="74" height="74" rx="16" fill="#33415a"/>
+    <rect x="466" y="232" width="74" height="74" rx="16" fill="#f0b429"/>
+    <rect x="556" y="232" width="74" height="74" rx="16" fill="#3fb868"/>
+    <rect x="646" y="232" width="74" height="74" rx="16" fill="#4a8fe7"/>
+    <rect x="736" y="232" width="74" height="74" rx="16" fill="#33415a"/>
+    <rect x="196" y="322" width="74" height="74" rx="16" fill="#3fb868"/>
+    <rect x="286" y="322" width="74" height="74" rx="16" fill="#e5534b"/>
+    <rect x="376" y="322" width="74" height="74" rx="16" fill="#33415a"/>
+    <rect x="466" y="322" width="74" height="74" rx="16" fill="#4a8fe7"/>
+    <rect x="556" y="322" width="74" height="74" rx="16" fill="#3fb868"/>
+    <rect x="646" y="322" width="74" height="74" rx="16" fill="#3fb868"/>
+    <rect x="736" y="322" width="74" height="74" rx="16" fill="#e5534b"/>
+    <rect x="196" y="412" width="74" height="74" rx="16" fill="#33415a"/>
+    <rect x="286" y="412" width="74" height="74" rx="16" fill="#4a8fe7"/>
+    <rect x="376" y="412" width="74" height="74" rx="16" fill="#4a8fe7"/>
+    <rect x="466" y="412" width="74" height="74" rx="16" fill="#f0b429"/>
+    <rect x="556" y="412" width="74" height="74" rx="16" fill="#3fb868"/>
+    <rect x="646" y="412" width="74" height="74" rx="16" fill="#4a8fe7"/>
+    <rect x="736" y="412" width="74" height="74" rx="16" fill="#33415a"/>
+    <rect x="196" y="502" width="74" height="74" rx="16" fill="#4a8fe7"/>
+    <rect x="286" y="502" width="74" height="74" rx="16" fill="#3fb868"/>
+    <rect x="376" y="502" width="74" height="74" rx="16" fill="#4a8fe7"/>
+    <rect x="466" y="502" width="74" height="74" rx="16" fill="#e5534b"/>
+    <rect x="556" y="502" width="74" height="74" rx="16" fill="#3fb868"/>
+    <rect x="646" y="502" width="74" height="74" rx="16" fill="#e5534b"/>
+    <rect x="736" y="502" width="74" height="74" rx="16" fill="#e5534b"/>
+    <rect x="196" y="592" width="74" height="74" rx="16" fill="#4a8fe7"/>
+    <rect x="286" y="592" width="74" height="74" rx="16" fill="#4a8fe7"/>
+    <rect x="376" y="592" width="74" height="74" rx="16" fill="#33415a"/>
+    <rect x="466" y="592" width="74" height="74" rx="16" fill="#e5534b"/>
+    <rect x="556" y="592" width="74" height="74" rx="16" fill="#3fb868"/>
+    <rect x="646" y="592" width="74" height="74" rx="16" fill="#e5534b"/>
+    <rect x="736" y="592" width="74" height="74" rx="16" fill="#3fb868"/>
+    <rect x="196" y="682" width="74" height="74" rx="16" fill="#33415a"/>
+    <rect x="286" y="682" width="74" height="74" rx="16" fill="#f0b429"/>
+    <rect x="376" y="682" width="74" height="74" rx="16" fill="#e5534b"/>
+    <rect x="466" y="682" width="74" height="74" rx="16" fill="#3fb868"/>
+    <rect x="556" y="682" width="74" height="74" rx="16" fill="#3fb868"/>
+    <rect x="646" y="682" width="74" height="74" rx="16" fill="#f0b429"/>
+    <rect x="736" y="682" width="74" height="74" rx="16" fill="#f0b429"/>
     </g>
-    <g transform="translate(0 140)">
-      <rect x="0"   y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
-      <rect x="106" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
-      <rect x="212" y="0" width="88" height="88" rx="16" fill="#2c3a47"/>
-      <rect x="318" y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
-      <rect x="424" y="0" width="88" height="88" rx="16" fill="#d9534f"/>
-      <rect x="530" y="0" width="88" height="88" rx="16" fill="#e0a526"/>
-    </g>
-    <g transform="translate(0 280)">
-      <rect x="0"   y="0" width="88" height="88" rx="16" fill="#d9534f"/>
-      <rect x="106" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
-      <rect x="212" y="0" width="88" height="88" rx="16" fill="#e0a526"/>
-      <rect x="318" y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
-      <rect x="424" y="0" width="88" height="88" rx="16" fill="#d9534f"/>
-      <rect x="530" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
-    </g>
-    <g transform="translate(0 420)">
-      <rect x="0"   y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
-      <rect x="106" y="0" width="88" height="88" rx="16" fill="#2c3a47"/>
-      <rect x="212" y="0" width="88" height="88" rx="16" fill="#e0a526"/>
-      <rect x="318" y="0" width="88" height="88" rx="16" fill="#3aa65a"/>
-      <rect x="424" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
-      <rect x="530" y="0" width="88" height="88" rx="16" fill="#3b82d6"/>
-    </g>
-    <!-- the conserved column -->
-    <rect x="300" y="-36" width="124" height="580" rx="28" fill="none" stroke="#f4f1e8" stroke-width="18"/>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+    <rect x="101.5" y="101.5" width="821" height="821" rx="184" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="3"/>
   </g>
+  <use xlink:href="#grid" opacity="0.55"/>
+  <g filter="url(#lensShadow)">
+    <!-- handle -->
+    <g transform="rotate(-45 593.0 459.0)">
+      <rect x="563.0" y="643.0" width="60" height="190" rx="30" fill="url(#handle)"/>
+    </g>
+    <circle cx="593.0" cy="459.0" r="200" fill="url(#rim)"/>
+  </g>
+  <g clip-path="url(#lens)">
+    <circle cx="593.0" cy="459.0" r="178" fill="#0f1626"/>
+    <g transform="translate(593.0 459.0) scale(1.75) translate(-593.0 -459.0)">
+      <use xlink:href="#grid"/>
+    </g>
+    <circle cx="593.0" cy="459.0" r="178" fill="url(#glass)"/>
+  </g>
+  <circle cx="593.0" cy="459.0" r="178" fill="none" stroke="#000000" stroke-opacity="0.35" stroke-width="4"/>
 </svg>
