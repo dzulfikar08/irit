@@ -3,9 +3,10 @@
 # The Mac App Store edition of msascope: sandboxed, signed with "Apple Distribution" (or "3rd Party
 # Mac Developer Application"), the Mac App Store provisioning profile embedded, packaged with
 # productbuild and signed with "3rd Party Mac Developer Installer". Upload the .pkg with
-# `xcrun altool --upload-package` (msascope-mas.yml); it is not notarised.
+# `xcrun altool --upload-app` (msascope-mas.yml); it is not notarised.
 #
-#   --build N   CFBundleVersion, which must grow with every upload (e.g. 0.3.5.42)
+#   --build N   CFBundleVersion: at most three dot-separated integers (App Store Connect rejects
+#               more), growing with every upload, e.g. the workflow's run number
 #
 # Entitlements: scripts/assets/msascope-mas.entitlements (TEAMID filled in here): the sandbox, files
 # the user chooses (open/save panels, drops, Finder) and bookmarks to reopen them; no network, no
@@ -36,6 +37,7 @@ bin="${pos[0]}" out="${pos[1]}"
 for v in APPLE_TEAM_ID MAS_PROFILE_PATH MSASCOPE_ACKNOWLEDGEMENTS; do
   [ -n "${!v:-}" ] || { echo "error: $v is not set" >&2; exit 1; }
 done
+[[ "$build" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo "error: --build $build is not 1 to 3 dot-separated integers" >&2; exit 1; }
 [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo "error: APPLE_TEAM_ID is not a 10-character team id" >&2; exit 1; }
 
 find_identity() { security find-identity -v -p "$1" | awk -v want="$2" 'index($0, want) { print $2; exit }'; }
@@ -51,6 +53,9 @@ mkdir -p "$out"; out="$(cd "$out" && pwd)"
 MSASCOPE_MAS=1 MSASCOPE_BUILD="$build" "$root/scripts/macos-app.sh" "$bin" "$out"
 app="$out/msascope.app"
 cp "$MAS_PROFILE_PATH" "$app/Contents/embedded.provisionprofile"
+# Everything readable by everyone: App Store Connect rejects a package with root-only files (the
+# profile comes from a mode-600 temporary file).
+chmod -R u+rwX,go+rX,go-w "$app"
 
 ent="$(mktemp)"; trap 'rm -f "$ent"' EXIT
 sed "s/TEAMID/$APPLE_TEAM_ID/g" "$root/scripts/assets/msascope-mas.entitlements" > "$ent"

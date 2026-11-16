@@ -71,8 +71,9 @@ jobs:
           set -euo pipefail
           version="$(awk '/^\[workspace.package\]/{s=1;next} /^\[/{s=0} s && /^version *=/{gsub(/.*= *"|".*/,""); print; exit}' Cargo.toml)"
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          # CFBundleVersion must grow with every upload, rejected ones included.
-          ./scripts/build-mas-pkg.sh --build "${version}.${GITHUB_RUN_NUMBER}" dist/universal/msascope dist
+          # CFBundleVersion: at most three integers, growing with every upload (rejected ones
+          # included), so this workflow's run number. Renaming the workflow file resets it.
+          ./scripts/build-mas-pkg.sh --build "${GITHUB_RUN_NUMBER}" dist/universal/msascope dist
       - name: Validate with App Store Connect
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
