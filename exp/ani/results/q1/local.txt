@@ -1,0 +1,13 @@
+genome	markers	candidates	assigned_by_ani
+Bsubtilis_168	4107	23	true
+Ecoli_400kb_piece	385	1941	true
+Ecoli_K12_MG1655	4419	420	true
+G021783475	1858	9	true
+Mgenitalium_G37_table4	542	2	true
+Nanosynbacter_lyticus_TM7x_CPR	710	176	true
+Omnitrophota_bacterium_2026	2404	6	false
+Paeruginosa_PAO1	6187	1090	true
+Promethearchaeum_syntrophicum_Asgard	4355	15	true
+3166 reference(s) screened in, 0 already cached; fetched 1615356823 bytes in 3166 request(s)
+times: screen 9.5 s, fetch 9.4 s, GTDB-Tk 4.4 s
+GTDB-Tk's ANI screen output: /home/runner/work/irit/irit/local/out/classify/ani_screen

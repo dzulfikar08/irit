@@ -1,0 +1,12 @@
+== local vs GTDB-Tk + skani 0.3.1 (full database)
+gtdbtk.bac120.ani_summary.tsv: identical (7 rows)
+gtdbtk.ar53.ani_summary.tsv: identical (1 rows)
+gtdbtk.ani_screen_unassigned_hits.tsv.gz: identical rows (0)
+== gtdb4 vs GTDB-Tk + skani 0.3.1 (full database)
+gtdbtk.bac120.ani_summary.tsv: identical (7 rows)
+gtdbtk.ar53.ani_summary.tsv: identical (1 rows)
+gtdbtk.ani_screen_unassigned_hits.tsv.gz: identical rows (0)
+== GTDB-Tk + skani 0.4.0 vs skani 0.3.1, both full database
+gtdbtk.bac120.ani_summary.tsv: identical (7 rows)
+gtdbtk.ar53.ani_summary.tsv: identical (1 rows)
+gtdbtk.ani_screen_unassigned_hits.tsv.gz: identical rows (0)

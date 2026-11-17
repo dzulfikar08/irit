@@ -1,0 +1,3 @@
+Ref_file	Query_file	ANI	Align_fraction_ref	Align_fraction_query	Ref_name	Query_name
+/srv/home/uqpchaum/gtdb/data_for_gtdb_website/R232_website/create_gtdbtk_package/release232/skani/gtdb_genomes_reps_r232/database/GCA/021/783/475/GCA_021783475.1_genomic.fna.gz	/home/dzul/.cache/irit-ani-laptop/g1/G021783475.fna	100.00	99.93	99.93	JAJXTU010000073.1	JAJXTU010000073.1
+/srv/home/uqpchaum/gtdb/data_for_gtdb_website/R232_website/create_gtdbtk_package/release232/skani/gtdb_genomes_reps_r232/database/GCF/039/822/205/GCF_039822205.1_genomic.fna.gz	/home/dzul/.cache/irit-ani-laptop/g1/G021783475.fna	94.76	80.52	84.57	NZ_JBAGBW010000001.1	JAJXTU010000073.1

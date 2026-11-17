@@ -1,0 +1,4 @@
+/home/runner/gtdb/idx/markers.idx 1748824109 zstd-19: 1748864152
+/home/runner/gtdb/idx/refs.bin 8196843 zstd-19: 5703776
+/home/runner/gtdb/idx4/gz.idx 571990880 zstd-19: 347183041
+/home/runner/gtdb/idx16/gz.idx 143038728 zstd-19: 86350064

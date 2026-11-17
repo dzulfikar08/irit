@@ -1,0 +1,10 @@
+4.0K	local/assigned.json
+4.0K	local/bin
+1.6G	local/cache
+1.7G	local/db
+4.0K	local/genomes.json
+8.0K	local/gtdbtk_data
+8.0K	local/logs
+28K	local/out
+4.0K	local/query_list.txt
+2.9M	local/query_sketch

@@ -1,0 +1,8 @@
+skani_version:0.3.1
+date_created:2026-03-27T19:35:55.993978
+input_directory:/srv/home/uqpchaum/gtdb/data_for_gtdb_website/R232_website/create_gtdbtk_package/release232/skani/gtdb_genomes_reps_r232
+extension_filter:.gz
+num_genomes_sketches:199923
+sketches.db_md5:c58e686b29bfc41c91b7e7be69e5c5c7
+markers.bin_md5:6c719d7c95d9293e5f8669d5ec727ac4
+index.db_md5:fcde0614e71f33cdfe9ede678a3f6206

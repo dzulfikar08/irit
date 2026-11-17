@@ -1,0 +1,1495 @@
+{
+  "url": "https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz",
+  "md5": "25a59e0352b1fd150c589f56559767d4",
+  "compressed_size": 60806405195,
+  "gzip_members": 1,
+  "spacing": 1048576,
+  "target": {
+    "path": "release232/skani/database/sketches.db",
+    "offset": 3072,
+    "size": 75270701831
+  },
+  "checkpoints": 69767,
+  "members": [
+    {
+      "path": "release232/",
+      "offset": 512,
+      "size": 0
+    },
+    {
+      "path": "release232/skani/",
+      "offset": 1024,
+      "size": 0
+    },
+    {
+      "path": "release232/skani/create_genome_paths.sh",
+      "offset": 1536,
+      "size": 319
+    },
+    {
+      "path": "release232/skani/database/",
+      "offset": 2560,
+      "size": 0
+    },
+    {
+      "path": "release232/skani/database/sketches.db",
+      "offset": 3072,
+      "size": 75270701831
+    },
+    {
+      "path": "release232/skani/database/index.db",
+      "offset": 75270705664,
+      "size": 39984608
+    },
+    {
+      "path": "release232/skani/database/markers.bin",
+      "offset": 75310690816,
+      "size": 9864161739
+    },
+    {
+      "path": "release232/skani/database/metadata.tsv",
+      "offset": 85174853120,
+      "size": 390
+    },
+    {
+      "path": "release232/markers/",
+      "offset": 85174854144,
+      "size": 0
+    },
+    {
+      "path": "release232/markers/pfam/",
+      "offset": 85174854656,
+      "size": 0
+    },
+    {
+      "path": "release232/markers/pfam/generatePfamdat.py",
+      "offset": 85174855168,
+      "size": 728
+    },
+    {
+      "path": "release232/markers/pfam/Pfam-A.hmm.dat.origin",
+      "offset": 85174856704,
+      "size": 2991042
+    },
+    {
+      "path": "release232/markers/pfam/Pfam-A.hmm.dat",
+      "offset": 85177848320,
+      "size": 2583
+    },
+    {
+      "path": "release232/markers/pfam/Pfam-A.hmm",
+      "offset": 85177851904,
+      "size": 986999
+    },
+    {
+      "path": "release232/markers/pfam/Pfam-A.hmm.h3i",
+      "offset": 85178839552,
+      "size": 1177
+    },
+    {
+      "path": "release232/markers/pfam/Pfam-A.hmm.h3m",
+      "offset": 85178841600,
+      "size": 410178
+    },
+    {
+      "path": "release232/markers/pfam/Pfam-A.hmm.h3f",
+      "offset": 85179252736,
+      "size": 256114
+    },
+    {
+      "path": "release232/markers/pfam/Pfam-A.hmm.h3p",
+      "offset": 85179509760,
+      "size": 481909
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/",
+      "offset": 85179992576,
+      "size": 0
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF04919.13.hmm",
+      "offset": 85179993088,
+      "size": 85289
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/copy_markers.sh",
+      "offset": 85180079104,
+      "size": 12442
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF07541.13.hmm",
+      "offset": 85180092416,
+      "size": 54161
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF01000.27.hmm",
+      "offset": 85180147200,
+      "size": 53214
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF00687.22.hmm",
+      "offset": 85180200960,
+      "size": 95989
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF00466.21.hmm",
+      "offset": 85180297728,
+      "size": 47617
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF00827.18.hmm",
+      "offset": 85180346368,
+      "size": 88995
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF01280.21.hmm",
+      "offset": 85180435968,
+      "size": 68080
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF01090.20.hmm",
+      "offset": 85180504576,
+      "size": 64825
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF01200.19.hmm",
+      "offset": 85180570112,
+      "size": 30878
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF01015.19.hmm",
+      "offset": 85180601856,
+      "size": 91794
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF00900.21.hmm",
+      "offset": 85180694528,
+      "size": 35989
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF00410.20.hmm",
+      "offset": 85180731392,
+      "size": 59705
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF02576.18.hmm",
+      "offset": 85180791808,
+      "size": 35054
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF01025.20.hmm",
+      "offset": 85180827648,
+      "size": 78281
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF03726.15.hmm",
+      "offset": 85180906496,
+      "size": 39744
+    },
+    {
+      "path": "release232/markers/pfam/individual_hmms/PF00380.20.hmm",
+      "offset": 85180946944,
+      "size": 57384
+    },
+    {
+      "path": "release232/markers/tigrfam/",
+      "offset": 85181005312,
+      "size": 0
+    },
+    {
+      "path": "release232/markers/tigrfam/tigrfam.hmm",
+      "offset": 85181005824,
+      "size": 23840612
+    },
+    {
+      "path": "release232/markers/tigrfam/tigrfam.hmm.h3i",
+      "offset": 85204847104,
+      "size": 8618
+    },
+    {
+      "path": "release232/markers/tigrfam/tigrfam.hmm.h3m",
+      "offset": 85204856320,
+      "size": 9967436
+    },
+    {
+      "path": "release232/markers/tigrfam/tigrfam.hmm.h3f",
+      "offset": 85214824448,
+      "size": 4273448
+    },
+    {
+      "path": "release232/markers/tigrfam/tigrfam.hmm.h3p",
+      "offset": 85219098624,
+      "size": 11709354
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/",
+      "offset": 85230808576,
+      "size": 0
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00006.HMM",
+      "offset": 85230809088,
+      "size": 144050
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00019.HMM",
+      "offset": 85230953984,
+      "size": 167539
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00020.HMM",
+      "offset": 85231122432,
+      "size": 169382
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00029.HMM",
+      "offset": 85231292416,
+      "size": 41207
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00037.HMM",
+      "offset": 85231334400,
+      "size": 61047
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00043.HMM",
+      "offset": 85231396352,
+      "size": 52284
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00054.HMM",
+      "offset": 85231449600,
+      "size": 195195
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00059.HMM",
+      "offset": 85231645696,
+      "size": 52733
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00061.HMM",
+      "offset": 85231698944,
+      "size": 47663
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00064.HMM",
+      "offset": 85231747584,
+      "size": 129755
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00065.HMM",
+      "offset": 85231878144,
+      "size": 163845
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00082.HMM",
+      "offset": 85232043008,
+      "size": 54120
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00083.HMM",
+      "offset": 85232097792,
+      "size": 134811
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00084.HMM",
+      "offset": 85232233472,
+      "size": 89631
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00086.HMM",
+      "offset": 85232324096,
+      "size": 67490
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00088.HMM",
+      "offset": 85232392192,
+      "size": 108539
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00090.HMM",
+      "offset": 85232501248,
+      "size": 46756
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00092.HMM",
+      "offset": 85232548864,
+      "size": 170764
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00095.HMM",
+      "offset": 85232720384,
+      "size": 90574
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00111.HMM",
+      "offset": 85232811520,
+      "size": 162932
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00115.HMM",
+      "offset": 85232975360,
+      "size": 190110
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00116.HMM",
+      "offset": 85233166336,
+      "size": 136189
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00134.HMM",
+      "offset": 85233303040,
+      "size": 287880
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00138.HMM",
+      "offset": 85233591808,
+      "size": 85500
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00158.HMM",
+      "offset": 85233677824,
+      "size": 69328
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00166.HMM",
+      "offset": 85233747968,
+      "size": 44894
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00168.HMM",
+      "offset": 85233793536,
+      "size": 77180
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00186.HMM",
+      "offset": 85233871360,
+      "size": 111779
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00194.HMM",
+      "offset": 85233984000,
+      "size": 265727
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00250.HMM",
+      "offset": 85234250240,
+      "size": 61069
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00279.HMM",
+      "offset": 85234312192,
+      "size": 80409
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00291.HMM",
+      "offset": 85234393600,
+      "size": 107618
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00323.HMM",
+      "offset": 85234502144,
+      "size": 100246
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00335.HMM",
+      "offset": 85234603008,
+      "size": 150507
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00337.HMM",
+      "offset": 85234754048,
+      "size": 243586
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00344.HMM",
+      "offset": 85234998272,
+      "size": 391574
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00362.HMM",
+      "offset": 85235390464,
+      "size": 202591
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00373.HMM",
+      "offset": 85235593728,
+      "size": 75794
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00382.HMM",
+      "offset": 85235670528,
+      "size": 191993
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00392.HMM",
+      "offset": 85235863040,
+      "size": 398032
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00396.HMM",
+      "offset": 85236261888,
+      "size": 389735
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00398.HMM",
+      "offset": 85236652544,
+      "size": 245439
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00405.HMM",
+      "offset": 85236898816,
+      "size": 67971
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00414.HMM",
+      "offset": 85236967424,
+      "size": 193805
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00416.HMM",
+      "offset": 85237161984,
+      "size": 210403
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00420.HMM",
+      "offset": 85237372928,
+      "size": 162958
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00431.HMM",
+      "offset": 85237536768,
+      "size": 97926
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00435.HMM",
+      "offset": 85237635584,
+      "size": 215935
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00436.HMM",
+      "offset": 85237852160,
+      "size": 125577
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00442.HMM",
+      "offset": 85237978624,
+      "size": 188277
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00445.HMM",
+      "offset": 85238167552,
+      "size": 149117
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00448.HMM",
+      "offset": 85238317568,
+      "size": 83633
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00456.HMM",
+      "offset": 85238402048,
+      "size": 263418
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00459.HMM",
+      "offset": 85238666240,
+      "size": 271260
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00460.HMM",
+      "offset": 85238938112,
+      "size": 146333
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00468.HMM",
+      "offset": 85239085056,
+      "size": 150493
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00472.HMM",
+      "offset": 85239236096,
+      "size": 369011
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00483.HMM",
+      "offset": 85239605760,
+      "size": 197989
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00487.HMM",
+      "offset": 85239804416,
+      "size": 271727
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00491.HMM",
+      "offset": 85240076800,
+      "size": 274957
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00496.HMM",
+      "offset": 85240352768,
+      "size": 82245
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00522.HMM",
+      "offset": 85240435712,
+      "size": 120043
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00539.HMM",
+      "offset": 85240556544,
+      "size": 167568
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00580.HMM",
+      "offset": 85240724992,
+      "size": 426626
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00593.HMM",
+      "offset": 85241152512,
+      "size": 411394
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00615.HMM",
+      "offset": 85241564672,
+      "size": 91468
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00631.HMM",
+      "offset": 85241656832,
+      "size": 304451
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00634.HMM",
+      "offset": 85241961984,
+      "size": 260653
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00635.HMM",
+      "offset": 85242223616,
+      "size": 141727
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00643.HMM",
+      "offset": 85242365952,
+      "size": 291088
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00663.HMM",
+      "offset": 85242657792,
+      "size": 170306
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00717.HMM",
+      "offset": 85242828800,
+      "size": 238983
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00755.HMM",
+      "offset": 85243068416,
+      "size": 119150
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00810.HMM",
+      "offset": 85243188224,
+      "size": 34771
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00922.HMM",
+      "offset": 85243223552,
+      "size": 80433
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00928.HMM",
+      "offset": 85243304960,
+      "size": 202106
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00959.HMM",
+      "offset": 85243507712,
+      "size": 198430
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00963.HMM",
+      "offset": 85243706880,
+      "size": 363931
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00964.HMM",
+      "offset": 85244071424,
+      "size": 27399
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00967.HMM",
+      "offset": 85244099584,
+      "size": 191984
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR00982.HMM",
+      "offset": 85244292096,
+      "size": 65192
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01008.HMM",
+      "offset": 85244358144,
+      "size": 91010
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01009.HMM",
+      "offset": 85244449792,
+      "size": 98843
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01011.HMM",
+      "offset": 85244549632,
+      "size": 104833
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01012.HMM",
+      "offset": 85244655104,
+      "size": 91469
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01017.HMM",
+      "offset": 85244747264,
+      "size": 93311
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01018.HMM",
+      "offset": 85244841472,
+      "size": 75787
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01020.HMM",
+      "offset": 85244918272,
+      "size": 98848
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01021.HMM",
+      "offset": 85245018112,
+      "size": 73030
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01028.HMM",
+      "offset": 85245091840,
+      "size": 86859
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01029.HMM",
+      "offset": 85245179392,
+      "size": 72106
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01032.HMM",
+      "offset": 85245252096,
+      "size": 53663
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01039.HMM",
+      "offset": 85245306368,
+      "size": 214099
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01044.HMM",
+      "offset": 85245521408,
+      "size": 48590
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01046.HMM",
+      "offset": 85245570560,
+      "size": 46750
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01052.HMM",
+      "offset": 85245618176,
+      "size": 226087
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01059.HMM",
+      "offset": 85245844992,
+      "size": 295687
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01063.HMM",
+      "offset": 85246141440,
+      "size": 369908
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01066.HMM",
+      "offset": 85246512128,
+      "size": 66109
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01071.HMM",
+      "offset": 85246579200,
+      "size": 67492
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01079.HMM",
+      "offset": 85246647296,
+      "size": 49052
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01082.HMM",
+      "offset": 85246696960,
+      "size": 208115
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01087.HMM",
+      "offset": 85246905856,
+      "size": 204436
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01128.HMM",
+      "offset": 85247111168,
+      "size": 145868
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01146.HMM",
+      "offset": 85247257600,
+      "size": 132971
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01164.HMM",
+      "offset": 85247391232,
+      "size": 59195
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01169.HMM",
+      "offset": 85247451136,
+      "size": 105761
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01171.HMM",
+      "offset": 85247557632,
+      "size": 127889
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01213.HMM",
+      "offset": 85247686144,
+      "size": 179535
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01302.HMM",
+      "offset": 85247866368,
+      "size": 208584
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01391.HMM",
+      "offset": 85248075776,
+      "size": 191952
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01393.HMM",
+      "offset": 85248268288,
+      "size": 275402
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01394.HMM",
+      "offset": 85248544256,
+      "size": 274955
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01510.HMM",
+      "offset": 85248820224,
+      "size": 72591
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01632.HMM",
+      "offset": 85248893440,
+      "size": 65653
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01951.HMM",
+      "offset": 85248960000,
+      "size": 61515
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01952.HMM",
+      "offset": 85249022464,
+      "size": 66126
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR01953.HMM",
+      "offset": 85249089536,
+      "size": 157864
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02012.HMM",
+      "offset": 85249248256,
+      "size": 149089
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02013.HMM",
+      "offset": 85249398272,
+      "size": 571847
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02027.HMM",
+      "offset": 85249970688,
+      "size": 138508
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02075.HMM",
+      "offset": 85250109952,
+      "size": 108516
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02191.HMM",
+      "offset": 85250219008,
+      "size": 102067
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02236.HMM",
+      "offset": 85250321920,
+      "size": 144506
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02273.HMM",
+      "offset": 85250467328,
+      "size": 77643
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02338.HMM",
+      "offset": 85250545664,
+      "size": 51819
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02350.HMM",
+      "offset": 85250598400,
+      "size": 275871
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02386.HMM",
+      "offset": 85250874880,
+      "size": 529903
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02389.HMM",
+      "offset": 85251405312,
+      "size": 170323
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02390.HMM",
+      "offset": 85251576320,
+      "size": 400825
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02397.HMM",
+      "offset": 85251977728,
+      "size": 164789
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02432.HMM",
+      "offset": 85252143104,
+      "size": 88250
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR02729.HMM",
+      "offset": 85252232192,
+      "size": 152784
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03263.HMM",
+      "offset": 85252385792,
+      "size": 84090
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03594.HMM",
+      "offset": 85252470784,
+      "size": 200279
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03625.HMM",
+      "offset": 85252672000,
+      "size": 94238
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03626.HMM",
+      "offset": 85252767232,
+      "size": 153703
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03627.HMM",
+      "offset": 85252921856,
+      "size": 61043
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03628.HMM",
+      "offset": 85252983808,
+      "size": 55052
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03629.HMM",
+      "offset": 85253039616,
+      "size": 67498
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03632.HMM",
+      "offset": 85253107712,
+      "size": 55050
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03654.HMM",
+      "offset": 85253163520,
+      "size": 81787
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03670.HMM",
+      "offset": 85253245952,
+      "size": 277269
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03671.HMM",
+      "offset": 85253523968,
+      "size": 190123
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03672.HMM",
+      "offset": 85253714944,
+      "size": 116830
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03673.HMM",
+      "offset": 85253832704,
+      "size": 61510
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03674.HMM",
+      "offset": 85253895168,
+      "size": 156946
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03676.HMM",
+      "offset": 85254052864,
+      "size": 186937
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03680.HMM",
+      "offset": 85254240768,
+      "size": 188766
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03723.HMM",
+      "offset": 85254430208,
+      "size": 145910
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03725.HMM",
+      "offset": 85254576640,
+      "size": 98877
+    },
+    {
+      "path": "release232/markers/tigrfam/individual_hmms/TIGR03953.HMM",
+      "offset": 85254676480,
+      "size": 87784
+    },
+    {
+      "path": "release232/masks/",
+      "offset": 85254765056,
+      "size": 0
+    },
+    {
+      "path": "release232/masks/gtdb_r232_ar53.mask",
+      "offset": 85254765568,
+      "size": 13540
+    },
+    {
+      "path": "release232/masks/gtdb_r232_bac120.mask",
+      "offset": 85254779904,
+      "size": 41084
+    },
+    {
+      "path": "release232/metadata/",
+      "offset": 85254821888,
+      "size": 0
+    },
+    {
+      "path": "release232/metadata/metadata.txt",
+      "offset": 85254822400,
+      "size": 333
+    },
+    {
+      "path": "release232/msa/",
+      "offset": 85254823424,
+      "size": 0
+    },
+    {
+      "path": "release232/msa/gtdb_r232_ar53.faa",
+      "offset": 85254823936,
+      "size": 137264442
+    },
+    {
+      "path": "release232/msa/gtdb_r232_bac120.faa",
+      "offset": 85392089088,
+      "size": 7801770105
+    },
+    {
+      "path": "release232/mrca_red/",
+      "offset": 93193860096,
+      "size": 0
+    },
+    {
+      "path": "release232/mrca_red/gtdbtk_r232_ar53.tsv",
+      "offset": 93193860608,
+      "size": 759103
+    },
+    {
+      "path": "release232/mrca_red/gtdbtk_r232_bac120.tsv",
+      "offset": 93194620416,
+      "size": 14234746
+    },
+    {
+      "path": "release232/pplacer/",
+      "offset": 93208856064,
+      "size": 0
+    },
+    {
+      "path": "release232/pplacer/gtdb_r232_bac120.refpkg/",
+      "offset": 93208856576,
+      "size": 0
+    },
+    {
+      "path": "release232/pplacer/gtdb_r232_bac120.refpkg/phylo_modellhc1b2n4.json",
+      "offset": 93208857088,
+      "size": 78656
+    },
+    {
+      "path": "release232/pplacer/gtdb_r232_bac120.refpkg/bac120_msa_reps_r232.faa",
+      "offset": 93208936448,
+      "size": 954888831
+    },
+    {
+      "path": "release232/pplacer/gtdb_r232_bac120.refpkg/gtdb_r232_bac120_decorated_unrooted.tree",
+      "offset": 94163826176,
+      "size": 8154694
+    },
+    {
+      "path": "release232/pplacer/gtdb_r232_bac120.refpkg/gtdb_r232_bac120_fasttree.log",
+      "offset": 94171981824,
+      "size": 517985300
+    },
+    {
+      "path": "release232/pplacer/gtdb_r232_bac120.refpkg/CONTENTS.json",
+      "offset": 94689968128,
+      "size": 792
+    },
+    {
+      "path": "release232/pplacer/gtdb_r232_ar53.refpkg/",
+      "offset": 94689969664,
+      "size": 0
+    },
+    {
+      "path": "release232/pplacer/gtdb_r232_ar53.refpkg/CONTENTS.json",
+      "offset": 94689970176,
+      "size": 774
+    },
+    {
+      "path": "release232/pplacer/gtdb_r232_ar53.refpkg/phylo_modelmx4efcu5.json",
+      "offset": 94689971712,
+      "size": 68813
+    },
+    {
+      "path": "release232/pplacer/gtdb_r232_ar53.refpkg/ar53_msa_reps_r232.faa",
+      "offset": 94690041344,
+      "size": 44435580
+    },
+    {
+      "path": "release232/pplacer/gtdb_r232_ar53.refpkg/gtdb_r232_ar53_decorated_unrooted.tree",
+      "offset": 94734477824,
+      "size": 489133
+    },
+    {
+      "path": "release232/pplacer/gtdb_r232_ar53.refpkg/fitting_stats.log",
+      "offset": 94734967808,
+      "size": 2745874
+    },
+    {
+      "path": "release232/radii/",
+      "offset": 94737714688,
+      "size": 0
+    },
+    {
+      "path": "release232/radii/gtdb_radii.tsv",
+      "offset": 94737715200,
+      "size": 10974845
+    },
+    {
+      "path": "release232/taxonomy/",
+      "offset": 94748690944,
+      "size": 0
+    },
+    {
+      "path": "release232/taxonomy/ar53_taxonomy_r232_reps.tsv",
+      "offset": 94748691456,
+      "size": 1415189
+    },
+    {
+      "path": "release232/taxonomy/bac120_taxonomy_r232_reps.tsv",
+      "offset": 94750107648,
+      "size": 26823382
+    },
+    {
+      "path": "release232/taxonomy/gtdb_taxonomy.tsv",
+      "offset": 94776931840,
+      "size": 28238571
+    },
+    {
+      "path": "release232/split/",
+      "offset": 94805171200,
+      "size": 0
+    },
+    {
+      "path": "release232/split/backbone/",
+      "offset": 94805171712,
+      "size": 0
+    },
+    {
+      "path": "release232/split/backbone/pplacer/",
+      "offset": 94805172224,
+      "size": 0
+    },
+    {
+      "path": "release232/split/backbone/pplacer/gtdbtk_package_backbone.refpkg/",
+      "offset": 94805172736,
+      "size": 0
+    },
+    {
+      "path": "release232/split/backbone/pplacer/gtdbtk_package_backbone.refpkg/CONTENTS.json",
+      "offset": 94805173248,
+      "size": 789
+    },
+    {
+      "path": "release232/split/backbone/pplacer/gtdbtk_package_backbone.refpkg/phylo_modelca1133nq.json",
+      "offset": 94805174784,
+      "size": 78656
+    },
+    {
+      "path": "release232/split/backbone/pplacer/gtdbtk_package_backbone.refpkg/msa_file.fa",
+      "offset": 94805254144,
+      "size": 30427488
+    },
+    {
+      "path": "release232/split/backbone/pplacer/gtdbtk_package_backbone.refpkg/decorated_unrooted_tree.tree",
+      "offset": 94835682304,
+      "size": 281698
+    },
+    {
+      "path": "release232/split/backbone/pplacer/gtdbtk_package_backbone.refpkg/gtdb_r232_bac120_fasttree.log",
+      "offset": 94835964928,
+      "size": 517985300
+    },
+    {
+      "path": "release232/split/backbone/red/",
+      "offset": 95353951232,
+      "size": 0
+    },
+    {
+      "path": "release232/split/backbone/red/backbone_red_value.tsv",
+      "offset": 95353951744,
+      "size": 453553
+    },
+    {
+      "path": "release232/split/class_level/",
+      "offset": 95354405888,
+      "size": 0
+    },
+    {
+      "path": "release232/split/class_level/tree_mapping.tsv",
+      "offset": 95354406400,
+      "size": 8951
+    },
+    {
+      "path": "release232/split/class_level/pplacer/",
+      "offset": 95354416128,
+      "size": 0
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.1.refpkg/",
+      "offset": 95354416640,
+      "size": 0
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.1.refpkg/CONTENTS.json",
+      "offset": 95354417152,
+      "size": 784
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.1.refpkg/phylo_modeltukm1vc_.json",
+      "offset": 95354418688,
+      "size": 78656
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.1.refpkg/1_msa.fa",
+      "offset": 95354498048,
+      "size": 128139570
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.1.refpkg/1_decorated_unrooted_tree.tree",
+      "offset": 95482638336,
+      "size": 1082326
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.1.refpkg/gtdb_r232_bac120_fasttree.log",
+      "offset": 95483721216,
+      "size": 517985300
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.2.refpkg/",
+      "offset": 96001707520,
+      "size": 0
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.2.refpkg/CONTENTS.json",
+      "offset": 96001708032,
+      "size": 784
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.2.refpkg/phylo_modelomdjy28i.json",
+      "offset": 96001709568,
+      "size": 78656
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.2.refpkg/2_msa.fa",
+      "offset": 96001788928,
+      "size": 139303359
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.2.refpkg/2_decorated_unrooted_tree.tree",
+      "offset": 96141092864,
+      "size": 1180060
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.2.refpkg/gtdb_r232_bac120_fasttree.log",
+      "offset": 96142273536,
+      "size": 517985300
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.3.refpkg/",
+      "offset": 96660259840,
+      "size": 0
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.3.refpkg/CONTENTS.json",
+      "offset": 96660260352,
+      "size": 784
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.3.refpkg/phylo_model3z78ef37.json",
+      "offset": 96660261888,
+      "size": 78656
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.3.refpkg/3_msa.fa",
+      "offset": 96660341248,
+      "size": 118630980
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.3.refpkg/3_decorated_unrooted_tree.tree",
+      "offset": 96778973184,
+      "size": 1001988
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.3.refpkg/gtdb_r232_bac120_fasttree.log",
+      "offset": 96779976192,
+      "size": 517985300
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.4.refpkg/",
+      "offset": 97297962496,
+      "size": 0
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.4.refpkg/CONTENTS.json",
+      "offset": 97297963008,
+      "size": 784
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.4.refpkg/phylo_modeljoowvhah.json",
+      "offset": 97297964544,
+      "size": 78656
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.4.refpkg/4_msa.fa",
+      "offset": 97298043904,
+      "size": 137537478
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.4.refpkg/4_decorated_unrooted_tree.tree",
+      "offset": 97435581952,
+      "size": 1170871
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.4.refpkg/gtdb_r232_bac120_fasttree.log",
+      "offset": 97436753408,
+      "size": 517985300
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.5.refpkg/",
+      "offset": 97954739712,
+      "size": 0
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.5.refpkg/CONTENTS.json",
+      "offset": 97954740224,
+      "size": 784
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.5.refpkg/phylo_model2d6sxn61.json",
+      "offset": 97954741760,
+      "size": 78656
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.5.refpkg/5_msa.fa",
+      "offset": 97954821120,
+      "size": 131968161
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.5.refpkg/5_decorated_unrooted_tree.tree",
+      "offset": 98086790144,
+      "size": 1107370
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.5.refpkg/gtdb_r232_bac120_fasttree.log",
+      "offset": 98087898112,
+      "size": 517985300
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.6.refpkg/",
+      "offset": 98605884416,
+      "size": 0
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.6.refpkg/CONTENTS.json",
+      "offset": 98605884928,
+      "size": 784
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.6.refpkg/phylo_model_pq81zio.json",
+      "offset": 98605886464,
+      "size": 78656
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.6.refpkg/6_msa.fa",
+      "offset": 98605965824,
+      "size": 134549064
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.6.refpkg/6_decorated_unrooted_tree.tree",
+      "offset": 98740515840,
+      "size": 1172186
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.6.refpkg/gtdb_r232_bac120_fasttree.log",
+      "offset": 98741688832,
+      "size": 517985300
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.7.refpkg/",
+      "offset": 99259675136,
+      "size": 0
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.7.refpkg/CONTENTS.json",
+      "offset": 99259675648,
+      "size": 784
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.7.refpkg/phylo_modelixvcsfp4.json",
+      "offset": 99259677184,
+      "size": 78656
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.7.refpkg/7_msa.fa",
+      "offset": 99259756544,
+      "size": 89189568
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.7.refpkg/7_decorated_unrooted_tree.tree",
+      "offset": 99348946944,
+      "size": 775690
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.7.refpkg/gtdb_r232_bac120_fasttree.log",
+      "offset": 99349723648,
+      "size": 517985300
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.8.refpkg/",
+      "offset": 99867709952,
+      "size": 0
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.8.refpkg/CONTENTS.json",
+      "offset": 99867710464,
+      "size": 784
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.8.refpkg/phylo_model2n92uq1b.json",
+      "offset": 99867712000,
+      "size": 78656
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.8.refpkg/8_msa.fa",
+      "offset": 99867791360,
+      "size": 81622944
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.8.refpkg/8_decorated_unrooted_tree.tree",
+      "offset": 99949414912,
+      "size": 716773
+    },
+    {
+      "path": "release232/split/class_level/pplacer/gtdbtk.package.8.refpkg/gtdb_r232_bac120_fasttree.log",
+      "offset": 99950132224,
+      "size": 517985300
+    },
+    {
+      "path": "release232/split/class_level/red/",
+      "offset": 100468118528,
+      "size": 0
+    },
+    {
+      "path": "release232/split/class_level/red/red_value_1.tsv",
+      "offset": 100468119040,
+      "size": 1909968
+    },
+    {
+      "path": "release232/split/class_level/red/red_value_2.tsv",
+      "offset": 100470029824,
+      "size": 2076628
+    },
+    {
+      "path": "release232/split/class_level/red/red_value_3.tsv",
+      "offset": 100472107008,
+      "size": 1768453
+    },
+    {
+      "path": "release232/split/class_level/red/red_value_4.tsv",
+      "offset": 100473876480,
+      "size": 2050256
+    },
+    {
+      "path": "release232/split/class_level/red/red_value_5.tsv",
+      "offset": 100475927552,
+      "size": 1967278
+    },
+    {
+      "path": "release232/split/class_level/red/red_value_6.tsv",
+      "offset": 100477895680,
+      "size": 2005753
+    },
+    {
+      "path": "release232/split/class_level/red/red_value_7.tsv",
+      "offset": 100479902208,
+      "size": 1329553
+    },
+    {
+      "path": "release232/split/class_level/red/red_value_8.tsv",
+      "offset": 100481232384,
+      "size": 1216753
+    }
+  ]
+}

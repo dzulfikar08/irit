@@ -1,0 +1,9 @@
+genomes/Bsubtilis_168.fna 1 contigs 4215606 bp
+genomes/Ecoli_400kb_piece.fna 1 contigs 400000 bp
+genomes/Ecoli_K12_MG1655.fna 1 contigs 4641652 bp
+genomes/G021783475.fna 138 contigs 1906805 bp
+genomes/Mgenitalium_G37_table4.fna 1 contigs 580076 bp
+genomes/Nanosynbacter_lyticus_TM7x_CPR.fna 1 contigs 705138 bp
+genomes/Omnitrophota_bacterium_2026.fna 1 contigs 2487890 bp
+genomes/Paeruginosa_PAO1.fna 1 contigs 6264404 bp
+genomes/Promethearchaeum_syntrophicum_Asgard.fna 1 contigs 4324194 bp

@@ -1,0 +1,34 @@
+/home/runner/gtdb/idx/:
+total 1715864
+drwxr-xr-x 2 runner runner       4096 Nov 10 18:06 .
+drwxr-xr-x 8 runner root         4096 Nov 10 18:06 ..
+-rw-r--r-- 4 runner runner 1748824109 Nov 10 18:03 markers.idx
+-rw-r--r-- 1 runner runner       2169 Nov 10 18:06 meta.json
+-rw-r--r-- 4 runner runner    8196843 Nov 10 18:06 refs.bin
+
+/home/runner/gtdb/idx1/:
+total 3950048
+drwxr-xr-x 2 runner runner       4096 Nov 10 18:06 .
+drwxr-xr-x 8 runner root         4096 Nov 10 18:06 ..
+-rw-r--r-- 1 runner runner 2287799488 Nov 10 18:06 gz.idx
+-rw-r--r-- 4 runner runner 1748824109 Nov 10 18:03 markers.idx
+-rw-r--r-- 1 runner runner       2583 Nov 10 18:06 meta.json
+-rw-r--r-- 4 runner runner    8196843 Nov 10 18:06 refs.bin
+
+/home/runner/gtdb/idx16/:
+total 1855552
+drwxr-xr-x 2 runner runner       4096 Nov 10 18:06 .
+drwxr-xr-x 8 runner root         4096 Nov 10 18:06 ..
+-rw-r--r-- 1 runner runner  143038728 Nov 10 18:06 gz.idx
+-rw-r--r-- 4 runner runner 1748824109 Nov 10 18:03 markers.idx
+-rw-r--r-- 1 runner runner       2584 Nov 10 18:06 meta.json
+-rw-r--r-- 4 runner runner    8196843 Nov 10 18:06 refs.bin
+
+/home/runner/gtdb/idx4/:
+total 2274452
+drwxr-xr-x 2 runner runner       4096 Nov 10 18:06 .
+drwxr-xr-x 8 runner root         4096 Nov 10 18:06 ..
+-rw-r--r-- 1 runner runner  571990880 Nov 10 18:06 gz.idx
+-rw-r--r-- 4 runner runner 1748824109 Nov 10 18:03 markers.idx
+-rw-r--r-- 1 runner runner       2583 Nov 10 18:06 meta.json
+-rw-r--r-- 4 runner runner    8196843 Nov 10 18:06 refs.bin

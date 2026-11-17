@@ -1,0 +1,2 @@
+user_genome	reference_genome	skani_ani	skani_af	reference_taxonomy	other_related_references(genome_id,species_name,radius,ANI,AF)
+Promethearchaeum_syntrophicum_Asgard	GCF_008000775.2	100.0	1.0	d__Archaea;p__Asgardarchaeota;c__Lokiarchaeia;o__Sigyniarchaeales;f__Promethearchaeaceae;g__Promethearchaeum;s__Promethearchaeum syntrophicum	

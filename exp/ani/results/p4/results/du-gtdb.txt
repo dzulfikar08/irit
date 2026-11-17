@@ -1,0 +1,10 @@
+4.0K	gtdb4/assigned.json
+4.0K	gtdb4/bin
+1.6G	gtdb4/cache
+1.7G	gtdb4/db
+4.0K	gtdb4/genomes.json
+8.0K	gtdb4/gtdbtk_data
+8.0K	gtdb4/logs
+28K	gtdb4/out
+4.0K	gtdb4/query_list.txt
+2.9M	gtdb4/query_sketch

@@ -1,0 +1,23 @@
+	Command being timed: "/home/runner/work/irit/irit/target/release/gtdbprep ani-index build --db /home/runner/gtdb/release232//skani/database --out /home/runner/gtdb/idx --release r232"
+	User time (seconds): 64.57
+	System time (seconds): 11.14
+	Percent of CPU this job got: 28%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 4:23.57
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 73108
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 17344
+	Voluntary context switches: 240853
+	Involuntary context switches: 356
+	Swaps: 0
+	File system inputs: 164508536
+	File system outputs: 3431712
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

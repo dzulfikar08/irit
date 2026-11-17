@@ -1,0 +1,59 @@
+gtdbprep: running /home/runner/micromamba/envs/gtdb/bin/python3 -c <inline script> list 2.8.0 /home/runner/work/irit/irit/genomes51 fna /home/runner/work/irit/irit/c51/genomes.json
+gtdbprep: running /home/runner/micromamba/envs/gtdb/bin/skani sketch -l /home/runner/work/irit/irit/c51/query_list.txt -o /home/runner/work/irit/irit/c51/query_sketch -t 4 -c 125 -m 1000
+gtdbprep: fetching 3166 reference sketch(es) from /home/runner/gtdb/release232//skani/database/sketches.db
+gtdbprep: running /home/runner/micromamba/envs/gtdb/bin/python3 -c <inline script> screen 2.8.0 /home/runner/work/irit/irit/c51/genomes.json /home/runner/work/irit/irit/c51/out gtdbtk 4 /home/runner/work/irit/irit/c51/assigned.json
+genome	markers	candidates	assigned_by_ani
+c00_Bsubtilis_168	4107	23	true
+c01_Ecoli_400kb_piece	385	1941	true
+c02_Ecoli_K12_MG1655	4419	420	true
+c03_G021783475	1858	9	true
+c04_Mgenitalium_G37_table4	542	2	true
+c05_Nanosynbacter_lyticus_TM7x_CPR	710	176	true
+c06_Omnitrophota_bacterium_2026	2404	6	false
+c07_Paeruginosa_PAO1	6187	1090	true
+c08_Promethearchaeum_syntrophicum_Asgard	4355	15	true
+c09_Bsubtilis_168	4107	23	true
+c10_Ecoli_400kb_piece	385	1941	true
+c11_Ecoli_K12_MG1655	4419	420	true
+c12_G021783475	1858	9	true
+c13_Mgenitalium_G37_table4	542	2	true
+c14_Nanosynbacter_lyticus_TM7x_CPR	710	176	true
+c15_Omnitrophota_bacterium_2026	2404	6	false
+c16_Paeruginosa_PAO1	6187	1090	true
+c17_Promethearchaeum_syntrophicum_Asgard	4355	15	true
+c18_Bsubtilis_168	4107	23	true
+c19_Ecoli_400kb_piece	385	1941	true
+c20_Ecoli_K12_MG1655	4419	420	true
+c21_G021783475	1858	9	true
+c22_Mgenitalium_G37_table4	542	2	true
+c23_Nanosynbacter_lyticus_TM7x_CPR	710	176	true
+c24_Omnitrophota_bacterium_2026	2404	6	false
+c25_Paeruginosa_PAO1	6187	1090	true
+c26_Promethearchaeum_syntrophicum_Asgard	4355	15	true
+c27_Bsubtilis_168	4107	23	true
+c28_Ecoli_400kb_piece	385	1941	true
+c29_Ecoli_K12_MG1655	4419	420	true
+c30_G021783475	1858	9	true
+c31_Mgenitalium_G37_table4	542	2	true
+c32_Nanosynbacter_lyticus_TM7x_CPR	710	176	true
+c33_Omnitrophota_bacterium_2026	2404	6	false
+c34_Paeruginosa_PAO1	6187	1090	true
+c35_Promethearchaeum_syntrophicum_Asgard	4355	15	true
+c36_Bsubtilis_168	4107	23	true
+c37_Ecoli_400kb_piece	385	1941	true
+c38_Ecoli_K12_MG1655	4419	420	true
+c39_G021783475	1858	9	true
+c40_Mgenitalium_G37_table4	542	2	true
+c41_Nanosynbacter_lyticus_TM7x_CPR	710	176	true
+c42_Omnitrophota_bacterium_2026	2404	6	false
+c43_Paeruginosa_PAO1	6187	1090	true
+c44_Promethearchaeum_syntrophicum_Asgard	4355	15	true
+c45_Bsubtilis_168	4107	23	true
+c46_Ecoli_400kb_piece	385	1941	true
+c47_Ecoli_K12_MG1655	4419	420	true
+c48_G021783475	1858	9	true
+c49_Mgenitalium_G37_table4	542	2	true
+c50_Nanosynbacter_lyticus_TM7x_CPR	710	176	true
+3166 reference(s) screened in, 0 already cached; fetched 1615356823 bytes in 3166 request(s)
+times: screen 7.5 s, fetch 5.8 s, GTDB-Tk 19.4 s
+GTDB-Tk's ANI screen output: /home/runner/work/irit/irit/c51/out/classify/ani_screen

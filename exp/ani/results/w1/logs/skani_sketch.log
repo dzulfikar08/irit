@@ -1,0 +1,5 @@
+[00:00:00.000] (7f56f55c7840) INFO   /home/dzul/.cache/irit-ani-laptop/bin/skani-0.3.1 sketch -l /home/dzul/.cache/irit-ani-laptop/w1/query_list.txt -o /home/dzul/.cache/irit-ani-laptop/w1/query_sketch -t 2 -c 125 -m 1000
+[00:00:00.000] (7f56f55c7840) INFO   Sketching files...
+[00:00:00.023] (7f56f4dfd6c0) INFO   Consolidated sketch database written with 2 sketches
+[00:00:00.023] (7f56f55c7840) INFO   Successfully wrote 2 sketches to consolidated database
+[00:00:00.023] (7f56f55c7840) INFO   Sketching time: 0.023458896

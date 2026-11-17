@@ -1,0 +1,3 @@
+sudo: preserving the entire environment is not supported, '-E' is ignored
+gtdbprep: running /home/runner/micromamba/envs/gtdb/bin/python3 -c <inline script> list 2.8.0 /home/runner/work/irit/irit/genomes51 fna /home/runner/work/irit/irit/ref51/genomes.json
+gtdbprep: running /home/runner/micromamba/envs/gtdb/bin/python3 -c <inline script> screen 2.8.0 /home/runner/work/irit/irit/ref51/genomes.json /home/runner/work/irit/irit/ref51/out gtdbtk 4 /home/runner/work/irit/irit/ref51/assigned.json

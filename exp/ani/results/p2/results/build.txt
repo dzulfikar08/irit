@@ -1,0 +1,1 @@
+199923 references, 644245721 marker k-mers (largest set 15955); markers.bin 9864161739 bytes -> markers.idx 1748824109 bytes + refs.bin 8196843 bytes; largest sketch 2129049 bytes

@@ -1,0 +1,8 @@
+[00:00:00.000] (7f7a4a69d840) INFO   skani search -t 2 -d /home/dzul/.cache/irit-ani-laptop/w2/gtdbtk_data/skani/database/ --ql /home/dzul/.cache/irit-ani-laptop/w2/out/ql.txt --short-header -o /home/dzul/.cache/irit-ani-laptop/w2/out/raw.tsv
+[00:00:00.000] (7f7a4a69d840) INFO   Searching...
+[00:00:00.000] (7f7a4a69d840) WARN   /home/dzul/.cache/irit-ani-laptop/w2/gtdbtk_data/skani/database/metadata.tsv does not have .sketch as an extension; skipping file
+[00:00:00.001] (7f7a4a69d840) INFO   Learned ANI mode detected. ANI may be adjusted according to a regression model trained on MAGs.
+[00:00:00.001] (7f7a4a69d840) INFO   Loading markers time: 0.001566189
+[00:00:00.001] (7f7a4a69d840) INFO   Detected consolidated sketch database format
+[00:00:00.002] (7f7a4a69d840) INFO   Loaded consolidated sketch database with 5 sketches
+[00:00:00.021] (7f7a4a69d840) INFO   Searching time: 0.019860748

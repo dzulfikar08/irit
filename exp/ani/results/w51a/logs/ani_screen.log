@@ -1,0 +1,9 @@
+[00:00:00.000] (7f6100e9b840) INFO   skani search -t 4 -d /home/dzul/.cache/irit-ani-laptop/w51a/gtdbtk_data/skani/database/ --ql /home/dzul/.cache/irit-ani-laptop/w51a/out/ql.txt --short-header -o /home/dzul/.cache/irit-ani-laptop/w51a/out/raw.tsv
+[00:00:00.008] (7f6100e9b840) INFO   Searching...
+[00:00:00.011] (7f6100e9b840) INFO   Learned ANI mode detected. ANI may be adjusted according to a regression model trained on MAGs.
+[00:00:00.011] (7f6100e9b840) INFO   Loading markers time: 0.002704227
+[00:00:00.019] (7f6100e9b840) INFO   Full index option detected; generating marker hash table
+[00:00:00.020] (7f6100e9b840) INFO   Full indexing time: 0.0010122
+[00:00:00.021] (7f6100e9b840) INFO   Detected consolidated sketch database format
+[00:00:00.021] (7f6100e9b840) INFO   Loaded consolidated sketch database with 4 sketches
+[00:00:04.403] (7f6100e9b840) INFO   Searching time: 4.3824058

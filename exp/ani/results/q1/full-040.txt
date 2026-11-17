@@ -1,0 +1,6 @@
+gtdbprep: running /home/runner/micromamba/envs/gtdb/bin/python3 -c <inline script> list 2.8.0 /home/runner/work/irit/irit/genomes fna /home/runner/work/irit/irit/ref040/genomes.json
+gtdbprep: running /home/runner/micromamba/envs/gtdb/bin/python3 -c <inline script> screen 2.8.0 /home/runner/work/irit/irit/ref040/genomes.json /home/runner/work/irit/irit/ref040/out gtdbtk 4 /home/runner/work/irit/irit/ref040/assigned.json
+genome	markers	candidates	assigned_by_ani
+0 reference(s) screened in, 0 already cached; fetched 0 bytes in 0 request(s)
+times: screen 0.0 s, fetch 0.0 s, GTDB-Tk 184.6 s
+GTDB-Tk's ANI screen output: /home/runner/work/irit/irit/ref040/out/classify/ani_screen

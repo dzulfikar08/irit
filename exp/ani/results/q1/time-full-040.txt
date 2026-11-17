@@ -1,0 +1,23 @@
+	Command being timed: "/home/runner/work/irit/irit/target/release/gtdbprep ani --genomes genomes --index /home/runner/gtdb/idx --work ref040 --skani /home/runner/micromamba/envs/skani040/bin/skani --allow-skani-version --data /home/runner/gtdb/release232/ --env /home/runner/micromamba/envs/gtdb --cpus 4 --full-db /home/runner/gtdb/release232//skani/database"
+	User time (seconds): 58.79
+	System time (seconds): 15.18
+	Percent of CPU this job got: 39%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 3:05.08
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 15415096
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 363471
+	Minor (reclaiming a frame) page faults: 4857908
+	Voluntary context switches: 396227
+	Involuntary context switches: 6159
+	Swaps: 0
+	File system inputs: 34060056
+	File system outputs: 80
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

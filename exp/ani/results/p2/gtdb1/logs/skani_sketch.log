@@ -1,0 +1,5 @@
+[00:00:00.000] (79ff7b56f840) INFO   /home/runner/micromamba/envs/gtdb/bin/skani sketch -l /home/runner/work/irit/irit/gtdb1/query_list.txt -o /home/runner/work/irit/irit/gtdb1/query_sketch -t 4 -c 125 -m 1000
+[00:00:00.000] (79ff7b56f840) INFO   Sketching files...
+[00:00:00.037] (79ff7a9fb6c0) INFO   Consolidated sketch database written with 9 sketches
+[00:00:00.037] (79ff7b56f840) INFO   Successfully wrote 9 sketches to consolidated database
+[00:00:00.037] (79ff7b56f840) INFO   Sketching time: 0.03737556
