@@ -2,7 +2,9 @@
 
 GTDB-Tk classifies bacterial and archaeal genomes against the Genome Taxonomy Database. It is the
 standard for metagenome-assembled genomes, and it no longer runs on ordinary computers. This page
-records why, what already helps, and what might.
+records why, what already helps, and what might. *(Stock GTDB-Tk still needs this. irit's
+[`gtdbprep`](../tools/gtdbprep.md) now runs the ANI screen and tree placement on a laptop in under
+8 GB; see the update under [Plan](#plan).)*
 
 ## The numbers
 
@@ -38,7 +40,7 @@ keeps, not interpreter overhead.
 
 | Approach | Status | Effect |
 |---|---|---|
-| GTDB-Tk `--scratch_dir` (+ `--pplacer_cpus 1`) | In GTDB-Tk | pplacer writes its tables to a memory-mapped file instead of RAM. Slower; how low it goes has not been measured here. |
+| GTDB-Tk `--scratch_dir` (+ `--pplacer_cpus 1`) | In GTDB-Tk | pplacer writes its tables to a memory-mapped file instead of RAM. Slower; how low it goes has not been measured here (later: one class tree finished under a 14 GiB cap, [gPlace vs pplacer](gplace-checks.md)). |
 | **gPlace** | New (November 2026), "work in progress" | Drop-in pplacer replacement giving identical placements; under 44 GiB for the largest R226 class tree that needs ~104 GB with pplacer, with a `--max_memory` cap. Being packaged for Bioconda by GTDB-Tk's maintainer. Authors advise checking results with `gplace compare`. |
 | SCAMPP / BSCAMPP | Published (TCBB 2022, 2025) | Place each query into a small subtree chosen around its nearest references, then run pplacer or EPA-ng on that subtree. Scales to 200,000-leaf trees with low memory; BSCAMPP limits subtrees to ~2,000 leaves. Not used by GTDB-Tk. |
 | EPA-ng memory saver | Published (IEEE 2021) | Recomputes intermediate results on demand instead of storing them all: less memory, more time. GTDB-Tk's v2 paper found EPA-ng needed more memory than pplacer in their setting. |
@@ -96,6 +98,11 @@ Hosted options that exist today (2026-11-10):
 2. If gPlace with a memory cap reaches desktop sizes, document the recipe and add it to `dblock`.
 3. Otherwise, prototype lower-precision or compressed tables, ideally as a contribution to gPlace
    rather than a competing tool.
+
+*(Update 2026-11-19: steps 1 and 2 were done on GitHub runners and this laptop rather than a rented
+machine. gPlace placed identically to pplacer down to 1.9–5.2 GiB ([gPlace vs
+pplacer](gplace-checks.md)), and the recipe is in dblock's placement entries and
+[`gtdbprep`](../tools/gtdbprep.md). Step 3 wasn't needed.)*
 
 ## Sources
 

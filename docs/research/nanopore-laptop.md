@@ -154,7 +154,8 @@ Notes:
   mutations that its Autocycler assembly had. On our full read set, Flye + Medaka has all of
   them.
 - **Base-level accuracy** (errors per Mb against an Illumina-polished reference) was not measured
-  here: irit has no read-mapping tool yet. The study measured AF47's Flye assembly at 4
+  here: irit has no read-mapping tool yet (since 0.5.0, `coverm_genome` maps reads for depth;
+  base-level accuracy is still not measured). The study measured AF47's Flye assembly at 4
   substitutions and 6 indels unpolished (Q57.8), and 0 and 0 after Medaka with all reads (Q100)
   (**cited**, `assembly_nucleotide_accuracy_cleaned.csv`).
 
@@ -259,7 +260,7 @@ get a warning naming the copy count where the contig is a clean multiple.
 - **Corrupt downloads.** Four ENA downloads (AHB29 and AF39, twice each) arrived the right size
   but corrupt, with no error from curl; a third copy matched ENA's MD5. Flye stopped at an
   "invalid sequence symbol" deep into the file. Check reads against ENA's MD5s before a run; irit
-  can't do that yet.
+  can't do that yet. *(It can since 0.6.0: `sheetgen verify --ena`, `reads_verify` in irit-mcp.)*
 - **isotable needed a long-read read-QC row** (fixed, [#21](https://github.com/dzulfikar08/irit/issues/21)).
   It marked the ONT sample `incomplete` for "no read count / no Q30 (fastp)", and leanqc's FastQC
   thresholds failed long reads on per-position quality. isotable now takes reads, read N50 and

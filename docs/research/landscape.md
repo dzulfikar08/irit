@@ -16,7 +16,7 @@ Ranked by how often they recur and how well they're documented.
 | 3 | Installing tools, dependency conflicts | Strong (28% of 98 omics tools failed to install in 2 h, Mangul et al. 2019) | Bioconda, BioContainers, pixi | Mostly solved; single binaries sidestep it |
 | 4 | Debugging pipeline runs on HPC/cloud | Strong (studies of 25,000+ nf-core issues) | Nextflow/Seqera tooling | Too platform-specific for a small tool |
 | 5 | Merging AMR/virulence calls from several tools | Moderate (PHA4GE's hAMRonization exists for this) | hAMRonization, abricate `--summary` | Contribute upstream rather than duplicate |
-| 6 | One QC row per isolate (reads, species, assembly, completeness, AMR) | Moderate, indirect: pipelines keep writing their own summary scripts | MultiQC (per tool, not per isolate) | Planned: `isotable` |
+| 6 | One QC row per isolate (reads, species, assembly, completeness, AMR) | Moderate, indirect: pipelines keep writing their own summary scripts | MultiQC (per tool, not per isolate) | Built: [`isotable`](../tools/isotable.md) |
 | 7 | Preparing NCBI/ENA submissions | Moderate (documentation, not complaints) | Webin-CLI, SeqSender | Planned: `subprep` |
 | 8 | Fetching public reads with metadata | Strong, but well served | kingfisher, fastq-dl, NCBI datasets | Skip |
 | 9 | GTDB ↔ NCBI taxonomy mapping | Moderate | GTDB mapping files, taxonkit | Maybe later |
@@ -25,7 +25,7 @@ Ranked by how often they recur and how well they're documented.
 ## 2. Viewers
 
 Which data types would gain most from a fast, GPU-rendered native viewer (planned in Rust with
-GPUI):
+GPUI; since built as [msascope](../tools/msascope.md)):
 
 | Data | Main tools | Complaint | Gap |
 |---|---|---|---|
@@ -35,7 +35,7 @@ GPUI):
 | Assembly graphs | Bandage / BandageNG | Minutes to lay out, 12 GB RAM | Large but niche; layout is the hard part |
 | Metagenomic overviews | Krona, anvi'o | Browser limits, O(n²) clustering | Medium |
 
-First viewer: **multiple sequence alignments**, with a linked tree panel next.
+First viewer: **multiple sequence alignments**, with a linked tree panel next (shipped in 0.3.0).
 
 ## 3. AI agents for bioinformatics
 
@@ -52,7 +52,7 @@ Gaps a small team can fill, and our order for them:
 
 1. A typed MCP tool layer over standard microbial genomics tools (fastp, SPAdes, Bakta, CheckM2,
    GTDB-Tk, AMRFinderPlus) with checked flags and pinned versions. None exists for Bakta, CheckM2 or
-   GTDB-Tk.
+   GTDB-Tk. *(irit-mcp wraps all three since 0.3.0.)*
 2. Recording every call as a replayable script (and RO-Crate), so results don't depend on the AI.
 3. A cheap evaluation harness on small microbial datasets, including deliberately broken inputs.
 

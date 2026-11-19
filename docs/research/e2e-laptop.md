@@ -97,12 +97,13 @@ small skani database of those references. The sketches were read from GTDB's arc
 cache, so the 8 GB run and the replay fetched nothing. Passing that folder as `data_path` to
 irit-mcp's `gtdbtk_classify_wf` passes its data checks, and GTDB-Tk then runs its own ANI screen and
 writes its usual summary files. That route works but is not yet documented or recorded
-([#4](https://github.com/dzulfikar08/irit/issues/4)).
+([#4](https://github.com/dzulfikar08/irit/issues/4)). *(Fixed in 0.3.5; see below.)*
 
 **The placement check.** A genome assigned by ANI skips tree placement, so placement was tested
 separately on the same genome: `gtdbtk identify`, `align --skip_gtdb_refs`, then `classify` with
 the ANI screen skipped, on the placement-lite data. pplacer was replaced by gPlace through the
 `pplacer` shim described in [gPlace vs pplacer](gplace-checks.md), at `--max_memory 6G`.
+*(Since 0.6.0 this route is `gtdbprep place`, and `gtdbprep_place` in irit-mcp.)*
 
 ## Time and memory per step
 
@@ -208,7 +209,7 @@ with a 5.19 GiB peak. Every command exited as recorded. 25 of 34 hash checks pas
 So the run is **replayable**: every command reruns and every result a person reads comes out the
 same. It is **not bit-for-bit reproducible**, and `replay.sh`'s own check says so. irit-mcp's list
 of outputs that may change between runs treats SKESA's `contigs.fa` as stable, which does not hold
-here.
+here. *(Fixed in 0.3.5: every Shovill output is volatile, [#5](https://github.com/dzulfikar08/irit/issues/5).)*
 
 ## Gaps found
 
@@ -315,7 +316,8 @@ discarded, and the run above was started again from an empty folder.
   benchmarks.
 - No run on an 8 GB machine; the 8 GB limit was a cgroup cap on a 30 GB machine. Page cache counts
   toward the cap, so a real 8 GB machine would also need room for the desktop.
-- SPAdes was not tested through Shovill; SKESA is irit-mcp's tested assembler.
+- SPAdes was not tested through Shovill; SKESA is irit-mcp's tested assembler. *(Since then the
+  real-tools workflow runs Shovill with SPAdes, and both paper redos used it.)*
 - Disk, not memory, was the tight resource: the three databases took 6.8 GiB (2.9 GiB CheckM2,
   1.7 GiB placement-lite, 2.2 GiB ANI screen index) and the tool environments 4.0 GB.
 

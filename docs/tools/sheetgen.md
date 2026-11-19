@@ -181,12 +181,12 @@ sheetgen verify --sheet samplesheet.csv --json > verify.json
 | Option | Effect |
 |---|---|
 | `PATH...` | Read files, or folders scanned recursively for FASTQ files (all of them, `_fail_` files included). |
-| `--sheet FILE` | Also check every FASTQ path in this sample sheet (CSV, or TSV by extension or tabs). Relative paths are taken from the current folder; URLs are skipped with a note. |
+| `--sheet FILE` | Also check every FASTQ path in this sample sheet (CSV, or TSV by extension or tabs). Relative paths are taken from the current folder; URLs are skipped with a note. Repeatable. |
 | `--md5 FILE` | Expected MD5s, `md5sum` style (`<md5>  <file>` or `<md5> *<file>`) or BSD style (`MD5 (file) = <md5>`). Names are matched by path relative to the list's folder, then by file name. Repeatable. |
 | `--ena` | Look up expected MD5s and sizes at ENA (network; nothing is fetched without this flag). |
 | `--run FILE=ACCESSION` | Run accession for a file whose name doesn't contain one (needs `--ena`). Repeatable. |
 | `--json` | Print the report as JSON on stdout (for irit-mcp and scripts). |
-| `-j N` | Check N files at a time (default 1; each file uses four threads). |
+| `-j`, `--jobs N` | Check N files at a time (default 1; each file uses four threads). |
 
 What is checked, in one pass over the file:
 

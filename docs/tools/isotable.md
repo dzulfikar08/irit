@@ -98,7 +98,7 @@ Shovill's own: on the [paper redo](../research/paper-redo-kpn.md)'s three assemb
 146 contigs in all against 38, 58 and 55 of 500 bp or more. `contigs_all` keeps the full count.
 
 `isotable assembly-stats FILE...` prints the same statistics as a table, one row per file (plain or
-gzip FASTA), or JSON with `--json`. `--min-contig N` changes the cut-off (0 counts everything);
+gzip FASTA), or JSON with `--json`, on stdout or into `-o FILE`. `--min-contig N` changes the cut-off (0 counts everything);
 `contigs_all` and `length_all` are always over every contig. irit-mcp's `assembly_stats` runs it.
 
 ```

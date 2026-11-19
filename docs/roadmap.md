@@ -9,8 +9,10 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [x] `dblock`: database catalog, disk planning, resumable and streaming fetch, lock file, verify,
       tool-version check.
 - [x] Baseline of nf-core/bacass on a laptop ([setup](lab/setup.md), [benchmarks](benchmarks.md)).
-- [x] `isotable`: one graded row per sample from nine tools' outputs, isolate and MAG (MIMAG) modes,
-      with a note for reduced-genome lineages.
+- [x] `isotable`: one graded row per sample from other tools' outputs (nine at first, fifteen by
+      0.5.0: fastp, leanqc, FastQC, QUAST, Shovill, Flye, Medaka, BUSCO, CheckM2, GTDB-Tk, Kraken 2,
+      CoverM, mlst, AMRFinderPlus, Kleborate), isolate and MAG (MIMAG) modes, with a note for
+      reduced-genome lineages.
 - [x] v0.1.0 release with static binaries for Linux (x86_64, ARM64), macOS (Intel, Apple Silicon)
       and Windows, built by GitHub Actions on each tag.
 - [x] Upstream reports: GTDB R232 mock database checksum ([GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726));
@@ -52,10 +54,9 @@ What's done, what's next, and what's further out. Items move up as evidence come
       to [#11](https://github.com/dzulfikar08/irit/issues/11).
 - [x] `seqplan` (0.4.0): isolates per sequencing run and cost per isolate at a target
       coverage, from Illumina's specifications and reported nanopore yields, each cited
-      ([seqplan](tools/seqplan.md)). Next: measure how low the coverage can go for this kind of
-      work (subsampling the *K. pneumoniae* reads from the paper reproduction), so a plan can use
-      a measured coverage instead of a habit.
-- [x] **`leanqc` long-read views** (0.3.2): N50, N90, length bins and quality by length.
+      ([seqplan](tools/seqplan.md)). The coverage it plans for is now measured: every call held
+      down to 15× on the paper's *K. pneumoniae* ([How much depth is enough](research/coverage-depth.md)).
+- [x] **`leanqc` long-read views** (0.3.4): N50, N90, length bins and quality by length.
 - [x] **Replay gaps from the laptop run closed** (0.3.2): output folders ([#2](https://github.com/dzulfikar08/irit/issues/2)),
       naming genomes ([#3](https://github.com/dzulfikar08/irit/issues/3)), a recorded `gtdbprep ani`
       tool ([#4](https://github.com/dzulfikar08/irit/issues/4)), Shovill and leanqc outputs that change
@@ -63,6 +64,12 @@ What's done, what's next, and what's further out. Items move up as evidence come
       so `replay.sh` reruns the isolate path from reads to species on its own.
 - [x] **fieldsheet**: an offline phone worksheet for sample metadata ([guide](tools/fieldsheet.md),
       0.6.0). Next: try it on a low-end Android phone in the field.
+- [x] **`sheetgen verify`** (0.6.0): read files checked before analysis (full gzip decompression,
+      FASTQ structure, MD5 against an `md5sum` file or ENA's published MD5s), also as irit-mcp's
+      `reads_verify`.
+- [x] **`cooccur`** (0.6.0): which genomes rise and fall together across samples (CLR
+      proportionality or Spearman, permutation p-values, BH q-values), matching propr and R;
+      first tested on real data in 0.6.1 ([write-up](research/cooccur-real.md)).
 
 ## Next
 
@@ -76,7 +83,7 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [ ] **GTDB placement data without the 60.8 GB download**: an unofficial, credited mirror
       (280 MB download) on GitHub Releases (`dzulfikar08/irit-data`) and the `dblock` entries
       `gtdbtk-r232-placement` and `-lite` (0.2.1); `dblock` stores identical files once as hard
-      links (0.3.0), so the ten `fasttree.log` copies take 2.7 GB instead of 7.4 GB. Waiting on GTDB
+      links (0.3.0), so the ten `fasttree.log` copies take 2.7 GB instead of 7.4 GB.
       GTDB has no plans for per-folder downloads and is fine with the mirror as long as it stays
       credited and links back ([GTDBTk#727](https://github.com/Ecogenomics/GTDBTk/issues/727)).
 - [ ] **The ANI species check on a laptop**: `gtdbprep ani` screens locally and range-reads only
@@ -112,8 +119,8 @@ What's done, what's next, and what's further out. Items move up as evidence come
 - [ ] **Check the `irit-mcp` wrappers on a large machine**: Bakta with the full database, SPAdes
       through Shovill (the real-tools workflow uses SKESA). GTDB-Tk `classify_wf` has now run with
       R232 data for a genome the ANI screen assigns, through the small data folder `gtdbprep ani`
-      builds ([laptop run](research/e2e-laptop.md)); genomes that need tree placement still go
-      through the launcher and gPlace outside irit-mcp ([#4](https://github.com/dzulfikar08/irit/issues/4)).
+      builds ([laptop run](research/e2e-laptop.md)); genomes that need tree placement go through
+      `gtdbprep_place` (gPlace under a memory cap, 0.6.0).
 
 ## Later
 

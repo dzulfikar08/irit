@@ -130,6 +130,7 @@ reagents) is still the expensive part. Everything after the read files, this pap
     an MCP client, plus three smaller messages.
 - **Gaps that are features, not bugs:** irit has no QUAST, no read-mapping coverage tool, and no
   virulence or Kleborate-style typing. Those three would cover the rest of this paper's Table 1.
+  *(All three were added in 0.5.0: `assembly_stats`, `coverm_genome` and `kleborate`.)*
 
 The agent's own report, the brief, the launcher and both transcripts are kept with the run
 (outside this repository).

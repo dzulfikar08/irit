@@ -854,10 +854,10 @@ It uses GPUI through Longbridge's `gpui-kit` 0.9.1, which pins a GPUI snapshot (
 0.3.12); the `gpui` crate on crates.io is from October 2025. Versions are pinned exactly because the
 API changes often.
 
-## Planned redesign
+## Redesign
 
 Phases 0–8 are built (see "Built so far" below), except the parts of phase 8 listed at the end. The pictures here are **mockups**, a
-static drawing of the planned main window at its
+static drawing of the main window as it was planned, at its
 default size (1280 × 800). It shows 40 of the 73 sequences of Pfam's globin seed alignment
 ([PF00042](https://www.ebi.ac.uk/interpro/entry/pfam/PF00042/)), ordered by a tree computed from
 those rows for the drawing only.

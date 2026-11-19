@@ -189,7 +189,7 @@ for this isolate.
 - **Read checksums:** the agent couldn't check the reads' MD5s. During this work, four ONT
   downloads (two files, twice each) arrived corrupt with no download error; Flye only noticed
   partway through ([nanopore write-up](nanopore-laptop.md)). irit has no way to check read files against
-  ENA/SRA checksums.
+  ENA/SRA checksums. *(Added in 0.6.0: `sheetgen verify --ena`, `reads_verify` in irit-mcp.)*
 
 ## Files
 

@@ -21,6 +21,8 @@ dblock plan                        # will it fit, and how will it be fetched?
 dblock fetch                       # download, verify, unpack; writes dblock.lock
 dblock fetch --no-dedupe           # same, but keep identical files as separate copies
 dblock fetch --jobs 1              # one download at a time (default: 4 side by side)
+dblock fetch checkm2-db-v3         # only some of the added databases
+dblock fetch --keep-archive        # also keep the downloaded archive in <store>/archives
 dblock verify                      # same file names and sizes as locked? (seconds)
 dblock verify --deep               # same contents? re-hashes every file (minutes to hours)
 dblock check                       # do installed tool versions accept these databases?
@@ -308,7 +310,7 @@ Every URL, size and checksum in the built-in catalog was checked against the pub
 |---|---|---|---|
 | `gtdbtk-r232` | 60.8 GB | ~100 GB | GTDB-Tk ≥ 2.7.0 (2.7.1+ recommended). Needs ~140 GB RAM to run: see [GTDB-Tk and memory](../research/gtdbtk-memory.md). |
 | `gtdbtk-r232-client` | 26 MB | 80 MB | Client data for [gtdbprep](gtdbprep.md): `markers/`, `masks/`, `metadata/`, `taxonomy/` from the mockup archive. **Can't classify.** MD5 observed, not published; see below. |
-| `gtdbtk-r232-placement` | 280 MB (12 parts) | 7.4 GB | **Unofficial mirror** of GTDB-Tk's placement folders; no ANI database or MSAs, so classification stops at genus. See below. |
+| `gtdbtk-r232-placement` | 280 MB (12 parts) | 7.4 GB | **Unofficial mirror** of GTDB-Tk's placement folders; no ANI database or MSAs: on their own they give genus at most. With `gtdbtk-r232-ani-screen`, [`gtdbprep ani`](gtdbprep.md) names species, and `gtdbprep place` places the genomes it can't name. See below. |
 | `gtdbtk-r232-placement-lite` | 175 MB (11 parts) | 5.9 GB | Same without the full bacterial tree (no `--full_tree`). |
 | `gtdbtk-r232-ani-screen` | 2.1 GB (3 parts) | 2.3 GB | Screen index for `gtdbprep ani`, GTDB-Tk's ANI species screen without the 85 GB skani database. **Derived** from GTDB data by an unofficial mirror. See below. |
 | `gtdbtk-r232-mockup` | 26 MB | ~120 MB | Test database. For gtdbprep use `gtdbtk-r232-client` (below). |
@@ -435,9 +437,11 @@ archaeal tree work. Its `pplacer/` then holds only `gtdb_r232_ar53.refpkg`, and 
 reason `gtdbtk check_install` reports `pplacer` as wrong on a lite folder.
 
 What these can't do: without `skani/` there is no ANI species screen, so classification stops at
-genus (species stays `s__`), and GTDB-Tk 2.8's `classify` has no option to skip the screen; the
-research page shows the small launcher it used, and how gPlace stood in for pplacer with every
-placement step under an 8.5 GiB cap. Compat: GTDB-Tk ≥ 2.7.0.
+genus (species stays `s__`), and GTDB-Tk 2.8's `classify` has no option to skip the screen. Both
+are covered by `gtdbprep`: [`gtdbprep ani`](gtdbprep.md) with `gtdbtk-r232-ani-screen` gives species
+names, and [`gtdbprep place`](gtdbprep.md#tree-placement-on-the-placement-only-data-place) places
+the other genomes with gPlace under a memory cap (the research page shows how this was first done by
+hand, every placement step under an 8.5 GiB cap). Compat: GTDB-Tk ≥ 2.7.0.
 
 ### `gtdbtk-r232-ani-screen`: the screen index for `gtdbprep ani`
 

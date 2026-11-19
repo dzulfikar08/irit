@@ -2,17 +2,20 @@
 
 `irit-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives AI
 agents (Claude Code, Claude Desktop and other MCP clients) the irit tools as typed tools. Each call
-runs the real `sheetgen`, `leanqc`, `isotable`, `seqplan` or `dblock` binary, and is written to a run record
+runs the real `sheetgen`, `leanqc`, `isotable`, `seqplan`, `dblock`, `gtdbprep` or `cooccur` binary, and is written to a run record
 with a `replay.sh` that repeats the same commands without any AI.
 
-It also wraps thirteen third-party tools, so a whole run is recorded and replayable the same way.
+It also wraps sixteen third-party programs, so a whole run is recorded and replayable the same way.
 For the microbial isolate path (trim, assemble, annotate, check quality, classify, type, find
 resistance genes): fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus,
 plus CoverM for the depth of an isolate by read mapping and Kleborate for *Klebsiella* typing,
 virulence and resistance scores. `assembly_stats` gives QUAST-style assembly statistics (N50, L50,
 N90, GC, Ns), computed by isotable.
-For metagenomes, from reads to metagenome-assembled genomes (MAGs): MEGAHIT, CoverM and MetaBAT2,
-then CheckM2 and GTDB-Tk on the bins. See [Third-party tools](#third-party-tools).
+For metagenomes, from reads to metagenome-assembled genomes (MAGs): MEGAHIT, CoverM, MetaBAT2 or
+SemiBin2 (one sample or several), CheckM2, galah to dereplicate bins across samples, and a genome ×
+sample abundance table (`coverm_abundance`); then `gtdbprep_ani` and `gtdbprep_place` for the bins'
+taxonomy and `cooccur` for genomes that rise and fall together. `reads_verify` checks read files
+before any of it. See [Third-party tools](#third-party-tools).
 
 ## Why
 
@@ -37,11 +40,11 @@ grades them.
 
 ## Install and register
 
-Build it (it is a standalone crate for now), and have the irit binaries on `PATH` or in a folder:
+Install it with the other tools ([installer](../install.md)), or build it with them; the binaries
+land in `target/release/`:
 
 ```sh
-cargo build --release --manifest-path mcp/Cargo.toml     # mcp/target/release/irit-mcp
-cargo build --release -p sheetgen -p leanqc -p isotable -p dblock
+cargo build --release     # irit-mcp, sheetgen, leanqc, isotable, dblock, seqplan, gtdbprep, cooccur
 ```
 
 Claude Code (the server runs in the folder Claude Code was started in):
@@ -67,7 +70,7 @@ Any client that takes a JSON config (Claude Desktop's `claude_desktop_config.jso
 | Option | Effect |
 |---|---|
 | `--bin-dir DIR` | Folder holding the irit binaries (env `IRIT_BIN_DIR`). Default: search `PATH`. |
-| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `flye`, `medaka_consensus`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`, `megahit`, `coverm`, `metabat2`, `kleborate`, `rasusa`). Repeatable. Default: search `PATH`. |
+| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `flye`, `medaka_consensus`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`, `megahit`, `coverm`, `metabat2`, `SemiBin2`, `galah`, `kleborate`, `rasusa`). Repeatable. Default: search `PATH`. |
 | `--runs-dir DIR` | Where run records go (env `IRIT_RUNS_DIR`). Default `./irit-runs`. |
 | `--run-id ID` | Name of this session's run folder. Default `<UTC time>-<pid>`. The server refuses to start when that folder already holds a record, so a second session can't overwrite the first one's. |
 | `--root DIR` | Folder the tools may write in. Default: the server's working folder. |
@@ -82,7 +85,9 @@ leanqc `outdir`, isotable `output` and `mqc`, fastp `out1`, `out2`, `json` and `
 CheckM2 `outdir`, GTDB-Tk `out_dir` and `scratch_dir`, mlst `outfile`, `json` and `novel`, AMRFinderPlus
 `output`, `mutation_all`, `protein_output` and `nucleotide_output`, `dblock.toml` and `dblock.lock` in the `project_dir`
 of `dblock_add` and `dblock_fetch` (the folder and each file are checked, since dblock writes
-through a symlinked `dblock.toml`), and `dblock_add`'s `store`. "Resolve" means after `..` and
+through a symlinked `dblock.toml`), `dblock_add`'s `store`, and likewise every output path of the
+later tools (Flye, Medaka, Rasusa, MEGAHIT, CoverM, MetaBAT2, SemiBin2, galah, Kleborate, `gtdbprep_ani`
+and `gtdbprep_place` `work`, `cooccur` `output` and `summary`). "Resolve" means after `..` and
 symlinks, including a symlink that doesn't point anywhere yet: `qc -> /elsewhere` or `../x.csv` is
 refused, a symlink to a folder inside the root is fine. Absolute paths are accepted if they land
 inside the root.
@@ -184,6 +189,7 @@ One graded row per sample ([isotable](isotable.md)).
 | `min_reads`, `max_contigs`, `min_n50` | integers | Thresholds. |
 | `min_q30`, `min_busco`, `min_completeness`, `max_contamination` | 0-100 | Thresholds (%). |
 | `min_depth` | number | Warn below this mean depth from read mapping (`coverm_genome`), fail below half. Default 20; 0 turns it off. |
+| `min_contig` | integer | Shortest contig counted in the assembly statistics. Default 500 (QUAST's). |
 
 Returns `counts` per status and `samples`, each with `status`, `reasons` (a list) and `values`
 (the other columns).
@@ -218,6 +224,7 @@ Isolates per sequencing run at a target coverage ([seqplan](seqplan.md)). Writes
 | `organism` or `genome_size` | preset id, or bp with k/M/G | Exactly one. Presets use NCBI's expected genome size. |
 | `coverage` | number | Target mean coverage. Default 50. |
 | `usable`, `imbalance` | numbers | Usable fraction of the run (default 0.8 Illumina, 1.0 nanopore) and barcode-imbalance margin (default 1.3). |
+| `barcodes` | integer | Barcodes the library kit offers; caps isolates per run. |
 | `samples` | integer | Isolates to sequence: adds runs needed and cost per isolate for them. |
 | `run_price`, `currency` | number, label | The user's own run price. There are no built-in prices. |
 
@@ -241,7 +248,8 @@ and `catalog` (extra catalog JSON).
 
 ### `reads_verify`
 
-Runs [`sheetgen verify`](sheetgen.md) on read files or folders. It checks gzip integrity (every
+Runs [`sheetgen verify`](sheetgen.md) on read files or folders (`paths`, scanned recursively) and on
+the FASTQ columns of sample sheets (`sheets`); `jobs` checks several files at once. It checks gzip integrity (every
 member, CRC and length), FASTQ structure, and MD5/SHA-256 against `md5` files or ENA (`ena`, network,
 opt-in; `runs` names the accession for files whose name has none). The result has the per-file
 report. The call is an error (`reads_have_problems`) when any file is corrupt, doesn't match, or is
@@ -253,7 +261,8 @@ check without comparing its output.
 Runs [`cooccur`](cooccur.md) on a genome × sample table ([`coverm_abundance`](#coverm_abundance)'s
 output). Parameters: `table`, `output` (edge list TSV), `summary` (JSON; default next to the output),
 `measure`, `taxonomy` (GTDB-Tk summaries, for CPR labels), `method` (`rho` or `spearman`),
-`min_prevalence`, `fdr`, `min_stat`, `positive_only`, `seed` (default 1, so a replay matches). The
+`min_prevalence`, `fdr`, `min_stat`, `positive_only`, `seed` (default 1, so a replay matches),
+`overwrite`. The
 result includes the summary, with the CPR–non-CPR pairs that pass.
 
 ### `gtdbprep_place`
@@ -261,8 +270,8 @@ result includes the summary, with the CPR–non-CPR pairs that pass.
 Runs [`gtdbprep place`](gtdbprep.md): GTDB-Tk tree placement on the laptop data for genomes
 [`gtdbprep_ani`](#gtdbprep_ani) didn't assign. Parameters: `genome_dir`, `extension`, `work`,
 `skip_assigned` (gtdbprep_ani's work folder), `data_path` (or `$GTDBTK_DATA_PATH`), `env` (GTDB-Tk
-2.8.0 with gPlace, or `$GTDBPREP_ENV`), `max_memory` (default 6G), `cpus`. The result lists
-`place.tsv`'s rows. GTDB-Tk's logs and the gPlace call log are volatile.
+2.8.0 with gPlace, or `$GTDBPREP_ENV`), `max_memory` (default 6G), `cpus`, `overwrite`. The result
+lists `place.tsv`'s rows. Its `.log`, `.json` (including `place.json`) and `.gz` outputs are volatile.
 
 ### Third-party tools
 
@@ -614,7 +623,7 @@ Laptop options in GTDB-Tk 2.8.0, checked against [the research notes](../researc
   command-line option skips it. So the placement-only data (dblock `gtdbtk-r232-placement`, no
   `skani/`) can't run classify_wf by itself: the server refuses it and points to
   [`gtdbprep_ani`](#gtdbprep_ani), whose `<work>/gtdbtk_data` adds a small skani database, and to
-  [the placement test](../research/gtdb-placement-test.md) for genomes the screen doesn't assign.
+  [`gtdbprep_place`](#gtdbprep_place) for genomes the screen doesn't assign.
 - **The split tree needs its files.** Unless `full_tree` is set, the data must hold
   `split/backbone/pplacer/gtdbtk_package_backbone.refpkg` and `split/class_level/tree_mapping.tsv`.
   Without them pplacer would fail after the ANI screen and marker steps, so the server refuses
@@ -678,9 +687,8 @@ sketch cached: `gtdbprep_ani` took 15 s (`s__Bacillus subtilis`, GCF_000009045.1
 `gtdbtk_classify_wf` 4.8 s (`classification_method: ani_screen`). After deleting both output
 folders, `replay.sh` recreated them and matched all 32 outputs.
 
-A genome the screen does not assign still needs tree placement, which classify_wf on this data
-can't do on a laptop yet (gPlace through a `pplacer` shim; see
-[the placement test](../research/gtdb-placement-test.md)).
+A genome the screen does not assign needs tree placement: [`gtdbprep_place`](#gtdbprep_place)
+runs it on the same data, with gPlace under a memory cap (0.6.0).
 
 #### `mlst`
 
@@ -839,9 +847,9 @@ recorded instead, and replay prints them beside the replayed assembly's. Not off
 The bins' taxonomy: `gtdbprep_ani` assigns bins of known species. GTDB-Tk's `classify_wf` can't
 place the rest on dblock's `gtdbtk-r232-placement-lite` data: it always aligns against GTDB's
 reference MSA, which placement-lite leaves out, and fails with `msa/gtdb_r232_bac120.faa does not
-exist`. Until that is solved, place them with the full GTDB-Tk data, or outside irit-mcp with
-`gtdbtk identify`, `gtdbtk align --skip_gtdb_refs` and `classify` with the ANI screen skipped (see
-[the MAG laptop test](../research/mag-laptop.md)).
+exist`. [`gtdbprep_place`](#gtdbprep_place) places them instead (`gtdbtk identify`, `align
+--skip_gtdb_refs` and `classify` without the ANI screen, as in [the MAG laptop
+test](../research/mag-laptop.md)); set its `skip_assigned` to `gtdbprep_ani`'s work folder.
 
 #### `coverm_contig`
 
@@ -860,6 +868,7 @@ MetaBAT's own `jgi_summarize_bam_contig_depths` does.
 | `methods` | list | `mean` (CoverM's default), `trimmed_mean`, `covered_fraction`, `covered_bases`, `variance`, `length`, `count`, `reads_per_base`, `rpkm`, `tpm`, or `metabat` on its own. |
 | `min_read_percent_identity`, `min_read_aligned_percent` | percentages | Read filters. |
 | `threads` | integer | CoverM's default is 1. |
+| `overwrite` | boolean | Replace an existing `output`. Default `false`. |
 | `bam_cache_dir` | folder | Also keep each sample's BAM (`--bam-file-cache-directory`): `<folder>/<reference file name>.<read 1 file name>.bam`, sorted by coordinate. These are the `bams` of [`semibin2`](#semibin2). Two samples whose read 1 files have the same name are refused (they would share a BAM). |
 
 Returns the number of contigs in the table and, per sample, the reads mapped and their percentage
@@ -919,6 +928,7 @@ Bins the contigs into genomes by depth and tetranucleotide frequency. Writes
 | `min_bin_size` | integer | Smallest bin written, in bp (default 200000). |
 | `seed` | integer, 1 or more | Default **1** here: MetaBAT2's own default (0) draws a random seed, so its bins would differ between runs. |
 | `threads` | integer | MetaBAT2's default is every core. |
+| `overwrite` | boolean | Allow an `outdir` that has files (bins of the same name are replaced; others stay). Default `false`. |
 | `unbinned`, `no_sample_depths` | booleans | Also write `<prefix>.unbinned.fa`; leave per-sample depths out of the bin headers. |
 
 Returns each bin's contigs, length, N50 and GC, the bin count and the binned length. MetaBAT2 has
@@ -1285,6 +1295,7 @@ field:
 | `no_reports` | leanqc exited 0 but wrote no report; there is no QC result. |
 | `missing_outputs` | A third-party tool exited 0 but didn't write the files it always writes; `message` lists them. Recorded as failed. |
 | `output_unreadable` | sheetgen, isotable or a third-party tool exited 0 but its output could not be read back. |
+| `reads_have_problems` | `reads_verify`: a file is corrupt, doesn't match its MD5 or isn't listed; `report` is still returned. |
 
 A parameter that isn't in the schema is refused by the MCP layer itself, with the list of valid
 names.
@@ -1377,7 +1388,7 @@ sh irit-runs/<run-id>/replay.sh                            # binaries from PATH
 IRIT_BIN_DIR=/opt/irit/bin sh irit-runs/<run-id>/replay.sh # or from a folder
 ```
 
-Third-party tools (fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder, megahit, coverm, metabat2, kleborate, rasusa) are always taken from
+Third-party tools (fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder, megahit, coverm, metabat2, SemiBin2, galah, kleborate, rasusa) are always taken from
 `PATH`, so activate their conda environment first. `IRIT_BIN_DIR` applies to the irit tools only.
 
 Some third-party outputs differ between two identical runs. They are recorded with
@@ -1390,14 +1401,21 @@ inputs and paths in the real-tools workflow (below) and comparing every file:
 | fastp | `.html` | The HTML report; the JSON report is identical. |
 | shovill | everything | `shovill.log` has times and the machine's CPUs and RAM; every `contigs.fa` header carries the date, so it differs on another day. SPAdes 3.15.5 gave different contigs in two identical runs (2,803,881 bp both times, same ST). SKESA's were identical in the real-tools workflow, but SKESA 2.5.1 with 8 CPUs gave 57 contigs once and 56 twice from identical reads in [the laptop run](../research/e2e-laptop.md). |
 | gtdbprep ani | `.log`, `.gz` | Logs; the gzip header of GTDB-Tk's unassigned-hits file carries a time. |
+| gtdbprep place | `.log`, `.json`, `.gz` | Logs, the run record `place.json` (times), gzip headers. |
+| flye | everything | `flye.log` has times, and multi-threaded runs give different assemblies; replay compares contig count, length and N50. |
+| medaka | everything | The folder holds logs and a BAM, and the consensus bytes aren't promised identical between runs (GPU or CPU batches). |
+| rasusa | none | With the seed (1 unless set) the output is byte-identical. |
 | mlst | `.json` | Same values, keys in another order (mlst writes it without sorting, and Perl randomises hash order). The TSV is identical. |
 | bakta | `.log`, `.gbff`, `.embl`, `.json`, `.svg` | Run times and dates (GenBank `LOCUS` date; in the JSON only `run.start` and `run.end`). |
 | checkm2 | `checkm2.log` | Timestamps. |
 | gtdbtk | `.log`, `gtdbtk.json`, `.gz` | Timestamps (in `gtdbtk.json` only each step's start and end); gzip headers carry a time. |
 | megahit | everything | The log has times; `final.contigs.fa` differed between two identical runs in the real-tools workflow (same 92 contigs, 3,384,504 bp and N50 both times), and so did the intermediate contigs. Replay compares the assembly's contig count, length and N50, as for Shovill. |
-| coverm_contig | none | Three runs on the same assembly and reads gave identical depth tables ([MAG laptop test](../research/mag-laptop.md)); it differs on replay only when the assembly it reads did. |
+| coverm_contig | none (the BAMs kept with `bam_cache_dir`: their header names a temporary folder) | Three runs on the same assembly and reads gave identical depth tables ([MAG laptop test](../research/mag-laptop.md)); it differs on replay only when the assembly it reads did. |
 | coverm_genome | none | Byte-identical table on replay on the laptop (BfR-EC-20867, 4 threads). |
 | kleborate | none | Byte-identical tables on replay on the laptop (BfR-EC-20867). Not yet checked by the real-tools workflow. |
+| semibin2, semibin2_concatenate | `SemiBinRun.log` | Times; with the seed (1 unless set) the bins and tables were identical. |
+| galah | `clusters.tsv`, `representatives.txt` with `threads` above 1 | galah writes them in a different order each run with more than one thread (the same clusters); with one they are identical. |
+| coverm_abundance | none | |
 | metabat2 | none | With the seed irit-mcp passes (1 unless set), a second run gave identical bins and `bin.BinMembers.txt`; `bin.BinInfo.txt` names the output folder. MetaBAT2's own default seed is random. |
 
 The script warns when a tool's `--version` (its first line) differs from the recorded one (a tool whose version
@@ -1551,7 +1569,7 @@ run but does not carry the data.
   The workflow now also runs `coverm_genome` on the *S. aureus* SKESA assembly, `kleborate` on
   *K. pneumoniae* HS11286's RefSeq genome (expected: ST11, KPC-2) with *M. genitalium* as an
   assembly Kleborate gives no row, and `assembly_stats` on *M. genitalium* (one 580,076 bp contig);
-  not yet run.
+  passed on 2026-11-15 ([run](https://github.com/dzulfikar08/irit/actions/runs/43698860156)).
 - Stand-ins for the paper-redo gaps (2026-11-14): Shovill → `assembly_stats` (N50, L50, N90, L90 of
   a known assembly, and `min_contig`) → `coverm_genome` (Shovill logged 61×, mapping 20.5×: the
   warning) → `kleborate` through a wrapper script that `exec`s it, with stand-in bundled data in
@@ -1581,7 +1599,8 @@ run but does not carry the data.
   [`semibin2`](#semibin2), [`galah`](#galah) and [`coverm_abundance`](#coverm_abundance). The
   real-tools workflow now also installs SemiBin2 and galah and runs `coverm_contig` with
   `bam_cache_dir`, `semibin2` (trained, on the two-genome mock), `galah` over the MetaBAT2 and
-  SemiBin2 bins and `coverm_abundance`; not yet run.
+  SemiBin2 bins and `coverm_abundance`; passed on 2026-11-15
+  ([run](https://github.com/dzulfikar08/irit/actions/runs/43698860156)).
 - By hand: a session with sheetgen → leanqc → isotable → dblock_catalog replayed with all 7 outputs
   matching; dblock_add, plan, verify, env and check against a local project. On 2026-11-14, the
   real CoverM 0.8.0 and Kleborate 3.2.4 on BfR-EC-20867 from the paper redo: `assembly_stats`,
@@ -1606,7 +1625,8 @@ run but does not carry the data.
 - The real programs are checked by the opt-in workflow on small genomes and GTDB's mock database.
   With R232 data, GTDB-Tk has run through irit-mcp only on a laptop by hand, for a genome the ANI
   screen assigns (`gtdbprep_ani`, then `data_path: <work>/gtdbtk_data`; see
-  [the laptop run](../research/e2e-laptop.md)); tree placement through irit-mcp has not.
+  [the laptop run](../research/e2e-laptop.md)). `gtdbprep_place` has stand-in tests only; `gtdbprep
+  place` itself was checked on R232 data outside irit-mcp.
 - Bakta: the AMRFinderPlus data inside the Bakta v6 databases (`amrfinderplus-db/`) may be older
   than the `amrfinder` Bioconda installs with Bakta 1.12.2, and Bakta then fails with "amrfinder
   error". Give Bakta dblock's `amrfinderplus-db-4.2-2026-10-29.1` as `amrfinderplus-db/latest`

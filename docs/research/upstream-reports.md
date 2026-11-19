@@ -54,7 +54,8 @@ curl -s https://data.gtdb.ecogenomic.org/releases/release232/232.0/MD5SUM.txt | 
 ```
 
 `dblock` keeps GTDB's published checksum in its catalog and refuses the file until one of the two
-is updated. Status: reported 2026-11-10 as [Ecogenomics/GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726).
+is updated. Status: reported 2026-11-10 as [Ecogenomics/GTDBTk#726](https://github.com/Ecogenomics/GTDBTk/issues/726);
+GTDB corrected `MD5SUM.txt`, and dblock fetches the mockup again since 0.3.2.
 
 ## gPlace: identical to pplacer, and an OOM kill before the `--max_memory` check
 

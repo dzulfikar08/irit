@@ -28,6 +28,7 @@ metadata, and take well under a minute per genome on a laptop. Splitting there m
 gtdbprep prep --genomes mags/ -x fa --work prep-work --out bundle.tar.gz \
     --data r232-client/ --env ~/micromamba/envs/gtdbtk
 irit-gtdb-prep ...          # the same as `gtdbprep prep ...`
+gtdbprep prep ... --force   # replace gtdbprep's own files in a work folder that has them
 
 # Optional: also add skani 0.3.1 sketches for a remote ANI screen (contain DNA, see Privacy)
 gtdbprep prep ... --sketch --skani /path/to/skani-0.3.1
@@ -290,8 +291,8 @@ The results are GTDB-Tk's own files, in `ani-work/out/classify/ani_screen/`:
 links to the placement-lite data plus a small skani database of the fetched references. With it
 as `GTDBTK_DATA_PATH`, `gtdbtk classify_wf` runs its ANI screen on that database and writes the
 usual `classify/gtdbtk.bac120.summary.tsv` (isotable reads it), in seconds for genomes the screen
-assigns. Genomes it doesn't assign go on to tree placement, which needs the
-[placement setup](../research/gtdb-placement-test.md) on a laptop.
+assigns. Genomes it doesn't assign go on to tree placement: `gtdbprep place --skip-assigned <ani work>`
+(see [below](#tree-placement-on-the-placement-only-data-place)).
 
 **From an AI agent.** irit-mcp has this as the `gtdbprep_ani` tool, recorded and replayable like
 the others, then `gtdbtk_classify_wf` with `data_path: <work>/gtdbtk_data`
@@ -300,8 +301,8 @@ the others, then `gtdbtk_classify_wf` with `data_path: <work>/gtdbtk_data`
 **What it downloads per genome.** Every reference that passes skani's marker screen has to be
 fetched, because GTDB-Tk's files list all the close references, not only the species call. That
 was 2 to 1,941 references per genome in the tests (B. subtilis 23, E. coli 420, P. aeruginosa
-1,090, a 400 kb piece of E. coli 1,941), about 0.51 MB each. With the default source (GTDB's
-archive, `--source gtdb`, see below) each reference costs about 2.9 MB of download on average, so roughly:
+1,090, a 400 kb piece of E. coli 1,941), about 0.51 MB each. From GTDB's
+archive (`--source gtdb`, see below) each reference costs about 2.9 MB of download on average, so roughly:
 
 | Genome | References | From GTDB's archive (`--source gtdb`) | From an unpacked `sketches.db` |
 |---|---:|---:|---:|

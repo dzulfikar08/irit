@@ -396,7 +396,10 @@ experiment, not a plan.
 
 ## Status
 
-Step 1 is built: [`gtdbprep`](../tools/gtdbprep.md). Two findings from building it:
+Step 1 is built: [`gtdbprep`](../tools/gtdbprep.md). *(Since then placement was shown to fit a
+laptop ([GTDB placement in 8.5 GB](gtdb-placement-test.md), [gPlace vs pplacer](gplace-checks.md)),
+so the local route was built instead of the server: [`gtdbprep ani`](ani-laptop.md) (0.3.0) and
+`gtdbprep place` (0.6.0). The server is parked.)* Two findings from building it:
 
 - Besides `markers/`, `masks/` and `metadata/`, GTDB-Tk also opens `taxonomy/gtdb_taxonomy.tsv`
   during identify/align, only to reject genome IDs that clash with GTDB accessions. With random IDs

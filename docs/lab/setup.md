@@ -37,7 +37,9 @@ wiring without computing anything.
 - **Disk, not RAM or CPU.** About 16 GB of container images for one pipeline. Check
   `docker system df` and prune images you no longer need.
 - **Reference databases.** Full Kraken 2 (~80 GB) and GTDB-Tk (~100 GB on disk, ~140 GB RAM) do not
-  fit a typical laptop. Use the capped Kraken 2 indexes and Bakta's light database;
+  fit a typical laptop. Use the capped Kraken 2 indexes and Bakta's light database. For GTDB,
+  [`gtdbprep`](../tools/gtdbprep.md) runs the ANI species screen and tree placement on dblock's
+  `gtdbtk-r232-ani-screen` and `gtdbtk-r232-placement-lite` data in under 8 GB of RAM;
   [`dblock plan`](../tools/dblock.md) tells you what fits before downloading.
 - **FastQC memory.** 2–3 GB per file inside the pipeline; [`leanqc`](../tools/leanqc.md) does the
   same job in tens of MB.

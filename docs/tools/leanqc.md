@@ -94,7 +94,7 @@ translations of FastQC's Java code, each marked with the FastQC class and method
 
 When a file's median read is longer than 1,000 bp (or with `--long`), the report gets a **Long
 reads** section and the JSON a `long_reads` object; the terminal line gets a second line with the
-same summary. Files with shorter reads are reported exactly as before: their JSON has no
+same summary. Files with shorter reads are reported as they were before 0.3.4: their JSON has no
 `long_reads` field.
 
 - **Lengths**: total bases, N50 and N90, mean and median length, longest read, and reads and bases
@@ -147,19 +147,19 @@ JSON fields under `long_reads`:
 Memory doesn't grow with the file: the long-read tables have a fixed size (90 length bins, read
 quality in 0.1 steps), and the length histogram has one entry per distinct read length.
 
-Measured on this project's laptop on 2026-11-12 (shared with another long job; leanqc 0.3.2 from
-main against this version, alternating runs, `--no-html`):
+Measured on this project's laptop on 2026-11-12 (shared with another long job; leanqc 0.3.2 against
+0.3.4, which added the long-read views, alternating runs, `--no-html`):
 
-| File | main | this version | Peak RSS (both) |
+| File | 0.3.2 | 0.3.4 | Peak RSS (both) |
 |---|---|---|---|
 | Synthetic, 1.5 GB FASTQ, 90,010 reads, log-normal lengths (median 5 kb, up to 300 kb) | 9.3 s (median of 10) | 7.1 s (median of 10) | 22–23 MB |
 | Same generator, first 0.3 GB | | 1.4 s | 15 MB |
 | ENA DRR1060986 (MinION, *Salmonella* Dublin), 148 MB gzipped, 13,144 reads | 3.2 s (3 runs) | 2.6 s (3 runs) | 14 MB |
 | Synthetic short reads, 1 GB, 150 bp | 5.3 s (4 runs) | 3.9 s (4 runs) | 13 MB |
 
-This version also adds work (an error-probability sum per base), and the faster times were not
+0.3.4 also adds work (an error-probability sum per base), and the faster times were not
 traced to a cause (code generation is the likely one); take them as "not slower". The JSON for the
-short-read file is identical to main's, and for the long-read files identical apart from the new
+short-read file is identical to 0.3.2's, and for the long-read files identical apart from the new
 `long_reads` object. The synthetic file comes from `scripts/make_long_fastq.py`.
 
 Checked against an independent Python calculation (reading the FASTQ and computing every figure

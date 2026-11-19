@@ -231,6 +231,9 @@ No bug was found, and cooccur's code was not changed. Two things came up:
   summary line with the per-sample zero range, and a warning when it is wide, would flag this. Also
   `--min-prevalence 0.8` as a suggested setting for MetaPhlAn tables.
 
+*(Both done in 0.6.1: a `passes` column in the edge list, and a warning when the share of absent
+genomes differs a lot between samples.)*
+
 ## 7. Files
 
 Kept in `bioinfo-lab/cooccur-real/` (not in the repo):

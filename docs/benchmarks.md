@@ -17,7 +17,7 @@ includes about 0.5 s of container start.
 | 1 file: peak memory | 483 MB | 13 MB |
 | 4 files, 4 threads: wall time | 10.0 s | 1.8 s |
 | 4 files, 4 threads: peak memory | 1,350 MB | 41 MB |
-| Install size | 941 MB image (or a Java runtime + FastQC) | 1.6 MB binary |
+| Install size | 941 MB image (or a Java runtime + FastQC) | 1.8 MB binary (0.6.1) |
 
 The leanqc figures were re-measured after the FastQC-parity changes of 2026-11-10 (median of three
 warm runs; the single file is ERR044595_1M_1); the FastQC figures are from the first measurement

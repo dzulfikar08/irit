@@ -18,7 +18,8 @@ place of pplacer. It follows up [Split GTDB-Tk: a design](split-gtdb.md) and
   85.17 GB is the skani ANI database and 7.94 GB is the reference MSAs, and placement uses neither.
 - **What is still missing on a laptop is the ANI species screen.** Its database is 85.2 GB. Without
   it, GTDB-Tk classifies down to genus, and the species field stays empty (`s__`). The plan's
-  "range-read the skani database" idea is now the main open problem.
+  "range-read the skani database" idea is now the main open problem. *(Solved since by `gtdbprep
+  ani`, 0.3.0: [the ANI species check on a laptop](ani-laptop.md).)*
 - **Download stays expensive.** The archive is one 60.8 GB gzip stream. Getting the 7.4 GB that
   placement needs still means streaming all of it (59–65 min on the runner).
 
@@ -78,7 +79,8 @@ Notes:
   full-tree refpkg, come to about 5.9 GB.
 - **The ten refpkgs each carry a 517,985,300-byte `gtdb_r232_bac120_fasttree.log`.** That is 5.18
   GB of the 7.37 GB. The files are the same size; whether they are byte-identical was not checked.
-  If they are, hard-linking them would bring placement data down to about 2.7 GB.
+  If they are, hard-linking them would bring placement data down to about 2.7 GB. *(They are,
+  and dblock hard-links them since 0.3.0.)*
 - **The skani database is bigger than the design page assumed.** `markers.bin` alone is 9.86 GB,
   against the 5–7 GB estimate in [split-gtdb.md](split-gtdb.md). `sketches.db` is 75.3 GB, about
   376 KB per representative.
@@ -175,7 +177,8 @@ outputs).
   genome would probably still be placed as a genus-level relative.
 - **Not checked here:** whether pplacer gives the same placements. That needs a ~140 GB machine.
   gPlace's own validation reports identical output for R226 (127,343 genomes); `gplace compare`
-  against pplacer on these jplace files is the follow-up.
+  against pplacer on these jplace files is the follow-up. *(Done: identical placements for 59 of
+  59 genomes, [gPlace vs pplacer](gplace-checks.md).)*
 
 ## What it means for the split-GTDB plan
 
@@ -215,7 +218,8 @@ What a laptop route still needs:
    the placer, so the PATH shim and the `skip_ani_screen` launcher are needed for now. Both should
    go away if GTDB-Tk adopts gPlace upstream.
 
-**Next steps:**
+**Next steps** *(all done since: [gPlace vs pplacer](gplace-checks.md) and
+[the ANI species check on a laptop](ani-laptop.md))*:
 
 - Rerun with skani on a machine with ~90 GB of free disk, to get full species calls and to time
   the screen.

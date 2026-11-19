@@ -51,6 +51,9 @@ cooccur abundance.tsv --alternative greater --min-stat 0.6 --summary summary.jso
 cooccur counts.tsv --measure count --pseudocount 1 --method spearman --all-pairs -o all.tsv
 ```
 
+Through irit-mcp, [`coverm_abundance`](mcp.md#coverm_abundance) builds the table and
+[`cooccur`](mcp.md#cooccur) runs this tool, both recorded and replayable.
+
 | Option | Effect |
 |---|---|
 | `TABLE` | `coverm genome` output (`Genome`, then `<sample> <Method>` columns), or a plain TSV with the genome in the first column and one column per sample. CoverM's `unmapped` row is dropped. |
@@ -236,7 +239,7 @@ Ryzen 5 PRO 4650U (6 cores, 12 threads), shared with other jobs:
 
 Spearman re-ranks both genomes for every permutation, hence the extra time. Memory grows with the
 number of pairs (roughly 100 bytes each while running) and the table, not with permutations. The release binary is
-1.0 MB.
+1.2 MB (0.6.1).
 
 ## Known gaps
 

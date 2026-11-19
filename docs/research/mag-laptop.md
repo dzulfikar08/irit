@@ -28,7 +28,8 @@ through irit-mcp inside an 8 GB, no-swap memory cap. Numbers are **measured** un
 - **Two gaps in irit.** GTDB-Tk's `classify_wf` can't place genomes on dblock's placement-lite data
   (it leaves out the reference MSA that `classify_wf` always aligns against), so the three bins the
   ANI screen couldn't assign were placed outside irit-mcp. And SemiBin2, the better binner in
-  benchmarks, is not wrapped yet.
+  benchmarks, is not wrapped yet. *(Both closed since: `gtdbprep_place` places such bins on
+  placement-lite inside irit-mcp, and `semibin2` is wrapped, 0.6.0; multi-sample binning, 0.6.1.)*
 
 ## What was run
 
@@ -164,11 +165,13 @@ for such a community; the second needs more memory and is the next thing to meas
 - **Placement on placement-lite.** `gtdbtk_classify_wf` always aligns against GTDB's reference MSA
   (`msa/gtdb_r232_bac120.faa`), which placement-lite leaves out, so a bin the ANI screen can't
   assign fails. Either add `msa/` to the dblock entry, or give irit-mcp the identify → align
-  `--skip_gtdb_refs` → classify route the end-to-end run used.
+  `--skip_gtdb_refs` → classify route the end-to-end run used. *(Done in 0.6.0 as `gtdbprep place`,
+  which gave these three bins the same classifications at 5.6 GiB.)*
 - **SemiBin2.** Its pretrained single-sample models may fit 8 GB and bin better than MetaBAT2.
+  *(Measured in 0.6.0: 0.9–1.5 GiB and 25–27 bins against MetaBAT2's 23, without better quality.)*
 - **Co-assembly.** How large a co-assembly fits MEGAHIT under 8 GB, and whether it rescues
   diverse, shallow samples like Hainich H4-1.
-- **Dereplication** (galah) once several samples are binned separately.
+- **Dereplication** (galah) once several samples are binned separately. *(Wrapped in 0.6.0.)*
 
 ## Choosing the tools (cited)
 
@@ -180,7 +183,7 @@ on the laptop.
 | Assembly | MEGAHIT 1.2.9 | In benchmarks it uses far less memory than metaSPAdes: 8.7 times less on average in [Zhang et al. 2023](https://academic.oup.com/bib/article/24/2/bbad087/7077274), and 11 GB against metaSPAdes' 157 GB on one mid-sized dataset in [van der Walt et al. 2017](https://link.springer.com/article/10.1186/s12864-017-3918-9). Its memory cap (`-m`) is the one knob a laptop needs ([Li et al. 2015](https://doi.org/10.1093/bioinformatics/btv033)). | metaSPAdes ([Nurk et al. 2017](https://doi.org/10.1101/gr.213959.116)): often better contigs, but its memory needs rule out 8 GB for anything but small samples. |
 | Depth | CoverM 0.8.0, `contig --methods metabat` | One call maps reads (strobealign by default) and writes MetaBAT's depth table from the streamed alignments, without a BAM file on disk ([Aroney et al. 2025](https://doi.org/10.1093/bioinformatics/btaf147)). | MetaBAT's own `jgi_summarize_bam_contig_depths`: needs a sorted BAM from a separate mapper and samtools first. |
 | Binning | MetaBAT 2.18 | The lowest peak memory of the binners in a 2025 benchmark, about 2 GB ([Briefings in Bioinformatics 2025](https://academic.oup.com/bib/article/26/6/bbaf617/8339791)); maintained, one C++ program ([Kang et al. 2019](https://doi.org/10.7717/peerj.7359)). | SemiBin2 ([Pan et al. 2023](https://doi.org/10.1093/bioinformatics/btad209)) and COMEBin recover more high-quality bins in that benchmark, but SemiBin2 peaked at 24-37 GB there. SemiBin's pretrained single-sample models are much lighter (4.4 GB peak in [the SemiBin1 paper](https://www.nature.com/articles/s41467-022-29843-y)). |
-| Dereplication | none yet | One sample gives one set of bins: nothing to dereplicate. | dRep ([Olm et al. 2017](https://doi.org/10.1038/ismej.2017.126)) or galah (skani-based, [Shaw and Yu 2023](https://doi.org/10.1038/s41592-023-02018-3)) once several samples are binned separately. |
+| Dereplication | none yet (galah since 0.6.0) | One sample gives one set of bins: nothing to dereplicate. | dRep ([Olm et al. 2017](https://doi.org/10.1038/ismej.2017.126)) or galah (skani-based, [Shaw and Yu 2023](https://doi.org/10.1038/s41592-023-02018-3)) once several samples are binned separately. |
 | Quality | CheckM2 1.1.0 (already in irit-mcp) | Machine-learning models that don't depend on lineage-specific marker sets ([Chklovski et al. 2023](https://doi.org/10.1038/s41592-023-01940-w)). That matters for reduced genomes such as Patescibacteria (CPR), which lack single-copy genes the older marker-set approach expects: CheckM 1 rated one complete, single-scaffold CPR genome 70.1% complete ([Chen et al. 2020](https://www.biorxiv.org/content/10.1101/808410v2.full.pdf)), and groundwater studies have rechecked CPR MAGs with CheckM2 ([npj Biofilms and Microbiomes 2024](https://www.nature.com/articles/s41522-024-00615-4)). The CheckM2 authors note that a genome from a new phylum is still its hardest case. | CheckM 1 with the 43-marker CPR set of [Brown et al. 2015](https://doi.org/10.1038/nature14486). |
 | Tiers | MIMAG ([Bowers et al. 2017](https://doi.org/10.1038/nbt.3893)) | High quality: >90% complete, <5% contamination, plus 23S, 16S and 5S rRNA and at least 18 tRNAs; medium: ≥50% and <10%; low: <50%, <10%. isotable's MAG mode tiers on completeness and contamination only, so its "high" is `high*`, and a bin at 10% contamination or more is `low`. | |
 | Taxonomy | gtdbprep ani + GTDB-Tk 2.8.0 on GTDB R232 (already in irit-mcp) | The laptop route of [the end-to-end run](e2e-laptop.md): the ANI screen first, then tree placement for bins the screen can't assign. | |
