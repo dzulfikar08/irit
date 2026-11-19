@@ -7,18 +7,18 @@ Each command-line tool is one static Rust binary: no Java, no conda, no containe
 
 | Tool | What it does | Replaces | Binary |
 |---|---|---|---|
-| [`sheetgen`](docs/tools/sheetgen.md) | Builds a pipeline's sample sheet from a folder of FASTQ files and checks it against the pipeline's own schema; `sheetgen verify` checks read files against their MD5s | Hand-written CSVs, per-pipeline scripts | 6.4 MB |
+| [`sheetgen`](docs/tools/sheetgen.md) | Builds a pipeline's sample sheet from a folder of FASTQ files and checks it against the pipeline's own schema; `sheetgen verify` checks read files against their MD5s | Hand-written CSVs, per-pipeline scripts | 8.4 MB |
 | [`leanqc`](docs/tools/leanqc.md) | Read quality control with an offline HTML report, short and long reads | FastQC | 1.8 MB |
 | [`isotable`](docs/tools/isotable.md) | Joins fastp, leanqc, QUAST, Shovill, Flye, Medaka, BUSCO, CheckM2, GTDB-Tk, Kraken 2, CoverM, mlst, AMRFinderPlus and Kleborate outputs into one graded row per sample (isolates or MAGs), with QUAST-style assembly statistics | Per-pipeline summary scripts | 3.1 MB |
 | [`dblock`](docs/tools/dblock.md) | Downloads (in parallel), verifies and pins reference databases (GTDB-Tk, CheckM2, SILVA, Kraken 2, Bakta, CARD, AMRFinderPlus) with a lock file | Each tool's own downloader | 5.8 MB |
 | [`seqplan`](docs/tools/seqplan.md) | Plans a sequencing run before you sequence: isolates per run and cost per isolate at a target coverage, from Illumina's specifications and reported nanopore yields | Spreadsheets and vendor calculators | 1.0 MB |
-| [`irit-mcp`](docs/tools/mcp.md) | Gives AI agents (any MCP client) the irit tools and wrapped third-party tools (fastp, Shovill, Flye, Medaka, MEGAHIT, CoverM, MetaBAT2, CheckM2, GTDB-Tk, mlst, AMRFinderPlus, Kleborate, Rasusa) as typed, checked tools, and records every call with a `replay.sh` that reruns it without the AI | Agents calling CLIs through a free-form shell | 6.9 MB |
-| [`gtdbprep`](docs/tools/gtdbprep.md) | GTDB-Tk on a laptop: the ANI species check without the 85 GB skani database, and the laptop half of a split GTDB-Tk | Downloading the 100 GB GTDB-Tk package | 4.0 MB |
-| [`cooccur`](docs/tools/cooccur.md) | Which genomes rise and fall together across samples (compositional statistics with permutation p-values and FDR), with CPR–host candidate pairs | R scripts with propr or SparCC | 1.0 MB |
+| [`irit-mcp`](docs/tools/mcp.md) | Gives AI agents (any MCP client) the irit tools and wrapped third-party tools (fastp, Shovill, Flye, Medaka, MEGAHIT, CoverM, MetaBAT2, SemiBin2, galah, CheckM2, GTDB-Tk, mlst, AMRFinderPlus, Kleborate, Rasusa) as typed, checked tools, and records every call with a `replay.sh` that reruns it without the AI | Agents calling CLIs through a free-form shell | 7.5 MB |
+| [`gtdbprep`](docs/tools/gtdbprep.md) | GTDB-Tk on a laptop: the ANI species check without the 85 GB skani database, and GTDB tree placement for genomes the ANI check can't name, and the laptop half of a split GTDB-Tk | Downloading the 100 GB GTDB-Tk package | 4.2 MB |
+| [`cooccur`](docs/tools/cooccur.md) | Which genomes rise and fall together across samples (compositional statistics with permutation p-values and FDR), with CPR–host candidate pairs | R scripts with propr or SparCC | 1.2 MB |
 | [`fieldsheet`](docs/tools/fieldsheet.md) | Offline phone worksheet for sample metadata in the field; exports a sample sheet | Paper forms, spreadsheets | web app |
 | [`msascope`](docs/tools/msascope.md) | GPU-drawn desktop viewer for very large multiple sequence alignments (100,000 × 30,000 tested) | Jalview, AliView, SeaView | desktop app |
 
-Binary sizes: the Linux x86_64 builds of 0.5.0 (cooccur: 0.6.0).
+Binary sizes: the Linux x86_64 builds of 0.6.1.
 
 **Tested on real data** (each write-up says what was measured and how):
 [an AI agent redoing two published genome papers](docs/research/paper-redo-kpn.md) ([second](docs/research/paper-redo-bd.md)),

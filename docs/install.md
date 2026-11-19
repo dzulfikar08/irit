@@ -9,8 +9,8 @@ curl -fsSL https://raw.githubusercontent.com/dzulfikar08/irit/main/scripts/insta
 It downloads the latest release from GitHub, checks each download against the release's
 `SHA256SUMS`, and installs without sudo:
 
-- the command-line tools (`sheetgen`, `leanqc`, `isotable`, `dblock`, `irit-mcp`, `gtdbprep`,
-  `irit-gtdb-prep`) into `~/.local/bin`;
+- the command-line tools (`sheetgen`, `leanqc`, `isotable`, `dblock`, `seqplan`, `cooccur`,
+  `irit-mcp`, `gtdbprep`, `irit-gtdb-prep`) into `~/.local/bin`;
 - msascope: on macOS `~/Applications/msascope.app` plus an `msascope` command in `~/.local/bin`; on
   Linux `~/.local/bin/msascope`.
 
@@ -51,14 +51,14 @@ viewer's files are named `msaview` instead of `msascope`):
 | `msascope.dmg` | msascope.app for Apple Silicon and Intel Macs | Developer ID, notarised, ticket stapled |
 | `msascope-universal-macos.tar.gz` | the same msascope.app as a tarball (used by the installer) | as above |
 | `msascope-x86_64-linux.tar.gz`, `msascope-aarch64-linux.tar.gz` | msascope for Linux; needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40 or later) | no |
-| `irit-x86_64-windows.zip` | `sheetgen`, `leanqc`, `isotable`, `dblock` for Windows | **no**: SmartScreen may warn the first time |
+| `irit-x86_64-windows.zip` | `sheetgen`, `leanqc`, `isotable`, `dblock`, `seqplan`, `cooccur` for Windows | **no**: SmartScreen may warn the first time |
 | `SHA256SUMS` | SHA-256 of every file above | |
 
 `irit-mcp` and `gtdbprep` use Unix-only APIs, so the Windows archive doesn't have them. Or
 build from source with Rust:
 
 ```sh
-cargo install --git https://github.com/dzulfikar08/irit sheetgen leanqc isotable dblock irit-mcp gtdbprep
+cargo install --git https://github.com/dzulfikar08/irit sheetgen leanqc isotable dblock seqplan cooccur irit-mcp gtdbprep
 ```
 
 ## Verifying a download

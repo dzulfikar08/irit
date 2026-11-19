@@ -397,7 +397,7 @@ jobs:
           - macOS command-line tools (Apple Silicon and Intel, Developer ID signed and notarised): [irit-${VERSION}-universal-macos.tar.gz](${dl}/irit-${VERSION}-universal-macos.tar.gz)
           - msascope for macOS (signed, notarised): [msascope-${VERSION}.dmg](${dl}/msascope-${VERSION}.dmg). Open it and drag msascope to Applications.
           - msascope for Linux (glibc 2.39 or newer: Ubuntu 24.04, Debian 13, Fedora 40 or later): [x86_64](${dl}/msascope-${VERSION}-x86_64-linux.tar.gz), [aarch64](${dl}/msascope-${VERSION}-aarch64-linux.tar.gz)
-          - Windows (sheetgen, leanqc, isotable, dblock): [irit-${VERSION}-x86_64-windows.zip](${dl}/irit-${VERSION}-x86_64-windows.zip). **Not code-signed**: SmartScreen may warn the first time you run them.
+          - Windows (sheetgen, leanqc, isotable, dblock, seqplan, cooccur): [irit-${VERSION}-x86_64-windows.zip](${dl}/irit-${VERSION}-x86_64-windows.zip). **Not code-signed**: SmartScreen may warn the first time you run them.
 
           Check downloads with \`sha256sum -c SHA256SUMS --ignore-missing\` (macOS: \`shasum -a 256 -c SHA256SUMS --ignore-missing\`). More, including checking the macOS signatures: https://dzulfikar08.github.io/irit/install/
           EOF
