@@ -14,6 +14,7 @@ browsing, aggregates per tool rather than per sample, without a pass/fail decisi
 ```sh
 isotable results/ --sheet samplesheet.csv -o qc_table.tsv --mqc isotable_mqc.tsv
 isotable results/ --mode mag                     # MIMAG tiers from CheckM2
+isotable mag_out/GenomeBinning/ --mode mag       # nf-core/mag: read its bin_summary.tsv
 isotable results/ --min-n50 20000 --max-contigs 200
 isotable results/ --require reads,q30,contigs,n50,completeness,kraken
 isotable assembly-stats asm/*/contigs.fa         # QUAST-style statistics, one row per assembly
@@ -32,7 +33,8 @@ isotable assembly-stats asm/*/contigs.fa         # QUAST-style statistics, one r
 
 ## Outputs it reads
 
-Found anywhere under the given folders, by file name:
+Found anywhere under the given folders, by file name (hAMRonization tables and nf-core/mag bin
+summaries by their header, [below](#aggregated-outputs)):
 
 | Tool | File | Columns |
 |---|---|---|
@@ -49,6 +51,8 @@ Found anywhere under the given folders, by file name:
 | GTDB-Tk | `*summary.tsv`, or the ANI screen's `classify/ani_screen/*.ani_summary.tsv` (from `gtdbprep ani`, or classify_wf when the screen assigned every genome) | classification |
 | mlst | `*mlst*.tsv` | scheme, sequence type |
 | AMRFinderPlus | `*amrfinder*.tsv` | AMR genes |
+| hAMRonization 1.1.9-1.4.1 | any `.tsv` or `.txt` with its header (`hamronize <tool> --format tsv`, `hamronize summarize -t tsv`), rows named by `input_file_name` | `amr_genes`, and `amr_by_tool`: which tool reported which gene |
+| nf-core/mag 3.0-5.5 | `GenomeBinning/bin_summary.tsv`, or any `.tsv` with its header (`bin` and `Depth <sample>` columns); `--mode mag` only | CheckM2 completeness and contamination (`checkm2_*`), CheckM's (`checkm_completeness`, `checkm_contamination`), BUSCO complete % and lineage, GTDB-Tk classification, and `mag_depths` (nf-core/mag's depth per sample) |
 | CoverM | `*coverm*.tsv` with a `Genome` column (`coverm genome`, methods mean and covered_fraction; irit-mcp's `coverm_genome`). A one-genome table is named after the file (`s1.coverm.tsv` → `s1`); with several genomes, each row after its genome | `mapped_depth` (mean depth from read mapping; several read sets add up), `covered_percent` (one read set only). `coverm contig` tables are skipped and listed |
 | Kleborate 3 | `klebsiella_pneumo_complex_output.txt`, `klebsiella_oxytoca_complex_output.txt`, `escherichia_output.txt`; rows named by `strain` (the assembly's file name) | `kleborate_species`, `kleborate_species_match`, `kleborate_st`, `virulence_score`, `resistance_score`, `k_locus`, `o_locus`, `ybt`, `clb`, `iuc`, `iro`, `rmpadc` (`-`: not found). Full or `--trim_headers` headers |
 
@@ -75,6 +79,98 @@ listed at the end, like a dangling link; the sample then lacks that read file's 
 Kraken 2 files are recognised by their content (six
 or eight tab-separated columns with a rank code), read line by line; per-read output such as
 `*.kraken2.classifiedreads.txt` is skipped (and listed) instead of being read into memory.
+
+## Aggregated outputs
+
+Pipelines that already gather results into one table per run are read from that table, so the
+tools behind it need no parser of their own here. Both are recognised by their header, whatever the
+file is called; a file named like one of them (`*hamroniz*`, `bin_summary.tsv`) whose header doesn't
+fit is skipped and listed with the reason, never read as something else.
+
+### hAMRonization
+
+[hAMRonization](https://github.com/pha4ge/hAMRonization) converts the reports of 17 AMR tools
+(AMRFinderPlus, abricate, RGI, ResFinder, staramr, SRST2, ...) to one TSV layout. isotable reads that
+layout, per tool (`hamronize <tool> --format tsv`) or combined (`hamronize summarize -t tsv`, as
+nf-core/funcscan's `hamronization_combined_report.tsv`). The columns were matched against
+hAMRonization 1.4.1 (`hAMRonization/hAMRonizedResult.py`); they are the same 36 from 1.1.9 on. A
+table needs `input_file_name`, `gene_symbol`, `analysis_software_name` and `genetic_variation_type`;
+one with `input_file_name` and `gene_symbol` but not the others is skipped and listed. The JSON and
+interactive HTML summaries are skipped and listed too.
+
+- **Sample.** `input_file_name`, without folders and extensions, like any other name (hAMRonization
+  itself drops `.gz`, `.fna`, `.fasta`, `.fsa`, `.faa` and `.fa`). A FASTQ name (from SRST2, ARIBA,
+  GROOT and other read-based tools) counts as a read file, so mate tags join the sample as for
+  read QC.
+- **Genes.** `gene_symbol`, as the tool's database names it. Rows that report a variant
+  (`genetic_variation_type` other than `gene_presence_detected`) get the mutation added:
+  `gyrA p.S83I`, `nalC p.G71E`. A gene found twice by one tool (NDM-1 on two contigs) counts once.
+- **Which tool.** `amr_genes` is every tool's genes together, sorted; `amr_by_tool` lists them per
+  tool (`abricate: aacA-ENT1,eat(A); rgi: NDM-1,nalC p.G71E`). Each value remembers its file and
+  tool run (`[abricate 1.0.1, ncbi 2024-01]`).
+- **The same tool in two files.** A per-tool table and the summary made from it agree and count
+  once. Two runs of one tool on one sample with different genes (another version, another database)
+  make `amr_genes` a `CONFLICT` naming both.
+- **AMRFinderPlus twice.** When a sample has its own AMRFinderPlus file (`*amrfinder*.tsv`), the
+  `amrfinderplus` rows of hAMRonization tables for that sample are left out and a note says so. They
+  are the same results, and hAMRonization changes them: it leaves out virulence genes and
+  INTERNAL_STOP hits, keeps STRESS genes, which the AMRFinderPlus parser leaves out, and writes
+  `gyrA_S83I` as `gyrA` plus `p.S83I`. Comparing the two would flag differences that aren't there;
+  adding them up would list one gene twice. Without an AMRFinderPlus file, hAMRonization's
+  `amrfinderplus` rows are used like any other tool's.
+
+hAMRonization writes no row for a tool that found nothing, so a sample no tool found anything in has
+no AMR evidence at all (and is `incomplete` with `--require amr`), and `amr_by_tool` can't show a tool
+that ran and found nothing. isotable doesn't map names between databases: CARD's `NDM-1` and
+NCBI's `blaNDM-1` are listed as two genes.
+
+On the test tables (`isotable/testdata/hamronization`), some columns:
+
+```
+sample                                status  amr_genes                                    amr_by_tool
+GCF_010120755.1_ASM1012075v1_genomic  pass    NDM-1,aacA-ENT1,cirA_Y253CfsTer5,eat(A),...  abricate: aacA-ENT1,eat(A),msr(C); amrfinderplus: cirA_Y253CfsTer5,gyrA_S83I,mgrB_Q30Ter; rgi: NDM-1,nalC,nalC p.G71E
+SAMPLE_B                              pass    blaTEM-156,pmrB p.C84R,sul2                  amrfinderplus: blaTEM-156,pmrB p.C84R,sul2
+```
+
+### nf-core/mag bin summary
+
+[nf-core/mag](https://nf-co.re/mag) collects each bin's QC and classification in
+`GenomeBinning/bin_summary.tsv` (its `bin/combine_tables.py`). With `--mode mag`, isotable reads it
+as one row per bin, so a finished nf-core/mag run gets MIMAG tiers and the notes below without
+running anything again. In isolate mode the file is skipped and listed. Bins are named by the `bin`
+column (`MEGAHIT-MetaBAT2-sample1.1.fa`, joined as `MEGAHIT-MetaBAT2-sample1.1`, the name CheckM2
+gives the same bin).
+
+Two layouts, matched against `combine_tables.py` at the tags named:
+
+| nf-core/mag | Layout | Columns read |
+|---|---|---|
+| 5.2.0-5.5.0 (5.5.0) | every column but `bin` and `Depth <sample>` carries its tool's suffix; BUSCO, CheckM and CheckM2 can all be there | `Completeness_checkm2`, `Contamination_checkm2`; `Completeness_checkm`, `Contamination_checkm`; `Complete_busco`, `Dataset_busco`; `classification_gtdbtk` |
+| 3.0.0-5.1.0 (3.4.0, 5.0.0) | one bin QC tool (`--binqc_tool`), its columns as the tool writes them, and a pandas index column first | `Completeness`, `Contamination` with CheckM2's `Completeness_Model_Used` (3.3.0 on) or CheckM's `Bin Id`; BUSCO's `Complete`, `Dataset` (4.0 on) or nf-core/mag's `%Complete (specific)`, `%Complete (domain)` (3.x); `classification` |
+
+- **CheckM2 first.** When CheckM2 and CheckM are both there, CheckM2's values set the MIMAG tier
+  (CheckM2 is far more accurate on lineages without a specific marker set, see
+  [below](#reduced-genomes-patescibacteria--cpr)). CheckM's are shown in their own columns. When a
+  bin has CheckM only, its tier comes from CheckM and the reason says so: `MIMAG medium (72.0%
+  complete, 3.1% contamination) (CheckM; no CheckM2)`.
+- **BUSCO** is shown, not graded (below). It gives no contamination, so it can't set a tier.
+- An unsuffixed `Completeness` with neither CheckM2's nor CheckM's marker column can't be told
+  apart, and is skipped and listed rather than guessed. So is a table with depths only.
+- QUAST's columns are not read: isotable's contig and N50 thresholds are for isolates.
+- `mag_depths` shows nf-core/mag's depth columns (`sample1=21.4,sample2=3.2`: the median depth of
+  the bin's contigs in each sample). It is not CoverM's mean depth and is not graded.
+
+nf-core/mag runs BUSCO only by default. For MIMAG tiers, run it with `--run_checkm2` (5.2 on) or
+`--binqc_tool checkm2` (3.3-5.1); otherwise every bin is `incomplete` (no contamination).
+
+Three bins of the test summary (`isotable/testdata/nfcore-mag/5.5.0`), some columns:
+
+```
+sample                      status  checkm2_completeness  checkm2_contamination  mimag_tier  reasons
+MEGAHIT-MetaBAT2-sample1.1  pass    97.5                  1.2                    high*
+MEGAHIT-MetaBAT2-sample1.3  warn    64                    0.8                    medium      warn: MIMAG medium (64.0% complete, 0.8% contamination); note: Patescibacteria have reduced genomes; CheckM2 can underestimate their completeness (see docs)
+MEGAHIT-MetaBAT2-sample1.5  fail    92                    12.5                   low         fail: MIMAG low (92.0% complete, 12.5% contamination)
+```
 
 ## Assembly statistics
 
@@ -185,9 +281,9 @@ Statuses, worst first: `conflict` (files disagree), `fail`, `incomplete` (a requ
 missing), `warn`, `pass`. A sample never passes on partial evidence.
 
 **Required measurements.** By default an isolate needs reads and Q30 (fastp), contigs and N50
-(QUAST, or a Shovill, Flye or Medaka assembly), and completeness (CheckM2 or BUSCO); a MAG needs CheckM2 completeness and contamination.
+(QUAST, or a Shovill, Flye or Medaka assembly), and completeness (CheckM2 or BUSCO); a MAG needs completeness and contamination (CheckM2, or CheckM from an nf-core/mag bin summary).
 `--require` replaces the list with any of `reads`, `q30`, `contigs`, `n50`, `completeness`,
-`contamination`, `kraken`, `gtdb`, `depth` (CoverM), `mlst`, `amr`, `kleborate`; `--require none`
+`contamination`, `kraken`, `gtdb`, `depth` (CoverM), `mlst`, `amr` (AMRFinderPlus or hAMRonization), `kleborate`; `--require none`
 turns the check off.
 
 **Long reads.** A long-read-only isolate (Nanopore assembled without short reads) has no fastp
@@ -268,12 +364,14 @@ study before using the grades for decisions, and change them with the flags abov
 **MAG mode** uses MIMAG tiers from CheckM2: high (> 90% complete, < 5% contamination) passes, medium
 (≥ 50%, < 10%) warns, anything else fails. The tier is shown as `high*`: the full MIMAG high-quality
 standard also requires the 23S, 16S and 5S rRNA genes and at least 18 tRNAs, which these tools
-don't report.
+don't report. Without CheckM2, CheckM's values from an nf-core/mag bin summary set the tier, and the
+reason says so. BUSCO is shown but not graded in MAG mode: its isolate thresholds (95% and 90%)
+would fail most medium-quality MAGs, which the tier already grades.
 
 ### Reduced genomes (Patescibacteria / CPR)
 
-When GTDB-Tk places a genome in Patescibacteria and its CheckM2 completeness is below 90%, a note is
-added; the verdict is not changed. Evidence:
+When GTDB-Tk places a genome in Patescibacteria and its CheckM2 completeness (CheckM's, when there
+is no CheckM2) is below 90%, a note is added; the verdict is not changed. Evidence:
 
 - CheckM2 is far more accurate than CheckM1 for reduced-genome lineages without a specific marker
   set (mean absolute error 6.4 against 19.7) ([CheckM2 paper](https://www.biorxiv.org/content/10.1101/2022.07.11.499243v1.full)).
@@ -319,11 +417,30 @@ added; the verdict is not changed. Evidence:
 - Synthetic CheckM2 and GTDB-Tk files (in `isotable/testdata/mag/`, made up for the test) in MAG
   mode: tiers as expected, including a 92%-complete bin failing on 12.5% contamination, and the
   note on both Patescibacteria bins.
+- hAMRonization 1.4.1 tables made by `hamronize` from cut-down copies of hAMRonization's own test
+  reports (abricate, AMRFinderPlus 4.2 point mutations, RGI; in `isotable/testdata/hamronization/`):
+  genes grouped by file and tool run, mutations added to variant rows, a per-tool table and the
+  summary made from it count once, a disagreeing second run of a tool gives `conflict`, and a
+  genome's own AMRFinderPlus file replaces hAMRonization's `amrfinderplus` rows for it (and only for
+  it). A hAMRonization table named `*.amrfinderplus.tsv` is read as hAMRonization; a JSON summary, a
+  table missing `analysis_software_name`, and a `hamronized_*.tsv` with another header are skipped
+  and listed.
+- nf-core/mag bin summaries written by the pipeline's own `combine_tables.py` at 5.5.0 (BUSCO,
+  CheckM, CheckM2, QUAST, GTDB-Tk) and 5.0.0 (`--binqc_tool checkm2`), from made-up inputs with the
+  values of the CheckM2 and GTDB-Tk files above (in `isotable/testdata/nfcore-mag/`): the same tiers
+  and Patescibacteria notes from both layouts, CheckM2 rather than CheckM or BUSCO setting the tier,
+  no conflict with a CheckM2 report of the same bins beside it, a CheckM-only summary giving a tier
+  marked as CheckM's, a 3.x BUSCO summary read from its specific or domain lineage, and the file
+  skipped in isolate mode. Not tested on a full nf-core/mag run.
 
 ## Known gaps
 
 - No Bracken, Mash or sylph parsers yet.
 - AMRFinderPlus outputs are matched by file name; one file per sample is assumed.
+- hAMRonization: TSV only (not its JSON or HTML); gene names are not mapped between databases; a
+  tool that found nothing leaves no row, so it can't be told from a tool that didn't run.
+- nf-core/mag bin summaries: QUAST's columns, CAT and pyDamage are not read; BUSCO alone gives no
+  MIMAG tier.
 - Dangling symlinks, unreadable folders and unreadable FastQC zips in the results are skipped and
   listed, not read.
 - Trimmed reads are recognised by name only (`.fastp`, `_val_N`, `_trimmed`, `.trimmed`); other

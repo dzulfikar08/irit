@@ -75,7 +75,10 @@ pub fn scan(dirs: &[std::path::PathBuf]) -> Result<Scan> {
             }
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            let parsed: Option<(&'static str, Result<Vec<Record>>)> = if name.ends_with(".fastp.json") {
+            let by_header = by_header(path, &name, &mut skipped);
+            let parsed: Parsed = if let Some(p) = by_header {
+                p
+            } else if name.ends_with(".fastp.json") {
                 Some(("fastp", fastp(path, &name)))
             } else if name.ends_with("_leanqc.json") {
                 Some(("leanqc", leanqc(path)))
@@ -158,6 +161,198 @@ fn drop_polished_drafts(out: &mut Vec<Record>, skipped: &mut Vec<String>) {
         }
         !draft
     });
+}
+
+/// A file's tool and what reading it gave; `None` when it is not read.
+type Parsed = Option<(&'static str, Result<Vec<Record>>)>;
+
+/// Outputs recognised by their header rather than their name: hAMRonization's TSV and nf-core/mag's
+/// bin summary, which users and pipelines name freely (`hamronization_combined_report.tsv`,
+/// `<tool>.tsv`, `bin_summary.tsv`). `None`: not one of them, try the name rules. `Some(None)`: a
+/// file named like one of them that can't be read as one; it is listed in `skipped` with the reason.
+fn by_header(path: &Path, name: &str, skipped: &mut Vec<String>) -> Option<Parsed> {
+    let lower = name.to_ascii_lowercase();
+    let named_hamr = lower.contains("hamroniz");
+    let mut skip = |why: String| {
+        skipped.push(format!("{} ({why})", path.display()));
+        Some(None)
+    };
+    if named_hamr && (lower.ends_with(".json") || lower.ends_with(".html")) {
+        return skip("hAMRonization JSON or HTML report, not read; isotable reads its TSV (`hamronize <tool> --format tsv`, `hamronize summarize -t tsv`)".into());
+    }
+    if !(lower.ends_with(".tsv") || lower.ends_with(".txt")) {
+        return None;
+    }
+    let header = first_line(path).unwrap_or_default();
+    let cols: Vec<&str> = header.split('\t').map(str::trim).collect();
+    let has = |c: &str| cols.contains(&c);
+    if has("input_file_name") && has("gene_symbol") {
+        let missing: Vec<&str> = HAMR_REQUIRED.iter().copied().filter(|c| !has(c)).collect();
+        if !missing.is_empty() {
+            return skip(format!("hAMRonization-like table without {}; not a layout isotable knows (hAMRonization 1.1.9 to 1.4.1)", missing.join(", ")));
+        }
+        return Some(Some(("hAMRonization", hamronization(path))));
+    }
+    if has("bin") && cols.iter().any(|c| c.starts_with("Depth ")) {
+        return match mag_bin_summary(path) {
+            Ok(Err(why)) => skip(format!("nf-core/mag bin summary, not read: {why}")),
+            r => Some(Some(("nf-core/mag", r.map(|r| r.unwrap_or_default())))),
+        };
+    }
+    if named_hamr {
+        return skip(format!("named like hAMRonization output but its header lacks {}", HAMR_REQUIRED.join(", ")));
+    }
+    if name == "bin_summary.tsv" {
+        return skip("named like nf-core/mag's bin summary but its header has no `bin` and `Depth <sample>` columns".into());
+    }
+    None
+}
+
+/// The first line of a file, without reading more than 64 KiB of it.
+fn first_line(path: &Path) -> Option<String> {
+    let mut line = String::new();
+    std::io::BufReader::new(std::fs::File::open(path).ok()?.take(64 << 10)).read_line(&mut line).ok()?;
+    Some(line.trim_end_matches(['\r', '\n']).to_string())
+}
+
+/// hAMRonization's mandatory fields that isotable uses. The 36 columns of its TSV (per-tool
+/// `hamronize <tool> --format tsv` and `hamronize summarize -t tsv`) are the same from 1.1.9 to
+/// 1.4.1 (`hAMRonization/hAMRonizedResult.py`).
+const HAMR_REQUIRED: &[&str] = &["input_file_name", "gene_symbol", "analysis_software_name", "genetic_variation_type"];
+
+static FASTQ_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(fastq|fq)(\.(gz|bz2|zst))?$").unwrap());
+
+/// hAMRonization TSV (matched against 1.4.1, columns unchanged since 1.1.9): one row per hit, from
+/// any of the AMR tools it converts. Rows are grouped by `input_file_name` (hAMRonization keeps its
+/// base name and drops `.gz`, `.fna`, `.fasta`, `.fsa`, `.faa`, `.fa`; isotable strips folders and
+/// extensions again, as for every name) and by tool run (`analysis_software_name` and version,
+/// reference database and version). Each group is one record: `amr_genes` lists `gene_symbol`, with
+/// the mutation added for variant rows (`gyrA p.S83I`), as the tool's database names it.
+pub fn hamronization(path: &Path) -> Result<Vec<Record>> {
+    type Run = (String, String, String, String, String);
+    let mut groups: BTreeMap<Run, std::collections::BTreeSet<String>> = BTreeMap::new();
+    let get = |r: &BTreeMap<String, String>, k: &str| r.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
+    for (i, r) in tsv(path)?.iter().enumerate() {
+        let file = get(r, "input_file_name");
+        if file.is_empty() {
+            bail!("row {} has no input_file_name", i + 2);
+        }
+        let symbol = get(r, "gene_symbol");
+        if symbol.is_empty() {
+            continue;
+        }
+        let mut gene = symbol;
+        if get(r, "genetic_variation_type") != "gene_presence_detected" {
+            let mutation = [get(r, "amino_acid_mutation"), get(r, "nucleotide_mutation")].into_iter().find(|m| !m.is_empty());
+            if let Some(m) = mutation {
+                gene = format!("{gene} {m}");
+            }
+        }
+        let software = match get(r, "analysis_software_name") {
+            s if s.is_empty() => "unknown".to_string(),
+            s => s.to_ascii_lowercase(),
+        };
+        let file = file.rsplit(['/', '\\']).next().unwrap_or(&file).to_string();
+        let run = (
+            file,
+            software,
+            get(r, "analysis_software_version"),
+            get(r, "reference_database_name"),
+            get(r, "reference_database_version"),
+        );
+        groups.entry(run).or_default().insert(gene);
+    }
+    Ok(groups
+        .into_iter()
+        .map(|((file, software, version, db, db_version), genes)| {
+            // Read-based tools (SRST2, ARIBA, GROOT...) name the read file; mate tags then count.
+            let kind = if FASTQ_NAME.is_match(&file) { Kind::ReadFile } else { Kind::Genome };
+            let mut run = format!("{software} {version}").trim().to_string();
+            let db = format!("{db} {db_version}").trim().to_string();
+            if !db.is_empty() {
+                run = format!("{run}, {db}");
+            }
+            let genes = genes.into_iter().collect::<Vec<_>>().join(",");
+            rec(
+                file,
+                kind,
+                vec![("amr_software", Value::Text(software)), ("amr_run", Value::Text(run)), ("amr_genes", Value::Text(genes))],
+            )
+        })
+        .collect())
+}
+
+/// nf-core/mag's `GenomeBinning/bin_summary.tsv` (`bin/combine_tables.py`), one row per bin. Two
+/// layouts, matched against the pipeline's own script:
+/// - 5.2.0 to 5.5.0 (checked at 5.5.0): every column but `bin` and `Depth <sample>` carries the
+///   tool's suffix (`Completeness_checkm2`, `Completeness_checkm`, `Complete_busco`,
+///   `classification_gtdbtk`, ...), and BUSCO, CheckM and CheckM2 can all be there.
+/// - 3.0.0 to 5.1.0 (checked at 3.4.0 and 5.0.0): one bin QC tool, columns as the tool writes them
+///   (`Completeness` with CheckM2's `Completeness_Model_Used` or CheckM's `Bin Id`; BUSCO's batch
+///   summary `Complete` from 4.0, nf-core/mag's own `%Complete (specific)` before), and a pandas
+///   index column first.
+///
+/// CheckM2 goes to the same fields as a CheckM2 `quality_report.tsv`, CheckM to its own; QUAST's
+/// columns are not read (isotable's contig and N50 thresholds are for isolates). `Err(reason)` for
+/// a table with none of the columns isotable reads, or an unsuffixed `Completeness` whose tool can't
+/// be told.
+pub fn mag_bin_summary(path: &Path) -> Result<std::result::Result<Vec<Record>, String>> {
+    let header = first_line(path).unwrap_or_default();
+    let cols: Vec<&str> = header.split('\t').map(str::trim).collect();
+    let has = |c: &str| cols.contains(&c);
+    let suffixed = cols.iter().any(|c| ["_busco", "_checkm", "_checkm2", "_quast", "_gtdbtk"].iter().any(|s| c.ends_with(s)));
+    let pair = |a: &'static str, b: &'static str| (has(a) && has(b)).then_some((a, b));
+    let checkm2 = pair("Completeness_checkm2", "Contamination_checkm2")
+        .or_else(|| (!suffixed && has("Completeness_Model_Used")).then(|| pair("Completeness", "Contamination")).flatten());
+    let checkm = pair("Completeness_checkm", "Contamination_checkm")
+        .or_else(|| (!suffixed && has("Bin Id")).then(|| pair("Completeness", "Contamination")).flatten());
+    if !suffixed && has("Completeness") && checkm2.is_none() && checkm.is_none() {
+        return Ok(Err("a `Completeness` column without CheckM2's `Completeness_Model_Used` or CheckM's `Bin Id`, so which tool it is from is unclear".into()));
+    }
+    // (complete %, lineage) in order of preference; 3.x tables have specific and domain columns.
+    let busco: Vec<(&str, &str)> = if has("Complete_busco") {
+        vec![("Complete_busco", "Dataset_busco")]
+    } else if !suffixed && has("Input_file") && has("Complete") {
+        vec![("Complete", "Dataset")]
+    } else {
+        [("%Complete (specific)", "Specific lineage dataset"), ("%Complete (domain)", "Domain")].into_iter().filter(|(c, _)| has(c)).collect()
+    };
+    let gtdb = if has("classification_gtdbtk") { Some("classification_gtdbtk") } else { (!suffixed && has("classification")).then_some("classification") };
+    let depths: Vec<&str> = cols.iter().copied().filter(|c| c.starts_with("Depth ")).collect();
+    if checkm2.is_none() && checkm.is_none() && busco.is_empty() && gtdb.is_none() {
+        return Ok(Err("no CheckM2, CheckM, BUSCO or GTDB-Tk columns".into()));
+    }
+    let mut out = Vec::new();
+    for r in tsv(path)? {
+        let Some(bin) = r.get("bin").filter(|b| !b.is_empty()) else { continue };
+        let mut fields = Vec::new();
+        for (tool, keys) in [(checkm2, ["completeness", "contamination"]), (checkm, ["checkm_completeness", "checkm_contamination"])] {
+            if let Some((c, x)) = tool
+                && let (Some(c), Some(x)) = (get_num(&r, c), get_num(&r, x))
+            {
+                fields.push((keys[0], Value::Num(c)));
+                fields.push((keys[1], Value::Num(x)));
+            }
+        }
+        if let Some((c, lineage)) = busco.iter().find_map(|(c, l)| Some((get_num(&r, c)?, r.get(*l)))) {
+            fields.push(("busco_complete", Value::Num(c)));
+            if let Some(l) = lineage.filter(|l| !l.is_empty()) {
+                fields.push(("busco_lineage", Value::Text(l.clone())));
+            }
+        }
+        if let Some(tax) = gtdb.and_then(|g| r.get(g)).filter(|t| !t.is_empty()) {
+            fields.push(("gtdb", Value::Text(tax.clone())));
+        }
+        let d: Vec<String> = depths
+            .iter()
+            .filter_map(|c| Some(format!("{}={}", c.trim_start_matches("Depth "), r.get(*c).filter(|v| !v.is_empty())?)))
+            .collect();
+        if !d.is_empty() {
+            fields.push(("mag_depths", Value::Text(d.join(","))));
+        }
+        out.push(rec(bin.clone(), Kind::Genome, fields));
+    }
+    Ok(Ok(out))
 }
 
 fn rec(raw_name: impl Into<String>, kind: Kind, fields: Vec<(&'static str, Value)>) -> Record {
@@ -985,6 +1180,110 @@ mod tests {
         let (_, seen, skipped) = scan(&[t.path().to_path_buf()]).unwrap();
         assert_eq!(seen["CoverM"], 2);
         assert!(skipped.iter().any(|s| s.contains("s.coverm.tsv")), "{skipped:?}");
+    }
+
+    fn testdata(rel: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join(rel)
+    }
+
+    fn field(r: &Record, k: &str) -> Option<String> {
+        r.fields.iter().find(|(f, _)| *f == k).map(|(_, v)| v.show())
+    }
+
+    #[test]
+    fn hamronization_summary_rows_group_by_file_and_tool_run() {
+        let r = hamronization(&testdata("hamronization/hamronization_combined_report.tsv")).unwrap();
+        let got: Vec<(String, String, String)> =
+            r.iter().map(|r| (r.raw_name.clone(), field(r, "amr_software").unwrap(), field(r, "amr_genes").unwrap())).collect();
+        let g = "GCF_010120755.1_ASM1012075v1_genomic".to_string();
+        assert_eq!(
+            got,
+            [
+                (g.clone(), "abricate".into(), "aacA-ENT1,eat(A),msr(C)".into()),
+                // AMRFinderPlus point mutations: hAMRonization splits gyrA_S83I into gyrA and p.S83I
+                (g.clone(), "amrfinderplus".into(), "cirA p.Y253CfsTer5,gyrA p.S83I,mgrB p.Q30Ter".into()),
+                // NDM-1 on two contigs counts once; nalC without and with a mutation stay apart
+                (g.clone(), "rgi".into(), "NDM-1,nalC,nalC p.G71E".into()),
+                ("SAMPLE_B".into(), "amrfinderplus".into(), "blaTEM-156,pmrB p.C84R,sul2".into()),
+            ]
+        );
+        assert!(r.iter().all(|r| r.kind == Kind::Genome));
+        assert_eq!(field(&r[0], "amr_run").as_deref(), Some("abricate 1.0.1, ncbi 2024-01"));
+        assert_eq!(field(&r[1], "amr_run").as_deref(), Some("amrfinderplus 4.2.7, NCBI Reference Gene Database 2025-07-16.1"));
+    }
+
+    #[test]
+    fn hamronization_is_recognised_by_its_header() {
+        let t = tempfile::tempdir().unwrap();
+        let header = std::fs::read_to_string(testdata("hamronization/hamronized_abricate.tsv")).unwrap();
+        let header = header.lines().next().unwrap();
+        // named like AMRFinderPlus output, as nf-core/funcscan's per-tool tables can be: read as
+        // hAMRonization, not as an AMRFinderPlus file with no genes
+        let row = "reads/S1_R1.fastq\tblaKPC-2\tKPC-2\tResFinder\t2.1\tAY034847\tsrst2\t0.2.0\tgene_presence_detected";
+        std::fs::write(t.path().join("S1.amrfinderplus.tsv"), format!("{header}\n{row}\n")).unwrap();
+        std::fs::write(t.path().join("hamronization_combined_report.json"), "[]").unwrap();
+        std::fs::write(t.path().join("hamronized_old.tsv"), "input_file_name\tgene_symbol\tgene_name\nS2\tblaOXA-48\tOXA-48\n").unwrap();
+        std::fs::write(t.path().join("hamronized_other.tsv"), "sample\tgene\nS3\tsul1\n").unwrap();
+        let (records, seen, skipped) = scan(&[t.path().to_path_buf()]).unwrap();
+        assert_eq!((seen.get("hAMRonization"), seen.get("AMRFinderPlus")), (Some(&1), None));
+        assert_eq!(records.len(), 1);
+        // a read-based tool names the read file, so mate tags can be stripped like read QC's
+        assert_eq!((records[0].raw_name.as_str(), records[0].kind), ("S1_R1.fastq", Kind::ReadFile));
+        assert_eq!(field(&records[0], "amr_genes").as_deref(), Some("blaKPC-2"));
+        let why = skipped.join("\n");
+        assert!(why.contains("hamronization_combined_report.json (hAMRonization JSON or HTML report, not read"), "{why}");
+        assert!(why.contains("hamronized_old.tsv (hAMRonization-like table without analysis_software_name, genetic_variation_type"), "{why}");
+        assert!(why.contains("hamronized_other.tsv (named like hAMRonization output but its header lacks"), "{why}");
+    }
+
+    #[test]
+    fn nf_core_mag_bin_summary_suffixed_columns() {
+        // combine_tables.py of nf-core/mag 5.5.0 with BUSCO, CheckM, CheckM2, QUAST and GTDB-Tk
+        let r = mag_bin_summary(&testdata("nfcore-mag/5.5.0/bin_summary.tsv")).unwrap().unwrap();
+        assert_eq!(r.len(), 5);
+        assert_eq!((r[0].raw_name.as_str(), r[0].kind), ("MEGAHIT-MetaBAT2-sample1.1.fa", Kind::Genome));
+        let get = |i: usize, k: &str| field(&r[i], k).unwrap_or_default();
+        assert_eq!((get(0, "completeness"), get(0, "contamination")), ("97.5".into(), "1.2".into()));
+        assert_eq!((get(0, "checkm_completeness"), get(0, "checkm_contamination")), ("95.1".into(), "1.5".into()));
+        assert_eq!((get(0, "busco_complete"), get(0, "busco_lineage")), ("96.8".into(), "bacteria_odb12".into()));
+        assert_eq!(get(0, "mag_depths"), "sample1=21.4,sample2=3.2");
+        assert!(get(2, "gtdb").contains("p__Patescibacteria"));
+        // QUAST's columns are not read
+        assert!(field(&r[0], "n50").is_none() && field(&r[0], "contigs").is_none());
+    }
+
+    #[test]
+    fn nf_core_mag_bin_summary_one_qc_tool_unsuffixed() {
+        // combine_tables.py of nf-core/mag 5.0.0, --binqc_tool checkm2: index column, no suffixes
+        let r = mag_bin_summary(&testdata("nfcore-mag/5.0.0/bin_summary.tsv")).unwrap().unwrap();
+        assert_eq!(r.len(), 5);
+        assert_eq!(r[4].raw_name, "MEGAHIT-MetaBAT2-sample1.5.fa");
+        assert_eq!((field(&r[4], "completeness"), field(&r[4], "contamination")), (Some("92".into()), Some("12.5".into())));
+        assert!(field(&r[4], "checkm_completeness").is_none() && field(&r[4], "busco_complete").is_none());
+        assert!(field(&r[4], "gtdb").unwrap().contains("p__Actinomycetota"));
+
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("bin_summary.tsv");
+        // --binqc_tool checkm: CheckM's columns, which go to their own fields
+        std::fs::write(&p, "\tbin\tDepth s1\tBin Id\tMarker lineage\tCompleteness\tContamination\n0\tb.1.fa\t3.5\tb.1\tk__Bacteria (UID203)\t88.2\t1.1\n").unwrap();
+        let r = mag_bin_summary(&p).unwrap().unwrap();
+        assert_eq!(r[0].fields, [("checkm_completeness", Value::Num(88.2)), ("checkm_contamination", Value::Num(1.1)), ("mag_depths", Value::Text("s1=3.5".into()))]);
+        // 3.x with BUSCO: nf-core/mag's own summary columns; the specific lineage when there is one
+        std::fs::write(&p, "\tbin\tDepth s1\tGenomeBin\tDomain\t%Complete (domain)\tSpecific lineage dataset\t%Complete (specific)\n0\tb.1.fa\t3.5\tb.1.fa\tbacteria_odb10\t80.6\tburkholderiales_odb10\t91.2\n1\tb.2.fa\t1.0\tb.2.fa\tbacteria_odb10\t50.0\t\t\n").unwrap();
+        let r = mag_bin_summary(&p).unwrap().unwrap();
+        assert_eq!((field(&r[0], "busco_complete"), field(&r[0], "busco_lineage")), (Some("91.2".into()), Some("burkholderiales_odb10".into())));
+        assert_eq!((field(&r[1], "busco_complete"), field(&r[1], "busco_lineage")), (Some("50".into()), Some("bacteria_odb10".into())));
+        // Completeness whose tool can't be told, and depths alone, are not read
+        std::fs::write(&p, "\tbin\tDepth s1\tCompleteness\tContamination\n0\tb.1.fa\t3.5\t90\t1\n").unwrap();
+        assert!(mag_bin_summary(&p).unwrap().err().unwrap().contains("which tool"));
+        std::fs::write(&p, "\tbin\tDepth s1\n0\tb.1.fa\t3.5\n").unwrap();
+        assert!(mag_bin_summary(&p).unwrap().is_err());
+        let (records, _, skipped) = scan(&[t.path().to_path_buf()]).unwrap();
+        assert!(records.is_empty());
+        assert!(skipped[0].contains("nf-core/mag bin summary, not read: no CheckM2, CheckM, BUSCO or GTDB-Tk columns"), "{skipped:?}");
+        std::fs::write(&p, "Bin\tCompleteness\n").unwrap();
+        let (_, _, skipped) = scan(&[t.path().to_path_buf()]).unwrap();
+        assert!(skipped[0].contains("named like nf-core/mag's bin summary but its header has no `bin`"), "{skipped:?}");
     }
 
     #[test]

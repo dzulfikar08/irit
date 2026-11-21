@@ -2,7 +2,7 @@
 //!
 //! Point it at a results folder; it finds fastp, leanqc, FastQC, QUAST, Shovill/Flye/Medaka
 //! assemblies, BUSCO, CheckM2, GTDB-Tk, Kraken 2, CoverM, mlst, AMRFinderPlus and Kleborate outputs
-//! by name, joins them by sample, and grades each sample against thresholds you can change. Two
+//! by name, and hAMRonization tables and nf-core/mag bin summaries by header, joins them by sample, and grades each sample against thresholds you can change. Two
 //! files that disagree about one sample make a `conflict`; a sample missing a required measurement
 //! is `incomplete`, never `pass`. `isotable assembly-stats` prints QUAST-style statistics of
 //! assembly FASTA files.
@@ -18,7 +18,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     version,
-    about = "One QC row per sample from fastp, leanqc, FastQC, QUAST, assembly, BUSCO, CheckM2, GTDB-Tk, Kraken 2, CoverM, mlst, AMRFinderPlus and Kleborate outputs",
+    about = "One QC row per sample from fastp, leanqc, FastQC, QUAST, assembly, BUSCO, CheckM2, GTDB-Tk, Kraken 2, CoverM, mlst, AMRFinderPlus, hAMRonization, Kleborate and nf-core/mag bin summary outputs",
     args_conflicts_with_subcommands = true,
     subcommand_negates_reqs = true
 )]
@@ -54,8 +54,8 @@ struct Cli {
     mqc: Option<PathBuf>,
 
     /// Measurements a sample needs before it can pass, comma-separated, from: reads, q30,
-    /// contigs, n50, completeness (CheckM2 or BUSCO), contamination, kraken, gtdb, depth (CoverM),
-    /// mlst, amr, kleborate.
+    /// contigs, n50, completeness (CheckM2, CheckM or BUSCO), contamination (CheckM2 or CheckM),
+    /// kraken, gtdb, depth (CoverM), mlst, amr (AMRFinderPlus or hAMRonization), kleborate.
     /// Default: reads,q30,contigs,n50,completeness (isolate); completeness,contamination (MAG).
     /// `--require none` turns the check off.
     #[arg(long, value_delimiter = ',')]
@@ -169,13 +169,13 @@ const REQUIREMENTS: &[(&str, &[&str], &str)] = &[
     ("q30", &["q30_trimmed", "read_q"], "Q30 (fastp), or median read quality (leanqc, long reads)"),
     ("contigs", &["contigs"], "contig count, contigs of 500 bp or more (QUAST, or a Shovill, Flye or Medaka assembly)"),
     ("n50", &["n50"], "N50 of contigs of 500 bp or more (QUAST, or a Shovill, Flye or Medaka assembly)"),
-    ("completeness", &["completeness", "busco_complete"], "completeness (CheckM2 or BUSCO)"),
-    ("contamination", &["contamination"], "contamination (CheckM2)"),
+    ("completeness", &["completeness", "checkm_completeness", "busco_complete"], "completeness (CheckM2, CheckM or BUSCO)"),
+    ("contamination", &["contamination", "checkm_contamination"], "contamination (CheckM2 or CheckM)"),
     ("kraken", &["kraken_top"], "Kraken 2 report"),
     ("gtdb", &["gtdb"], "GTDB-Tk classification (or its ANI screen)"),
     ("depth", &["mapped_depth"], "mean depth from read mapping (CoverM genome)"),
     ("mlst", &["mlst_st"], "mlst result"),
-    ("amr", &["amr_genes"], "AMRFinderPlus result"),
+    ("amr", &["amr_genes"], "AMR result (AMRFinderPlus or hAMRonization)"),
     ("kleborate", &["kleborate_species"], "Kleborate result"),
 ];
 
@@ -278,6 +278,9 @@ struct Row {
     /// FastQC reports per report (a zip and its sibling extracted folder are one key);
     /// `[raw reads, trimmed reads]`.
     fastqc: [BTreeMap<String, Vec<Record>>; 2],
+    /// AMR genes per tool (AMRFinderPlus, and each tool in hAMRonization files): (source, genes,
+    /// from a native AMRFinderPlus file).
+    amr: BTreeMap<String, Vec<(String, Value, bool)>>,
     notes: Vec<String>,
 }
 
@@ -316,15 +319,19 @@ const COLUMNS: &[(&str, &str)] = &[
     ("shovill_depth", "shovill_depth_est"),
     ("mapped_depth", "mapped_depth"),
     ("covered_fraction", "covered_percent"),
+    ("mag_depths", "mag_depths"),
     ("busco_complete", "busco_complete"),
     ("busco_lineage", "busco_lineage"),
     ("completeness", "checkm2_completeness"),
     ("contamination", "checkm2_contamination"),
+    ("checkm_completeness", "checkm_completeness"),
+    ("checkm_contamination", "checkm_contamination"),
     ("mimag", "mimag_tier"),
     ("gtdb", "gtdb_classification"),
     ("mlst_scheme", "mlst_scheme"),
     ("mlst_st", "mlst_st"),
     ("amr_genes", "amr_genes"),
+    ("amr_by_tool", "amr_by_tool"),
     ("kleborate_species", "kleborate_species"),
     ("kleborate_species_match", "kleborate_species_match"),
     ("kleborate_st", "kleborate_st"),
@@ -401,9 +408,13 @@ fn main() -> Result<()> {
     };
     let required = requirements(cli.require.as_deref(), cli.mode)?;
     let grade_list = graded(cli.fastqc_grade.as_deref())?;
-    let (records, seen, skipped) = parse::scan(&cli.dirs)?;
+    let (mut records, seen, mut skipped) = parse::scan(&cli.dirs)?;
+    if cli.mode == Mode::Isolate {
+        skip_mag_summaries(&mut records, &mut skipped);
+    }
     if records.is_empty() {
-        bail!("no recognised tool outputs under the given folders");
+        let list: String = skipped.iter().map(|s| format!("\n  skipped: {s}")).collect();
+        bail!("no recognised tool outputs under the given folders{list}");
     }
     let (rows, joins, unmatched) = join(records, &sheet, &sheet_files);
     let rows = finish(rows, cli.mode);
@@ -460,6 +471,13 @@ fn main() -> Result<()> {
         eprintln!("  warning: `{u}` matched no sample in the sheet; it got its own row");
     }
     Ok(())
+}
+
+/// nf-core/mag's bin summary describes MAGs: in isolate mode it is listed, not read.
+fn skip_mag_summaries(records: &mut Vec<Record>, skipped: &mut Vec<String>) {
+    let files: BTreeSet<String> = records.iter().filter(|r| r.tool == "nf-core/mag").map(|r| r.source.clone()).collect();
+    records.retain(|r| r.tool != "nf-core/mag");
+    skipped.extend(files.into_iter().map(|f| format!("{f} (nf-core/mag bin summary; read with --mode mag)")));
 }
 
 fn requirements(given: Option<&[String]>, mode: Mode) -> Result<Vec<&'static str>> {
@@ -530,6 +548,18 @@ fn join(records: Vec<Record>, sheet: &[String], files: &BTreeMap<String, String>
         let row = rows.entry(sample).or_default();
         match r.tool {
             "fastp" => row.fastp.push(r),
+            "AMRFinderPlus" | "hAMRonization" => {
+                let get = |k: &str| r.fields.iter().find(|(f, _)| *f == k).map(|(_, v)| v.clone());
+                let native = r.tool == "AMRFinderPlus";
+                let tool = if native { "amrfinderplus".to_string() } else { get("amr_software").map(|v| v.show()).unwrap_or_default() };
+                let source = match get("amr_run") {
+                    Some(run) => format!("{} [{}]", r.source, run.show()),
+                    None => r.source.clone(),
+                };
+                if let Some(genes) = get("amr_genes") {
+                    row.amr.entry(tool).or_default().push((source, genes, native));
+                }
+            }
             "FastQC" => row.fastqc[t].entry(report_key(&r.source)).or_default().push(r),
             "leanqc" => {
                 let mut long = Vec::new();
@@ -599,13 +629,65 @@ fn finish(mut rows: BTreeMap<String, Row>, mode: Mode) -> BTreeMap<String, Row> 
         }
         merge_fastqc(row, false);
         merge_fastqc(row, true);
+        merge_amr(row);
         if mode == Mode::Mag
-            && let (Some(c), Some(x)) = (num(row, "completeness"), num(row, "contamination"))
+            && let Some((c, x, _)) = quality(row)
         {
             row.cells.insert("mimag", Cell::One { value: Value::Text(mimag(c, x).into()), sources: Vec::new() });
         }
     }
     rows
+}
+
+/// AMR genes from AMRFinderPlus files and hAMRonization tables. Per tool, files must agree (a
+/// hAMRonization summary and the per-tool file it was made from do), else `amr_genes` is a
+/// conflict. A sample's own AMRFinderPlus file wins over hAMRonization's `amrfinderplus` rows for
+/// it: they are the same tool's results, and hAMRonization leaves out some rows (virulence genes,
+/// INTERNAL_STOP hits) and keeps others AMRFinderPlus files mark STRESS, so the two would not compare.
+/// `amr_genes` is every tool's genes together, `amr_by_tool` which tool reported which (only when a
+/// hAMRonization table contributed).
+fn merge_amr(row: &mut Row) {
+    let tools = std::mem::take(&mut row.amr);
+    if tools.is_empty() {
+        return;
+    }
+    let mut by_tool: Vec<(String, String, Vec<String>)> = Vec::new();
+    let mut conflict: Vec<(String, Value)> = Vec::new();
+    let mut from_hamr = false;
+    for (tool, mut entries) in tools {
+        if entries.iter().any(|(_, _, native)| *native) {
+            let left_out: Vec<String> = entries.iter().filter(|(_, _, n)| !n).map(|(s, _, _)| s.clone()).collect();
+            if !left_out.is_empty() {
+                row.notes.push(format!(
+                    "AMRFinderPlus rows of hAMRonization table {} left out: the sample's own AMRFinderPlus output is used",
+                    left_out.join(", ")
+                ));
+            }
+            entries.retain(|(_, _, native)| *native);
+        } else {
+            from_hamr = true;
+        }
+        let (_, first, _) = &entries[0];
+        if entries.iter().any(|(_, v, _)| v != first) {
+            conflict.extend(entries.iter().map(|(s, v, _)| (s.clone(), v.clone())));
+            continue;
+        }
+        let sources = entries.iter().map(|(s, _, _)| s.clone()).collect();
+        by_tool.push((tool, first.show(), sources));
+    }
+    if !conflict.is_empty() {
+        row.cells.insert("amr_genes", Cell::Conflict(conflict));
+        return;
+    }
+    let sources: Vec<String> = by_tool.iter().flat_map(|(_, _, s)| s.clone()).collect();
+    let genes: BTreeSet<&str> =
+        by_tool.iter().flat_map(|(_, g, _)| g.split(',')).filter(|g| !g.is_empty() && *g != "none").collect();
+    let genes = if genes.is_empty() { "none".to_string() } else { genes.into_iter().collect::<Vec<_>>().join(",") };
+    row.cells.insert("amr_genes", Cell::One { value: Value::Text(genes), sources: sources.clone() });
+    if from_hamr {
+        let list: Vec<String> = by_tool.iter().map(|(t, g, _)| format!("{t}: {}", if g.is_empty() { "none" } else { g })).collect();
+        row.cells.insert("amr_by_tool", Cell::One { value: Value::Text(list.join("; ")), sources });
+    }
 }
 
 /// A sample's long reads (leanqc): reads and bases add up over files; the read N50 is given for one
@@ -909,6 +991,15 @@ fn pooled(runs: &[&Record]) -> (BTreeMap<&'static str, Value>, Option<String>) {
     (out, note)
 }
 
+/// Completeness and contamination from one tool: CheckM2 when it is there, else CheckM (nf-core/mag
+/// bin summaries made with CheckM only).
+fn quality(row: &Row) -> Option<(f64, f64, &'static str)> {
+    if let (Some(c), Some(x)) = (num(row, "completeness"), num(row, "contamination")) {
+        return Some((c, x, "CheckM2"));
+    }
+    Some((num(row, "checkm_completeness")?, num(row, "checkm_contamination")?, "CheckM"))
+}
+
 fn num(row: &Row, k: &str) -> Option<f64> {
     match row.cells.get(k)?.value()? {
         Value::Num(x) => Some(*x),
@@ -1017,7 +1108,8 @@ fn grade(row: &Row, l: &Limits, mode: Mode, required: &[&str], graded: &Graded) 
         let sp = row.cells.get("kleborate_species").map(Cell::show).unwrap_or_default();
         flag(Status::Warn, format!("Kleborate's species call is {sp}, which the preset it ran doesn't type, so its typing was not run (Not Tested)"));
     }
-    if let Some(b) = num(row, "busco_complete") {
+    // In MAG mode the MIMAG tier grades a bin; BUSCO is shown, not graded against isolate thresholds.
+    if let Some(b) = num(row, "busco_complete").filter(|_| mode == Mode::Isolate) {
         if b < l.min_busco - 5.0 {
             flag(Status::Fail, format!("BUSCO {b:.1}% < {:.0}%", l.min_busco - 5.0));
         } else if b < l.min_busco {
@@ -1028,28 +1120,30 @@ fn grade(row: &Row, l: &Limits, mode: Mode, required: &[&str], graded: &Graded) 
     // Reduced-genome lineages: CheckM2 is far better than CheckM1 here but has still been shown to
     // underestimate complete, circular Patescibacteria genomes.
     let reduced = gtdb.contains("p__Patescibacteri");
-    if let (Some(c), Some(x)) = (num(row, "completeness"), num(row, "contamination")) {
+    if let Some((c, x, tool)) = quality(row) {
+        // CheckM2 is the usual source; name the tool only when it is CheckM.
+        let by = if tool == "CheckM2" { String::new() } else { format!(" ({tool}; no CheckM2)") };
         match mode {
             Mode::Isolate => {
                 if c < l.min_completeness - 5.0 {
-                    flag(Status::Fail, format!("completeness {c:.1}% < {:.0}%", l.min_completeness - 5.0));
+                    flag(Status::Fail, format!("completeness {c:.1}% < {:.0}%{by}", l.min_completeness - 5.0));
                 } else if c < l.min_completeness {
-                    flag(Status::Warn, format!("completeness {c:.1}% < {:.0}%", l.min_completeness));
+                    flag(Status::Warn, format!("completeness {c:.1}% < {:.0}%{by}", l.min_completeness));
                 }
                 if x > 5.0 {
-                    flag(Status::Fail, format!("contamination {x:.1}% > 5%"));
+                    flag(Status::Fail, format!("contamination {x:.1}% > 5%{by}"));
                 } else if x > l.max_contamination {
-                    flag(Status::Warn, format!("contamination {x:.1}% > {:.0}%", l.max_contamination));
+                    flag(Status::Warn, format!("contamination {x:.1}% > {:.0}%{by}", l.max_contamination));
                 }
             }
             Mode::Mag => match mimag(c, x) {
                 "high*" => {}
-                "medium" => flag(Status::Warn, format!("MIMAG medium ({c:.1}% complete, {x:.1}% contamination)")),
-                _ => flag(Status::Fail, format!("MIMAG low ({c:.1}% complete, {x:.1}% contamination)")),
+                "medium" => flag(Status::Warn, format!("MIMAG medium ({c:.1}% complete, {x:.1}% contamination){by}")),
+                _ => flag(Status::Fail, format!("MIMAG low ({c:.1}% complete, {x:.1}% contamination){by}")),
             },
         }
         if reduced && c < 90.0 {
-            why.push("note: Patescibacteria have reduced genomes; CheckM2 can underestimate their completeness (see docs)".into());
+            why.push(format!("note: Patescibacteria have reduced genomes; {tool} can underestimate their completeness (see docs)"));
         }
     }
     (worst, why)
@@ -1105,7 +1199,10 @@ mod tests {
         let required = requirements(require.as_deref(), mode).unwrap();
         let grade_list: Option<Vec<String>> = grade_list.map(|g| g.iter().map(|s| s.to_string()).collect());
         let graded = graded(grade_list.as_deref()).unwrap();
-        let (records, _, _) = parse::scan(&[root.to_path_buf()]).unwrap();
+        let (mut records, _, mut skipped) = parse::scan(&[root.to_path_buf()]).unwrap();
+        if mode == Mode::Isolate {
+            skip_mag_summaries(&mut records, &mut skipped);
+        }
         let (rows, _, _) = join(records, &sheet, &BTreeMap::new());
         finish(rows, mode)
             .into_iter()
@@ -1671,5 +1768,97 @@ mod tests {
         assert_eq!(*s3, Status::Fail, "{why3:?}");
         assert!(why3.iter().any(|w| w.contains("no Kleborate result")), "{why3:?}");
         assert!(!why3.iter().any(|w| w.contains("differ by")), "{why3:?}");
+    }
+
+    fn copy_testdata(from: &str, to: &Path) {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join(from);
+        for e in std::fs::read_dir(dir).unwrap() {
+            let e = e.unwrap();
+            if e.file_type().unwrap().is_file() {
+                std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn hamronization_feeds_amr_genes_without_double_counting_amrfinderplus() {
+        let t = tempfile::tempdir().unwrap();
+        copy_testdata("hamronization", t.path());
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["amr"]));
+        let (status, why, row) = &rows["GCF_010120755.1_ASM1012075v1_genomic"];
+        assert_eq!(*status, Status::Pass, "{why:?}");
+        // the native AMRFinderPlus file wins over hAMRonization's amrfinderplus rows for this genome;
+        // abricate's per-tool table and the summary agree, so they count once
+        assert_eq!(
+            cell(row, "amr_by_tool"),
+            "abricate: aacA-ENT1,eat(A),msr(C); amrfinderplus: cirA_Y253CfsTer5,gyrA_S83I,mgrB_Q30Ter; rgi: NDM-1,nalC,nalC p.G71E"
+        );
+        assert_eq!(cell(row, "amr_genes"), "NDM-1,aacA-ENT1,cirA_Y253CfsTer5,eat(A),gyrA_S83I,mgrB_Q30Ter,msr(C),nalC,nalC p.G71E");
+        assert!(row.notes.iter().any(|n| n.contains("AMRFinderPlus rows of hAMRonization table") && n.contains("amrfinderplus 4.2.7")), "{:?}", row.notes);
+        let Some(Cell::One { sources, .. }) = row.cells.get("amr_genes") else { panic!() };
+        assert!(sources.iter().any(|s| s.ends_with("hamronized_abricate.tsv [abricate 1.0.1, ncbi 2024-01]")), "{sources:?}");
+        // no AMRFinderPlus file of its own: hAMRonization's amrfinderplus rows are used
+        let (_, _, b) = &rows["SAMPLE_B"];
+        assert_eq!(cell(b, "amr_genes"), "blaTEM-156,pmrB p.C84R,sul2");
+        assert!(b.notes.is_empty(), "{:?}", b.notes);
+
+        // a native file alone keeps the old output: no amr_by_tool column
+        let t2 = tempfile::tempdir().unwrap();
+        write(t2.path(), "S.amrfinder.tsv", "Element symbol\tElement type\nblaKPC-2\tAMR\nfimH\tVIRULENCE\n");
+        let rows = table(t2.path(), &[], Mode::Isolate, Some(&["amr"]));
+        assert_eq!(cell(&rows["S"].2, "amr_genes"), "blaKPC-2");
+        assert!(!rows["S"].2.cells.contains_key("amr_by_tool"));
+
+        // two runs of one tool on one sample that disagree are a conflict
+        let abricate = std::fs::read_to_string(t.path().join("hamronized_abricate.tsv")).unwrap();
+        write(t.path(), "rerun/hamronized_abricate.tsv", &abricate.replace("\teat(A)\t", "\teat(B)\t"));
+        let rows = table(t.path(), &[], Mode::Isolate, Some(&["amr"]));
+        let (status, why, row) = &rows["GCF_010120755.1_ASM1012075v1_genomic"];
+        assert_eq!(*status, Status::Conflict);
+        assert_eq!(cell(row, "amr_genes"), "CONFLICT");
+        assert!(why.iter().any(|w| w.contains("amr_genes differs") && w.contains("eat(B)")), "{why:?}");
+    }
+
+    #[test]
+    fn nf_core_mag_bin_summary_gives_mimag_tiers() {
+        let t = tempfile::tempdir().unwrap();
+        copy_testdata("nfcore-mag/5.5.0", t.path());
+        let rows = table(t.path(), &[], Mode::Mag, None);
+        let tiers: Vec<(String, Status)> = rows.iter().map(|(k, (s, _, r))| (format!("{k} {}", cell(r, "mimag")), *s)).collect();
+        let b = "MEGAHIT-MetaBAT2-sample1";
+        assert_eq!(
+            tiers,
+            [
+                (format!("{b}.1 high*"), Status::Pass),
+                (format!("{b}.2 medium"), Status::Warn),
+                (format!("{b}.3 medium"), Status::Warn),
+                (format!("{b}.4 low"), Status::Fail),
+                (format!("{b}.5 low"), Status::Fail),
+            ]
+        );
+        // CheckM2 (64%), not CheckM (41%) or BUSCO (55.3%, not graded in MAG mode), sets the tier
+        let (_, why, _) = &rows[&format!("{b}.3")];
+        assert_eq!(why.len(), 2, "{why:?}");
+        assert!(why[0].contains("MIMAG medium (64.0% complete"), "{why:?}");
+        assert!(why[1].contains("Patescibacteria") && why[1].contains("CheckM2 can underestimate"), "{why:?}");
+        // the same bins with a CheckM2 quality report beside the summary: same values, no conflict
+        write(t.path(), "checkm2/quality_report.tsv", &format!("Name\tCompleteness\tContamination\n{b}.3\t64.0\t0.8\n"));
+        assert_eq!(table(t.path(), &[], Mode::Mag, None)[&format!("{b}.3")].0, Status::Warn);
+
+        // CheckM only (an nf-core/mag run with --binqc_tool checkm): the tier comes from CheckM
+        let t = tempfile::tempdir().unwrap();
+        write(
+            t.path(),
+            "GenomeBinning/bin_summary.tsv",
+            "\tbin\tDepth s1\tBin Id\tMarker lineage\tCompleteness\tContamination\tclassification\n0\tb.1.fa\t3.5\tb.1\tk__Bacteria (UID203)\t70.0\t1.0\td__Bacteria;p__Patescibacteria;c__;o__;f__;g__;s__\n",
+        );
+        let rows = table(t.path(), &[], Mode::Mag, None);
+        let (status, why, row) = &rows["b.1"];
+        assert_eq!(*status, Status::Warn, "{why:?}");
+        assert_eq!(cell(row, "mimag"), "medium");
+        assert!(why[0].ends_with("(CheckM; no CheckM2)"), "{why:?}");
+        assert!(why[1].contains("CheckM can underestimate"), "{why:?}");
+        // in isolate mode the summary is listed, not read
+        assert!(table(t.path(), &[], Mode::Isolate, None).is_empty());
     }
 }

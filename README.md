@@ -116,6 +116,16 @@ that folder.
   35, 725-731, 2017). No code from those tools is included.
 - dblock's catalog points at databases published by their authors (GTDB, CheckM2, SILVA, Kraken 2
   index builds, Bakta, CARD); each entry records its source and licence.
+- **Rust libraries:** [needletail](https://github.com/onecodex/needletail) reads FASTQ and FASTA
+  in leanqc; [rmcp](https://github.com/modelcontextprotocol/rust-sdk) is irit-mcp's MCP server;
+  [jsonschema](https://github.com/Stranger6667/jsonschema) checks nf-core schemas in sheetgen;
+  [GPUI](https://www.gpui.rs/) draws msascope. Each crate's licence is in its own repository.
+- cooccur's rho follows the definition and zero handling of the R package
+  [propr](https://github.com/tpq/propr) (Quinn et al.), and was checked against it.
+- irit-mcp runs tools installed separately, each under its own licence; cite them in papers.
+
+See [Related projects](docs/related.md) for tools that overlap with irit's, including the ones that
+are the better choice for some jobs.
 
 ## Licence
 

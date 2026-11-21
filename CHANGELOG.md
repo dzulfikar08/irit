@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### isotable
+- Reads **hAMRonization** tables (per-tool and `summarize` TSV; columns matched against 1.1.9–1.4.1),
+  so the resistance genes of any tool hAMRonization supports reach the table; a new `amr_by_tool`
+  column says which tool reported what. A sample's own AMRFinderPlus file takes precedence over
+  hAMRonization's AMRFinderPlus rows, so nothing is counted twice.
+- Reads **nf-core/mag's `bin_summary.tsv`** in `--mode mag` (both layouts, 3.0.0–5.1.0 and
+  5.2.0–5.5.0): MIMAG tiers and the Patescibacteria note for nf-core/mag results. CheckM2 values
+  are preferred over CheckM. BUSCO is no longer graded in MAG mode (its isolate thresholds failed
+  most medium-quality MAGs).
+- Files are recognised by their header before their name.
+
+### Docs
+- [Related projects](docs/related.md): what overlaps with each irit tool, and when nf-core/mag,
+  Bactopia, falco, MultiQC, hAMRonization, ODK/KoboToolbox, propr or Nextflow are the better choice.
+  The README now credits needletail, rmcp, jsonschema, GPUI and propr.
+
 ## 0.6.1 (2026-11-15)
 
 SemiBin2 multi-sample binning, single-end reads for contig coverage, and cooccur tested on real
