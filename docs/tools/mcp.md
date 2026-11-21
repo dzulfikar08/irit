@@ -365,7 +365,12 @@ How they work:
   GTDB-Tk, mlst and AMRFinderPlus outputs are read with isotable's own parsers. If the summary
   can't be read, the result is an error (`output_unreadable`), not an empty list.
 - **Time.** Shovill, Bakta, CheckM2 and GTDB-Tk can run for minutes to hours. The call returns when
-  the program ends; an MCP client with a short request timeout may give up first.
+  the program ends. While it runs, irit-mcp sends a progress notification every minute
+  (`IRIT_MCP_PROGRESS_SECS` changes the interval) if the client asked for progress with a
+  `progressToken`; Claude Code does, and gives up on a call that sends nothing for 30 minutes.
+  Without these, CheckM2's DIAMOND step on 40 MAGs (over 30 minutes with no output) was dropped
+  twice in a test, though CheckM2 itself was fine. A client may also have a limit on a call's total
+  time: in Claude Code, set `MCP_TOOL_TIMEOUT` (milliseconds) above the longest step you expect.
 - **Names isotable can join.** isotable finds outputs by name and joins them by sample. Shovill
   always writes `<outdir>/contigs.fa`, which would make every assembly sample `contigs`, so: mlst's
   `outfile` must contain `mlst` and end in `.tsv`, and with one assembly the sample part of the name

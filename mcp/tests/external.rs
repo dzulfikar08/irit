@@ -1290,6 +1290,23 @@ fn missing_tool_gives_an_install_hint() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("not one of fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder"));
 }
 
+/// A long call sends progress notifications while it runs, so a client doesn't give up on it.
+#[test]
+fn long_call_sends_progress_notifications() {
+    let s = setup();
+    let work = &s.work;
+    script(&work.join("fake-bin"), "fastp", &format!("sleep 3\n{FASTP}"));
+    let mut c = Client::spawn(work, &[], &[("PATH", s.path.as_str()), ("IRIT_MCP_PROGRESS_SECS", "1")]);
+    let (r, notes) = c.call_with_progress("fastp", json!({"in1": "reads/s1_R1.fastq", "json": "s1.fastp.json"}), "tok-1");
+    assert_ne!(r["isError"], true, "{r}");
+    let progress: Vec<&Value> = notes.iter().filter(|n| n["method"] == "notifications/progress").collect();
+    assert!(progress.len() >= 2, "{notes:?}");
+    assert_eq!(progress[0]["params"]["progressToken"], "tok-1");
+    assert!(progress[0]["params"]["message"].as_str().unwrap().starts_with("fastp still running"), "{:?}", progress[0]);
+    assert!(progress[1]["params"]["progress"].as_f64() > progress[0]["params"]["progress"].as_f64());
+    c.close();
+}
+
 /// Reads to assembly (Shovill), typing (mlst) and resistance genes (AMRFinderPlus), then isotable
 /// over the results: the sample names line up although Shovill always writes `contigs.fa`.
 #[test]

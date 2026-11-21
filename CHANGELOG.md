@@ -13,6 +13,9 @@
   reports to one format; the tool and database versions are taken from the call that wrote the
   report. isotable reads the result.
 - amrfinder records its database version in the call record.
+- **Progress notifications** every minute while a call runs, when the client sends a progress token.
+  Claude Code drops a call that sends nothing for 30 minutes; CheckM2's DIAMOND step on 40 MAGs
+  was dropped twice that way in the water-depot test, though CheckM2 itself was fine.
 
 ### dblock
 - `sylph-gtdb-r232-c1000` (4.9 GB) and `sylph-gtdb-r220-c1000` (2.6 GB), sylph's prebuilt GTDB

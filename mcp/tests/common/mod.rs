@@ -63,6 +63,26 @@ impl Client {
         }
     }
 
+    /// A tool call with a progress token; returns the result and the notifications that came before it.
+    pub fn call_with_progress(&mut self, tool: &str, args: Value, token: &str) -> (Value, Vec<Value>) {
+        let id = self.next;
+        self.next += 1;
+        let params = json!({"name": tool, "arguments": args, "_meta": {"progressToken": token}});
+        self.send(json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params}));
+        let mut notes = Vec::new();
+        loop {
+            let mut line = String::new();
+            assert!(self.stdout.read_line(&mut line).unwrap() > 0, "server closed stdout");
+            let msg: Value = serde_json::from_str(&line).unwrap();
+            if msg["id"] == json!(id) {
+                return (msg.get("result").cloned().unwrap_or(msg), notes);
+            }
+            if msg.get("method").is_some() {
+                notes.push(msg);
+            }
+        }
+    }
+
     pub fn call(&mut self, tool: &str, args: Value) -> Value {
         let r = self.request("tools/call", json!({"name": tool, "arguments": args}));
         r.get("result").cloned().unwrap_or(r)

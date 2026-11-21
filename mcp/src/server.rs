@@ -1429,6 +1429,47 @@ impl ServerHandler for Irit {
             .with_server_info(Implementation::new("irit-mcp", record::IRIT_MCP_VERSION))
             .with_instructions(INSTRUCTIONS)
     }
+
+    // A tool such as CheckM2's DIAMOND step can run for an hour without printing anything. Clients
+    // give up on a call that sends nothing for a while (Claude Code: 30 minutes without a response
+    // or progress), so while a call runs, a progress notification goes out every minute
+    // (`IRIT_MCP_PROGRESS_SECS`) when the client asked for them with a progress token.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, ErrorData> {
+        let ticker = context.meta.get_progress_token().map(|token| {
+            let (peer, tool) = (context.peer.clone(), request.name.to_string());
+            let every = progress_every();
+            tokio::spawn(async move {
+                let start = std::time::Instant::now();
+                let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+                for n in 1u32.. {
+                    tick.tick().await;
+                    let minutes = start.elapsed().as_secs() / 60;
+                    let note = rmcp::model::ProgressNotificationParam::new(token.clone(), f64::from(n))
+                        .with_message(format!("{tool} still running ({minutes} min)"));
+                    if peer.notify_progress(note).await.is_err() {
+                        break;
+                    }
+                }
+            })
+        });
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let result = self.tool_router.call(tcc).await;
+        if let Some(t) = ticker {
+            t.abort();
+        }
+        result
+    }
+}
+
+/// How often a running call sends a progress notification: `IRIT_MCP_PROGRESS_SECS` seconds,
+/// default 60.
+fn progress_every() -> std::time::Duration {
+    let secs = std::env::var("IRIT_MCP_PROGRESS_SECS").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&s| s > 0);
+    std::time::Duration::from_secs(secs.unwrap_or(60))
 }
 
 #[cfg(test)]
