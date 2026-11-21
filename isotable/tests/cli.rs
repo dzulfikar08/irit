@@ -73,6 +73,43 @@ fn nf_core_mag_bin_summary_in_mag_mode() {
     let r = &rows(&out)[2];
     assert_eq!((r["checkm_completeness"].as_str(), r["busco_complete"].as_str()), ("41", "55.3"));
     assert_eq!(r["mag_depths"], "sample1=5.5,sample2=0.4");
+    // high* is explained: a column on the row, a note at the end, the MultiQC table's description
+    assert_eq!((rows(&out)[0]["mimag_rrna_trna"].as_str(), rows(&out)[1]["mimag_rrna_trna"].as_str()), ("not checked", ""));
+    let t = tempfile::tempdir().unwrap();
+    let mqc = t.path().join("mqc.tsv");
+    let (_, err) = isotable(&[testdata("nfcore-mag/5.5.0").to_str().unwrap(), "--mode", "mag", "--mqc", mqc.to_str().unwrap()]);
+    assert!(err.contains("note: high* = MIMAG high quality by completeness (> 90%) and contamination (< 5%) only"), "{err}");
+    assert!(std::fs::read_to_string(&mqc).unwrap().contains("# description: 'high* = MIMAG high quality"));
+}
+
+/// A sheet in MAG mode: bins keep their rows and get the sample their name contains; samples with
+/// no bins get no rows, and names that match no sample give one warning, not one each.
+#[test]
+fn mag_mode_with_a_sheet() {
+    let t = tempfile::tempdir().unwrap();
+    let mut report = String::from("Name\tCompleteness\tContamination\n");
+    for (bin, c) in [("D01-S1.1", 97.0), ("D01-S1.2", 60.0), ("D01-S2_SemiBin_4", 95.0), ("bin.7", 70.0), ("bin.8", 70.0)] {
+        report.push_str(&format!("{bin}\t{c}\t1.0\n"));
+    }
+    std::fs::write(t.path().join("quality_report.tsv"), report).unwrap();
+    // D01-S3 has read QC but no bins: it still counts as a sample with no bins
+    std::fs::write(
+        t.path().join("D01-S3.fastp.json"),
+        r#"{"summary": {"before_filtering": {"total_reads": 100, "total_bases": 15000}, "after_filtering": {"total_reads": 90, "total_bases": 13000, "q30_rate": 0.9}}}"#,
+    )
+    .unwrap();
+    let sheet = t.path().join("sheet.csv");
+    std::fs::write(&sheet, "sample,fastq_1,fastq_2\nD01-S1,a_1.fq.gz,a_2.fq.gz\nD01-S2,b_1.fq.gz,b_2.fq.gz\nD01-S3,c_1.fq.gz,c_2.fq.gz\n").unwrap();
+    let (out, err) = isotable(&[t.path().to_str().unwrap(), "--mode", "mag", "--sheet", sheet.to_str().unwrap()]);
+    let got: Vec<(String, String, String)> =
+        rows(&out).iter().filter(|r| r["sample"] != "D01-S3").map(|r| (r["sample"].clone(), r["bin_sample"].clone(), r["status"].clone())).collect();
+    let want = [("D01-S1.1", "D01-S1", "pass"), ("D01-S1.2", "D01-S1", "warn"), ("D01-S2_SemiBin_4", "D01-S2", "pass"), ("bin.7", "", "warn"), ("bin.8", "", "warn")];
+    assert_eq!(got, want.map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string())), "{out}");
+    assert_eq!(err.matches("warning").count(), 1, "{err}");
+    assert!(err.contains("warning: 2 names matched no sheet sample; they got rows of their own, with no bin_sample: bin.7, bin.8"), "{err}");
+    assert!(rows(&out).iter().any(|r| r["sample"] == "D01-S3" && r["reads_raw"] == "100"), "{out}");
+    assert!(err.contains("note: 1 of 3 sheet samples have no bins here: D01-S3"), "{err}");
+    assert!(!err.contains("not an exact name match"), "{err}");
 }
 
 #[test]

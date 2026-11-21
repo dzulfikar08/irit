@@ -48,6 +48,16 @@ struct Cli {
     #[arg(long)]
     pipeline: Option<String>,
 
+    /// Leave this sample out of the sheet (as named in the sheet, or before cleaning). Repeatable.
+    #[arg(long, value_name = "SAMPLE")]
+    exclude: Vec<String>,
+
+    /// Leave out the samples listed in this file, one per line (blank lines and `#` comments
+    /// skipped). A line naming a FASTQ file leaves out the sample that has it, every lane, so the
+    /// list `sheetgen verify --failed` writes can be given as is.
+    #[arg(long, value_name = "FILE")]
+    exclude_from: Option<PathBuf>,
+
     /// Fixed value for a column, e.g. `--set strandedness=auto`. Repeatable.
     #[arg(long = "set", value_name = "COLUMN=VALUE")]
     set: Vec<String>,
@@ -225,6 +235,10 @@ fn main() -> Result<()> {
     }
     let (mut units, mut warnings) = pair(files, &PairOpts { long: cli.long, no_pair_numeric: cli.no_pair_numeric })?;
     warnings.extend(notes);
+    let excluded = exclude(&mut units, &cli.exclude, cli.exclude_from.as_deref(), &mut warnings)?;
+    if units.is_empty() {
+        bail!("every sample was excluded ({})", excluded.join(", "));
+    }
     check_names(&units, cli.allow_merge, &mut warnings)?;
     if let Some(dir) = &cli.link_into {
         link_into(&mut units, dir)?;
@@ -287,6 +301,9 @@ fn main() -> Result<()> {
             .map(|p| format!(", columns from {}", p.display()))
             .unwrap_or_default()
     );
+    if !excluded.is_empty() {
+        eprintln!("  note: left out (--exclude): {}", excluded.join(", "));
+    }
     let numeric: BTreeSet<&str> = units.iter().filter(|u| u.numeric_pair).map(|u| u.sample.as_str()).collect();
     if !numeric.is_empty() {
         let list: Vec<_> = numeric.into_iter().collect();
@@ -306,6 +323,37 @@ fn main() -> Result<()> {
         eprintln!("  warning: {w}");
     }
     Ok(())
+}
+
+/// Drop the samples `--exclude` and `--exclude-from` name, every row (lane) of each. A FASTQ file
+/// entry drops the sample with that file: the same file when the entry exists here, else a file of
+/// that name. An entry that matches nothing is a warning. Returns the samples dropped.
+fn exclude(units: &mut Vec<Unit>, names: &[String], from: Option<&Path>, warnings: &mut Vec<String>) -> Result<Vec<String>> {
+    let mut entries: Vec<String> = names.iter().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
+    if let Some(p) = from {
+        let text = std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
+        entries.extend(text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(String::from));
+    }
+    let mut drop: BTreeSet<String> = BTreeSet::new();
+    for e in &entries {
+        let hit: Vec<&str> = if FASTQ_EXT.is_match(e) {
+            let path = Path::new(e);
+            let want = path.canonicalize().ok();
+            let same = |f: &PathBuf| match &want {
+                Some(w) => f.canonicalize().ok().as_ref() == Some(w),
+                None => f.file_name() == path.file_name(),
+            };
+            units.iter().filter(|u| [&u.r1, &u.r2, &u.long].into_iter().flatten().any(same)).map(|u| u.sample.as_str()).collect()
+        } else {
+            units.iter().filter(|u| u.sample == *e || clean_name(&u.sample) == *e).map(|u| u.sample.as_str()).collect()
+        };
+        if hit.is_empty() {
+            warnings.push(format!("--exclude {e}: no such sample or read file, so nothing was left out for it"));
+        }
+        drop.extend(hit.into_iter().map(String::from));
+    }
+    units.retain(|u| !drop.contains(&u.sample));
+    Ok(drop.into_iter().collect())
 }
 
 fn show_dirs(dirs: &[PathBuf]) -> String {

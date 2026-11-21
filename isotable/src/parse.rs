@@ -821,19 +821,41 @@ pub fn mlst(path: &Path) -> Result<Vec<Record>> {
         .collect())
 }
 
+/// The AMR hits (type AMR) of an AMRFinderPlus report, one entry per element symbol and name,
+/// sorted. A symbol shared by hits with different names (`blaOXA` for three OXA families when no
+/// allele matched exactly) gets the name in brackets, and a hit found more than once gets
+/// `x<count>`, so distinct genes stay distinct. Commas in a name become `;` (the list is
+/// comma-separated).
+pub fn amrfinder_genes(rows: &[BTreeMap<String, String>]) -> Vec<String> {
+    let mut found: BTreeMap<&str, BTreeMap<String, u64>> = BTreeMap::new();
+    for r in rows {
+        let t = r.get("Element type").or_else(|| r.get("Type")).map(String::as_str).unwrap_or("AMR");
+        let Some(symbol) = r.get("Element symbol").or_else(|| r.get("Gene symbol")) else { continue };
+        if t != "AMR" || symbol.is_empty() {
+            continue;
+        }
+        let name = r.get("Element name").or_else(|| r.get("Sequence name")).map(|n| n.replace(',', ";")).unwrap_or_default();
+        *found.entry(symbol.as_str()).or_default().entry(name).or_default() += 1;
+    }
+    let mut genes = Vec::new();
+    for (symbol, names) in found {
+        for (name, count) in &names {
+            let mut g = symbol.to_string();
+            if names.len() > 1 {
+                g += &format!(" ({name})");
+            }
+            if *count > 1 {
+                g += &format!(" x{count}");
+            }
+            genes.push(g);
+        }
+    }
+    genes
+}
+
 /// AMRFinderPlus: one file per sample; lists AMR genes (column names changed in 4.x).
 pub fn amrfinder(path: &Path, name: &str) -> Result<Vec<Record>> {
-    let rows = tsv(path)?;
-    let mut genes: Vec<String> = rows
-        .iter()
-        .filter(|r| {
-            let t = r.get("Element type").or_else(|| r.get("Type")).map(String::as_str).unwrap_or("AMR");
-            t == "AMR"
-        })
-        .filter_map(|r| r.get("Element symbol").or_else(|| r.get("Gene symbol")).cloned())
-        .collect();
-    genes.sort();
-    genes.dedup();
+    let genes = amrfinder_genes(&tsv(path)?);
     let raw = name.split(".amrfinder").next().unwrap_or(name).split("_amrfinder").next().unwrap_or(name);
     let raw = raw.trim_end_matches(".tsv").to_string();
     let value = if genes.is_empty() { "none".to_string() } else { genes.join(",") };
@@ -987,9 +1009,68 @@ pub fn match_sample(raw: &str, kind: Kind, sheet: &[String], strip_mate: bool) -
     (base, how)
 }
 
+/// The sheet sample a MAG bin was binned from: the longest sheet name that appears in the bin's
+/// name as a whole part, at the start or after `-`, `_` or `.`, and followed by one of them.
+/// MetaBAT2 with the sample as prefix (`D01-S1.12`), SemiBin2 with the sample as tag
+/// (`D01-S1_3`) or multi-sample (`D01-S1_SemiBin_3`), and nf-core/mag (`MEGAHIT-MetaBAT2-D01-S1.12`)
+/// all name bins so. `None` when no sheet name fits (MetaBAT2's default `bin.12`).
+pub fn bin_sample(name: &str, sheet: &[String]) -> Option<String> {
+    let sep = |c: char| matches!(c, '-' | '_' | '.');
+    let fits = |s: &str| {
+        name.match_indices(s).any(|(i, _)| {
+            name[..i].chars().next_back().is_none_or(sep) && name[i + s.len()..].chars().next().is_some_and(sep)
+        })
+    };
+    sheet.iter().filter(|s| !s.is_empty() && fits(s)).max_by_key(|s| s.len()).cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn amrfinder_hits_sharing_a_symbol_stay_apart() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("s1.amrfinder.tsv");
+        std::fs::write(
+            &p,
+            "Contig id\tElement symbol\tElement name\tType\n\
+             c1\tblaOXA\tOXA-48 family carbapenem-hydrolyzing class D beta-lactamase\tAMR\n\
+             c2\tblaOXA\tOXA-1 family class D beta-lactamase\tAMR\n\
+             c3\ttet(A)\ttetracycline efflux MFS transporter Tet(A)\tAMR\n\
+             c4\ttet(A)\ttetracycline efflux MFS transporter Tet(A)\tAMR\n\
+             c5\tmecA\tPBP2a, methicillin resistance\tAMR\n\
+             c6\tsea\tenterotoxin type A\tVIRULENCE\n",
+        )
+        .unwrap();
+        let r = amrfinder(&p, "s1.amrfinder.tsv").unwrap();
+        assert_eq!(r[0].raw_name, "s1");
+        assert_eq!(
+            r[0].fields,
+            vec![(
+                "amr_genes",
+                Value::Text(
+                    "blaOXA (OXA-1 family class D beta-lactamase),blaOXA (OXA-48 family carbapenem-hydrolyzing class D beta-lactamase),mecA,tet(A) x2"
+                        .into()
+                )
+            )]
+        );
+    }
+
+    #[test]
+    fn bins_of_sheet_samples() {
+        let sheet: Vec<String> = ["D01-S1", "D01-S10", "D01", "1"].map(String::from).to_vec();
+        let b = |name| bin_sample(name, &sheet);
+        assert_eq!(b("D01-S1.12").as_deref(), Some("D01-S1"));
+        assert_eq!(b("D01-S10.3").as_deref(), Some("D01-S10"));
+        assert_eq!(b("D01-S1_3").as_deref(), Some("D01-S1"));
+        assert_eq!(b("D01-S1_SemiBin_3").as_deref(), Some("D01-S1"));
+        assert_eq!(b("MEGAHIT-MetaBAT2-D01-S1.12").as_deref(), Some("D01-S1"));
+        // a sheet name must be followed by a separator: `bin.1` is not a bin of sample `1`
+        assert_eq!(b("bin.1"), None);
+        assert_eq!(b("D01-S100.1").as_deref(), Some("D01"));
+        assert_eq!(b("XD01-S2.1"), None);
+    }
 
     #[test]
     fn names_without_sheet() {

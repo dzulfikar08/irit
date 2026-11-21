@@ -47,6 +47,11 @@ pub struct VerifyArgs {
     #[arg(long)]
     json: bool,
 
+    /// Write the corrupt and mismatched files here, one path per line (empty when none). Give it
+    /// to `sheetgen --exclude-from` to leave their samples out of the sheet.
+    #[arg(long, value_name = "FILE")]
+    failed: Option<PathBuf>,
+
     /// Files to check at the same time (each uses about four threads).
     #[arg(short, long, default_value_t = 1)]
     jobs: usize,
@@ -907,6 +912,7 @@ pub fn run(args: VerifyArgs) -> Result<bool> {
 
     let mut counts: BTreeMap<Verdict, usize> = BTreeMap::new();
     let mut total_bytes = 0u64;
+    let mut failed = String::new();
     for r in &rows {
         let v = match &r.checked {
             Ok(c) => {
@@ -916,6 +922,12 @@ pub fn run(args: VerifyArgs) -> Result<bool> {
             Err(_) => Verdict::Corrupt,
         };
         *counts.entry(v).or_default() += 1;
+        if matches!(v, Verdict::Corrupt | Verdict::Mismatch) {
+            failed.push_str(&format!("{}\n", r.path.display()));
+        }
+    }
+    if let Some(p) = &args.failed {
+        std::fs::write(p, &failed).with_context(|| format!("writing {}", p.display()))?;
     }
     let all_ok = counts.keys().all(|v| *v == Verdict::Ok);
     let mb_s = total_bytes as f64 / 1e6 / seconds.max(1e-9);

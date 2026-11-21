@@ -166,7 +166,9 @@ pub fn genome_key(name: &str) -> String {
 }
 
 /// Reads taxonomy tables into genome key → lineage. Takes GTDB-Tk summaries (`user_genome` and
-/// `classification` columns) or two-column tables (genome, lineage) with or without a header.
+/// `classification` columns), GTDB-Tk's ANI screen summaries (`<prefix>.<marker>.ani_summary.tsv`
+/// from `gtdbprep ani` or classify_wf: `user_genome` and `reference_taxonomy`), or two-column
+/// tables (genome, lineage) with or without a header.
 pub fn read_taxonomy(paths: &[impl AsRef<Path>]) -> Result<HashMap<String, String>> {
     let mut out = HashMap::new();
     for p in paths {
@@ -189,11 +191,14 @@ pub fn parse_taxonomy(text: &str) -> Result<Vec<(String, String)>> {
         None => return Ok(Vec::new()),
         Some(first) => {
             let cols: Vec<&str> = first.split('\t').collect();
-            if let Some(c) = cols.iter().position(|c| *c == "classification") {
+            if let Some(c) = cols.iter().position(|c| *c == "classification").or_else(|| cols.iter().position(|c| *c == "reference_taxonomy")) {
                 let g = cols.iter().position(|c| *c == "user_genome").unwrap_or(0);
                 lines.next();
                 (g, c)
             } else {
+                if cols.contains(&"user_genome") {
+                    bail!("a GTDB-Tk table without a classification or reference_taxonomy column; give a summary.tsv or ani_summary.tsv");
+                }
                 if cols.len() < 2 {
                     bail!("expected two tab-separated columns (genome, lineage)");
                 }
@@ -269,6 +274,11 @@ mod tests {
         let t = parse_taxonomy(gtdb).unwrap();
         assert_eq!(t[0], ("bin.1".into(), "d__Bacteria;p__Patescibacteriota;c__Paceibacteria".into()));
         assert_eq!(phylum(&t[1].1), "p__Pseudomonadota");
+        // the ANI screen's summary: the lineage is reference_taxonomy, not the second column
+        let ani = "user_genome\treference_genome\tskani_ani\tskani_af\treference_taxonomy\n\
+                   bin.7\tGCA_1.1\t99.1\t0.9\td__Bacteria;p__Pseudomonadota;s__X y\n";
+        assert_eq!(parse_taxonomy(ani).unwrap(), [("bin.7".to_string(), "d__Bacteria;p__Pseudomonadota;s__X y".to_string())]);
+        assert!(parse_taxonomy("user_genome\treference_genome\nbin.7\tGCA_1.1\n").is_err());
         let plain = parse_taxonomy("genome\tlineage\nbin.3.fa\td__Archaea;p__Nanoarchaeota\n").unwrap();
         assert_eq!(plain, vec![("bin.3.fa".into(), "d__Archaea;p__Nanoarchaeota".into())]);
         let noheader = parse_taxonomy("bin.3\td__Archaea;p__Nanoarchaeota\n").unwrap();

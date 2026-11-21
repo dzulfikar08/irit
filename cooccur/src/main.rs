@@ -31,8 +31,9 @@ struct Cli {
     #[arg(short, long)]
     measure: Option<String>,
 
-    /// Taxonomy table: a GTDB-Tk summary (user_genome, classification) or two columns (genome,
-    /// lineage). Repeat for the bacterial and archaeal summaries.
+    /// Taxonomy table: a GTDB-Tk summary (user_genome, classification), an ANI screen summary
+    /// (user_genome, reference_taxonomy: `gtdbprep ani`'s), gtdbprep place's place.tsv, or two
+    /// columns (genome, lineage). Repeat for several tables.
     #[arg(short, long)]
     taxonomy: Vec<PathBuf>,
 

@@ -16,6 +16,46 @@
 - **Progress notifications** every minute while a call runs, when the client sends a progress token.
   Claude Code drops a call that sends nothing for 30 minutes; CheckM2's DIAMOND step on 40 MAGs
   was dropped twice that way in the water-depot test, though CheckM2 itself was fine.
+- **Results fit the client.** Every tool result is cut to 40,000 characters
+  (`IRIT_MCP_RESULT_CHARS`), note included: the largest list at any depth (genomes, samples, hits,
+  calls, a call's inputs) or the longest string is halved until it fits, and `result_shortened`
+  says how many rows there were and which file has them all. describe_run keeps the newest calls. More than 20 output
+  files are listed as the 20 nearest the output folder plus a count per folder; the run record
+  still has every file and hash. gtdbprep_ani (86k characters for 167 genomes), isotable,
+  describe_run, megahit and leanqc results had been refused by the client.
+- describe_run's default summary lists 5 output paths per call and counts the rest.
+- **Calls are recorded when they start**, as `started`, and updated when they end. A call the
+  client dropped, or one cut off by a killed server, stays `started` in run.json, describe_run
+  and list_runs (`unfinished`), and replay.sh notes it as never finished.
+- galah writes `<outdir>/representatives/`, a link to each representative genome, as its
+  description said. It can be gtdbprep_ani's or gtdbprep_place's genome_dir. replay.sh makes the
+  same links.
+- galah's `checkm2_report` takes a list of reports (CheckM2 run per sample). They are joined into
+  `<outdir>/checkm2_quality_report.tsv`; reports with different headers, or a genome in two
+  reports, are refused. replay.sh joins them again, and removes old links in `representatives/`
+  before making the new ones, as the server does.
+- gtdbprep_place falls back to the data locked in `dblock.lock`, as gtdbprep_ani does, and takes
+  `min_perc_aa` (GTDB-Tk align's). When align leaves out every genome, gtdbprep now says so
+  instead of GTDB-Tk's `IndexError` in markers.py; an older gtdbprep's IndexError gets a hint.
+- gtdbprep_ani returns `summary_files`, GTDB-Tk's ANI summaries, for cooccur's taxonomy and isotable.
+- amrfinder's `amr_genes` is isotable's list (below), so hits that share a symbol stay apart.
+- reads_verify names each bad file and why, in its message and in `problems`, and writes the
+  failing files to `failed` (sheetgen verify `--failed`). A check that finds problems (exit 1 with
+  a report) is recorded as ok with exit status 1, so replay.sh reruns it, expects 1, and makes
+  the `failed` list again. Its description said `not_listed`; the status is `not listed`.
+- sheetgen takes `exclude` and `exclude_from` (reads_verify's failed list works as is).
+- isotable's description mentions the `bin_sample` and `mimag_rrna_trna` columns.
+
+### gtdbprep
+- `place --min-perc-aa` is passed to GTDB-Tk align (checked before anything runs). When align
+  leaves out every genome (too few markers), place stops with an error naming the genome with the
+  most markers, instead of GTDB-Tk's `IndexError: list index out of range` in classify. When
+  identify found no markers in any genome, it says that instead, right after identify.
+
+### cooccur
+- `--taxonomy` reads GTDB-Tk's ANI screen summaries (`reference_taxonomy`, from `gtdbprep ani` or
+  classify_wf). Before, their second column (the reference genome) was taken as the lineage. A
+  GTDB-Tk table with neither lineage column is refused.
 
 ### dblock
 - `sylph-gtdb-r232-c1000` (4.9 GB) and `sylph-gtdb-r220-c1000` (2.6 GB), sylph's prebuilt GTDB
@@ -31,6 +71,23 @@
   are preferred over CheckM. BUSCO is no longer graded in MAG mode (its isolate thresholds failed
   most medium-quality MAGs).
 - Files are recognised by their header before their name.
+- `--mode mag` with `--sheet`: rows are bins, and a new `bin_sample` column names the sheet sample
+  in the bin's name (`D01-S1.12` from `D01-S1`). Sheet samples with no bins no longer get empty
+  `fail` rows; one note lists them (also those with only read QC). Bins that match no sample give
+  one warning instead of one each. A bin goes to the longest sheet name it contains, so keep the
+  sheet complete.
+- AMRFinderPlus `amr_genes` keeps genes that share a symbol apart: one entry per element symbol
+  and name, with the name in brackets when the symbol is shared (`blaOXA` for three OXA
+  families), and `x<count>` for a gene found more than once. Before, they showed as one `blaOXA`.
+- `high*` is explained in the output: a `mimag_rrna_trna` column (`not checked`), a note at the
+  end of the run and the MultiQC table's description. The rRNA and tRNA genes MIMAG high quality
+  also needs are not checked.
+
+### sheetgen
+- `--exclude SAMPLE` (repeatable) and `--exclude-from FILE` leave samples out of the sheet. A FASTQ
+  path in the file leaves out the sample that has it.
+- `verify --failed FILE` writes the corrupt and mismatched files, one per line, ready for
+  `--exclude-from`.
 
 ### Docs
 - [Related projects](docs/related.md): what overlaps with each irit tool, and when nf-core/mag,

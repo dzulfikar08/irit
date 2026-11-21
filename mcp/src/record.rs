@@ -33,6 +33,14 @@ pub struct LinkRecord {
     pub target: String,
 }
 
+/// A table the server joined from others before the tool ran: the first input whole, then the
+/// others without their header line (CheckM2 reports run per depot, for galah).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConcatRecord {
+    pub output: String,
+    pub inputs: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
@@ -44,6 +52,9 @@ pub enum Status {
     Rejected,
     /// The tool could not be started (binary missing, I/O error).
     Error,
+    /// Recorded when the call starts and replaced when it ends: a call still `started` never
+    /// finished as far as the record knows (the server stopped, or the client dropped the call).
+    Started,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +119,13 @@ pub struct CallRecord {
     /// wrote a report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<DatabaseRecord>,
+    /// Symlinks the server made after the tool ran, from what it wrote (galah's representatives
+    /// into `<outdir>/representatives/`). replay.sh makes the same links after the call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links_after: Vec<LinkRecord>,
+    /// Tables the server joined before the tool ran; replay.sh joins them again (awk).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concat: Vec<ConcatRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -161,17 +179,27 @@ pub fn new_run_id() -> String {
     format!("{}-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ"), std::process::id())
 }
 
+/// Output paths a call summary lists; the rest are counted.
+const SUMMARY_OUTPUTS: usize = 5;
+
 /// One call in a few hundred bytes: what describe_run shows by default (the full record, with
-/// every input's SHA-256, can be tens of kB).
+/// every input's SHA-256, can be tens of kB). A call that wrote many files (MEGAHIT's
+/// intermediate contigs) lists the few nearest its output folder and counts the rest.
 pub fn call_summary(c: &CallRecord) -> Value {
+    let mut paths: Vec<&str> = c.outputs.iter().map(|o| o.path.as_str()).collect();
+    paths.sort_by_key(|p| (p.matches('/').count(), *p));
     let mut v = json!({
         "id": c.id,
         "mcp_tool": c.mcp_tool,
         "status": c.status,
         "started": c.started,
         "ended": c.ended,
-        "outputs": c.outputs.iter().map(|o| o.path.as_str()).collect::<Vec<_>>(),
+        "output_count": c.outputs.len(),
+        "outputs": paths.iter().take(SUMMARY_OUTPUTS).collect::<Vec<_>>(),
     });
+    if c.status == Status::Started {
+        v["note"] = json!("never finished: the server stopped or the client dropped the call; its outputs were not recorded");
+    }
     if let Some(x) = &c.version {
         v["version"] = json!(x);
     }
@@ -223,8 +251,12 @@ impl Run {
         fs::create_dir_all(self.dir.join("calls"))
     }
 
+    /// Adds a call, or replaces the record of the same call (its `started` record).
     pub fn add(&mut self, call: CallRecord) -> io::Result<()> {
-        self.log.calls.push(call);
+        match self.log.calls.iter_mut().find(|c| c.id == call.id) {
+            Some(c) => *c = call,
+            None => self.log.calls.push(call),
+        }
         self.log.calls.sort_by_key(|c| c.id);
         self.write()
     }
@@ -511,6 +543,29 @@ fn safe_path(p: &str) -> String {
     if p.starts_with('-') { format!("./{p}") } else { p.to_string() }
 }
 
+/// A path awk reads as a file: relative ones get `./` in front (no `-` option, no `x=y` assignment).
+fn awk_operand(p: &str) -> String {
+    if p.starts_with('/') { p.to_string() } else { format!("./{p}") }
+}
+
+/// Joins tables as replay.sh's awk does: `inputs[0]` whole, then the others without their first
+/// line; every line ends in a newline. Headers must be the same (the caller checks).
+pub fn concat_tables(output: &Path, inputs: &[PathBuf]) -> Result<(), String> {
+    let mut out = Vec::new();
+    for (i, p) in inputs.iter().enumerate() {
+        let bytes = fs::read(p).map_err(|e| format!("could not read {}: {e}", p.display()))?;
+        let body = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+        if bytes.is_empty() {
+            continue;
+        }
+        for line in body.split(|&b| b == b'\n').skip(usize::from(i > 0)) {
+            out.extend_from_slice(line);
+            out.push(b'\n');
+        }
+    }
+    fs::write(output, out).map_err(|e| format!("could not write {}: {e}", output.display()))
+}
+
 /// `dblock fetch` downloads databases again; replay.sh only does that when asked.
 fn is_fetch(c: &CallRecord) -> bool {
     c.argv.first().is_some_and(|t| t == "dblock") && c.argv.get(1).is_some_and(|s| s == "fetch")
@@ -610,6 +665,11 @@ pub fn replay_script(log: &RunLog) -> String {
                 for l in &c.links {
                     s += &format!("ln -sfn -- {} {} || exit 1\n", sh_quote(&l.target), sh_quote(&safe_path(&l.path)));
                 }
+                for t in &c.concat {
+                    // `./` in front: awk reads an operand like `a=b.tsv` as an assignment.
+                    let ins = t.inputs.iter().map(|i| sh_quote(&awk_operand(i))).collect::<Vec<_>>().join(" ");
+                    s += &format!("awk 'FNR == 1 && NR != 1 {{ next }} {{ print }}' {ins} > {} || exit 1\n", sh_quote(&safe_path(&t.output)));
+                }
                 // Inputs an earlier call wrote: did the replay make the same file?
                 let mut drifts = false;
                 if !fetch {
@@ -635,6 +695,16 @@ pub fn replay_script(log: &RunLog) -> String {
                 }
                 if let Some(to) = &c.stdout_to {
                     s += &format!("cp -- \"$OUT/{n}.stdout\" {} || failed=1\n", sh_quote(&safe_path(to)));
+                }
+                let after_dirs: BTreeSet<&str> =
+                    c.links_after.iter().filter_map(|l| Path::new(&l.path).parent()?.to_str()).filter(|d| !d.is_empty()).collect();
+                // As the server did: links an earlier call left there go first (other files stay).
+                for d in after_dirs {
+                    let d = sh_quote(&safe_path(d));
+                    s += &format!("mkdir -p -- {d} || failed=1\nfind {d} -maxdepth 1 -type l -exec rm -f {{}} + || failed=1\n");
+                }
+                for l in &c.links_after {
+                    s += &format!("ln -sfn -- {} {} || failed=1\n", sh_quote(&l.target), sh_quote(&safe_path(&l.path)));
                 }
                 if let Some(a) = &c.assembly {
                     s += &format!("assembly_note {n} {} {} {} {}\n", sh_quote(&safe_path(&a.path)), a.contigs, a.total_length, a.n50);
@@ -668,6 +738,12 @@ pub fn replay_script(log: &RunLog) -> String {
             }
             Status::Rejected | Status::Error => {
                 s += &sh_comment(&format!("not run: {}", c.error.as_deref().unwrap_or("")));
+            }
+            Status::Started => {
+                s += &sh_comment("not replayed: the call never finished in the run (the server stopped or the client dropped it); its outputs were not recorded");
+                if !cmd.is_empty() {
+                    s += &sh_comment(&format!("{} {cmd}", runner(c)));
+                }
             }
         }
     }
@@ -705,6 +781,7 @@ fn status_word(s: Status) -> &'static str {
         Status::Failed => "failed",
         Status::Rejected => "rejected",
         Status::Error => "error",
+        Status::Started => "started, never finished",
     }
 }
 
@@ -872,6 +949,8 @@ mod tests {
             warnings: Vec::new(),
             stdout_to: None,
             database: None,
+            links_after: Vec::new(),
+            concat: Vec::new(),
         }
     }
 
@@ -911,6 +990,58 @@ mod tests {
         c.stdout_to = Some("/data/x/amr/s 1.tsv".into());
         let s = replay_script(&log_of(vec![c]));
         assert!(s.contains("--outdir=qc -- 'my reads'\\''s.fq'\ncp -- \"$OUT/001.stdout\" '/data/x/amr/s 1.tsv' || failed=1\n"), "{s}");
+    }
+
+    #[test]
+    fn a_started_call_is_replaced_when_it_ends_and_marked_if_it_never_does() {
+        let d = tempfile::tempdir().unwrap();
+        let mut run = Run::new(d.path(), "r");
+        let mut started = call(1, Status::Started);
+        started.ended = String::new();
+        started.exit_status = None;
+        started.outputs.clear();
+        run.add(started.clone()).unwrap();
+        run.add(call(2, Status::Started)).unwrap();
+        run.add(call(2, Status::Ok)).unwrap();
+        assert_eq!(run.log.calls.iter().map(|c| (c.id, c.status)).collect::<Vec<_>>(), [(1, Status::Started), (2, Status::Ok)]);
+        let s = std::fs::read_to_string(d.path().join("r/replay.sh")).unwrap();
+        assert!(s.contains("# call 001: leanqc (started, never finished, 2026-11-10T00:00:00.000Z)\n# not replayed: the call never finished"), "{s}");
+        assert!(!s.contains("step 001") && s.contains("step 002"), "{s}");
+        sh_syntax_ok(&d.path().join("r/replay.sh"));
+        assert_eq!(call_summary(&started)["status"], "started");
+        assert!(call_summary(&started)["note"].as_str().unwrap().contains("never finished"));
+        // not in the RO-Crate's actions: it has no outputs or end
+        assert!(!serde_json::to_string(&ro_crate(&run.log)).unwrap().contains("#call-001"));
+    }
+
+    #[test]
+    fn replay_joins_tables_and_links_after_the_call() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = call(1, Status::Ok);
+        c.concat = vec![ConcatRecord { output: "/data/x/derep/checkm2_quality_report.tsv".into(), inputs: vec!["a=b.tsv".into(), "/data/x/r 2.tsv".into()] }];
+        c.links_after = vec![LinkRecord { path: "/data/x/derep/representatives/s1.fa".into(), target: "../../bins/s1.fa".into() }];
+        let s = replay_script(&log_of(vec![c]));
+        assert!(
+            s.contains("awk 'FNR == 1 && NR != 1 { next } { print }' ./a=b.tsv '/data/x/r 2.tsv' > /data/x/derep/checkm2_quality_report.tsv || exit 1\nstep 001 "),
+            "{s}"
+        );
+        assert!(
+            s.contains(
+                "\nmkdir -p -- /data/x/derep/representatives || failed=1\n\
+                 find /data/x/derep/representatives -maxdepth 1 -type l -exec rm -f {} + || failed=1\n\
+                 ln -sfn -- ../../bins/s1.fa /data/x/derep/representatives/s1.fa || failed=1\n"
+            ),
+            "{s}"
+        );
+        // the server's join is the same as awk's
+        let (a, b, out) = (d.path().join("a.tsv"), d.path().join("b.tsv"), d.path().join("out.tsv"));
+        std::fs::write(&a, "Name\tC\nx\t1\n").unwrap();
+        std::fs::write(&b, "Name\tC\r\ny\t2\r\n\nz\t3").unwrap();
+        concat_tables(&out, &[a.clone(), b.clone()]).unwrap();
+        let joined = std::fs::read(&out).unwrap();
+        assert_eq!(joined, b"Name\tC\nx\t1\ny\t2\r\n\nz\t3\n");
+        let awk = std::process::Command::new("awk").args(["FNR == 1 && NR != 1 { next } { print }"]).arg(&a).arg(&b).output().unwrap();
+        assert_eq!(awk.stdout, joined);
     }
 
     #[test]

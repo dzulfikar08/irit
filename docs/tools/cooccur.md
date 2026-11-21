@@ -58,7 +58,7 @@ Through irit-mcp, [`coverm_abundance`](mcp.md#coverm_abundance) builds the table
 |---|---|
 | `TABLE` | `coverm genome` output (`Genome`, then `<sample> <Method>` columns), or a plain TSV with the genome in the first column and one column per sample. CoverM's `unmapped` row is dropped. |
 | `-m, --measure M` | Which CoverM measure to use when the table has several: `relative_abundance`, `count`, `mean`, `trimmed_mean`, `reads_per_base`, `rpkm` or `tpm` (or the column name, e.g. `"Read Count"`). Covered fraction, covered bases, variance and length are refused. |
-| `-t, --taxonomy FILE` | GTDB-Tk summary (`user_genome`, `classification`) or a two-column table (genome, lineage). Repeat for bacterial and archaeal summaries. Names match with or without `.fa`/`.fna`/`.fasta`. |
+| `-t, --taxonomy FILE` | GTDB-Tk summary (`user_genome`, `classification`), GTDB-Tk's ANI screen summary (`user_genome`, `reference_taxonomy`: `gtdbprep ani`'s `out/classify/ani_screen/*.ani_summary.tsv`), `gtdbprep place`'s `place.tsv`, or a two-column table (genome, lineage). Repeat for several tables. Names match with or without `.fa`/`.fna`/`.fasta`. |
 | `--cpr-taxon RANK` | Lineage rank that marks a genome as CPR (exact match of one `;`-separated rank). Repeatable. Default: `p__Patescibacteria` and `p__Patescibacteriota` (GTDB R232 uses the second). Give `p__Nanoarchaeota` or another group to look at its partners instead. |
 | `--method rho\|spearman` | Proportionality rho on CLR values (default), or Spearman's correlation of CLR values. |
 | `--min-prevalence F` | Keep genomes present in at least this fraction of samples. Default 0.5. |

@@ -88,6 +88,19 @@ impl Client {
         r.get("result").cloned().unwrap_or(r)
     }
 
+    /// Sends a tool call without waiting for its answer.
+    pub fn call_no_wait(&mut self, tool: &str, args: Value) {
+        let id = self.next;
+        self.next += 1;
+        self.send(json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": tool, "arguments": args}}));
+    }
+
+    /// Stops the server at once, as a crash or a killed client would.
+    pub fn kill(mut self) {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+    }
+
     pub fn close(mut self) {
         drop(self.stdin.take());
         assert!(self.child.wait().unwrap().success());

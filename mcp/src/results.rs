@@ -436,7 +436,15 @@ pub fn amrfinder_summary(path: &Path) -> Result<Value, String> {
             Value::Object(o)
         })
         .collect();
-    Ok(json!({"sample": isotable["sample"], "amr_genes": isotable["amr_genes"], "counts_by_type": counts, "hits": hits}))
+    // isotable's list, as a list: one entry per element symbol and name (amrfinder_genes).
+    let maps: Vec<std::collections::BTreeMap<String, String>> =
+        rows.iter().filter(|r| r.len() == header.len()).map(|r| header.iter().cloned().zip(r.iter().cloned()).collect()).collect();
+    Ok(json!({
+        "sample": isotable["sample"],
+        "amr_genes": isotable::parse::amrfinder_genes(&maps),
+        "counts_by_type": counts,
+        "hits": hits,
+    }))
 }
 
 /// Bakta's `<prefix>.txt`: `Key: value` lines under `Sequence(s):`, `Annotation:` and `Bakta:`
@@ -662,6 +670,242 @@ pub fn hamronized_summary(path: &Path) -> Result<Value, String> {
         })
         .collect();
     Ok(json!({"rows": rows.len(), "samples": samples}))
+}
+
+/// The files `sheetgen verify` found a problem with, each with why: the first problem in it
+/// (and where), an MD5 or size that differs from the expected one, or no expected MD5 for it.
+pub fn reads_problems(report: &Value) -> Vec<Value> {
+    let files = report["files"].as_array().map(Vec::as_slice).unwrap_or_default();
+    files
+        .iter()
+        .filter(|f| f["status"].as_str().is_some_and(|s| s != "ok"))
+        .map(|f| {
+            let mut why = Vec::new();
+            let p = &f["problem"];
+            if let Some(what) = p["what"].as_str() {
+                let at: Vec<String> = [("byte", "byte_offset"), ("record", "record"), ("line", "line")]
+                    .iter()
+                    .filter_map(|(word, k)| p[*k].as_u64().map(|n| format!("{word} {n}")))
+                    .collect();
+                why.push(if at.is_empty() { what.to_string() } else { format!("{what} (at {})", at.join(", ")) });
+            }
+            let from = f["expected_from"].as_str().unwrap_or("the expected list");
+            if let (Some(got), Some(want)) = (f["md5"].as_str(), f["expected_md5"].as_str())
+                && got != want
+            {
+                why.push(format!("MD5 {got}, but {from} lists {want}"));
+            }
+            if let (Some(got), Some(want)) = (f["bytes"].as_u64(), f["expected_bytes"].as_u64())
+                && got != want
+            {
+                why.push(format!("{got} bytes, but {from} lists {want}"));
+            }
+            // sheetgen's Verdict::name: "not listed", with a space
+            if f["status"] == "not listed" {
+                why.push("no expected MD5 for it in the md5 files or ENA".into());
+            }
+            if why.is_empty() {
+                why.push(format!("status {}", f["status"].as_str().unwrap_or("?")));
+            }
+            json!({"path": f["path"], "status": f["status"], "why": why.join("; ")})
+        })
+        .collect()
+}
+
+/// Output files a tool result lists; the rest are counted per folder (the run record has them all).
+pub const RESULT_OUTPUTS: usize = 20;
+/// Characters of JSON a tool result is cut down to. MCP clients refuse larger results (Claude
+/// Code: about 25,000 tokens; a 73,000-character isotable result was refused).
+/// `IRIT_MCP_RESULT_CHARS` changes it.
+pub const RESULT_CHARS: usize = 40_000;
+/// Strings up to this many characters are never cut.
+const MIN_STRING: usize = 200;
+
+/// One step into a JSON value: an object key or a list index.
+#[derive(Debug, Clone)]
+enum Step {
+    Key(String),
+    Index(usize),
+}
+
+/// `run.calls.0.inputs`: how a nested list is named in `result_shortened` and `full_tables`.
+fn path_name(path: &[Step]) -> String {
+    path.iter()
+        .map(|s| match s {
+            Step::Key(k) => k.clone(),
+            Step::Index(i) => i.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn at<'a>(v: &'a mut Value, path: &[Step]) -> Option<&'a mut Value> {
+    path.iter().try_fold(v, |v, s| match s {
+        Step::Key(k) => v.get_mut(k.as_str()),
+        Step::Index(i) => v.get_mut(*i),
+    })
+}
+
+/// The largest things that can be cut, each as (its JSON length, where it is).
+#[derive(Default)]
+struct Cuttable {
+    /// A list of two or more rows.
+    list: Option<(usize, Vec<Step>)>,
+    /// A string over MIN_STRING characters.
+    string: Option<(usize, Vec<Step>)>,
+    /// A list of one row.
+    single: Option<(usize, Vec<Step>)>,
+}
+
+fn json_len(s: &str) -> usize {
+    serde_json::to_string(s).map_or(0, |x| x.len())
+}
+
+/// The length of `v` as compact JSON (what serde_json writes), noting the largest lists and
+/// strings anywhere in it. `result_shortened` is counted but never cut.
+fn measure(v: &Value, path: &mut Vec<Step>, cut: &mut Cuttable) -> usize {
+    let keep = |slot: &mut Option<(usize, Vec<Step>)>, n: usize, path: &[Step]| {
+        if slot.as_ref().is_none_or(|(m, _)| n > *m) {
+            *slot = Some((n, path.to_vec()));
+        }
+    };
+    match v {
+        Value::Array(a) => {
+            let mut n = 2 + a.len().saturating_sub(1);
+            for (i, x) in a.iter().enumerate() {
+                path.push(Step::Index(i));
+                n += measure(x, path, cut);
+                path.pop();
+            }
+            match a.len() {
+                0 => {}
+                1 => keep(&mut cut.single, n, path),
+                _ => keep(&mut cut.list, n, path),
+            }
+            n
+        }
+        Value::Object(m) => {
+            let mut n = 2 + m.len().saturating_sub(1);
+            for (k, x) in m {
+                n += json_len(k) + 1;
+                if path.is_empty() && k == "result_shortened" {
+                    n += x.to_string().len();
+                    continue;
+                }
+                path.push(Step::Key(k.clone()));
+                n += measure(x, path, cut);
+                path.pop();
+            }
+            n
+        }
+        Value::String(s) => {
+            let n = json_len(s);
+            if s.chars().count() > MIN_STRING {
+                keep(&mut cut.string, n, path);
+            }
+            n
+        }
+        other => other.to_string().len(),
+    }
+}
+
+/// Fits a tool result into `limit` characters, the same way for every tool. A long `outputs`
+/// list keeps the files nearest the output folder and counts the rest per folder. Then, while
+/// the result (with the note about what was cut) is too large, the larger of the largest list
+/// anywhere in it with two or more rows (`genomes`, `report.files`, `run.calls`, `call.inputs`)
+/// and the longest string (over 200 characters) is halved; when neither is left, one-row lists
+/// are emptied. `result_shortened`
+/// names each shortened list and where all its rows are: the file the tool gave in `full_tables`
+/// (list name -> path), else the run record. A list named in `keep_last` keeps its last rows
+/// instead of its first (describe_run's calls: the newest). Both hint keys are removed here.
+/// Returns whether the result changed.
+pub fn fit_result(v: &mut Value, limit: usize) -> bool {
+    let Some(obj) = v.as_object_mut() else { return false };
+    let full = match obj.remove("full_tables") {
+        Some(Value::Object(m)) => m,
+        _ => Map::new(),
+    };
+    let keep_last: Vec<String> = match obj.remove("keep_last") {
+        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+        _ => Vec::new(),
+    };
+    let mut changed = !full.is_empty() || !keep_last.is_empty();
+    let record = match obj.get("call_id").and_then(Value::as_u64) {
+        Some(id) => format!("the run record: describe_run with call_id {id}"),
+        None => "the run record".to_string(),
+    };
+    if let Some(Value::Array(outs)) = obj.get_mut("outputs")
+        && outs.len() > RESULT_OUTPUTS
+    {
+        let total = outs.len();
+        let depth = |o: &Value| o["path"].as_str().unwrap_or("").matches('/').count();
+        let mut order: Vec<usize> = (0..total).collect();
+        order.sort_by_key(|&i| (depth(&outs[i]), i));
+        let keep: std::collections::BTreeSet<usize> = order[..RESULT_OUTPUTS].iter().copied().collect();
+        let mut folders: BTreeMap<String, u64> = BTreeMap::new();
+        let mut kept = Vec::with_capacity(RESULT_OUTPUTS);
+        for (i, o) in outs.drain(..).enumerate() {
+            if keep.contains(&i) {
+                kept.push(o);
+            } else {
+                let dir = Path::new(o["path"].as_str().unwrap_or("")).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                *folders.entry(dir).or_default() += 1;
+            }
+        }
+        *outs = kept;
+        obj.insert("outputs_not_listed".into(), json!({"count": total - RESULT_OUTPUTS, "by_folder": folders, "listed_in": record}));
+        changed = true;
+    }
+    let (mut lists, mut strings) = (Map::new(), Map::new());
+    loop {
+        if !lists.is_empty() || !strings.is_empty() {
+            let mut note = json!({"why": format!("the whole result is over {limit} characters, more than MCP clients accept"), "lists": lists});
+            if !strings.is_empty() {
+                note["strings"] = json!(strings);
+            }
+            v["result_shortened"] = note;
+        }
+        let mut cut = Cuttable::default();
+        if measure(v, &mut Vec::new(), &mut cut) <= limit {
+            break;
+        }
+        changed = true;
+        // the larger of the largest list and the longest string; one-row lists last
+        let list_first = match (&cut.list, &cut.string) {
+            (Some((l, _)), Some((s, _))) => l >= s,
+            (list, string) => list.is_some() || string.is_none(),
+        };
+        let list = if list_first { cut.list.or(cut.single.filter(|_| cut.string.is_none())) } else { None };
+        if let Some((_, path)) = list {
+            let name = path_name(&path);
+            let Some(Value::Array(rows)) = at(v, &path) else { break };
+            let total = lists.get(&name).and_then(|e: &Value| e["total"].as_u64()).unwrap_or(rows.len() as u64);
+            let keep = rows.len() / 2;
+            let last = keep_last.contains(&name);
+            if last {
+                rows.drain(..rows.len() - keep);
+            } else {
+                rows.truncate(keep);
+            }
+            let all_in = full.get(&name).cloned().unwrap_or_else(|| json!(record));
+            let mut entry = json!({"shown": keep, "total": total, "all_rows_in": all_in});
+            if last {
+                entry["kept"] = json!("the last rows");
+            }
+            lists.insert(name, entry);
+        } else if let Some((_, path)) = cut.string {
+            let name = path_name(&path);
+            let Some(Value::String(text)) = at(v, &path) else { break };
+            let chars = text.chars().count();
+            let length = strings.get(&name).and_then(|e: &Value| e["length"].as_u64()).unwrap_or(chars as u64);
+            let shown = chars / 2;
+            *text = text.chars().take(shown).collect::<String>() + " [cut]";
+            strings.insert(name, json!({"length": length, "shown": shown}));
+        } else {
+            break;
+        }
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -909,4 +1153,126 @@ mod tests {
         assert_eq!(v["samples"][0]["genes"], json!(["gyrA p.S83L", "tet(A)"]));
         assert_eq!(v["samples"][0]["by_tool"]["amrfinderplus 4.2.7, NCBI Reference Gene Database 2026-10-29.1"], json!(["gyrA p.S83L"]));
     }
+
+    #[test]
+    fn amr_genes_keep_hits_that_share_a_symbol_apart() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("s1.amrfinder.tsv");
+        let h = "Protein id\tContig id\tElement symbol\tElement name\tType\tClass\tMethod\n";
+        let rows = "NA\tc1\tblaOXA\tOXA-48 family carbapenem-hydrolyzing class D beta-lactamase\tAMR\tBETA-LACTAM\tBLASTX\n\
+                    NA\tc2\tblaOXA\tOXA-1 family class D beta-lactamase\tAMR\tBETA-LACTAM\tBLASTX\n\
+                    NA\tc3\tblaOXA\tOXA-10 family class D beta-lactamase\tAMR\tBETA-LACTAM\tPARTIALX\n\
+                    NA\tc4\ttet(A)\ttetracycline efflux MFS transporter Tet(A)\tAMR\tTETRACYCLINE\tEXACTX\n\
+                    NA\tc5\ttet(A)\ttetracycline efflux MFS transporter Tet(A)\tAMR\tTETRACYCLINE\tEXACTX\n\
+                    NA\tc6\tsea\tenterotoxin type A\tVIRULENCE\tNA\tEXACTX\n";
+        std::fs::write(&path, format!("{h}{rows}")).unwrap();
+        let v = amrfinder_summary(&path).unwrap();
+        assert_eq!(
+            v["amr_genes"],
+            json!([
+                "blaOXA (OXA-1 family class D beta-lactamase)",
+                "blaOXA (OXA-10 family class D beta-lactamase)",
+                "blaOXA (OXA-48 family carbapenem-hydrolyzing class D beta-lactamase)",
+                "tet(A) x2"
+            ])
+        );
+        assert_eq!(v["counts_by_type"], json!({"AMR": 5, "VIRULENCE": 1}));
+    }
+
+    #[test]
+    fn large_results_are_fitted_with_a_pointer_to_the_full_table() {
+        // a small result is left alone
+        let mut v = json!({"call_id": 3, "genomes": [{"genome": "a"}]});
+        assert!(!fit_result(&mut v, RESULT_CHARS));
+        assert!(v.get("result_shortened").is_none());
+
+        // 90 intermediate files: the 20 nearest the folder are listed, the rest counted
+        let mut outputs: Vec<Value> = (0..90)
+            .map(|i| json!({"path": format!("/w/asm/intermediate_contigs/k{i}.contigs.fa"), "size": 1, "sha256": "ab"}))
+            .collect();
+        outputs.push(json!({"path": "/w/asm/final.contigs.fa", "size": 1, "sha256": "cd"}));
+        let mut v = json!({"call_id": 4, "outputs": outputs});
+        assert!(fit_result(&mut v, RESULT_CHARS));
+        let listed = v["outputs"].as_array().unwrap();
+        assert_eq!(listed.len(), RESULT_OUTPUTS);
+        assert!(listed.iter().any(|o| o["path"] == "/w/asm/final.contigs.fa"), "{v}");
+        assert_eq!(v["outputs_not_listed"]["count"], 71);
+        assert_eq!(v["outputs_not_listed"]["by_folder"]["/w/asm/intermediate_contigs"], 71);
+        assert!(v["outputs_not_listed"]["listed_in"].as_str().unwrap().contains("call_id 4"));
+
+        // 167 genome rows over the limit: the list is halved until it fits, and says where the rest is
+        let genomes: Vec<Value> = (0..167)
+            .map(|i| json!({"genome": format!("bin.{i}"), "taxonomy": "d__Bacteria;p__Pseudomonadota;c__Gammaproteobacteria;o__Enterobacterales;f__Enterobacteriaceae;g__Escherichia;s__Escherichia coli", "ani": 98.7}))
+            .collect();
+        let report = json!({"files": (0..30).map(|i| json!({"path": format!("r{i}.fq.gz"), "status": "ok"})).collect::<Vec<_>>()});
+        let mut v = json!({"call_id": 5, "genomes": genomes, "report": report, "full_tables": {"genomes": "/w/ani/ani_summary.tsv"}});
+        let before = v.to_string().len();
+        assert!(before > 30_000);
+        assert!(fit_result(&mut v, 10_000));
+        assert!(v.to_string().len() <= 10_000, "{}", v.to_string().len());
+        assert!(v.get("full_tables").is_none());
+        let s = &v["result_shortened"]["lists"]["genomes"];
+        assert_eq!(s["total"], 167);
+        assert_eq!(s["shown"], v["genomes"].as_array().unwrap().len());
+        assert_eq!(s["all_rows_in"], "/w/ani/ani_summary.tsv");
+        assert_eq!(v["genomes"][0]["genome"], "bin.0");
+        // a nested list without a file named points at the run record
+        let mut v = json!({"call_id": 6, "report": {"files": (0..400).map(|i| json!({"path": format!("reads/r{i}_1.fastq.gz"), "status": "ok", "md5": "0123456789abcdef0123456789abcdef"})).collect::<Vec<_>>()}});
+        assert!(fit_result(&mut v, 8_000));
+        assert!(v["result_shortened"]["lists"]["report.files"]["all_rows_in"].as_str().unwrap().contains("call_id 6"), "{v}");
+        assert_eq!(v["result_shortened"]["lists"]["report.files"]["total"], 400);
+        assert!(v.to_string().len() <= 8_000);
+    }
+
+    #[test]
+    fn the_limit_holds_for_deep_lists_long_strings_and_newest_calls() {
+        // the length measured is serde_json's own
+        let v = json!({"a": [1, "x\"y", {"b": null, "c": [true, 2.5]}], "é": "\n"});
+        assert_eq!(measure(&v, &mut Vec::new(), &mut Cuttable::default()), v.to_string().len());
+
+        // describe_run detail with one call of 3,000 inputs: the list two levels down is cut
+        let inputs: Vec<Value> = (0..3000).map(|i| json!({"path": format!("/w/bins/b{i}.fa"), "size": 9, "sha256": "ab".repeat(32)})).collect();
+        let mut v = json!({"run": {"calls": [{"id": 1, "inputs": inputs, "stderr": "e".repeat(5000)}]}, "keep_last": ["run.calls"]});
+        assert!(fit_result(&mut v, 6_000));
+        assert!(v.to_string().len() <= 6_000, "{}", v.to_string().len());
+        assert_eq!(v["result_shortened"]["lists"]["run.calls.0.inputs"]["total"], 3000, "{}", v["result_shortened"]);
+        assert!(v.get("keep_last").is_none());
+
+        // one huge string and nothing else to cut: it is shortened, and the note says so
+        let mut v = json!({"call_id": 2, "stdout": "z".repeat(50_000)});
+        assert!(fit_result(&mut v, 5_000));
+        assert!(v.to_string().len() <= 5_000);
+        assert_eq!(v["result_shortened"]["strings"]["stdout"]["length"], 50_000);
+        assert!(v["stdout"].as_str().unwrap().ends_with(" [cut]"));
+
+        // describe_run's calls keep the newest when shortened
+        let calls: Vec<Value> = (1..=50).map(|i| json!({"id": i, "mcp_tool": "fastp", "error": "x".repeat(150)})).collect();
+        let mut v = json!({"run": {"calls": calls}, "keep_last": ["run.calls"], "full_tables": {"run.calls": "/w/irit-runs/r/run.json"}});
+        assert!(fit_result(&mut v, 3_000));
+        assert!(v.to_string().len() <= 3_000);
+        let kept = v["run"]["calls"].as_array().unwrap();
+        assert_eq!(kept.last().unwrap()["id"], 50);
+        assert_eq!(v["result_shortened"]["lists"]["run.calls"]["kept"], "the last rows");
+        assert_eq!(v["result_shortened"]["lists"]["run.calls"]["all_rows_in"], "/w/irit-runs/r/run.json");
+    }
+
+
+    #[test]
+    fn reads_problems_name_each_file_and_why() {
+        let report = json!({"files": [
+            {"path": "reads/a_1.fastq.gz", "status": "ok", "md5": "aa"},
+            {"path": "reads/b_1.fastq.gz", "status": "corrupt", "md5": "bb",
+             "problem": {"what": "gzip member 1: CRC-32 differs", "byte_offset": 120, "record": 2, "line": null}},
+            {"path": "reads/c_1.fastq.gz", "status": "mismatch", "md5": "cc", "expected_md5": "dd", "expected_from": "ENA ERR1", "bytes": 10, "expected_bytes": 12},
+            {"path": "reads/d_1.fastq.gz", "status": "not listed", "md5": "ee"},
+            {"path": "reads/e_1.fastq.gz", "status": "corrupt", "problem": {"what": "No such file"}}
+        ]});
+        let p = reads_problems(&report);
+        assert_eq!(p.len(), 4);
+        assert_eq!(p[0], json!({"path": "reads/b_1.fastq.gz", "status": "corrupt", "why": "gzip member 1: CRC-32 differs (at byte 120, record 2)"}));
+        assert_eq!(p[1]["why"], "MD5 cc, but ENA ERR1 lists dd; 10 bytes, but ENA ERR1 lists 12");
+        assert_eq!(p[2]["why"], "no expected MD5 for it in the md5 files or ENA");
+        assert_eq!(p[3]["why"], "No such file");
+    }
+
 }

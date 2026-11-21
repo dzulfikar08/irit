@@ -50,6 +50,17 @@ pub struct Invocation {
     /// Asks the resolved program about the database a call uses (it gets the call's arguments):
     /// files to hash with the inputs, and its version for the record. abricate's `--list`.
     pub database_probe: Option<DatabaseProbe>,
+    /// After the tool exits 0: link each file listed in the first file (one path per line,
+    /// relative to the working folder) into the second folder, under its own name. galah's
+    /// representatives.txt into `<outdir>/representatives/`.
+    pub link_listed: Option<(PathBuf, PathBuf)>,
+    /// Tables the server joins before the tool runs (output, inputs): the first input whole, then
+    /// the rows of the others without their header line. galah's merged CheckM2 reports.
+    pub concat: Vec<(PathBuf, Vec<PathBuf>)>,
+    /// A non-zero exit that is still the tool's result (exit status, stdout): `sheetgen verify`
+    /// exits 1 with its report when a file has a problem. Recorded as ok with that exit status,
+    /// so replay.sh reruns it and expects the same status.
+    pub accept_exit: Option<fn(i32, &[u8]) -> bool>,
 }
 
 /// See [`Invocation::database_probe`].
@@ -74,6 +85,9 @@ impl Invocation {
             stdout_to: None,
             database: None,
             database_probe: None,
+            link_listed: None,
+            concat: Vec::new(),
+            accept_exit: None,
         }
     }
     pub(crate) fn opt(&mut self, name: &str, value: impl ToString) {
@@ -148,6 +162,12 @@ pub struct SheetgenParams {
     /// Write the sheet even if the schema has rules sheetgen can't evaluate. Only with the user's agreement.
     #[serde(default)]
     pub allow_unchecked: bool,
+    /// Samples to leave out of the sheet (as named in the sheet, or before cleaning), every lane of each.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// A file of samples to leave out, one per line (blank lines and # comments skipped). A line naming a FASTQ file leaves out the sample that has it, so reads_verify's `failed` list can be given as is.
+    #[serde(default)]
+    pub exclude_from: Option<String>,
 }
 
 pub fn sheetgen(ctx: &Ctx, p: &SheetgenParams) -> Check<Invocation> {
@@ -202,6 +222,14 @@ pub fn sheetgen(ctx: &Ctx, p: &SheetgenParams) -> Check<Invocation> {
     inv.flag("no-pair-numeric", p.no_pair_numeric);
     inv.flag("allow-merge", p.allow_merge);
     inv.flag("allow-unchecked", p.allow_unchecked);
+    for s in &p.exclude {
+        v::text("exclude", s)?;
+        inv.opt("exclude", s);
+    }
+    if let Some(f) = &p.exclude_from {
+        inv.inputs.push(v::existing_file(cwd, "exclude_from", f)?);
+        inv.opt("exclude-from", f);
+    }
     inv.positionals(&p.dirs);
     Ok(inv)
 }
@@ -587,6 +615,12 @@ pub struct ReadsVerifyParams {
     /// Files checked at the same time (each uses about four threads). Default 1.
     #[serde(default)]
     pub jobs: Option<u32>,
+    /// Write the corrupt and mismatched files here, one path per line (empty when none), inside the root: give it to sheetgen's exclude_from to leave their samples out of the sheet.
+    #[serde(default)]
+    pub failed: Option<String>,
+    /// Replace `failed` if it already exists. Default false.
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 /// `sheetgen verify --json`: gzip and FASTQ integrity plus MD5/SHA-256 against expected sums
@@ -622,6 +656,10 @@ pub fn reads_verify(ctx: &Ctx, p: &ReadsVerifyParams) -> Check<Invocation> {
         inv.opt("jobs", j);
     }
     inv.flag("json", true);
+    if let Some(f) = &p.failed {
+        inv.outputs.push(v::output_file(ctx, "failed", f, p.overwrite)?);
+        inv.opt("failed", f);
+    }
     for path in &p.paths {
         let full = cwd.join(path);
         if !full.exists() {
@@ -629,6 +667,9 @@ pub fn reads_verify(ctx: &Ctx, p: &ReadsVerifyParams) -> Check<Invocation> {
         }
         inv.inputs.push(full);
     }
+    // Exit 1 with a report: files have problems. That is the check's result, so the call is
+    // recorded as ok with exit status 1, and replay reruns it (making `failed` again).
+    inv.accept_exit = Some(|code, stdout| code == 1 && serde_json::from_slice::<serde_json::Value>(stdout).is_ok_and(|v| v["files"].is_array()));
     // The JSON report has timings, so replay doesn't compare it; it re-runs the check (exit status).
     inv.positionals(&p.paths);
     Ok(inv)
@@ -653,7 +694,7 @@ pub struct CooccurParams {
     /// Which CoverM measure to use when the table has several: relative_abundance, count, mean, trimmed_mean, reads_per_base, rpkm or tpm.
     #[serde(default)]
     pub measure: Option<String>,
-    /// Taxonomy tables: GTDB-Tk summaries (user_genome, classification) or two columns (genome, lineage); Patescibacteria are labelled CPR.
+    /// Taxonomy tables: GTDB-Tk summaries (user_genome, classification), ANI screen summaries (gtdbprep_ani's `<work>/out/classify/ani_screen/gtdbtk.*.ani_summary.tsv`: user_genome, reference_taxonomy), gtdbprep_place's place.tsv, or two columns (genome, lineage); Patescibacteria are labelled CPR. Give the ANI summaries and place.tsv together for genomes split between the two.
     #[serde(default)]
     pub taxonomy: Vec<String>,
     /// Statistic. Default rho.
@@ -747,9 +788,12 @@ pub struct GtdbprepPlaceParams {
     /// gtdbprep_ani's work folder: genomes its screen assigned are not placed and keep the screen's call.
     #[serde(default)]
     pub skip_assigned: Option<String>,
-    /// GTDB-Tk reference data with the placement trees: dblock's gtdbtk-r232-placement-lite. Default: $GTDBTK_DATA_PATH as the server started with.
+    /// GTDB-Tk reference data with the placement trees: dblock's gtdbtk-r232-placement-lite. Default: $GTDBTK_DATA_PATH as the server started with, else the one locked in ./dblock.lock.
     #[serde(default)]
     pub data_path: Option<String>,
+    /// GTDB-Tk align's --min_perc_aa: genomes with less of the marker alignment (percent) are left out. GTDB-Tk's default 10. Lower it for incomplete bins (few of the 120 markers); their placement is then less certain.
+    #[serde(default)]
+    pub min_perc_aa: Option<f64>,
     /// Environment with GTDB-Tk 2.8.0 and gPlace. Default: $GTDBPREP_ENV as the server started with.
     #[serde(default)]
     pub env: Option<String>,
@@ -787,13 +831,16 @@ pub fn gtdbprep_place(ctx: &Ctx, p: &GtdbprepPlaceParams) -> Check<Invocation> {
         inv.inputs.push(d.join("assigned.json"));
         inv.opt("skip-assigned", a);
     }
-    let data = match (&p.data_path, ctx.var("GTDBTK_DATA_PATH")) {
-        (Some(d), _) => d.clone(),
-        (None, Some(d)) => d.to_string_lossy().into_owned(),
-        (None, None) => return v::invalid("data_path", "give data_path (dblock's gtdbtk-r232-placement-lite) or start the server with GTDBTK_DATA_PATH"),
-    };
+    // As gtdbprep_ani: the parameter, $GTDBTK_DATA_PATH, else the data locked in ./dblock.lock.
+    let (data, _) = crate::external::db_location(ctx, &mut inv, "data_path", &p.data_path, "GTDBTK_DATA_PATH")?;
     v::existing_dir(cwd, "data_path", &data)?;
     inv.opt("data", &data);
+    if let Some(x) = p.min_perc_aa {
+        if !x.is_finite() || !(0.0..=100.0).contains(&x) {
+            return v::invalid("min_perc_aa", format!("{x} is not a percentage between 0 and 100"));
+        }
+        inv.opt("min-perc-aa", x);
+    }
     if let Some(e) = &p.env {
         v::existing_dir(cwd, "env", e)?;
         inv.opt("env", e);
@@ -1086,6 +1133,27 @@ mod tests {
     }
 
     #[test]
+    fn place_takes_data_from_dblock_lock_and_min_perc_aa() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        std::fs::create_dir_all(cx.cwd.join("bins")).unwrap();
+        std::fs::write(cx.cwd.join("bins/b1.fa"), b">c\nACGT\n").unwrap();
+        let lite = cx.cwd.join("store/gtdbtk-r232-placement-lite");
+        std::fs::create_dir_all(&lite).unwrap();
+        std::fs::write(
+            cx.cwd.join("dblock.lock"),
+            format!("[[database]]\nid = \"gtdbtk-r232-placement-lite\"\ndata_path = \"{}\"\nenv = \"GTDBTK_DATA_PATH\"\n", lite.display()),
+        )
+        .unwrap();
+        let pl = gtdbprep_place(&cx, &parse(serde_json::json!({"genome_dir": "bins", "extension": "fa", "work": "place", "min_perc_aa": 2.5}))).unwrap();
+        assert!(pl.args.contains(&format!("--data={}", lite.display())), "{:?}", pl.args);
+        assert!(pl.args.contains(&"--min-perc-aa=2.5".to_string()), "{:?}", pl.args);
+        assert!(pl.warnings.iter().any(|w| w.contains("dblock.lock") && w.contains("gtdbtk-r232-placement-lite")), "{:?}", pl.warnings);
+        let bad = gtdbprep_place(&cx, &parse(serde_json::json!({"genome_dir": "bins", "extension": "fa", "work": "p", "min_perc_aa": 120.0})));
+        assert_eq!(bad.unwrap_err().field, "min_perc_aa");
+    }
+
+    #[test]
     fn seqplan_args_and_checks() {
         let d = tempfile::tempdir().unwrap();
         let cx = ctx(d.path());
@@ -1153,6 +1221,36 @@ mod tests {
         assert_eq!(bad(json!({"dirs": ["reads"], "set": {"a=b": "c"}})), "set");
         assert_eq!(bad(json!({"dirs": ["nope"]})), "dirs");
         assert!(serde_json::from_value::<SheetgenParams>(json!({"dirs": ["reads"], "format": "csv"})).is_err());
+    }
+
+    #[test]
+    fn sheetgen_exclude_and_verify_failed_list() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        std::fs::create_dir(d.path().join("reads")).unwrap();
+        std::fs::write(d.path().join("reads/a_1.fastq.gz"), b"x").unwrap();
+        std::fs::write(d.path().join("bad.txt"), "reads/b_1.fastq.gz\n").unwrap();
+        let p: SheetgenParams = parse(json!({"dirs": ["reads"], "exclude": ["s1", "s 2"], "exclude_from": "bad.txt"}));
+        let inv = sheetgen(&cx, &p).unwrap();
+        assert_eq!(inv.args, ["--exclude=s1", "--exclude=s 2", "--exclude-from=bad.txt", "--", "reads"]);
+        assert!(inv.inputs.contains(&d.path().join("bad.txt")), "{:?}", inv.inputs);
+        let bad = |v: serde_json::Value| sheetgen(&cx, &parse(v)).unwrap_err().field;
+        assert_eq!(bad(json!({"dirs": ["reads"], "exclude_from": "nope.txt"})), "exclude_from");
+        assert_eq!(bad(json!({"dirs": ["reads"], "exclude": ["a\nb"]})), "exclude");
+        assert_eq!(bad(json!({"dirs": ["reads"], "exclude": [""]})), "exclude");
+
+        let p: ReadsVerifyParams = parse(json!({"paths": ["reads"], "failed": "qc/failed.txt"}));
+        let inv = reads_verify(&cx, &p).unwrap();
+        assert_eq!(inv.args, ["verify", "--json", "--failed=qc/failed.txt", "--", "reads"]);
+        assert!(inv.outputs.contains(&d.path().join("qc/failed.txt")), "{:?}", inv.outputs);
+        // an existing list is only replaced with overwrite; outside the root never
+        std::fs::write(d.path().join("failed.txt"), "").unwrap();
+        let p: ReadsVerifyParams = parse(json!({"paths": ["reads"], "failed": "failed.txt"}));
+        assert_eq!(reads_verify(&cx, &p).unwrap_err().field, "failed");
+        let p: ReadsVerifyParams = parse(json!({"paths": ["reads"], "failed": "failed.txt", "overwrite": true}));
+        assert!(reads_verify(&cx, &p).is_ok());
+        let p: ReadsVerifyParams = parse(json!({"paths": ["reads"], "failed": "/tmp/failed.txt", "overwrite": true}));
+        assert_eq!(reads_verify(&cx, &p).unwrap_err().field, "failed");
     }
 
     #[test]

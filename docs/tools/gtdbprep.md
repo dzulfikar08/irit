@@ -445,7 +445,11 @@ What it does:
    and lists them with GTDB-Tk's own rules, so genome IDs match the ones `ani` reports. With
    `--skip-assigned`, it reads `<ani work>/assigned.json` and the screen's `ani_summary.tsv`
    files, and unlinks the genomes the screen assigned: they need no placement.
-2. `gtdbtk identify`, then `gtdbtk align --skip_gtdb_refs`.
+2. `gtdbtk identify`, then `gtdbtk align --skip_gtdb_refs` (with `--min_perc_aa` when
+   `--min-perc-aa` is given; GTDB-Tk's default is 10%). If align leaves out every genome (too few
+   markers, as with very incomplete bins), `place` stops here with an error that names the genome
+   with the most markers. GTDB-Tk's classify would otherwise fail with
+   `IndexError: list index out of range`. Lower `--min-perc-aa` to place such genomes anyway.
 3. `gtdbtk classify --pplacer_cpus N`, run through GTDB-Tk's own `main()` after setting
    `options.skip_ani_screen = True`. That is the flag `classify_wf` sets after its own ANI step;
    GTDB-Tk 2.8 has no command-line option for it, and the placement-only data has no skani

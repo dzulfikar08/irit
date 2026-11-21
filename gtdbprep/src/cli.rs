@@ -125,6 +125,10 @@ struct PlaceArgs {
     /// Pass --full_tree to GTDB-Tk (default: only when the reference data has no split trees).
     #[arg(long)]
     full_tree: Option<bool>,
+    /// GTDB-Tk align's --min_perc_aa: genomes with less of the marker alignment (percent) are
+    /// left out (GTDB-Tk's default 10).
+    #[arg(long)]
+    min_perc_aa: Option<f64>,
     /// GTDB-Tk reference data with the placement trees (`gtdbtk-r232-placement-lite` has them;
     /// no skani/ or msa/ needed).
     #[arg(long, env = "GTDBTK_DATA_PATH")]
@@ -275,6 +279,7 @@ fn place_options(a: &PlaceArgs, full_tree: bool) -> crate::place::PlaceOptions {
         skip_assigned: a.skip_assigned.clone(),
         gplace: a.gplace.clone(),
         full_tree,
+        min_perc_aa: a.min_perc_aa,
     }
 }
 

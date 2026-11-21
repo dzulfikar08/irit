@@ -50,7 +50,7 @@ summaries by their header, [below](#aggregated-outputs)):
 | CheckM2 | `quality_report.tsv` | completeness, contamination |
 | GTDB-Tk | `*summary.tsv`, or the ANI screen's `classify/ani_screen/*.ani_summary.tsv` (from `gtdbprep ani`, or classify_wf when the screen assigned every genome) | classification |
 | mlst | `*mlst*.tsv` | scheme, sequence type |
-| AMRFinderPlus | `*amrfinder*.tsv` | AMR genes |
+| AMRFinderPlus | `*amrfinder*.tsv` | AMR genes: one entry per element symbol and name. A symbol shared by different genes (`blaOXA` for OXA families with no exact allele) gets the name in brackets, `blaOXA (OXA-48 family …)`; a gene found more than once gets `x<count>` |
 | hAMRonization 1.1.9-1.4.1 | any `.tsv` or `.txt` with its header (`hamronize <tool> --format tsv`, `hamronize summarize -t tsv`), rows named by `input_file_name` | `amr_genes`, and `amr_by_tool`: which tool reported which gene |
 | nf-core/mag 3.0-5.5 | `GenomeBinning/bin_summary.tsv`, or any `.tsv` with its header (`bin` and `Depth <sample>` columns); `--mode mag` only | CheckM2 completeness and contamination (`checkm2_*`), CheckM's (`checkm_completeness`, `checkm_contamination`), BUSCO complete % and lineage, GTDB-Tk classification, and `mag_depths` (nf-core/mag's depth per sample) |
 | CoverM | `*coverm*.tsv` with a `Genome` column (`coverm genome`, methods mean and covered_fraction; irit-mcp's `coverm_genome`). A one-genome table is named after the file (`s1.coverm.tsv` → `s1`); with several genomes, each row after its genome | `mapped_depth` (mean depth from read mapping; several read sets add up), `covered_percent` (one read set only). `coverm contig` tables are skipped and listed |
@@ -172,6 +172,9 @@ MEGAHIT-MetaBAT2-sample1.3  warn    64                    0.8                   
 MEGAHIT-MetaBAT2-sample1.5  fail    92                    12.5                   low         fail: MIMAG low (92.0% complete, 12.5% contamination)
 ```
 
+`mimag_rrna_trna` is `not checked` for the `high*` bin and empty for the others (see
+[Grading](#grading) for what `high*` means).
+
 ## Assembly statistics
 
 From an assembly FASTA (Shovill's, Flye's, Medaka's, or any file with `isotable assembly-stats`),
@@ -238,6 +241,16 @@ Each tool names things differently (`ERR044595.fastp.json`, `ERR044595-unicycler
 - Trimmed read files (see above) are matched under the name of the read file they came from, so
   `S_1.fastp.fastq.gz` and `S_1_val_1.fq.gz` join sample `S` (with a sheet, or next to the other
   mate's report without one), into the `*_trimmed_*` columns.
+- **MAG mode with `--sheet`**: rows are bins, and a bin keeps its own name. `bin_sample` is the
+  sheet sample the bin's name contains, as a whole part: at the start or after `-`, `_` or `.`,
+  and followed by one of them (the longest such sample). That covers MetaBAT2 with the sample as
+  prefix (`D01-S1.12`), SemiBin2 with the sample as tag (`D01-S1_3`) or multi-sample
+  (`D01-S1_SemiBin_3`), and nf-core/mag (`MEGAHIT-MetaBAT2-D01-S1.12`). The sheet adds no rows
+  for samples that have no bins; one note lists them (also samples that only have read QC). Names
+  that contain no sheet sample (MetaBAT2's default `bin.12`) keep their rows with an empty
+  `bin_sample`, and get one warning for all of them.
+  A bin goes to the longest sheet name it contains, so keep the sheet complete: with `D01` in the
+  sheet but not `D01-S100`, bin `D01-S100.1` is matched to `D01`.
 
 ## Several files for one sample
 
@@ -364,7 +377,9 @@ study before using the grades for decisions, and change them with the flags abov
 **MAG mode** uses MIMAG tiers from CheckM2: high (> 90% complete, < 5% contamination) passes, medium
 (≥ 50%, < 10%) warns, anything else fails. The tier is shown as `high*`: the full MIMAG high-quality
 standard also requires the 23S, 16S and 5S rRNA genes and at least 18 tRNAs, which these tools
-don't report. Without CheckM2, CheckM's values from an nf-core/mag bin summary set the tier, and the
+don't report. The output says so: such bins have `not checked` in the `mimag_rrna_trna` column, the
+run ends with a `note: high* = ...` line on stderr, and the MultiQC table's description explains
+it. Without CheckM2, CheckM's values from an nf-core/mag bin summary set the tier, and the
 reason says so. BUSCO is shown but not graded in MAG mode: its isolate thresholds (95% and 90%)
 would fail most medium-quality MAGs, which the tier already grades.
 

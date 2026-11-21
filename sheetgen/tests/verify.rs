@@ -1,4 +1,5 @@
-//! `sheetgen verify` end to end: exit status and the JSON report.
+//! `sheetgen verify` end to end: exit status and the JSON report, and its failed-file list as
+//! `sheetgen --exclude-from` input.
 
 use std::io::Write;
 use std::process::Command;
@@ -58,6 +59,51 @@ fn sample_sheet_files_are_checked() {
     let (code, r) = verify(&["--sheet", sheet.to_str().unwrap()]);
     assert_eq!(code, 0, "{r}");
     assert_eq!(r["files"].as_array().unwrap().len(), 1);
+}
+
+/// `verify --failed` lists the bad file; `sheetgen --exclude-from` that list leaves its sample out
+/// (both lanes), and `--exclude` leaves out a sample by name.
+#[test]
+fn failed_files_leave_their_samples_out_of_the_sheet() {
+    let t = tempfile::tempdir().unwrap();
+    let reads = t.path().join("reads");
+    std::fs::create_dir(&reads).unwrap();
+    let good = gz("@a\nACGT\n+\nIIII\n");
+    for name in ["A_S1_L001_R1_001.fastq.gz", "A_S1_L001_R2_001.fastq.gz", "B_S2_L001_R1_001.fastq.gz", "B_S2_L002_R1_001.fastq.gz"] {
+        std::fs::write(reads.join(name), &good).unwrap();
+    }
+    std::fs::write(reads.join("B_S2_L001_R2_001.fastq.gz"), &good[..good.len() - 3]).unwrap();
+    std::fs::write(reads.join("B_S2_L002_R2_001.fastq.gz"), &good).unwrap();
+    std::fs::write(reads.join("C_R1.fastq.gz"), &good).unwrap();
+    std::fs::write(reads.join("C_R2.fastq.gz"), &good).unwrap();
+    let failed = t.path().join("failed.txt");
+    let (code, _) = verify(&[reads.to_str().unwrap(), "--failed", failed.to_str().unwrap()]);
+    assert_eq!(code, 1);
+    let list = std::fs::read_to_string(&failed).unwrap();
+    assert_eq!(list.lines().count(), 1, "{list}");
+    assert!(list.trim_end().ends_with("B_S2_L001_R2_001.fastq.gz"), "{list}");
+
+    let sheetgen = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_sheetgen")).arg(&reads).args(args).output().unwrap();
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert!(o.status.success(), "{err}");
+        let samples: Vec<String> =
+            String::from_utf8_lossy(&o.stdout).lines().skip(1).map(|l| l.split(',').next().unwrap().to_string()).collect();
+        (samples, err)
+    };
+    let (samples, err) = sheetgen(&["--exclude-from", failed.to_str().unwrap()]);
+    assert_eq!(samples, ["A", "C"]);
+    assert!(err.contains("note: left out (--exclude): B"), "{err}");
+    // by name, repeatable; a name that matches nothing is a warning
+    let (samples, err) = sheetgen(&["--exclude", "A", "--exclude", "C", "--exclude", "nope"]);
+    assert_eq!(samples, ["B", "B"]);
+    assert!(err.contains("warning: --exclude nope: no such sample or read file"), "{err}");
+    // a file name alone (the list made elsewhere) works too
+    std::fs::write(&failed, "# from another machine\n/elsewhere/C_R2.fastq.gz\n").unwrap();
+    assert_eq!(sheetgen(&["--exclude-from", failed.to_str().unwrap()]).0, ["A", "B", "B"]);
+    // leaving out every sample is an error
+    let o = Command::new(env!("CARGO_BIN_EXE_sheetgen")).arg(&reads).args(["--exclude", "A", "--exclude", "B", "--exclude", "C"]).output().unwrap();
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("every sample was excluded"));
 }
 
 fn md5_hex(data: &[u8]) -> String {

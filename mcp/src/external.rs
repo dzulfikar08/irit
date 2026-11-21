@@ -413,6 +413,10 @@ pub fn failure_hint(tool: &str, exit_status: Option<i32>, stderr: &str) -> Optio
     if tool == "SemiBin2" && (exit_status.is_none() || exit_status == Some(137)) && stderr.contains("Training model") {
         return Some("SemiBin2 was killed while training its own model, which holds up to 4 million contig pairs in memory (about 8 GB was not enough for one sample of 4,842 contigs); rerun with a pretrained environment (global when none matches) and depth or one BAM".into());
     }
+    if tool == "gtdbprep" && stderr.contains("IndexError: list index out of range") && stderr.contains("markers.py") {
+        return Some("GTDB-Tk's classify had no aligned genome to place: align left out every genome for too few markers (min_perc_aa, default 10%). \
+Lower min_perc_aa, or the genomes are too incomplete to place; identify/identify/gtdbtk.bac120.markers_summary.tsv in the work folder has their marker counts".into());
+    }
     if exit_status.is_none() || exit_status == Some(137) {
         return Some(format!("{tool} was killed by a signal, often the out-of-memory killer under a memory cap; check the cap, give the tool less memory or fewer threads, or use its low-memory option"));
     }
@@ -443,7 +447,7 @@ fn list_item(value: &str) -> String {
 /// else the one database of that kind locked in the working folder's `dblock.lock` (a warning
 /// then says which, since nothing in the call named it). Returns the text to pass on and the path
 /// resolved against the working folder.
-fn db_location(ctx: &Ctx, inv: &mut Invocation, field: &str, given: &Option<String>, var: &str) -> Check<(String, PathBuf)> {
+pub(crate) fn db_location(ctx: &Ctx, inv: &mut Invocation, field: &str, given: &Option<String>, var: &str) -> Check<(String, PathBuf)> {
     let text = match given {
         Some(g) => {
             v::text(field, g)?;
@@ -3746,7 +3750,7 @@ pub struct GalahParams {
     /// With genome_dirs: file extension to match. Default fa (MetaBAT2's and SemiBin2's bins).
     #[serde(default)]
     pub extension: Option<String>,
-    /// Output folder, inside the root: clusters.tsv (representative, member), representatives.txt, and copies of the representative genomes in representatives/ (for coverm_abundance genome_dirs). Its representatives/ must be missing or empty.
+    /// Output folder, inside the root: clusters.tsv (representative, member), representatives.txt, and representatives/ with a link to each representative genome (a genome_dir for gtdbprep_ani and gtdbprep_place, or genome_dirs for coverm_abundance). representatives/ may hold only links (irit-mcp replaces them).
     pub outdir: String,
     /// Allow an outdir that already has files (clusters.tsv and representatives.txt are replaced). Default false.
     #[serde(default)]
@@ -3760,9 +3764,9 @@ pub struct GalahParams {
     /// Precluster ANI, in percent, at most ani. galah's default 90.
     #[serde(default)]
     pub precluster_ani: Option<f64>,
-    /// CheckM2's quality_report.tsv covering every genome (one checkm2 call over all of them): the best genome of each cluster becomes its representative, by quality_formula. Without it, the first given.
+    /// CheckM2's quality_report.tsv, or a list of them (one per checkm2 call, e.g. per sample): together they must cover every genome. The best genome of each cluster becomes its representative, by quality_formula. Without it, the first given. Several reports are joined into `<outdir>/checkm2_quality_report.tsv` (same header needed) for galah.
     #[serde(default)]
-    pub checkm2_report: Option<String>,
+    pub checkm2_report: Option<OneOrMany>,
     /// Leave out genomes below this completeness (percent). Needs checkm2_report.
     #[serde(default)]
     pub min_completeness: Option<f64>,
@@ -3777,6 +3781,23 @@ pub struct GalahParams {
     /// Threads. Default 1: with more, galah writes clusters.tsv and representatives.txt in a different order each run (same clusters), so replay can only check they exist.
     #[serde(default)]
     pub threads: Option<u32>,
+}
+
+/// One path, or a list of them.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(untagged)]
+pub enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    pub fn paths(&self) -> Vec<&str> {
+        match self {
+            OneOrMany::One(p) => vec![p.as_str()],
+            OneOrMany::Many(v) => v.iter().map(String::as_str).collect(),
+        }
+    }
 }
 
 /// Genome names in a CheckM2 quality_report.tsv (its Name column).
@@ -3818,24 +3839,63 @@ pub fn galah(ctx: &Ctx, p: &GalahParams) -> Check<Invocation> {
     if let Some(x) = p.precluster_ani {
         inv.opt("precluster-ani", x);
     }
+    let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(p.overwrite), true)?;
+    let base = p.outdir.trim_end_matches('/');
     match &p.checkm2_report {
-        Some(r) => {
-            let path = v::existing_file(cwd, "checkm2_report", r)?;
-            let names = checkm2_report_names(&path).or_else(|e| v::invalid("checkm2_report", format!("{r}: {e}")))?;
-            let missing: Vec<&str> = genomes.iter().map(|(_, _, n)| n.as_str()).filter(|n| !names.iter().any(|x| x == n)).collect();
+        Some(reports) => {
+            let given = reports.paths();
+            if given.is_empty() {
+                return v::invalid("checkm2_report", "an empty list; give one or more CheckM2 quality_report.tsv files, or leave it out");
+            }
+            let mut names: Vec<(String, &str)> = Vec::new();
+            let mut paths = Vec::new();
+            let mut first_header: Option<(String, &str)> = None;
+            for r in &given {
+                let path = v::existing_file(cwd, "checkm2_report", r)?;
+                let header = std::fs::read_to_string(&path).map(|t| t.lines().next().unwrap_or("").trim_end_matches('\r').to_string()).unwrap_or_default();
+                match &first_header {
+                    None => first_header = Some((header, r)),
+                    Some((h, first)) if *h != header => {
+                        return v::invalid("checkm2_report", format!("{r} has another header than {first}; only reports with the same columns can be joined"));
+                    }
+                    Some(_) => {}
+                }
+                for n in checkm2_report_names(&path).or_else(|e| v::invalid("checkm2_report", format!("{r}: {e}")))? {
+                    if let Some((_, other)) = names.iter().find(|(x, _)| *x == n) {
+                        return v::invalid("checkm2_report", format!("genome {n} is in both {other} and {r}; give each genome's report once"));
+                    }
+                    names.push((n, r));
+                }
+                if paths.contains(&path) {
+                    return v::invalid("checkm2_report", format!("{r} is given twice"));
+                }
+                paths.push(path);
+            }
+            let missing: Vec<&str> = genomes.iter().map(|(_, _, n)| n.as_str()).filter(|n| !names.iter().any(|(x, _)| x == n)).collect();
             if !missing.is_empty() {
+                let what = if given.len() == 1 { given[0].to_string() } else { format!("the {} reports", given.len()) };
                 return v::invalid(
                     "checkm2_report",
                     format!(
-                        "{r} has no row for {} of the genomes ({}{}); galah stops on that. Run checkm2 once over all of them (genomes list)",
+                        "{what} have no row for {} of the genomes ({}{}); galah stops on that. Run checkm2 over the missing genomes and add its report",
                         missing.len(),
                         missing.iter().take(5).copied().collect::<Vec<_>>().join(", "),
                         if missing.len() > 5 { ", ..." } else { "" }
                     ),
                 );
             }
-            inv.inputs.push(path);
-            inv.opt("checkm2-quality-report", r);
+            inv.inputs.extend(paths.iter().cloned());
+            if paths.len() == 1 {
+                inv.opt("checkm2-quality-report", given[0]);
+            } else {
+                let merged = outdir.join("checkm2_quality_report.tsv");
+                if !p.overwrite && merged.exists() {
+                    return v::invalid("outdir", format!("{base}/checkm2_quality_report.tsv already exists; pass overwrite: true"));
+                }
+                inv.outputs.push(merged.clone());
+                inv.opt("checkm2-quality-report", format!("{base}/checkm2_quality_report.tsv"));
+                inv.concat.push((merged, paths));
+            }
         }
         None => {
             if p.min_completeness.is_some() || p.max_contamination.is_some() || p.quality_formula.is_some() {
@@ -3860,8 +3920,6 @@ pub fn galah(ctx: &Ctx, p: &GalahParams) -> Check<Invocation> {
     if threads > 1 {
         inv.volatile = &["clusters.tsv", "representatives.txt"];
     }
-    let outdir = v::output_dir(ctx, "outdir", &p.outdir, Some(p.overwrite), true)?;
-    let base = p.outdir.trim_end_matches('/');
     let (clusters, list) = (outdir.join("clusters.tsv"), outdir.join("representatives.txt"));
     for (out, flag, name) in
         [(&clusters, "output-cluster-definition", "clusters.tsv"), (&list, "output-representative-list", "representatives.txt")]
@@ -3871,15 +3929,63 @@ pub fn galah(ctx: &Ctx, p: &GalahParams) -> Check<Invocation> {
         }
         inv.opt(flag, format!("{base}/{name}"));
     }
-    // No copies of the representatives: galah refuses a copy folder that isn't empty, which a replay
-    // in the same folder would hit. representatives.txt lists the files; coverm_abundance reads it.
-    inv.outputs.extend([clusters.clone(), list.clone()]);
-    inv.expect = vec![vec![clusters], vec![list]];
+    // galah's own copy folder is not used: galah refuses one that isn't empty, which a replay in the
+    // same folder would hit. irit-mcp links the listed representatives into representatives/
+    // itself after galah ran, and replay.sh makes the same links.
+    let reps = outdir.join("representatives");
+    if let Ok(rd) = std::fs::read_dir(&reps) {
+        let other: Vec<String> = rd
+            .flatten()
+            .filter(|e| !e.file_type().is_ok_and(|t| t.is_symlink()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        if !other.is_empty() {
+            return v::invalid(
+                "outdir",
+                format!("{base}/representatives holds files that are not links ({}); irit-mcp links the representatives there: move them", other.join(", ")),
+            );
+        }
+    } else if reps.exists() {
+        return v::invalid("outdir", format!("{base}/representatives exists and is not a folder"));
+    }
+    inv.outputs.extend([clusters.clone(), list.clone(), reps.clone()]);
+    inv.expect = vec![vec![clusters], vec![list.clone()]];
+    inv.link_listed = Some((list, reps));
     for (path, _, _) in &genomes {
         inv.inputs.push(path.clone());
     }
     genome_args(&mut inv, &p.genomes, &p.genome_dirs, &p.extension, &genomes);
     Ok(inv)
+}
+
+/// Links each genome listed in `list` (galah's representatives.txt: one path per line, relative
+/// to `cwd`) into `dir` under its file name, as a link relative to `dir`. Links left in `dir` by
+/// an earlier call are removed first; other files are never touched (galah's checks refuse them).
+pub fn link_listed(cwd: &Path, list: &Path, dir: &Path) -> Result<Vec<crate::record::LinkRecord>, String> {
+    let text = std::fs::read_to_string(list).map_err(|e| format!("could not read {}: {e}", list.display()))?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    for e in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten() {
+        if e.file_type().is_ok_and(|t| t.is_symlink()) {
+            std::fs::remove_file(e.path()).map_err(|err| format!("could not remove {}: {err}", e.path().display()))?;
+        }
+    }
+    let real_dir = v::resolve(dir);
+    let mut links = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let genome = cwd.join(line);
+        let Some(name) = genome.file_name() else { return Err(format!("{}: {line:?} is not a file path", list.display())) };
+        let link = dir.join(name);
+        if std::fs::symlink_metadata(&link).is_ok() {
+            return Err(format!("{} lists two genomes named {}", list.display(), name.to_string_lossy()));
+        }
+        let target = relative_to(&real_dir, &v::resolve(&genome));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).map_err(|e| format!("could not link {}: {e}", link.display()))?;
+        #[cfg(not(unix))]
+        return Err(format!("could not link {}: symlinks need a Unix system", link.display()));
+        links.push(crate::record::LinkRecord { path: link.to_string_lossy().into_owned(), target: target.to_string_lossy().into_owned() });
+    }
+    Ok(links)
 }
 
 /// Genomes for galah and CoverM: one folder is passed as the folder (`-d`, `-x`), so a replay
@@ -5447,6 +5553,43 @@ mod tests {
     }
 
     #[test]
+    fn galah_links_representatives_and_joins_reports() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        for f in ["bins/s1/s1.1.fa", "bins/s2/s2.1.fa"] {
+            write(d.path(), f, ">c\nACGT\n");
+        }
+        write(d.path(), "r1.tsv", "Name\tCompleteness\tContamination\ns1.1\t90\t1\n");
+        write(d.path(), "r2.tsv", "Name\tCompleteness\tContamination\ns2.1\t95\t0.5\n");
+        let inv = galah(&cx, &parse(json!({"genome_dirs": ["bins/s1", "bins/s2"], "checkm2_report": ["r1.tsv", "r2.tsv"], "outdir": "derep"}))).unwrap();
+        let reps = cx.cwd.join("derep/representatives");
+        assert_eq!(inv.link_listed, Some((cx.cwd.join("derep/representatives.txt"), reps.clone())));
+        assert!(inv.outputs.contains(&reps) && inv.outputs.contains(&cx.cwd.join("derep/checkm2_quality_report.tsv")), "{:?}", inv.outputs);
+        assert_eq!(inv.concat, [(cx.cwd.join("derep/checkm2_quality_report.tsv"), vec![cx.cwd.join("r1.tsv"), cx.cwd.join("r2.tsv")])]);
+        assert!(inv.args.contains(&"--checkm2-quality-report=derep/checkm2_quality_report.tsv".to_string()), "{:?}", inv.args);
+        // one report in a list is passed as it is
+        let inv = galah(&cx, &parse(json!({"genome_dirs": ["bins/s1"], "checkm2_report": ["r1.tsv"], "outdir": "derep"}))).unwrap();
+        assert!(inv.concat.is_empty() && inv.args.contains(&"--checkm2-quality-report=r1.tsv".to_string()), "{:?}", inv.args);
+        let bad = |j: serde_json::Value| galah(&cx, &parse(j)).unwrap_err();
+        let e = bad(json!({"genome_dirs": ["bins/s1"], "checkm2_report": ["r1.tsv", "r1.tsv"], "outdir": "derep"}));
+        assert!(e.message.contains("in both"), "{}", e.message);
+        assert_eq!(bad(json!({"genome_dirs": ["bins/s1"], "checkm2_report": [], "outdir": "derep"})).field, "checkm2_report");
+
+        // after galah: links relative to the folder; an earlier call's links are replaced
+        write(d.path(), "derep/representatives.txt", "bins/s1/s1.1.fa\n./bins/s2/s2.1.fa\n");
+        std::fs::create_dir_all(&reps).unwrap();
+        std::os::unix::fs::symlink("../../bins/s1/old.fa", reps.join("old.fa")).unwrap();
+        let links = link_listed(&cx.cwd, &cx.cwd.join("derep/representatives.txt"), &reps).unwrap();
+        assert_eq!(links.iter().map(|l| l.target.as_str()).collect::<Vec<_>>(), ["../../bins/s1/s1.1.fa", "../../bins/s2/s2.1.fa"]);
+        assert_eq!(std::fs::read_to_string(reps.join("s2.1.fa")).unwrap(), ">c\nACGT\n");
+        assert!(std::fs::symlink_metadata(reps.join("old.fa")).is_err());
+        // a file of the user's in representatives/ is refused before galah runs
+        write(d.path(), "derep/representatives/mine.fa", ">x\nA\n");
+        let e = bad(json!({"genome_dirs": ["bins/s1"], "outdir": "derep", "overwrite": true}));
+        assert!(e.field == "outdir" && e.message.contains("mine.fa"), "{}", e.message);
+    }
+
+    #[test]
     fn galah_args_and_checks() {
         let d = tempfile::tempdir().unwrap();
         let cx = ctx(d.path());
@@ -5629,6 +5772,8 @@ mod tests {
         assert!(failure_hint("SemiBin2", None, "Generating features").unwrap().contains("killed by a signal"));
         assert!(failure_hint("megahit", Some(137), "").is_some());
         assert!(failure_hint("checkm2", Some(1), "ERROR: no genomes").is_none());
+        let gtdbtk = "  File \"/env/lib/python3.12/site-packages/gtdbtk/markers.py\", line 670, in _place\nIndexError: list index out of range\n";
+        assert!(failure_hint("gtdbprep", Some(1), gtdbtk).unwrap().contains("min_perc_aa"));
     }
 
     #[test]

@@ -240,6 +240,8 @@ impl Irit {
             warnings: Vec::new(),
             stdout_to: None,
             database: None,
+            links_after: Vec::new(),
+            concat: Vec::new(),
         };
         let finish = |mut rec: CallRecord, stdout: Vec<u8>, stderr: String| {
             rec.ended = record::now();
@@ -273,6 +275,10 @@ impl Irit {
         };
         rec.program = Some(program.to_string_lossy().into_owned());
         rec.version = self.version(inv.tool, &program).await;
+        // Recorded now and replaced when the call ends, so a call the client drops (or a server
+        // stopped mid-call) still shows in run.json and replay.sh, as never finished.
+        rec.status = Status::Started;
+        self.save(rec.clone());
 
         let targets: Vec<PathBuf> = inv.outputs.iter().map(|p| validate::resolve(p)).collect();
         let _claim = self.busy.claim(id, targets).await;
@@ -283,7 +289,16 @@ impl Irit {
             .iter()
             .map(|(p, t)| record::LinkRecord { path: p.to_string_lossy().into_owned(), target: t.to_string_lossy().into_owned() })
             .collect();
+        rec.concat = inv
+            .concat
+            .iter()
+            .map(|(o, ins)| record::ConcatRecord {
+                output: o.to_string_lossy().into_owned(),
+                inputs: ins.iter().map(|i| i.to_string_lossy().into_owned()).collect(),
+            })
+            .collect();
         let links = inv.links.clone();
+        let concat = inv.concat.clone();
         let (mut inputs, outputs) = (inv.inputs.clone(), inv.outputs.clone());
         let (bundled, prog, ctx) = (inv.bundled_data, program.clone(), self.cfg.ctx.clone());
         let (probe, args) = (inv.database_probe, inv.args.clone());
@@ -309,6 +324,9 @@ impl Irit {
             // After the snapshot, so the links are recorded as outputs (and checked by replay.sh).
             for (link, target) in &links {
                 make_link(link, target)?;
+            }
+            for (output, inputs) in &concat {
+                record::concat_tables(output, inputs)?;
             }
             Ok::<_, String>((record::input_records(&inputs), snap, found, database))
         })
@@ -362,6 +380,12 @@ impl Irit {
         if let (true, Some(to)) = (out.status.success(), &inv.stdout_to) {
             saved = std::fs::write(to, &out.stdout).map_err(|e| format!("could not write {}: {e}", to.display()));
         }
+        if let (true, Some((list, dir))) = (out.status.success(), &inv.link_listed) {
+            match x::link_listed(&self.cfg.ctx.cwd, list, dir) {
+                Ok(links) => rec.links_after = links,
+                Err(e) => saved = Err(e),
+            }
+        }
         let outputs = inv.outputs.clone();
         rec.outputs = tokio::task::spawn_blocking(move || record::output_records(&before, &outputs)).await.unwrap_or_default();
         for o in &mut rec.outputs {
@@ -369,7 +393,8 @@ impl Irit {
         }
         rec.warnings.extend(x::stderr_warnings(inv.tool, &String::from_utf8_lossy(&out.stderr)));
         rec.exit_status = out.status.code();
-        rec.status = if out.status.success() { Status::Ok } else { Status::Failed };
+        let accepted = out.status.success() || inv.accept_exit.zip(out.status.code()).is_some_and(|(f, c)| f(c, &out.stdout));
+        rec.status = if accepted { Status::Ok } else { Status::Failed };
         if let (true, Some(a)) = (out.status.success(), &inv.assembly) {
             rec.assembly = results::assembly_stats(a).ok().map(|v| record::AssemblyStats {
                 path: a.to_string_lossy().into_owned(),
@@ -389,7 +414,7 @@ impl Irit {
                 rec.inputs.extend(record::input_records(&[model]));
             }
         }
-        if !out.status.success() {
+        if !accepted {
             rec.error = Some(match out.status.code() {
                 Some(c) => format!("exit status {c}"),
                 None => "killed by a signal".into(),
@@ -452,7 +477,8 @@ impl Irit {
                 v["note"] = json!("nothing was run");
                 Err(CallToolResult::structured_error(v))
             }
-            Status::Error => {
+            // Started: never seen here, the call has ended by the time it is answered.
+            Status::Error | Status::Started => {
                 v["error"] = json!("tool_unavailable");
                 v["message"] = json!(r.error);
                 Err(CallToolResult::structured_error(v))
@@ -484,6 +510,11 @@ impl Irit {
             }
             Err(e) => e,
         })
+    }
+
+    /// Where a call's stdout was saved in the run folder.
+    fn stdout_file(&self, d: &Done) -> Option<PathBuf> {
+        d.record.stdout.as_ref().map(|s| self.cfg.runs_root.join(&self.cfg.run_id).join(s))
     }
 
     /// The table a successful call produced: its output file, else its stdout.
@@ -611,7 +642,8 @@ impl Irit {
 impl Irit {
     #[tool(description = "Build a pipeline sample sheet (CSV/TSV) from folders of FASTQ files. With `pipeline` or `schema` it uses that \
 nf-core pipeline's own columns and validates every row against the pipeline's input schema, refusing values the pipeline would reject \
-(the stderr then names the row, column and a hint such as `set` or `link_into`). Returns the sheet's columns and rows.")]
+(the stderr then names the row, column and a hint such as `set` or `link_into`). exclude and exclude_from leave samples out (e.g. \
+reads_verify's failed list). Returns the sheet's columns and rows.")]
     async fn sheetgen(&self, Parameters(params): Parameters<p::SheetgenParams>) -> Result<CallToolResult, ErrorData> {
         let d = self.execute("sheetgen", &params, p::sheetgen(&self.cfg.ctx, &params)).await;
         let text = if d.record.status == Status::Ok {
@@ -622,7 +654,9 @@ nf-core pipeline's own columns and validates every row against the pipeline's in
         } else {
             String::new()
         };
+        let full = params.output.as_ref().map(|o| self.cfg.ctx.cwd.join(o)).or_else(|| self.stdout_file(&d));
         self.reply(d, |_, v| {
+            v["full_tables"] = json!({"rows": full});
             let (header, rows) = results::parse_table(&text);
             v["output"] = json!(params.output);
             v["columns"] = json!(header);
@@ -649,6 +683,9 @@ details, reads, GC and Q30, and the report paths.")]
             let count = |s: &str| reports.iter().filter(|r| r["verdict"] == s).count();
             v["summary"] = json!({"files": reports.len(), "pass": count("pass"), "warn": count("warn"), "fail": count("fail")});
             v["reports"] = json!(reports);
+            if let Some(o) = d.record.outputs.iter().find(|o| o.path.ends_with("leanqc_summary.tsv")) {
+                v["full_tables"] = json!({"reports": o.path});
+            }
             v.as_object_mut().unwrap().remove("outputs"); // the reports already list the paths
         })
     }
@@ -667,7 +704,8 @@ CoverM genome, mlst, AMRFinderPlus, Kleborate) found under results folders into 
 assembly statistics (contigs >= 500 bp, N50, L50, N90, largest contig, GC, Ns per 100 kbp) and Shovill's depth estimate. Mapped depth (coverm_genome) is graded with min_depth and \
 compared with Shovill's estimate. Status, worst first: conflict (files disagree), fail, incomplete (a required \
 measurement is missing), warn, pass. Returns each sample's status, reasons and values, and counts per status. Thresholds are starting \
-points, not a standard: say so when reporting grades.")]
+points, not a standard: say so when reporting grades. In mode mag with a sheet, rows are bins and the bin_sample column names each bin's \
+sample; the mimag_rrna_trna column says MIMAG's rRNA and tRNA genes were not checked, so a high* grade is not full MIMAG high quality.")]
     async fn isotable(&self, Parameters(params): Parameters<p::IsotableParams>) -> Result<CallToolResult, ErrorData> {
         let d = self.execute("isotable", &params, p::isotable(&self.cfg.ctx, &params)).await;
         let text = if d.record.status == Status::Ok {
@@ -678,7 +716,9 @@ points, not a standard: say so when reporting grades.")]
         } else {
             String::new()
         };
+        let full = params.output.as_ref().map(|o| self.cfg.ctx.cwd.join(o)).or_else(|| self.stdout_file(&d));
         self.reply(d, |_, v| {
+            v["full_tables"] = json!({"samples": full});
             let t = results::isotable_rows(&text);
             v["counts"] = t["counts"].clone();
             v["columns"] = t["columns"].clone();
@@ -982,21 +1022,22 @@ genomes with taxonomic and sequence abundance, adjusted ANI and coverage.")]
     }
 
     #[tool(description = "galah 0.6.3 cluster: dereplicate genomes (e.g. the bins of several samples) at an ANI (default 95%, a \
-species) with skani, keeping one representative per cluster. With `checkm2_report` (one checkm2 quality_report.tsv covering every \
-genome) the best genome by quality_formula represents each cluster, and min_completeness / max_contamination leave genomes out. Genomes \
-are named after their files, so bins of different samples need different names (metabat2 prefix, semibin2 tag). Writes \
-`<outdir>/clusters.tsv` and `<outdir>/representatives.txt` (pass it to coverm_abundance as genome_list). Returns the clusters, their sizes and the genomes left out.")]
+species) with skani, keeping one representative per cluster. With `checkm2_report` (CheckM2 quality_report.tsv files, one or a list \
+that together cover every genome) the best genome by quality_formula represents each cluster, and min_completeness / max_contamination \
+leave genomes out. Genomes are named after their files, so bins of different samples need different names (metabat2 prefix, semibin2 tag). \
+Writes `<outdir>/clusters.tsv`, `<outdir>/representatives.txt` (coverm_abundance's genome_list) and `<outdir>/representatives/`, a link \
+to each representative genome (genome_dir for gtdbprep_ani and gtdbprep_place). Returns the clusters, their sizes and the genomes left out.")]
     async fn galah(&self, Parameters(params): Parameters<x::GalahParams>) -> Result<CallToolResult, ErrorData> {
         let inv = x::galah(&self.cfg.ctx, &params);
         // the genome files given or found in the folder (the CheckM2 report is an input too)
         let cwd = self.cfg.ctx.cwd.clone();
-        let report = params.checkm2_report.as_ref().map(|r| cwd.join(r));
+        let reports: Vec<PathBuf> = params.checkm2_report.iter().flat_map(|r| r.paths()).map(|r| cwd.join(r)).collect();
         let given: Vec<String> = inv
             .as_ref()
             .map(|i| {
                 i.inputs
                     .iter()
-                    .filter(|p| Some(*p) != report.as_ref())
+                    .filter(|p| !reports.contains(p))
                     .map(|p| p.strip_prefix(&cwd).unwrap_or(p).to_string_lossy().into_owned())
                     .collect()
             })
@@ -1011,7 +1052,15 @@ are named after their files, so bins of different samples need different names (
             v["cluster_count"] = json!(clusters.len());
             v["left_out"] = json!(left_out);
             v["representatives_list"] = json!(outdir.join("representatives.txt"));
+            v["representatives_dir"] = json!(outdir.join("representatives"));
             v["clusters"] = json!(clusters);
+            // left_out is in no file galah writes: the genomes the call read that clusters.tsv lacks
+            let left_out_from = format!(
+                "the genomes in this call's inputs (describe_run with call_id {}) that {} does not list",
+                v["call_id"],
+                outdir.join("clusters.tsv").display()
+            );
+            v["full_tables"] = json!({"clusters": outdir.join("clusters.tsv"), "left_out": left_out_from});
             Ok(())
         })
     }
@@ -1127,6 +1176,7 @@ the AMR gene list isotable reads.")]
             v["database_version"] = json!(db_version);
             v["report"] = json!(params.output);
             v["summary"] = results::amrfinder_summary(&report)?;
+            v["full_tables"] = json!({"summary.hits": report});
             Ok(())
         })
     }
@@ -1243,6 +1293,7 @@ classify/<prefix>.{bac120,ar53}.summary.tsv.")]
             for s in &written {
                 genomes.extend(results::gtdbtk_summary(s)?);
             }
+            v["full_tables"] = json!({"genomes": written});
             v["summary_files"] = json!(written);
             v["genomes"] = json!(genomes);
             Ok(())
@@ -1253,7 +1304,8 @@ classify/<prefix>.{bac120,ar53}.summary.tsv.")]
 Screens the genomes locally against a screen index (dblock gtdbtk-r232-ani-screen), fetches only the reference sketches needed into a \
 per-user cache, and runs GTDB-Tk's own screen on them. Needs GTDB-Tk 2.8 and skani 0.3.1 (`env`, or $GTDBPREP_ENV) and the \
 placement-lite data (`data_path`, or $GTDBTK_DATA_PATH). Missing sketches are only fetched with `source` set (network; `gtdb` reads \
-GTDB's server: ask the user). Returns per genome: whether the screen assigned it, the species, reference, ANI and AF. Afterwards \
+GTDB's server: ask the user). Returns per genome: whether the screen assigned it, the species, reference, ANI and AF, and \
+summary_files: GTDB-Tk's ANI summaries (user_genome, reference_taxonomy), which cooccur's taxonomy and isotable read. Afterwards \
 `<work>/gtdbtk_data` is a full GTDB-Tk data folder: pass it as gtdbtk_classify_wf's data_path for GTDB-Tk's usual summary files \
 (seconds for genomes the screen assigned).")]
     async fn gtdbprep_ani(&self, Parameters(params): Parameters<x::GtdbprepAniParams>) -> Result<CallToolResult, ErrorData> {
@@ -1267,7 +1319,10 @@ GTDB's server: ask the user). Returns per genome: whether the screen assigned it
         v["stdout"] = json!(tail(&stdout, STDERR_LIMIT));
         v["warnings"] = json!(d.record.warnings);
         match results::gtdbprep_ani_summary(&stdout, &work) {
-            Ok(g) => v["genomes"] = json!(g),
+            Ok(g) => {
+                v["genomes"] = json!(g);
+                v["full_tables"] = json!({"genomes": [self.stdout_file(&d), work.join("out/classify/ani_screen")]});
+            }
             Err(e) => {
                 v["error"] = json!("output_unreadable");
                 v["message"] = json!(format!("gtdbprep exited 0 but its result could not be read: {e}"));
@@ -1276,28 +1331,50 @@ GTDB's server: ask the user). Returns per genome: whether the screen assigned it
             }
         }
         v["data_path_for_classify"] = json!(work.join("gtdbtk_data"));
+        let summaries: Vec<PathBuf> = ["bac120", "ar53"]
+            .iter()
+            .map(|m| work.join(format!("out/classify/ani_screen/gtdbtk.{m}.ani_summary.tsv")))
+            .filter(|p| p.is_file())
+            .collect();
+        v["summary_files"] = json!(summaries);
         Ok(CallToolResult::structured(v))
     }
 
     #[tool(description = "sheetgen verify (irit): check read files before analysis. Fully decompresses each gzip file (every member, \
 CRC and length), checks the FASTQ records, computes MD5 and SHA-256, and compares them with expected MD5s from md5sum files (md5) or \
 ENA (ena: network, ask the user first). Each file is ok, mismatch, corrupt (with the byte offset and record of the first problem) or \
-not_listed. Run it on downloaded reads before assembly: corrupt downloads can arrive without any download error. About 3-4 s per \
-500 MB file. Returns the per-file report; the call is an error when any file has a problem.")]
+\"not listed\" (no expected MD5 for it). Run it on downloaded reads before assembly: corrupt downloads can arrive without any download error. About 3-4 s per \
+500 MB file. Returns the per-file report; the call is an error when any file has a problem, and `problems` names each bad file and why. \
+With `failed`, the corrupt and mismatched files are also written to that file, one per line, for sheetgen's exclude_from.")]
     async fn reads_verify(&self, Parameters(params): Parameters<p::ReadsVerifyParams>) -> Result<CallToolResult, ErrorData> {
         let d = self.execute("reads_verify", &params, p::reads_verify(&self.cfg.ctx, &params)).await;
         let report: Option<Value> = serde_json::from_str(&d.stdout_text()).ok();
+        let failed_list = params.failed.as_ref().map(|f| self.cfg.ctx.cwd.join(f));
         match (self.envelope(&d), report) {
-            (Ok(mut v), Some(r)) => {
-                v["report"] = r;
-                Ok(CallToolResult::structured(v))
-            }
-            // sheetgen verify exits 1 when a file has a problem; its report is still the answer
-            (Err(_), Some(r)) if d.record.exit_status == Some(1) => {
-                let mut v = json!({"call_id": d.record.id, "run_id": self.cfg.run_id, "error": "reads_have_problems"});
-                v["message"] = json!("some read files are corrupt, don't match their expected MD5, or are not listed: see report.files[].status and problem");
+            // sheetgen verify exits 1 with its report when a file has a problem: recorded as ok
+            // (exit status 1, replayed as such), answered as an error naming the files
+            (Ok(mut v), Some(r)) if d.record.exit_status == Some(1) => {
+                v["error"] = json!("reads_have_problems");
+                let problems = results::reads_problems(&r);
+                let total = r["files"].as_array().map_or(0, Vec::len);
+                let mut named: Vec<String> =
+                    problems.iter().take(10).map(|p| format!("{} ({}: {})", p["path"].as_str().unwrap_or("?"), p["status"].as_str().unwrap_or("?"), p["why"].as_str().unwrap_or(""))).collect();
+                if problems.len() > 10 {
+                    named.push(format!("and {} more (see problems)", problems.len() - 10));
+                }
+                v["message"] = json!(format!("{} of {total} read files have problems: {}", problems.len(), named.join("; ")));
+                v["problems"] = json!(problems);
+                if let Some(f) = &failed_list {
+                    v["failed_list"] = json!(f);
+                    v["next"] = json!("give failed_list to sheetgen's exclude_from to leave those samples out of the sheet");
+                }
                 v["report"] = r;
                 Ok(CallToolResult::structured_error(v))
+            }
+            (Ok(mut v), Some(r)) => {
+                v["failed_list"] = json!(failed_list);
+                v["report"] = r;
+                Ok(CallToolResult::structured(v))
             }
             (Ok(mut v), None) => {
                 v["error"] = json!("output_unreadable");
@@ -1305,8 +1382,7 @@ not_listed. Run it on downloaded reads before assembly: corrupt downloads can ar
                 v["note"] = json!("do not report the files as checked");
                 Ok(CallToolResult::structured_error(v))
             }
-            (Err(e), None) => Ok(e),
-            (Err(e), Some(_)) => Ok(e),
+            (Err(e), _) => Ok(e),
         }
     }
 
@@ -1349,6 +1425,7 @@ Minutes per genome. Returns place.tsv's rows (genome, classification, method).")
                     })
                     .collect();
                 v["genomes"] = json!(rows);
+                v["full_tables"] = json!({"genomes": table});
             }
         })
     }
@@ -1376,8 +1453,12 @@ and the RO-Crate.")]
                     };
                     v["run_id"] = json!(log.run_id);
                     v["call"] = json!(call);
+                    let run_json = dir.join("run.json");
+                    v["full_tables"] = json!({"call.inputs": run_json, "call.outputs": run_json});
                 } else if params.detail {
                     v["run"] = json!(log);
+                    v["full_tables"] = json!({"run.calls": dir.join("run.json")});
+                    v["keep_last"] = json!(["run.calls"]); // the newest calls, when shortened
                 } else {
                     v["run"] = json!({
                         "run_id": log.run_id,
@@ -1386,6 +1467,8 @@ and the RO-Crate.")]
                         "license": log.license,
                         "calls": log.calls.iter().map(record::call_summary).collect::<Vec<_>>(),
                     });
+                    v["full_tables"] = json!({"run.calls": dir.join("run.json")});
+                    v["keep_last"] = json!(["run.calls"]); // the newest calls, when shortened
                     v["note"] = json!("summary; pass detail: true for every call's full record, or call_id for one");
                 }
                 Ok(CallToolResult::structured(v))
@@ -1394,7 +1477,8 @@ and the RO-Crate.")]
         }
     }
 
-    #[tool(description = "List recorded runs (one per server session) with their number of calls by status.")]
+    #[tool(description = "List recorded runs (one per server session) with their number of calls by status (unfinished: calls that \
+started but never ended, e.g. dropped by the client).")]
     async fn list_runs(&self, Parameters(_): Parameters<p::ListRunsParams>) -> Result<CallToolResult, ErrorData> {
         let mut runs = Vec::new();
         if let Ok(rd) = std::fs::read_dir(&self.cfg.runs_root) {
@@ -1409,6 +1493,7 @@ and the RO-Crate.")]
                     "ok": count(Status::Ok),
                     "failed": count(Status::Failed),
                     "rejected": count(Status::Rejected) + count(Status::Error),
+                    "unfinished": count(Status::Started),
                     "tools": log.calls.iter().map(|c| c.mcp_tool.as_str()).collect::<std::collections::BTreeSet<_>>(),
                 }));
             }
@@ -1461,8 +1546,27 @@ impl ServerHandler for Irit {
         if let Some(t) = ticker {
             t.abort();
         }
-        result
+        result.map(fit_response)
     }
+}
+
+/// Every tool result goes through [`results::fit_result`], so none is larger than MCP clients
+/// accept.
+fn fit_response(response: rmcp::model::CallToolResponse) -> rmcp::model::CallToolResponse {
+    let rmcp::model::CallToolResponse::Complete(r) = response else { return response };
+    let Some(mut v) = r.structured_content.clone() else { return rmcp::model::CallToolResponse::Complete(r) };
+    if !results::fit_result(&mut v, result_chars()) {
+        return rmcp::model::CallToolResponse::Complete(r);
+    }
+    let mut fitted = if r.is_error == Some(true) { CallToolResult::structured_error(v) } else { CallToolResult::structured(v) };
+    fitted.result_type = r.result_type;
+    fitted.meta = r.meta;
+    rmcp::model::CallToolResponse::Complete(fitted)
+}
+
+/// Characters a tool result may have: `IRIT_MCP_RESULT_CHARS`, default [`results::RESULT_CHARS`].
+fn result_chars() -> usize {
+    std::env::var("IRIT_MCP_RESULT_CHARS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n >= 1000).unwrap_or(results::RESULT_CHARS)
 }
 
 /// How often a running call sends a progress notification: `IRIT_MCP_PROGRESS_SECS` seconds,

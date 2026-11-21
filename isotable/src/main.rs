@@ -286,6 +286,7 @@ struct Row {
 
 /// Columns in output order: (key, header).
 const COLUMNS: &[(&str, &str)] = &[
+    ("bin_sample", "bin_sample"),
     ("reads_raw", "reads_raw"),
     ("reads_trimmed", "reads_trimmed"),
     ("q30_trimmed", "q30_trimmed"),
@@ -327,6 +328,7 @@ const COLUMNS: &[(&str, &str)] = &[
     ("checkm_completeness", "checkm_completeness"),
     ("checkm_contamination", "checkm_contamination"),
     ("mimag", "mimag_tier"),
+    ("mimag_rrna_trna", "mimag_rrna_trna"),
     ("gtdb", "gtdb_classification"),
     ("mlst_scheme", "mlst_scheme"),
     ("mlst_st", "mlst_st"),
@@ -416,7 +418,7 @@ fn main() -> Result<()> {
         let list: String = skipped.iter().map(|s| format!("\n  skipped: {s}")).collect();
         bail!("no recognised tool outputs under the given folders{list}");
     }
-    let (rows, joins, unmatched) = join(records, &sheet, &sheet_files);
+    let (rows, joins, unmatched) = join(records, &sheet, &sheet_files, cli.mode);
     let rows = finish(rows, cli.mode);
 
     let present: Vec<_> = COLUMNS.iter().filter(|(k, _)| rows.values().any(|r| r.cells.contains_key(k))).collect();
@@ -426,7 +428,12 @@ fn main() -> Result<()> {
         out.push_str(h);
     }
     out.push('\n');
-    let mut mqc = String::from("# id: 'isotable'\n# section_name: 'isotable'\n# plot_type: 'table'\nSample\tstatus");
+    let mut mqc = String::from("# id: 'isotable'\n# section_name: 'isotable'\n");
+    let high = rows.values().any(|r| r.cells.get("mimag").map(Cell::show).as_deref() == Some("high*"));
+    if high {
+        mqc.push_str(&format!("# description: '{HIGH_STAR}'\n"));
+    }
+    mqc.push_str("# plot_type: 'table'\nSample\tstatus");
     for (_, h) in &present {
         mqc.push('\t');
         mqc.push_str(h);
@@ -456,6 +463,9 @@ fn main() -> Result<()> {
         tally.join(", "),
         seen.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<_>>().join(", ")
     );
+    if high {
+        eprintln!("  note: {HIGH_STAR}");
+    }
     for (raw, sample) in &joins {
         eprintln!("  note: `{raw}` joined to sample {sample} (not an exact name match)");
     }
@@ -467,10 +477,40 @@ fn main() -> Result<()> {
     for s in &skipped {
         eprintln!("  skipped: {s}");
     }
-    for u in &unmatched {
-        eprintln!("  warning: `{u}` matched no sample in the sheet; it got its own row");
+    match cli.mode {
+        Mode::Isolate => {
+            for u in &unmatched {
+                eprintln!("  warning: `{u}` matched no sample in the sheet; it got its own row");
+            }
+        }
+        // Rows are bins: one line for all bins named after no sheet sample, and one for the
+        // samples no bin came from.
+        Mode::Mag => {
+            if !unmatched.is_empty() {
+                let names: Vec<&str> = unmatched.iter().map(String::as_str).collect();
+                eprintln!("  warning: {} names matched no sheet sample; they got rows of their own, with no bin_sample: {}", names.len(), few(&names));
+            }
+            let binned: BTreeSet<String> = rows.values().filter_map(|r| r.cells.get("bin_sample").map(Cell::show)).collect();
+            // A sample with only read-QC rows (fastp, FastQC) still has no bins.
+            let none: Vec<&str> = sheet.iter().filter(|s| !binned.contains(*s)).map(String::as_str).collect();
+            if !none.is_empty() {
+                eprintln!("  note: {} of {} sheet samples have no bins here: {}", none.len(), sheet.len(), few(&none));
+            }
+        }
     }
     Ok(())
+}
+
+/// What `high*` means, for the MultiQC table and the end-of-run notes.
+const HIGH_STAR: &str = "high* = MIMAG high quality by completeness (> 90%) and contamination (< 5%) only; the standard also needs the 23S, 16S and 5S rRNA genes and at least 18 tRNAs, which were not checked (mimag_rrna_trna)";
+
+/// Up to 10 names, then how many more.
+fn few(names: &[&str]) -> String {
+    let mut s = names.iter().take(10).copied().collect::<Vec<_>>().join(", ");
+    if names.len() > 10 {
+        s.push_str(&format!(" and {} more", names.len() - 10));
+    }
+    s
 }
 
 /// nf-core/mag's bin summary describes MAGs: in isolate mode it is listed, not read.
@@ -505,7 +545,10 @@ type Joined = (BTreeMap<String, Row>, BTreeSet<(String, String)>, BTreeSet<Strin
 /// Assign every record to a sample and collect its values, keeping track of where each came from.
 /// `files`: read-file names the sheet lists, by sample, for QC reports named after a read file
 /// that doesn't start with the sample name.
-fn join(records: Vec<Record>, sheet: &[String], files: &BTreeMap<String, String>) -> Joined {
+///
+/// In MAG mode rows are bins: a bin keeps its own name, and `bin_sample` is the sheet sample its
+/// name contains (`D01-S1.12` from `D01-S1`); the sheet adds no rows for samples without output.
+fn join(records: Vec<Record>, sheet: &[String], files: &BTreeMap<String, String>, mode: Mode) -> Joined {
     // Without a sheet, a read file's mate suffix goes only if the other mate's report is there
     // and no other tool uses the unstripped name as a sample.
     // Trimmed read files (`x_1.fastp.fastq.gz`, `x_1_val_1.fq.gz`) are matched under the name of
@@ -536,6 +579,14 @@ fn join(records: Vec<Record>, sheet: &[String], files: &BTreeMap<String, String>
         {
             (sample, how) = (s.clone(), How::Prefix);
         }
+        let mut from = None;
+        if how == How::Unmatched
+            && mode == Mode::Mag
+            && r.kind == Kind::Genome
+            && let Some(s) = parse::bin_sample(&sample, sheet)
+        {
+            (from, how) = (Some(s), How::Exact);
+        }
         match how {
             How::Exact => {}
             How::Unmatched => {
@@ -546,6 +597,9 @@ fn join(records: Vec<Record>, sheet: &[String], files: &BTreeMap<String, String>
             }
         }
         let row = rows.entry(sample).or_default();
+        if let Some(s) = from {
+            put(&mut row.cells, "bin_sample", Value::Text(s), &r.source);
+        }
         match r.tool {
             "fastp" => row.fastp.push(r),
             "AMRFinderPlus" | "hAMRonization" => {
@@ -582,8 +636,10 @@ fn join(records: Vec<Record>, sheet: &[String], files: &BTreeMap<String, String>
             }
         }
     }
-    for s in sheet {
-        rows.entry(s.clone()).or_default();
+    if mode == Mode::Isolate {
+        for s in sheet {
+            rows.entry(s.clone()).or_default();
+        }
     }
     (rows, joins, unmatched)
 }
@@ -633,7 +689,11 @@ fn finish(mut rows: BTreeMap<String, Row>, mode: Mode) -> BTreeMap<String, Row> 
         if mode == Mode::Mag
             && let Some((c, x, _)) = quality(row)
         {
-            row.cells.insert("mimag", Cell::One { value: Value::Text(mimag(c, x).into()), sources: Vec::new() });
+            let tier = mimag(c, x);
+            row.cells.insert("mimag", Cell::One { value: Value::Text(tier.into()), sources: Vec::new() });
+            if tier == "high*" {
+                row.cells.insert("mimag_rrna_trna", Cell::One { value: Value::Text("not checked".into()), sources: Vec::new() });
+            }
         }
     }
     rows
@@ -1203,7 +1263,7 @@ mod tests {
         if mode == Mode::Isolate {
             skip_mag_summaries(&mut records, &mut skipped);
         }
-        let (rows, _, _) = join(records, &sheet, &BTreeMap::new());
+        let (rows, _, _) = join(records, &sheet, &BTreeMap::new(), mode);
         finish(rows, mode)
             .into_iter()
             .map(|(k, row)| {
@@ -1239,7 +1299,7 @@ mod tests {
         write(t.path(), "b/transposed_report.tsv", QUAST);
         let sheet = ["patient"];
         let records = parse::scan(&[t.path().to_path_buf()]).unwrap().0;
-        let (rows, _, unmatched) = join(records, &sheet.map(String::from), &BTreeMap::new());
+        let (rows, _, unmatched) = join(records, &sheet.map(String::from), &BTreeMap::new(), Mode::Isolate);
         assert!(rows["patient"].cells.is_empty() && rows["patient"].fastp.is_empty());
         assert_eq!(unmatched.into_iter().collect::<Vec<_>>(), ["patient_1", "patient_2"]);
         let rows = table(t.path(), &sheet, Mode::Isolate, None);
@@ -1518,7 +1578,7 @@ mod tests {
         let files = parse::sheet_read_files(&t.path().join("sheet.csv")).unwrap();
         assert_eq!(files.get("SRR30733615_2").map(String::as_str), Some("BAE-1"));
         let records = parse::scan(&[t.path().join("qc")]).unwrap().0;
-        let (rows, joins, unmatched) = join(records, &["BAE-1".to_string()], &files);
+        let (rows, joins, unmatched) = join(records, &["BAE-1".to_string()], &files, Mode::Isolate);
         assert_eq!(rows.keys().collect::<Vec<_>>(), ["BAE-1", "other_1"]);
         assert_eq!(rows["BAE-1"].leanqc[0].len(), 2);
         assert!(joins.iter().any(|(raw, s)| raw.starts_with("SRR30733615_1") && s == "BAE-1"), "{joins:?}");

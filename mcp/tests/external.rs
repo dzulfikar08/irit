@@ -1100,7 +1100,33 @@ fn multi_sample_binning_dereplication_and_abundance_with_stand_ins_replay() {
     write(work, "other/s1_0.fa", ">x\nACGT\n");
     let r = c.call("galah", json!({"genome_dirs": bin_dirs, "genomes": ["other/s1_0.fa"], "outdir": "derep"}));
     assert_eq!(r["structuredContent"]["field"], "genomes", "{r}");
-    let r = c.call("galah", json!({"genome_dirs": bin_dirs, "checkm2_report": "checkm2/quality_report.tsv", "outdir": "derep", "min_completeness": 50}));
+    // CheckM2 run once per sample: the reports are joined (same header), and one with other columns is refused
+    write(work, "reports/s1.tsv", "Name\tCompleteness\tContamination\ns1_0\t99\t1\ns1_1\t90\t2\n");
+    write(work, "reports/s2.tsv", "Name\tCompleteness\tContamination\ns2_0\t98\t1\ns2_1\t80\t3");
+    write(work, "reports/other.tsv", "Name\tCompleteness\tContamination\tNotes\ns2_0\t98\t1\tx\ns2_1\t80\t3\tx\n");
+    let r = c.call("galah", json!({"genome_dirs": bin_dirs, "checkm2_report": ["reports/s1.tsv", "reports/other.tsv"], "outdir": "derep"}));
+    assert_eq!(r["structuredContent"]["field"], "checkm2_report", "{r}");
+    assert!(r["structuredContent"]["message"].as_str().unwrap().contains("another header"), "{r}");
+    let r = c.call("galah", json!({"genome_dirs": bin_dirs, "checkm2_report": ["reports/s1.tsv"], "outdir": "derep"}));
+    assert!(r["structuredContent"]["message"].as_str().unwrap().contains("2 of the genomes"), "{r}");
+    let r = c.call(
+        "galah",
+        json!({"genome_dirs": bin_dirs, "checkm2_report": ["reports/s1.tsv", "reports/s2.tsv"], "outdir": "derep", "min_completeness": 50}),
+    );
+    assert_ne!(r["isError"], true, "{r}");
+    assert_eq!(
+        std::fs::read_to_string(work.join("derep/checkm2_quality_report.tsv")).unwrap(),
+        "Name\tCompleteness\tContamination\ns1_0\t99\t1\ns1_1\t90\t2\ns2_0\t98\t1\ns2_1\t80\t3\n"
+    );
+    assert!(r["structuredContent"]["command"].as_str().unwrap().contains("--checkm2-quality-report=derep/checkm2_quality_report.tsv"), "{r}");
+    // the representatives are linked into derep/representatives, a genome folder for gtdbprep
+    let reps = work.join("derep/representatives");
+    assert_eq!(std::fs::read_link(reps.join("s1_0.fa")).unwrap(), Path::new("../../bins/s1/output_bins/s1_0.fa"));
+    assert!(reps.join("s1_1.fa").is_file());
+    assert_eq!(std::fs::read_dir(&reps).unwrap().count(), 2);
+    let v = &r["structuredContent"];
+    assert_eq!(v["representatives_dir"], json!(reps));
+    let r = c.call("galah", json!({"genome_dirs": bin_dirs, "checkm2_report": "checkm2/quality_report.tsv", "outdir": "derep", "min_completeness": 50, "overwrite": true}));
     assert_ne!(r["isError"], true, "{r}");
     let v = &r["structuredContent"];
     assert_eq!((v["genomes_given"].as_u64(), v["cluster_count"].as_u64()), (Some(4), Some(2)), "{v}");
@@ -1141,8 +1167,10 @@ fn multi_sample_binning_dereplication_and_abundance_with_stand_ins_replay() {
     let ok: Vec<&Value> = log["calls"].as_array().unwrap().iter().filter(|c| c["status"] == "ok").collect();
     assert_eq!(
         ok.iter().map(|c| c["mcp_tool"].as_str().unwrap()).collect::<Vec<_>>(),
-        ["coverm_contig", "semibin2", "coverm_contig", "semibin2", "checkm2", "galah", "galah", "coverm_abundance"]
+        ["coverm_contig", "semibin2", "coverm_contig", "semibin2", "checkm2", "galah", "galah", "galah", "coverm_abundance"]
     );
+    assert_eq!(ok[5]["concat"][0]["inputs"], json!(["reports/s1.tsv", "reports/s2.tsv"].map(|r| work.join(r))));
+    assert_eq!(ok[5]["links_after"].as_array().unwrap().len(), 2, "{}", ok[5]);
     // the cached BAM and SemiBin2's log are volatile; the bins are not
     assert!(ok[2]["outputs"].as_array().unwrap().iter().any(|o| o["path"].as_str().unwrap().ends_with(".bam") && o["volatile"] == true), "{}", ok[2]["outputs"]);
     assert!(ok[3]["outputs"].as_array().unwrap().iter().all(|o| (o["volatile"] == true) == o["path"].as_str().unwrap().ends_with("SemiBinRun.log")), "{}", ok[3]["outputs"]);
@@ -1156,6 +1184,15 @@ fn multi_sample_binning_dereplication_and_abundance_with_stand_ins_replay() {
     assert!(out.status.success(), "replay failed: {err}");
     assert!(err.contains("outputs match"), "{err}");
     assert!(err.contains(&format!("reads {}", work.join(bam).display())), "{err}");
+    // replay joined the reports again and made the same links
+    assert!(work.join("derep/checkm2_quality_report.tsv").is_file());
+    assert_eq!(std::fs::read_link(work.join("derep/representatives/s1_0.fa")).unwrap(), Path::new("../../bins/s1/output_bins/s1_0.fa"));
+    // a replay over the old folder removes links galah no longer lists, as the server does
+    std::os::unix::fs::symlink("../../bins/s1/output_bins/gone.fa", work.join("derep/representatives/gone.fa")).unwrap();
+    let out = Command::new("sh").arg(run_dir.join("replay.sh")).env("PATH", &s.path).current_dir(work).output().unwrap();
+    assert!(out.status.success(), "second replay failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(std::fs::symlink_metadata(work.join("derep/representatives/gone.fa")).is_err());
+    assert_eq!(std::fs::read_dir(work.join("derep/representatives")).unwrap().count(), 2);
     for (p, h) in &all {
         if p.ends_with("SemiBinRun.log") || p.extension().is_some_and(|e| e == "bam") {
             assert!(p.is_file(), "{}", p.display());
@@ -1307,6 +1344,58 @@ fn long_call_sends_progress_notifications() {
     c.close();
 }
 
+/// A call that never ends (the server is killed while it runs) stays in the record as started, and
+/// replay.sh says it never finished instead of leaving it out.
+#[test]
+fn a_call_cut_off_mid_run_is_recorded_as_started() {
+    let s = setup();
+    let work = &s.work;
+    script(&work.join("fake-bin"), "fastp", &format!("sleep 5\n{FASTP}"));
+    let mut c = Client::spawn(work, &[], &[("PATH", s.path.as_str())]);
+    c.call_no_wait("fastp", json!({"in1": "reads/s1_R1.fastq", "json": "s1.fastp.json"}));
+    let run_json = work.join("irit-runs/test-run/run.json");
+    let started = std::time::Instant::now();
+    let log = loop {
+        let log: Option<Value> = std::fs::read(&run_json).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        if let Some(l) = log.filter(|l| l["calls"][0]["status"] == "started") {
+            break l;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(20), "no started record in {}", run_json.display());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    c.kill();
+    assert_eq!(log["calls"][0]["mcp_tool"], "fastp");
+    assert_eq!(log["calls"][0]["ended"], "");
+    let log: Value = serde_json::from_slice(&std::fs::read(&run_json).unwrap()).unwrap();
+    assert_eq!(log["calls"][0]["status"], "started", "{log}");
+    let replay = std::fs::read_to_string(work.join("irit-runs/test-run/replay.sh")).unwrap();
+    assert!(replay.contains("# call 001: fastp (started, never finished, "), "{replay}");
+    assert!(replay.contains("# not replayed: the call never finished in the run"), "{replay}");
+    assert!(!replay.contains("step 001"), "{replay}");
+
+    // describe_run and list_runs in a later session show it as unfinished
+    let mut c = Client::spawn(work, &["--run-id", "later"], &[("PATH", s.path.as_str()), ("IRIT_MCP_RESULT_CHARS", "3000")]);
+    // a result over the size limit is shortened, and says where the rest is
+    for _ in 0..14 {
+        c.call("fastp", json!({"in1": "reads/nope.fastq", "json": "x.fastp.json"}));
+    }
+    let r = c.call("describe_run", json!({"detail": true}));
+    let v = &r["structuredContent"];
+    let short = &v["result_shortened"]["lists"]["run.calls"];
+    assert_eq!(short["total"], 14, "{}", v["result_shortened"]);
+    assert_eq!(short["all_rows_in"], json!(work.join("irit-runs/later/run.json")));
+    assert!(r["content"][0]["text"].as_str().unwrap().len() <= 3000, "{}", v["result_shortened"]);
+    assert_eq!(v["run"]["calls"].as_array().unwrap().len(), short["shown"].as_u64().unwrap() as usize);
+    let r = c.call("describe_run", json!({"run_id": "test-run"}));
+    let call = &r["structuredContent"]["run"]["calls"][0];
+    assert_eq!(call["status"], "started", "{r}");
+    assert!(call["note"].as_str().unwrap().contains("never finished"), "{r}");
+    let r = c.call("list_runs", json!({}));
+    let run = r["structuredContent"]["runs"].as_array().unwrap().iter().find(|x| x["run_id"] == "test-run").unwrap().clone();
+    assert_eq!(run["unfinished"], 1, "{r}");
+    c.close();
+}
+
 /// Reads to assembly (Shovill), typing (mlst) and resistance genes (AMRFinderPlus), then isotable
 /// over the results: the sample names line up although Shovill always writes `contigs.fa`.
 #[test]
@@ -1364,7 +1453,7 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
     assert_ne!(r["isError"], true, "{r}");
     let v = &r["structuredContent"];
     assert_eq!(v["database_version"], "2026-10-29.1", "{v}");
-    assert_eq!(v["summary"]["amr_genes"], "blaZ,mecA");
+    assert_eq!(v["summary"]["amr_genes"], json!(["blaZ", "mecA"]));
     assert_eq!(v["summary"]["counts_by_type"], json!({"AMR": 2, "VIRULENCE": 1}));
     assert_eq!(v["summary"]["hits"][0]["element_symbol"], "mecA");
     assert_eq!(v["summary"]["hits"][0]["identity_to_reference"], "100.00");

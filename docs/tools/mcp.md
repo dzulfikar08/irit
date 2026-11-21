@@ -155,6 +155,8 @@ Sample sheet from folders of FASTQ files ([sheetgen](sheetgen.md)).
 | `schema` | file | Use this schema. Not together with `pipeline`. |
 | `set` | object | Fixed column values, e.g. `{"strandedness": "auto"}`. |
 | `link_into` | folder | Write clean symlinks there and list those. |
+| `exclude` | list of names | Leave these samples out (every lane of each). |
+| `exclude_from` | file | Leave out the samples listed there, one per line. A line naming a FASTQ file leaves out its sample, so `reads_verify`'s `failed` list works as is. |
 | `name_from_dir`, `long`, `relative`, `no_pair_numeric`, `allow_merge`, `allow_unchecked` | booleans | As the CLI flags. |
 
 Returns `columns`, `rows` (objects, up to 1,000), `row_count` and sheetgen's notes in `stderr`.
@@ -256,15 +258,23 @@ Runs [`sheetgen verify`](sheetgen.md) on read files or folders (`paths`, scanned
 the FASTQ columns of sample sheets (`sheets`); `jobs` checks several files at once. It checks gzip integrity (every
 member, CRC and length), FASTQ structure, and MD5/SHA-256 against `md5` files or ENA (`ena`, network,
 opt-in; `runs` names the accession for files whose name has none). The result has the per-file
-report. The call is an error (`reads_have_problems`) when any file is corrupt, doesn't match, or is
-not listed, and the report is still there. The JSON report has timings, so `replay.sh` re-runs the
-check without comparing its output.
+report; each file's `status` is `ok`, `mismatch`, `corrupt` or `not listed` (no expected MD5 for
+it). The call is an error (`reads_have_problems`) when any file is not `ok`, and the report is
+still there. Its `message` and `problems` name each bad file and why (the first problem and where,
+or the MD5 that differs). `failed` (a file inside the root; `overwrite` to replace it) gets the
+corrupt and mismatched files, one per line, for sheetgen's `exclude_from`.
+
+sheetgen verify exits 1 when a file has a problem. With a readable report that is still the
+check's result: the call is recorded as ok with exit status 1, and `replay.sh` re-runs it,
+expects exit status 1, and checks the `failed` list it writes again. The JSON report has timings,
+so `replay.sh` doesn't compare it.
 
 ### `cooccur`
 
 Runs [`cooccur`](cooccur.md) on a genome × sample table ([`coverm_abundance`](#coverm_abundance)'s
 output). Parameters: `table`, `output` (edge list TSV), `summary` (JSON; default next to the output),
-`measure`, `taxonomy` (GTDB-Tk summaries, for CPR labels), `method` (`rho` or `spearman`),
+`measure`, `taxonomy` (for CPR labels: GTDB-Tk summaries, gtdbprep_ani's ANI summaries from its
+`summary_files`, or gtdbprep_place's `place.tsv`), `method` (`rho` or `spearman`),
 `min_prevalence`, `fdr`, `min_stat`, `positive_only`, `seed` (default 1, so a replay matches),
 `overwrite`. The
 result includes the summary, with the CPR–non-CPR pairs that pass.
@@ -273,9 +283,16 @@ result includes the summary, with the CPR–non-CPR pairs that pass.
 
 Runs [`gtdbprep place`](gtdbprep.md): GTDB-Tk tree placement on the laptop data for genomes
 [`gtdbprep_ani`](#gtdbprep_ani) didn't assign. Parameters: `genome_dir`, `extension`, `work`,
-`skip_assigned` (gtdbprep_ani's work folder), `data_path` (or `$GTDBTK_DATA_PATH`), `env` (GTDB-Tk
-2.8.0 with gPlace, or `$GTDBPREP_ENV`), `max_memory` (default 6G), `cpus`, `overwrite`. The result
-lists `place.tsv`'s rows. Its `.log`, `.json` (including `place.json`) and `.gz` outputs are volatile.
+`skip_assigned` (gtdbprep_ani's work folder), `data_path` (else `$GTDBTK_DATA_PATH`, else the data
+locked in `./dblock.lock`, as for `gtdbprep_ani`), `env` (GTDB-Tk 2.8.0 with gPlace, or
+`$GTDBPREP_ENV`), `max_memory` (default 6G), `min_perc_aa` (GTDB-Tk align's, default 10: genomes
+with less of the marker alignment are left out), `cpus`, `overwrite`. The result lists
+`place.tsv`'s rows. Its `.log`, `.json` (including `place.json`) and `.gz` outputs are volatile.
+
+Incomplete bins (7 to 20 of the 120 bacterial markers) can all fall under `min_perc_aa`. GTDB-Tk
+2.8 then fails in classify with `IndexError: list index out of range`; gtdbprep stops before that
+and names the genome with the most markers. Lower `min_perc_aa` to place them anyway; such
+placements are less certain.
 
 ### Third-party tools
 
@@ -660,7 +677,7 @@ and the placement-lite data, not the 85 GB skani database. This is an irit binar
 | `genome_dir` | folder (required) | One genome per file; the file name is the genome's name. |
 | `extension` | text | Default `fna`. |
 | `index` | folder | Screen index: `meta.json`, `refs.bin`, `markers.idx` (dblock `gtdbtk-r232-ani-screen`). Default: the ANI-screen index locked in `./dblock.lock`. |
-| `data_path` | folder | GTDB-Tk data with `taxonomy/`, `radii/`, `metadata/` (dblock `gtdbtk-r232-placement-lite`). Default `$GTDBTK_DATA_PATH`; sent as `--data`. |
+| `data_path` | folder | GTDB-Tk data with `taxonomy/`, `radii/`, `metadata/` (dblock `gtdbtk-r232-placement-lite`). Default `$GTDBTK_DATA_PATH`, else the one locked in `./dblock.lock`; sent as `--data`. |
 | `work` | folder (required) | Work folder inside the root. |
 | `overwrite` | boolean | Allow a `work` folder that has files. |
 | `source` | text | Where sketches missing from the cache come from: a path or URL of an unpacked `sketches.db`, a URL with `{part}` (with `part_size`), or `gtdb` (range reads of GTDB's own archive). Network; ask the user first. Omit when everything is cached. |
@@ -685,7 +702,9 @@ how many and how many MB, so the network use can be weighed before allowing it.
 Returns `genomes` (per genome: `assigned_by_ani`, `species`, `taxonomy`, `reference`, `ani`, `af`,
 `markers`, `candidates`, and `used` with `species_only`; a genome skani could not sketch has
 `screened: false` and a note), `warnings`, `stdout` (gtdbprep's own lines: sketches
-cached and fetched, times) and `data_path_for_classify`. That folder, `<work>/gtdbtk_data`, is a
+cached and fetched, times), `summary_files` (GTDB-Tk's `ani_summary.tsv` files, with
+`user_genome` and `reference_taxonomy`: cooccur's `taxonomy` and isotable read them) and
+`data_path_for_classify`. That folder, `<work>/gtdbtk_data`, is a
 complete GTDB-Tk data folder: links to the placement-lite data plus the small skani database.
 Passed as `gtdbtk_classify_wf`'s `data_path`, it gives GTDB-Tk's usual summary files, and since
 it is an output of a recorded call, the record shows where it came from:
@@ -772,7 +791,9 @@ amrfinder.cpp). An unindexed folder (the raw files from NCBI) is refused with a 
 `amrfinder_index` or to fetch it with dblock, which indexes it. dblock's
 `amrfinderplus-db-4.2-2026-10-29.1` passes.
 
-Returns `database_version`, `report` and `summary`: `amr_genes` (what isotable reports),
+Returns `database_version`, `report` and `summary`: `amr_genes` (isotable's list: one entry per AMR
+element symbol and name; a symbol shared by different genes, such as `blaOXA` for three OXA
+families, gets the element name in brackets, and a gene found more than once gets `x<count>`),
 `counts_by_type` (AMR, STRESS, VIRULENCE, ...) and `hits`, each with `element_symbol`,
 `element_name`, `type`, `subtype`, `class`, `subclass`, `method`, `contig_id` or `protein_id`,
 `coverage_of_reference` and `identity_to_reference`.
@@ -1217,18 +1238,22 @@ Dereplicates genomes, typically the bins of several samples, with galah (`galah 
 within an ANI (default 95%, a species) and aligned fraction of each other form a cluster, and one
 genome represents it. skani does the comparisons. Writes `<outdir>/clusters.tsv`
 (`representative<TAB>member` lines, paths as given) and `<outdir>/representatives.txt`, one path per
-line, which `coverm_abundance` takes as `genome_list`. No copies are made: galah refuses a copy
-folder that has files, which a replay in the same folder would hit.
+line, which `coverm_abundance` takes as `genome_list`. After galah, the server links each
+representative into `<outdir>/representatives/` (relative links, named as the file), so the folder
+can be `gtdbprep_ani`'s or `gtdbprep_place`'s `genome_dir`. The links are recorded (`links_after`)
+and `replay.sh` makes them again. galah's own copy folder is not used: galah refuses one that has
+files, which a replay in the same folder would hit. `representatives/` may hold only links; the
+server replaces them on each call.
 
 | Parameter | Type | Meaning |
 |---|---|---|
 | `genomes` | list of files | Genome FASTA files. |
 | `genome_dirs` | list of folders | Folders of genomes, matched by `extension` (default `fa`, MetaBAT2's and SemiBin2's). Give this and/or `genomes`. |
-| `outdir` | folder (required) | Where `clusters.tsv` and `representatives.txt` go; an existing one needs `overwrite`. |
+| `outdir` | folder (required) | Where `clusters.tsv`, `representatives.txt` and `representatives/` go; an existing one needs `overwrite`. |
 | `ani` | percent, 80-100 | Default 95. |
 | `min_aligned_fraction` | percent | galah's default 15. |
 | `precluster_ani` | percent, at most `ani` | galah's default 90. |
-| `checkm2_report` | file | A CheckM2 `quality_report.tsv` listing **every** genome. Each cluster's best genome by `quality_formula` represents it; without a report, the first genome given does (and a warning says so). |
+| `checkm2_report` | file or list of files | CheckM2 `quality_report.tsv` files that together list **every** genome, e.g. one per sample when CheckM2 had to run per sample to fit in memory. Several are joined into `<outdir>/checkm2_quality_report.tsv` (they must have the same header, and a genome may be in only one); `replay.sh` joins them again. Each cluster's best genome by `quality_formula` represents it; without a report, the first genome given does (and a warning says so). |
 | `min_completeness`, `max_contamination` | percent | Leave genomes out by CheckM2's numbers (need `checkm2_report`). |
 | `quality_formula` | `Parks2020_reduced` (galah's default), `completeness-4contamination`, `completeness-5contamination` | How the representative is chosen. galah's `dRep` formula is not offered: it needs CheckM 1's strain heterogeneity. |
 | `small_genomes` | boolean | skani's settings for genomes under about 20 kb. |
@@ -1238,11 +1263,12 @@ Checks before running: genomes are named after their files (without the FASTA ex
 galah, CheckM2 and CoverM name them, so two files with one name (`bin.1.fa` of two samples) are
 refused: give each sample's bins their own prefix (`metabat2` `prefix`, `semibin2` `tag`). galah
 takes one `--checkm2-quality-report` and panics when a genome is missing from it ("Failed to find
-CheckM statistics"), so the server checks that every genome has a row and refuses the call
-otherwise: run `checkm2` once over all the genomes (its `genomes` list).
+CheckM statistics"), so the server checks that every genome has a row in the reports and refuses
+the call otherwise.
 
 Returns the clusters (sorted, with their members and sizes), the number of genomes given and of
-clusters, and the genomes left out by the quality filters. With more than one thread galah 0.6.3
+clusters, the genomes left out by the quality filters, `representatives_list` and
+`representatives_dir`. With more than one thread galah 0.6.3
 writes `clusters.tsv` and `representatives.txt` in a different order each run (the same clusters:
 checked on 48 bins, sorted files identical); with one they were byte-identical. One thread is the
 default, and with more both files are volatile. One thread was fast enough: 48 bins in 0.84 s.
@@ -1459,10 +1485,28 @@ was killed at an 8 GB cap on 23 MAGs, and with `lowmem` it peaked at 5.6 GiB.
 ### `describe_run`, `list_runs`
 
 `describe_run` (`run_id`, default the current run) returns the paths of `replay.sh` and the
-RO-Crate and a summary of each call: tool, status, version, exit status, error, warnings and output
-paths. `detail: true` returns every call's full record instead (command, environment, every input and
+RO-Crate and a summary of each call: tool, status, version, exit status, error, warnings, the
+number of outputs and up to 5 output paths (those nearest the output folder). `detail: true` returns every call's full record instead (command, environment, every input and
 output with SHA-256), which can be tens of kB per call; `call_id` returns one call in full.
-`list_runs` lists the runs in the runs folder with call counts.
+`list_runs` lists the runs in the runs folder with call counts (`unfinished`: calls that started
+but never ended).
+
+### Result size
+
+MCP clients refuse large results (Claude Code: about 25,000 tokens). Every result is cut to 40,000
+characters of JSON (`IRIT_MCP_RESULT_CHARS` changes it), the same way for every tool:
+
+- More than 20 output files: `outputs` lists the 20 nearest the output folder, and
+  `outputs_not_listed` counts the rest per folder (MEGAHIT's intermediate contigs, for example).
+- Then, while the result is too large (counting the note about what was cut), the larger of the
+  largest list and the longest string is halved. Lists are found at any depth: `genomes`,
+  `samples`, `summary.hits`, `report.files`, `run.calls`, `run.calls.0.inputs`. A list keeps its
+  first rows; describe_run's calls keep the last (newest). Strings over 200 characters (a long
+  `stdout`) end in ` [cut]`. Last, one-row lists are emptied.
+- `result_shortened` names each shortened list (how many rows it had, and the file that has them
+  all: the tool's table, or the run record) and each cut string (its length).
+
+The run record always has every file and hash.
 
 ### Errors
 
@@ -1477,14 +1521,17 @@ field:
 | `no_reports` | leanqc exited 0 but wrote no report; there is no QC result. |
 | `missing_outputs` | A third-party tool exited 0 but didn't write the files it always writes; `message` lists them. Recorded as failed. |
 | `output_unreadable` | sheetgen, isotable or a third-party tool exited 0 but its output could not be read back. |
-| `reads_have_problems` | `reads_verify`: a file is corrupt, doesn't match its MD5 or isn't listed; `report` is still returned. |
+| `reads_have_problems` | `reads_verify`: a file is corrupt, doesn't match its MD5 or isn't listed; `message` and `problems` name each one and why, and `report` is still returned. |
 
 A parameter that isn't in the schema is refused by the MCP layer itself, with the list of valid
 names.
 
 ## Run records
 
-One folder per server session, `irit-runs/<run-id>/`, rewritten after every call:
+One folder per server session, `irit-runs/<run-id>/`, rewritten when a call starts and when it ends.
+A call is written as `started` before its tool runs; if it never ends (the client dropped it, or
+the server was killed), it stays `started`, and `replay.sh` lists it as never finished without
+running it.
 
 ```
 irit-runs/20261110T074754Z-41022/

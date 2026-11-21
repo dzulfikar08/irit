@@ -273,9 +273,17 @@ fn reads_verify_and_cooccur_over_stdio() {
     let r = c.call("reads_verify", json!({"paths": ["reads/a_1.fastq.gz"]}));
     assert_eq!(r["isError"], false, "{r}");
     assert_eq!(r["structuredContent"]["report"]["files"][0]["status"], "ok", "{r}");
-    let r = c.call("reads_verify", json!({"paths": ["reads"]}));
+    let r = c.call("reads_verify", json!({"paths": ["reads"], "failed": "qc/failed.txt"}));
     assert_eq!(r["isError"], true, "{r}");
+    assert_eq!(r["structuredContent"]["exit_status"], 1, "{r}");
     assert_eq!(r["structuredContent"]["error"], "reads_have_problems", "{r}");
+    // the message and `problems` name the bad file and why
+    let msg = r["structuredContent"]["message"].as_str().unwrap();
+    let bad = work.join("reads/b_1.fastq.gz");
+    assert!(msg.starts_with(&format!("1 of 2 read files have problems: {} (corrupt: gzip member 1 is damaged", bad.display())), "{msg}");
+    assert_eq!(r["structuredContent"]["problems"][0]["path"], json!(bad), "{r}");
+    assert_eq!(std::fs::read_to_string(work.join("qc/failed.txt")).unwrap(), format!("{}\n", bad.display()));
+    assert_eq!(r["structuredContent"]["failed_list"], json!(work.join("qc/failed.txt")), "{r}");
     let statuses: Vec<&str> = r["structuredContent"]["report"]["files"].as_array().unwrap().iter().map(|f| f["status"].as_str().unwrap()).collect();
     assert!(statuses.contains(&"corrupt"), "{statuses:?}");
     let r = c.call("cooccur", json!({"table": "abundance.tsv", "output": "cooc/edges.tsv", "fdr": 0.5}));
@@ -284,8 +292,14 @@ fn reads_verify_and_cooccur_over_stdio() {
     assert!(std::fs::read_to_string(work.join("cooc/edges.tsv")).unwrap().contains("g1"), "{r}");
     c.close();
     let run_dir = work.join("irit-runs/test-run");
+    std::fs::remove_dir_all(work.join("qc")).unwrap();
     let out = Command::new("sh").arg(run_dir.join("replay.sh")).env("IRIT_BIN_DIR", &bin).current_dir(&work).output().unwrap();
-    // the second verify call failed on purpose; replay re-runs the ok calls
+    // the second verify call found a bad file: it is replayed expecting exit status 1, and the
+    // failed list it writes is made again and checked
+    let script = std::fs::read_to_string(run_dir.join("replay.sh")).unwrap();
+    assert!(script.contains("step 002 1 irit sheetgen verify --json --failed=qc/failed.txt"), "{script}");
+    assert!(script.lines().any(|l| l.starts_with("check ") && l.ends_with("qc/failed.txt")), "{script}");
+    assert!(work.join("qc/failed.txt").is_file(), "replay did not write the failed list again");
     assert!(out.status.success(), "replay failed: {}\n{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
 }
 

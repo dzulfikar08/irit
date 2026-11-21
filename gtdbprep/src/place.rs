@@ -14,7 +14,7 @@
 //! Genomes `gtdbprep ani` already assigned to a species can be skipped (`--skip-assigned`).
 //! See `docs/tools/gtdbprep.md` and `docs/research/gtdb-placement-test.md`.
 
-use crate::outputs::Summary;
+use crate::outputs::{self, Summary};
 use crate::tools::{self, Runner};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet};
@@ -59,6 +59,8 @@ pub struct PlaceOptions {
     /// The `gplace` program (default: the environment's, else the one on `PATH`).
     pub gplace: Option<PathBuf>,
     pub full_tree: bool,
+    /// GTDB-Tk align's `--min_perc_aa` (GTDB-Tk's default 10 when `None`).
+    pub min_perc_aa: Option<f64>,
 }
 
 /// One row of `place.tsv`.
@@ -512,11 +514,104 @@ fn symlink(_: &Path, _: &Path) -> Result<()> {
     bail!("gtdbprep place needs a Unix system (GTDB-Tk runs on Linux and macOS)")
 }
 
+/// Stops with a clear error when GTDB-Tk's align left out every genome it was given: too few
+/// markers for `--min_perc_aa`, or no markers at all (identify's failed genomes). Names the
+/// genome with the most single-copy markers.
+fn check_aligned(
+    work: &Path,
+    ids: &BTreeSet<String>,
+    ani: &AniCalls,
+    min_perc_aa: Option<f64>,
+) -> Result<()> {
+    let read = |rel: &str| fs::read_to_string(work.join(rel)).unwrap_or_default();
+    let mut left_out = BTreeSet::new();
+    for rel in [
+        "align/align/{p}.bac120.filtered.tsv",
+        "align/align/{p}.ar53.filtered.tsv",
+    ] {
+        left_out
+            .extend(outputs::two_columns(&read(&outputs::bundle_path(rel, PREFIX))).into_keys());
+    }
+    let no_markers = identify_failed(work);
+    let given: Vec<&String> = ids.iter().filter(|g| !ani.assigned.contains(*g)).collect();
+    let out = |g: &&String| left_out.contains(*g) || no_markers.contains(*g);
+    if given.is_empty() || !given.iter().all(out) {
+        return Ok(());
+    }
+    let none_found = given.iter().filter(|g| no_markers.contains(**g)).count();
+    // (share of the domain's markers in permille, description)
+    let mut best: Option<(usize, String)> = None;
+    for (domain, total) in [("bac120", 120), ("ar53", 53)] {
+        let rel = outputs::bundle_path(
+            &format!("identify/identify/{{p}}.{domain}.markers_summary.tsv"),
+            PREFIX,
+        );
+        let Ok(counts) = outputs::single_copy_counts(&read(&rel)) else {
+            continue;
+        };
+        for (g, n) in counts {
+            if best.as_ref().is_none_or(|(m, _)| n * 1000 / total > *m) {
+                best = Some((
+                    n * 1000 / total,
+                    format!("{g}, {n} of {total} {domain} markers"),
+                ));
+            }
+        }
+    }
+    let threshold = match min_perc_aa {
+        Some(p) => format!("{p}%"),
+        None => "10%, GTDB-Tk's default".to_string(),
+    };
+    let also = match none_found {
+        0 => String::new(),
+        n => format!(" ({n} of them had no markers at all)"),
+    };
+    bail!(
+        "no genome passed GTDB-Tk align's min_perc_aa ({threshold}): all {}{also} were left out, so \
+         there is nothing to place (see {}/align/align/*.filtered.tsv). Best: {}. Lower \
+         --min-perc-aa, or these genomes are too incomplete to place",
+        given.len(),
+        work.display(),
+        best.map(|(_, s)| s)
+            .unwrap_or_else(|| "no markers summary".to_string())
+    )
+}
+
+/// Genomes GTDB-Tk's identify found no markers in (`identify/gtdbtk.failed_genomes.tsv`).
+fn identify_failed(work: &Path) -> BTreeSet<String> {
+    let rel = outputs::bundle_path("identify/identify/{p}.failed_genomes.tsv", PREFIX);
+    let text = fs::read_to_string(work.join(rel)).unwrap_or_default();
+    outputs::two_columns(&text).into_keys().collect()
+}
+
+/// Stops when identify found markers in none of the genomes: then neither align nor a lower
+/// `--min-perc-aa` can help.
+fn check_identified(work: &Path, ids: &BTreeSet<String>, ani: &AniCalls) -> Result<()> {
+    let failed = identify_failed(work);
+    let given: Vec<&String> = ids.iter().filter(|g| !ani.assigned.contains(*g)).collect();
+    if given.is_empty() || !given.iter().all(|g| failed.contains(*g)) {
+        return Ok(());
+    }
+    bail!(
+        "GTDB-Tk identify found no marker genes in any of the {} genomes (see \
+         {}/identify/identify/gtdbtk.failed_genomes.tsv), so there is nothing to align or place. \
+         Check that they are nucleotide FASTA of the genomes meant; --min-perc-aa does not help here",
+        given.len(),
+        work.display()
+    )
+}
+
 /// Run identify, align (no references) and classify (no ANI screen) with gPlace as the placer.
 pub fn run(opts: &PlaceOptions, t: &crate::pipeline::Tools) -> Result<PlaceReport> {
     parse_memory(&opts.max_memory)?;
     let max_memory: String = opts.max_memory.split_whitespace().collect();
     ensure!(opts.pplacer_cpus >= 1, "--pplacer-cpus must be at least 1");
+    if let Some(p) = opts.min_perc_aa {
+        ensure!(
+            p.is_finite() && (0.0..=100.0).contains(&p),
+            "--min-perc-aa must be a percentage between 0 and 100"
+        );
+    }
     let ani = match &opts.skip_assigned {
         Some(d) => read_ani(d)?,
         None => AniCalls::default(),
@@ -667,6 +762,7 @@ pub fn run(opts: &PlaceOptions, t: &crate::pipeline::Tools) -> Result<PlaceRepor
             .args(["--extension", &opts.extension, "--cpus", &cpus]);
         runner.run("identify", c)?;
         report.seconds_identify = t0.elapsed().as_secs_f64();
+        check_identified(&work, &ids, &ani)?;
 
         let t1 = Instant::now();
         let mut c = command(Path::new(
@@ -678,8 +774,14 @@ pub fn run(opts: &PlaceOptions, t: &crate::pipeline::Tools) -> Result<PlaceRepor
             .arg("--out_dir")
             .arg(work.join("align"))
             .args(["--skip_gtdb_refs", "--cpus", &cpus]);
+        if let Some(p) = opts.min_perc_aa {
+            c.args(["--min_perc_aa", &p.to_string()]);
+        }
         runner.run("align", c)?;
         report.seconds_align = t1.elapsed().as_secs_f64();
+        // GTDB-Tk 2.8's classify fails with `IndexError: list index out of range` (markers.py)
+        // when align left out every genome; say why instead.
+        check_aligned(&work, &ids, &ani, opts.min_perc_aa)?;
 
         let t2 = Instant::now();
         let mut c = command(&python);
@@ -956,8 +1058,29 @@ class OptionsParser:
                 for f in sorted(os.listdir(genome_dir)) if f.endswith('.' + extension)}}, {{}}
     def parse_options(self, o):
         get = lambda n: o.argv[o.argv.index(n) + 1]
-        if o.subparser_name in ('identify', 'align'):
-            os.makedirs(get('--out_dir'))
+        if o.subparser_name == 'identify':
+            out = os.path.join(get('--out_dir'), 'identify')
+            os.makedirs(out)
+            ids = sorted(f[:-len(get('--extension')) - 1] for f in os.listdir(get('--genome_dir')))
+            with open(os.path.join(out, 'gtdbtk.bac120.markers_summary.tsv'), 'w') as fh:
+                fh.write('name\tnumber_unique_genes\tnumber_multiple_genes\tnumber_multiple_unique_genes\tnumber_missing_genes\n')
+                for g in ids:
+                    if not g.startswith('empty'):
+                        fh.write('{{}}\t{{}}\t0\t1\t0\n'.format(g, 6 if g.startswith('frag') else 100))
+            with open(os.path.join(out, 'gtdbtk.failed_genomes.tsv'), 'w') as fh:
+                for g in ids:
+                    if g.startswith('empty'):
+                        fh.write(g + '\tNo bacterial or archaeal marker\n')
+        elif o.subparser_name == 'align':
+            out = os.path.join(get('--out_dir'), 'align')
+            os.makedirs(out)
+            summary = os.path.join(get('--identify_dir'), 'identify/gtdbtk.bac120.markers_summary.tsv')
+            ids = [l.split('\t')[0] for l in open(summary).read().splitlines()[1:]]
+            pct = float(get('--min_perc_aa')) if '--min_perc_aa' in o.argv else 10.0
+            with open(os.path.join(out, 'gtdbtk.bac120.filtered.tsv'), 'w') as fh:
+                for g in ids:
+                    if g.startswith('frag') and pct > 5:
+                        fh.write(g + '\tInsufficient number of amino acids in MSA (4.9%)\n')
         elif o.subparser_name == 'classify':
             self.classify(o)
     def classify(self, o):
@@ -1083,6 +1206,7 @@ class OptionsParser:
             skip_assigned: Some(ani.clone()),
             gplace: None,
             full_tree: false,
+            min_perc_aa: None,
         };
         let r = run(&opts, &tools_).unwrap();
         assert_eq!((r.placed, r.skipped, r.gplace_calls), (2, 1, 1));
@@ -1141,6 +1265,49 @@ class OptionsParser:
         let r = run(&opts, &tools_).unwrap();
         assert_eq!((r.placed, r.skipped, r.gplace_calls), (0, 3, 0));
         assert!(r.rows.iter().all(|r| r.method == "ani_screen"));
+
+        // Every genome left out by align (too few markers): a clear error, not GTDB-Tk's IndexError.
+        let frags = root.join("frags");
+        fs::create_dir_all(&frags).unwrap();
+        for g in ["frag.1", "frag.2"] {
+            fs::write(frags.join(format!("{g}.fa")), ">c1\nACGT\n").unwrap();
+        }
+        let mut o = opts.clone();
+        o.genomes = frags;
+        o.skip_assigned = None;
+        o.work = root.join("work-frags");
+        let e = format!("{:#}", run(&o, &tools_).unwrap_err());
+        assert!(
+            e.contains("no genome passed GTDB-Tk align's min_perc_aa (10%, GTDB-Tk's default)")
+                && e.contains("all 2 were left out")
+                && e.contains("frag.1, 7 of 120 bac120 markers"),
+            "{e}"
+        );
+        // A lower --min-perc-aa is passed to align, and then they are placed.
+        o.min_perc_aa = Some(2.5);
+        let r = run(&o, &tools_).unwrap();
+        assert_eq!(r.placed, 2);
+        // A bad --min-perc-aa stops before anything runs.
+        let mut bad = o.clone();
+        bad.min_perc_aa = Some(150.0);
+        bad.work = root.join("work-bad");
+        assert!(format!("{:#}", run(&bad, &tools_).unwrap_err()).contains("--min-perc-aa"));
+        assert!(!bad.work.exists());
+        // No markers at all: identify's failure, not min_perc_aa, is named.
+        let empties = root.join("empties");
+        fs::create_dir_all(&empties).unwrap();
+        for g in ["empty.1", "empty.2"] {
+            fs::write(empties.join(format!("{g}.fa")), ">c1\nACGT\n").unwrap();
+        }
+        let mut o = o.clone();
+        o.genomes = empties;
+        o.work = root.join("work-empties");
+        let e = format!("{:#}", run(&o, &tools_).unwrap_err());
+        assert!(
+            e.contains("identify found no marker genes in any of the 2 genomes")
+                && e.contains("does not help"),
+            "{e}"
+        );
 
         // Without --skip-assigned every genome is placed; a bad memory size stops before anything runs.
         let mut o = opts.clone();

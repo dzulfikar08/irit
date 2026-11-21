@@ -24,6 +24,7 @@ sheetgen data/ --pipeline nf-core/bacass -o samplesheet.tsv  # bacass's own colu
 sheetgen data/ --schema path/to/schema_input.json --set strandedness=auto
 sheetgen data/ -f qiime2 -o manifest.tsv                     # QIIME 2 manifest
 sheetgen data/ --pipeline nf-core/bacass --link-into links/  # clean, space-free symlinks
+sheetgen data/ --exclude D01-S5 -o samplesheet.csv           # leave a sample out
 ```
 
 | Option | Effect |
@@ -33,6 +34,8 @@ sheetgen data/ --pipeline nf-core/bacass --link-into links/  # clean, space-free
 | `--pipeline NAME` | Find `assets/schema_input.json` for a pipeline Nextflow has pulled (`$NXF_HOME`, default `~/.nextflow`). |
 | `--schema FILE` | Use this schema instead. |
 | `--set COL=VALUE` | Fixed value for a column the files can't tell us, such as `strandedness`. Repeatable. |
+| `--exclude SAMPLE` | Leave this sample out, every row (lane) of it. The name as in the sheet, or before cleaning. Repeatable. A name that matches nothing is a warning. |
+| `--exclude-from FILE` | Leave out the samples listed in FILE, one per line (blank lines and `#` comments skipped). A line that is a FASTQ path leaves out the sample with that file: the same file if the path exists, else a file of that name. So the list `sheetgen verify --failed` writes works as is. |
 | `--name-from-dir` | Name samples after the folder holding the files. |
 | `--long` | Treat unpaired files as long reads (the schema's long-read column, for hybrid assembly). `_R1`/`_R2` mates still pair; bare `_1`/`_2` (and lowercase `_r1`/`_r2`) pair only with evidence they are short reads (see [Long reads](#long-reads-and-nanopore)). |
 | `--relative` | Paths relative to the current folder. |
@@ -176,6 +179,7 @@ sheetgen verify reads/ --md5 reads/MD5SUMS                # compare with an md5s
 sheetgen verify ERR044595_1.fastq.gz ERR044595_2.fastq.gz --ena
 sheetgen verify AHB29_ont.fastq.gz --ena --run AHB29_ont.fastq.gz=ERR15424439
 sheetgen verify --sheet samplesheet.csv --json > verify.json
+sheetgen verify reads/ --failed failed.txt                # then: sheetgen reads/ --exclude-from failed.txt
 ```
 
 | Option | Effect |
@@ -186,6 +190,7 @@ sheetgen verify --sheet samplesheet.csv --json > verify.json
 | `--ena` | Look up expected MD5s and sizes at ENA (network; nothing is fetched without this flag). |
 | `--run FILE=ACCESSION` | Run accession for a file whose name doesn't contain one (needs `--ena`). Repeatable. |
 | `--json` | Print the report as JSON on stdout (for irit-mcp and scripts). |
+| `--failed FILE` | Write the `corrupt` and `mismatch` files to FILE, one absolute path per line (empty when none). `sheetgen --exclude-from FILE` then leaves their samples out of the sheet. `not listed` files are not in it. |
 | `-j`, `--jobs N` | Check N files at a time (default 1; each file uses four threads). |
 
 What is checked, in one pass over the file:
