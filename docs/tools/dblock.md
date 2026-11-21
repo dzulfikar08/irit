@@ -161,7 +161,8 @@ as the copies exist on disk until they are linked.
 ### Formats
 
 `tar.gz`, `tar.bz2`, `tar.xz`, `tar.zst`, or `file` (kept as downloaded). All archive formats work
-in both modes. `tar.zst` archives made with a long window (`zstd --long=N`) decode without extra
+in both modes. An entry with one download may give its `sha256` besides the MD5; then both are
+checked (the sylph databases do). `tar.zst` archives made with a long window (`zstd --long=N`) decode without extra
 settings: dblock raises libzstd's decoder window limit from its default 2^27 (128 MiB) to 2^30
 (1 GiB, enough for `--long=30`). The limit is only a ceiling; the decoder allocates the window the
 archive declares.
@@ -313,6 +314,8 @@ Every URL, size and checksum in the built-in catalog was checked against the pub
 | `gtdbtk-r232-placement` | 280 MB (12 parts) | 7.4 GB | **Unofficial mirror** of GTDB-Tk's placement folders; no ANI database or MSAs: on their own they give genus at most. With `gtdbtk-r232-ani-screen`, [`gtdbprep ani`](gtdbprep.md) names species, and `gtdbprep place` places the genomes it can't name. See below. |
 | `gtdbtk-r232-placement-lite` | 175 MB (11 parts) | 5.9 GB | Same without the full bacterial tree (no `--full_tree`). |
 | `gtdbtk-r232-ani-screen` | 2.1 GB (3 parts) | 2.3 GB | Screen index for `gtdbprep ani`, GTDB-Tk's ANI species screen without the 85 GB skani database. **Derived** from GTDB data by an unofficial mirror. See below. |
+| `sylph-gtdb-r232-c1000` | 5.2 GB | same (one file) | sylph's database of GTDB R232's species representatives, for [`sylph_profile`](mcp.md#sylph_profile). sylph ≥ 0.3. Profiling against it peaked at 4.9 GiB of RAM. See below. |
+| `sylph-gtdb-r220-c1000` | 2.8 GB | same (one file) | The same for GTDB R220 (113,104 species). See below. |
 | `gtdbtk-r232-mockup` | 26 MB | ~120 MB | Test database. For gtdbprep use `gtdbtk-r232-client` (below). |
 | `checkm2-db-v3` | 1.7 GB | 3.08 GB (measured) | CheckM2 ≥ 1.1.0 only. |
 | `silva-144-qiime2-full` | 274 MB | same | QIIME 2 ≥ 2026.4. |
@@ -473,6 +476,34 @@ same file sizes. At run time, `gtdbprep ani` checks every sketch
 it fetches from GTDB against the SHA-256 prefix in the index. The index records the MD5s GTDB
 gives for `sketches.db`, `markers.bin` and `index.db` in the database's `metadata.tsv`, and the
 archive's MD5.
+
+### `sylph-gtdb-r232-c1000` and `sylph-gtdb-r220-c1000`: sylph's GTDB databases
+
+[sylph](https://github.com/bluenote-1577/sylph) profiles reads against prebuilt sketches of the
+genomes. Its authors publish databases of GTDB's species representatives
+([list](https://sylph-docs.github.io/pre%E2%80%90built-databases/)); these two entries are the `-c 1000`
+ones of R232 (199,923 species, `gtdb-r232-c1000-dbv1.syldb`, 5,219,051,219 bytes) and R220 (113,104
+species, `gtdb-r220-c1000-dbv1.syldb`, 2,836,800,847 bytes). `-c 1000` keeps one k-mer in 1,000, so
+it is smaller and less sensitive than `-c 200` (24 GB for R232, also published as a 19 GB two-stage
+`.syl2db` that needs sylph 1.0), but it fits a laptop: profiling against R232 peaked at 4.9 GiB with
+sylph 1.0.0, where sylph's README gives about 15 GB for the R220 `-c 200` database. Prefer R232: it
+matches GTDB-Tk's R232 data elsewhere in irit. Each entry is one file; `dblock env` gives its path,
+which goes into `sylph_profile`'s `databases`.
+
+```sh
+dblock add sylph-gtdb-r232-c1000
+dblock fetch
+dblock env   # <store>/sylph-gtdb-r232-c1000/gtdb-r232-c1000-dbv1.syldb
+```
+
+URLs: the authors' server (`faust.compbio.cs.cmu.edu`, which they ask users to prefer), then their
+Google Cloud mirror. Checksums: the authors publish none. For R232, Google Cloud Storage gives the
+object's MD5 (`x-goog-hash`), and our download on 2026-11-21 matched it; for R220 it gives only a
+CRC32C, so its MD5 is the one we computed from our download that day. Both entries carry the SHA-256
+of that download too, and dblock checks both. The sketches are of GTDB genomes and made by the sylph
+authors, not by GTDB; GTDB is CC BY-SA 4.0. Genomes are named by their GTDB file path (the
+accession); for lineages, sylph-tax (`sylph-tax taxprof -t GTDB_r232`, its own ~50 MB download of
+taxonomy files) adds them, outside dblock and irit-mcp.
 
 ## Tested
 

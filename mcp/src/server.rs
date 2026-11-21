@@ -20,9 +20,11 @@ isotable (one graded QC row per sample from tool outputs), assembly_stats (QUAST
 dblock_* (reference databases); \
 plus the microbial isolate path with third-party tools: fastp (trimming), shovill (Illumina assembly), flye and \
 medaka (nanopore/PacBio long-read assembly and polishing), bakta (annotation), checkm2 (completeness/contamination), gtdbprep_ani and gtdbtk_classify_wf (taxonomy), mlst (sequence type), \
-amrfinder (AMRFinderPlus resistance genes), coverm_genome (isolate depth by read mapping) and kleborate (K. pneumoniae typing, virulence and resistance scores); and metagenomes to MAGs: megahit (assembly), coverm_contig (depth) and \
+amrfinder (AMRFinderPlus resistance genes), abricate (genes against its bundled databases: resistance, vfdb virulence, plasmidfinder replicons), \
+hamronize and hamronize_summarize (abricate and AMRFinderPlus reports to one hAMRonization table), coverm_genome (isolate depth by read mapping) and kleborate (K. pneumoniae typing, virulence and resistance scores); and metagenomes to MAGs: megahit (assembly), coverm_contig (depth) and \
 metabat2 or semibin2 (bins; several samples binned together: semibin2_concatenate, coverm_contig, semibin2 with multi), then checkm2, gtdbprep_ani (species) and gtdbprep_place (tree placement for the rest) and isotable mode mag on the bins; across samples, galah (dereplication), \
-coverm_abundance (each genome's abundance in each sample) and cooccur (genomes that rise and fall together). Check downloaded reads first with reads_verify. Those need the program installed (Bioconda) and, for bakta, \
+coverm_abundance (each genome's abundance in each sample) and cooccur (genomes that rise and fall together); sylph_profile profiles read sets against GTDB without assembly, \
+or against the MAGs to estimate how much of each sample they account for. Check downloaded reads first with reads_verify. Those need the program installed (Bioconda) and, for bakta, \
 checkm2, gtdbtk_classify_wf and amrfinder, a database (dblock_env shows dblock-managed paths); they can run for \
 hours. Their results list `warnings` when the installed version isn't the one irit-mcp was checked against, and for warnings the tool printed that matter (read them). \
 Parameters are checked before anything runs; unknown parameters are refused, so read each tool's schema \
@@ -236,6 +238,8 @@ impl Irit {
             error: None,
             assembly: None,
             warnings: Vec::new(),
+            stdout_to: None,
+            database: None,
         };
         let finish = |mut rec: CallRecord, stdout: Vec<u8>, stderr: String| {
             rec.ended = record::now();
@@ -255,6 +259,8 @@ impl Irit {
         rec.env = inv.env.clone();
         rec.external = inv.external;
         rec.warnings = inv.warnings.clone();
+        rec.stdout_to = inv.stdout_to.as_ref().map(|p| p.to_string_lossy().into_owned());
+        rec.database = inv.database.clone();
         let Some(program) = self.resolve(inv.tool, inv.external) else {
             rec.status = Status::Error;
             rec.error = Some(match (&self.cfg.bin_dir, self.cfg.tool_paths.get(inv.tool)) {
@@ -280,6 +286,7 @@ impl Irit {
         let links = inv.links.clone();
         let (mut inputs, outputs) = (inv.inputs.clone(), inv.outputs.clone());
         let (bundled, prog, ctx) = (inv.bundled_data, program.clone(), self.cfg.ctx.clone());
+        let (probe, args) = (inv.database_probe, inv.args.clone());
         let prepared = tokio::task::spawn_blocking(move || {
             for d in &dirs {
                 std::fs::create_dir_all(d).map_err(|e| format!("could not create {}: {e}", d.display()))?;
@@ -291,18 +298,30 @@ impl Irit {
                 found = Some(data.len());
                 inputs.extend(data);
             }
+            let mut database = None;
+            if let Some(probe) = probe {
+                let (data, db) = probe(&prog, &ctx, &args);
+                found = Some(data.len());
+                inputs.extend(data);
+                database = db;
+            }
             let snap = record::snapshot(&outputs);
             // After the snapshot, so the links are recorded as outputs (and checked by replay.sh).
             for (link, target) in &links {
                 make_link(link, target)?;
             }
-            Ok::<_, String>((record::input_records(&inputs), snap, found))
+            Ok::<_, String>((record::input_records(&inputs), snap, found, database))
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
         let before = match prepared {
-            Ok((input_recs, before, found)) => {
+            Ok((input_recs, before, found, database)) => {
                 rec.inputs = input_recs;
+                if database.is_some() {
+                    rec.database = database;
+                } else if inv.database_probe.is_some() {
+                    rec.warnings.push(format!("could not read which database version {} uses; the record doesn't say", inv.tool));
+                }
                 if found == Some(0) {
                     rec.warnings.push(format!(
                         "could not find the data {} brings with it, so the record doesn't hash it; its version is all that identifies it",
@@ -338,6 +357,11 @@ impl Irit {
                 return finish(rec, Vec::new(), String::new());
             }
         };
+        // Before the outputs are recorded, so the file is one of them.
+        let mut saved = Ok(());
+        if let (true, Some(to)) = (out.status.success(), &inv.stdout_to) {
+            saved = std::fs::write(to, &out.stdout).map_err(|e| format!("could not write {}: {e}", to.display()));
+        }
         let outputs = inv.outputs.clone();
         rec.outputs = tokio::task::spawn_blocking(move || record::output_records(&before, &outputs)).await.unwrap_or_default();
         for o in &mut rec.outputs {
@@ -379,7 +403,10 @@ impl Irit {
                 .filter(|group| !group.iter().any(written))
                 .map(|g| g.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" or "))
                 .collect();
-            if !missing.is_empty() {
+            if let Err(e) = saved {
+                rec.status = Status::Error;
+                rec.error = Some(e);
+            } else if !missing.is_empty() {
                 rec.status = Status::Failed;
                 rec.error = Some(format!("exited 0 but did not write: {}", missing.join(", ")));
             }
@@ -532,6 +559,35 @@ impl Irit {
             data.display(),
             if skani_hashed { " and its skani database" } else { "" }
         ))
+    }
+
+    /// The successful call that wrote `path` as it is now (same path and SHA-256): in this run,
+    /// else in another run under the runs folder, newest run id first.
+    fn producer_of(&self, path: &Path) -> Option<CallRecord> {
+        let want = validate::resolve(path);
+        let (_, hash) = record::hash_file(path).ok()?;
+        let wrote = |c: &CallRecord| {
+            c.status == Status::Ok
+                && c.outputs.iter().any(|o| o.sha256.as_deref() == Some(hash.as_str()) && validate::resolve(Path::new(&o.path)) == want)
+        };
+        let current = {
+            let st = self.state.lock().unwrap();
+            if let Some(c) = st.run.log.calls.iter().rev().find(|c| wrote(c)) {
+                return Some(c.clone());
+            }
+            st.run.log.run_id.clone()
+        };
+        let mut runs: Vec<PathBuf> = std::fs::read_dir(&self.cfg.runs_root)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy() != current) && p.join("run.json").is_file())
+            .collect();
+        runs.sort();
+        runs.iter().rev().find_map(|r| {
+            let log: RunLog = serde_json::from_slice(&std::fs::read(r.join("run.json")).ok()?).ok()?;
+            log.calls.into_iter().rev().find(|c| wrote(c))
+        })
     }
 
     fn read_log(&self, run_id: Option<&str>) -> Result<RunLog, String> {
@@ -896,6 +952,35 @@ bam_cache_dir, then semibin2 with multi, this file as contigs and those BAMs. Re
         })
     }
 
+    #[tool(description = "sylph 1.0.0 profile: species-level profile of read sets (several samples per call, paired r1/r2 or \
+single-end reads) against prebuilt sylph databases and/or genome FASTA files sketched on the fly, by k-mer containment, without \
+assembly. Two uses: (a) against GTDB (dblock's sylph-gtdb-r232-c1000, 5.2 GB, or sylph-gtdb-r220-c1000, 2.8 GB), the sample's species \
+with their abundances and ANI; (b) with the sample's MAGs (galah's representatives.txt as genome_list) and estimate_unknown, how much \
+of each sample the MAGs account for (the sum of Sequence_abundance). Genome IDs only: GTDB lineages need sylph-tax (not wrapped). \
+Writes the profile table (TSV) to `output`; sylph names samples after their read file, and the result maps them to sample_names. \
+Memory: the whole database is loaded; GTDB R232 c1000 peaked at 4.9 GiB (sylph's README: about 15 GB for the 13 GB R220 c200 \
+database). Seconds to minutes per sample. Returns per sample the genomes detected, the sum of Sequence_abundance, and the top 10 \
+genomes with taxonomic and sequence abundance, adjusted ANI and coverage.")]
+    async fn sylph_profile(&self, Parameters(params): Parameters<x::SylphProfileParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("sylph_profile", &params, x::sylph_profile(&self.cfg.ctx, &params)).await;
+        let table = self.cfg.ctx.cwd.join(&params.output);
+        let samples = x::sylph_samples(&params);
+        let database = d.record.database.clone();
+        self.external_reply(d, |v| {
+            v["output"] = json!(params.output);
+            if database.is_some() {
+                v["database"] = json!(database);
+            }
+            v["samples"] = json!(results::sylph_summary(&table, &samples, 10)?);
+            v["sequence_abundance_sum_means"] = json!(if params.estimate_unknown {
+                "percent of the sample's reads the genomes given account for (estimate_unknown); the rest is unknown to them"
+            } else {
+                "about 100 whenever anything is detected: without estimate_unknown, Sequence_abundance is a share of the detected genomes only"
+            });
+            Ok(())
+        })
+    }
+
     #[tool(description = "galah 0.6.3 cluster: dereplicate genomes (e.g. the bins of several samples) at an ANI (default 95%, a \
 species) with skani, keeping one representative per cluster. With `checkm2_report` (one checkm2 quality_report.tsv covering every \
 genome) the best genome by quality_formula represents each cluster, and min_completeness / max_contamination leave genomes out. Genomes \
@@ -1042,6 +1127,65 @@ the AMR gene list isotable reads.")]
             v["database_version"] = json!(db_version);
             v["report"] = json!(params.output);
             v["summary"] = results::amrfinder_summary(&report)?;
+            Ok(())
+        })
+    }
+
+    #[tool(description = "abricate 1.4.0: screen assemblies (FASTA) against one of the databases bundled with abricate: ncbi \
+(default), card, resfinder, argannot, megares (resistance genes), vfdb, victors, ecoli_vf, upec_expec_vf (virulence genes), plasmidfinder \
+(plasmid replicons), ecoh (E. coli O/H antigens), bacmet2 (biocide and metal resistance). One database per call. Name the assemblies after \
+the samples (shovill's link_as, e.g. genomes/s1.fna): the FILE column, and later hamronize's input_file_name and isotable's sample, come \
+from the file name, so contigs.fa and other fixed assembler names are refused. Writes abricate's table (its stdout) to `output`. The \
+database's `abricate --list` row (date its BLAST index was built, sequence count) goes into the run record and the result, and its files \
+are hashed. Next: hamronize with tool abricate. Seconds per assembly. Returns hits per gene (files, best identity and coverage, product, \
+resistance) and genes per file.")]
+    async fn abricate(&self, Parameters(params): Parameters<x::AbricateParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("abricate", &params, x::abricate(&self.cfg.ctx, &params)).await;
+        let table = self.cfg.ctx.cwd.join(&params.output);
+        let database = d.record.database.clone();
+        self.external_reply(d, |v| {
+            v["database"] = json!(database);
+            v["output"] = json!(params.output);
+            v["summary"] = results::abricate_summary(&table)?;
+            Ok(())
+        })
+    }
+
+    #[tool(description = "hAMRonization 1.3.1 (hamronize abricate / amrfinderplus): convert one abricate or AMRFinderPlus 4.x report \
+into the hAMRonization TSV, one row per gene, the layout isotable and nf-core/funcscan read. hAMRonization needs the tool's version and \
+the database version (and, for AMRFinderPlus, the sample as input_file_name): the server takes them from the irit-mcp call that wrote \
+the report (found by its path and SHA-256 in this run or an earlier one), the sample from the report's name (`s1.amrfinder.tsv`); \
+give them when the report came from elsewhere. hAMRonization leaves out AMRFinderPlus's virulence rows and INTERNAL_STOP hits. A report \
+without hits gives an empty file. Name outputs `<sample>.<tool>.hamronized.tsv`. Then hamronize_summarize joins several. Returns the \
+metadata used and where each value came from, and the genes per input file.")]
+    async fn hamronize(&self, Parameters(params): Parameters<x::HamronizeParams>) -> Result<CallToolResult, ErrorData> {
+        let report = self.cfg.ctx.cwd.join(&params.report);
+        let producer = if report.is_file() { self.producer_of(&report) } else { None };
+        let metadata = x::hamronize_metadata(&params, producer.as_ref()).ok().map(|(m, _)| m);
+        let inv = x::hamronize(&self.cfg.ctx, &params, producer.as_ref());
+        let d = self.execute("hamronize", &params, inv).await;
+        let table = self.cfg.ctx.cwd.join(&params.output);
+        self.external_reply(d, |v| {
+            v["metadata"] = json!(metadata);
+            if let Some(c) = &producer {
+                v["report_written_by"] = json!({"mcp_tool": c.mcp_tool, "call_id": c.id, "started": c.started});
+            }
+            v["output"] = json!(params.output);
+            v["summary"] = results::hamronized_summary(&table)?;
+            Ok(())
+        })
+    }
+
+    #[tool(description = "hAMRonization 1.3.1 (hamronize summarize): join hAMRonization tables from hamronize (any tools and \
+samples; empty ones are fine) into one TSV, sorted by input file, tool and gene, duplicate rows dropped: what nf-core/funcscan calls \
+hamronization_combined_report.tsv. isotable reads it by its header. Returns the genes per input file and which tool run (tool and \
+database versions) reported each.")]
+    async fn hamronize_summarize(&self, Parameters(params): Parameters<x::HamronizeSummarizeParams>) -> Result<CallToolResult, ErrorData> {
+        let d = self.execute("hamronize_summarize", &params, x::hamronize_summarize(&self.cfg.ctx, &params)).await;
+        let table = self.cfg.ctx.cwd.join(&params.output);
+        self.external_reply(d, |v| {
+            v["output"] = json!(params.output);
+            v["summary"] = results::hamronized_summary(&table)?;
             Ok(())
         })
     }

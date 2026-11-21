@@ -2,9 +2,9 @@
 # Shovill 1.4.2, Bakta 1.12.2 (light database), CheckM2 1.1.0, GTDB-Tk 2.8.0 (GTDB's mock database),
 # mlst 2.35.0, AMRFinderPlus 4.2.7 (dblock's pinned database), CoverM 0.8.0 (also for isolate depth
 # and multi-genome abundance), MEGAHIT 1.2.9, MetaBAT 2.18, SemiBin 2.6.0 (one sample and
-# several), galah 0.6.3 and
-# Kleborate 3.2.4, on a small genome, on real S. aureus reads and on a K. pneumoniae reference
-# genome, then isotable (and its assembly statistics). Downloads about 3 GB of databases and takes about an hour, so it
+# several), galah 0.6.3,
+# Kleborate 3.2.4, abricate 1.4.0, hAMRonization 1.3.1 and sylph 1.0.0, on a small genome, on real
+# S. aureus reads and on a K. pneumoniae reference genome, then isotable (and its assembly statistics). Downloads about 3 GB of databases and takes about an hour, so it
 # only runs by hand:
 #   gh workflow run mcp-real-tools.yml --ref <branch>
 name: irit-mcp real tools
@@ -46,7 +46,8 @@ jobs:
           # fails on the newer Python the solver otherwise picks, so Shovill's environment gets 3.11.
           for spec in "bakta bakta=1.12.2" "checkm2 checkm2=1.1.0" "gtdbtk gtdbtk=2.8.0" "shovill shovill=1.4.2 python=3.11" \
                       "mlst mlst=2.35.0" "amrfinder ncbi-amrfinderplus=4.2.7" "megahit megahit=1.2.9" "coverm coverm=0.8.0" \
-                      "metabat2 metabat2=2.18" "semibin semibin=2.6.0"; do
+                      "metabat2 metabat2=2.18" "semibin semibin=2.6.0" "sylph sylph=1.0.0" "abricate abricate=1.4.0" \
+                      "hamronization hamronization=1.3.1"; do
             set -- $spec
             name=$1; shift
             micromamba create -y -n "$name" -c conda-forge -c bioconda "$@"
@@ -64,7 +65,8 @@ jobs:
           root=${MAMBA_ROOT_PREFIX:?setup-micromamba sets MAMBA_ROOT_PREFIX}
           # program:environment. amrfinder_index is what dblock runs to index the AMRFinderPlus database.
           for pe in fastp:fastp bakta:bakta checkm2:checkm2 gtdbtk:gtdbtk shovill:shovill mlst:mlst amrfinder:amrfinder amrfinder_index:amrfinder \
-                    megahit:megahit coverm:coverm metabat2:metabat2 kleborate:kleborate SemiBin2:semibin galah:galah; do
+                    megahit:megahit coverm:coverm metabat2:metabat2 kleborate:kleborate SemiBin2:semibin galah:galah \
+                    sylph:sylph abricate:abricate hamronize:hamronization; do
             t=${pe%%:*}; e=${pe#*:}
             # CheckM2's TensorFlow library asks for an executable stack, which newer glibc refuses
             # ("cannot enable executable stack"); this tunable allows it for that process only.
@@ -128,6 +130,8 @@ jobs:
             work/checkm2_first/quality_report.tsv
             work/gtdbtk_first/classify/*.summary.tsv
             work/typing_first/*
+            work/amr_first/*
+            work/mag_first/sylph_*.tsv
             work/kleb_first/*
             work/shovill_first/sa/shovill.log
             work/mag_first/depth.tsv

@@ -5,16 +5,20 @@ agents (Claude Code, Claude Desktop and other MCP clients) the irit tools as typ
 runs the real `sheetgen`, `leanqc`, `isotable`, `seqplan`, `dblock`, `gtdbprep` or `cooccur` binary, and is written to a run record
 with a `replay.sh` that repeats the same commands without any AI.
 
-It also wraps sixteen third-party programs, so a whole run is recorded and replayable the same way.
+It also wraps nineteen third-party programs, so a whole run is recorded and replayable the same way.
 For the microbial isolate path (trim, assemble, annotate, check quality, classify, type, find
 resistance genes): fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst and AMRFinderPlus,
-plus CoverM for the depth of an isolate by read mapping and Kleborate for *Klebsiella* typing,
-virulence and resistance scores. `assembly_stats` gives QUAST-style assembly statistics (N50, L50,
+plus CoverM for the depth of an isolate by read mapping, Kleborate for *Klebsiella* typing,
+virulence and resistance scores, abricate for resistance, virulence and plasmid replicon genes from
+its bundled databases, and hAMRonization to put abricate's and AMRFinderPlus's reports into one
+table. `assembly_stats` gives QUAST-style assembly statistics (N50, L50,
 N90, GC, Ns), computed by isotable.
 For metagenomes, from reads to metagenome-assembled genomes (MAGs): MEGAHIT, CoverM, MetaBAT2 or
 SemiBin2 (one sample or several), CheckM2, galah to dereplicate bins across samples, and a genome ×
 sample abundance table (`coverm_abundance`); then `gtdbprep_ani` and `gtdbprep_place` for the bins'
-taxonomy and `cooccur` for genomes that rise and fall together. `reads_verify` checks read files
+taxonomy and `cooccur` for genomes that rise and fall together; and sylph to profile read sets
+against GTDB without assembly, or against the MAGs to see how much of each sample they account
+for. `reads_verify` checks read files
 before any of it. See [Third-party tools](#third-party-tools).
 
 ## Why
@@ -70,7 +74,7 @@ Any client that takes a JSON config (Claude Desktop's `claude_desktop_config.jso
 | Option | Effect |
 |---|---|
 | `--bin-dir DIR` | Folder holding the irit binaries (env `IRIT_BIN_DIR`). Default: search `PATH`. |
-| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `flye`, `medaka_consensus`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`, `megahit`, `coverm`, `metabat2`, `SemiBin2`, `galah`, `kleborate`, `rasusa`). Repeatable. Default: search `PATH`. |
+| `--tool-path NAME=PATH` | Where a third-party tool is (`fastp`, `shovill`, `flye`, `medaka_consensus`, `bakta`, `checkm2`, `gtdbtk`, `mlst`, `amrfinder`, `megahit`, `coverm`, `metabat2`, `SemiBin2`, `galah`, `kleborate`, `rasusa`, `sylph`, `abricate`, `hamronize`). Repeatable. Default: search `PATH`. |
 | `--runs-dir DIR` | Where run records go (env `IRIT_RUNS_DIR`). Default `./irit-runs`. |
 | `--run-id ID` | Name of this session's run folder. Default `<UTC time>-<pid>`. The server refuses to start when that folder already holds a record, so a second session can't overwrite the first one's. |
 | `--root DIR` | Folder the tools may write in. Default: the server's working folder. |
@@ -275,7 +279,7 @@ lists `place.tsv`'s rows. Its `.log`, `.json` (including `place.json`) and `.gz`
 
 ### Third-party tools
 
-Nineteen tools wrap sixteen programs irit doesn't ship. Each one is pinned to an upstream version: its
+Twenty-three tools wrap nineteen programs irit doesn't ship. Each one is pinned to an upstream version: its
 parameters are exactly the flags that version has, read from its source at that release tag (for
 Shovill, mlst and AMRFinderPlus also compared with `--help` of the Bioconda package).
 Nothing else is offered, so an agent can't pass a flag the program doesn't know.
@@ -301,6 +305,9 @@ Nothing else is offered, so an agent can't pass a flag the program doesn't know.
 | `kleborate` | Kleborate | 3.2.4 | [`kleborate/__main__.py`](https://github.com/klebgenomics/Kleborate/blob/v3.2.4/kleborate/__main__.py) and `kleborate --help` of the pip package | `kleborate=3.2.4` (but see [`kleborate`](#kleborate): pip is lighter) |
 | `metabat2` | MetaBAT 2 | 2.18 | `metabat2 --help` of the Bioconda package ([MetaBAT](https://bitbucket.org/berkeleylab/metabat)) | `metabat2=2.18` |
 | `rasusa` | Rasusa `reads` | 5.1.0 | `rasusa reads --help` of the Bioconda package ([src/cli.rs](https://github.com/mbhall88/rasusa)) | `rasusa=5.1.0` |
+| `sylph_profile` | sylph `profile` | 1.0.0 | [`src/cmdline.rs`](https://github.com/bluenote-1577/sylph/blob/v1.0.0/src/cmdline.rs) (`ContainArgs`), how inputs are told apart from `contain` in [`src/contain.rs`](https://github.com/bluenote-1577/sylph/blob/v1.0.0/src/contain.rs), and `sylph profile --help` of the Bioconda package | `sylph=1.0.0` |
+| `abricate` | abricate | 1.4.0 | [`bin/abricate`](https://github.com/tseemann/abricate/blob/v1.4.0/bin/abricate) (`setOptions` and the main block) and `abricate --help` of the Bioconda package | `abricate=1.4.0` |
+| `hamronize`, `hamronize_summarize` | hAMRonization `hamronize abricate`, `amrfinderplus` and `summarize` | 1.3.1 | [`hAMRonization/Interfaces.py`](https://github.com/pha4ge/hAMRonization/blob/v1.3.1/hAMRonization/Interfaces.py), the required metadata in [`AbricateIO.py`](https://github.com/pha4ge/hAMRonization/blob/v1.3.1/hAMRonization/AbricateIO.py) and [`AmrFinderPlusIO.py`](https://github.com/pha4ge/hAMRonization/blob/v1.3.1/hAMRonization/AmrFinderPlusIO.py), and `hamronize <tool> --help` of the Bioconda package | `hamronization=1.3.1` |
 
 Bioconda's current Shovill is 1.4.2, not the older 1.1.0: 1.4.x added `--plasmid`, changed
 `--mincov`'s default to 2 and needs at least 8 GB for `--ram`.
@@ -366,14 +373,17 @@ How they work:
   `output` must contain `amrfinder` and end in `.tsv`, and isotable takes the sample from it
   (`s1.amrfinder.tsv` → `s1`); `coverm_genome`'s `output` must contain `coverm` and end in `.tsv`
   (`s1.coverm.tsv` → `s1`); Kleborate names its rows after the assembly file, so `kleborate` refuses
-  `contigs.fa` and other fixed assembler names (use Shovill's `link_as`, e.g. `genomes/s1.fna`).
-  Other names are refused with a message saying why. isotable reads
+  `contigs.fa` and other fixed assembler names (use Shovill's `link_as`, e.g. `genomes/s1.fna`), and
+  so does `abricate`, whose FILE column becomes hAMRonization's `input_file_name` and isotable's
+  sample. Other names are refused with a message saying why. isotable reads
   Shovill's `contigs.fa` (when `shovill.log` is beside it) as the sample named after its folder
   (`asm/s1` → `s1`), so name each `outdir` after its sample.
 
 The large databases are not hashed into the run record (they are tens of GB). Only their small
 version files are: Bakta's `version.json`, GTDB-Tk's `metadata/metadata.txt`, AMRFinderPlus's
-`version.txt`. Use `dblock_verify` to check a database itself. One exception: a GTDB-Tk `skani/`
+`version.txt`. A sylph database over 512 MB (the GTDB ones) is not hashed either; its file name,
+which names the release, goes into the record's `database`. abricate's bundled database (its
+`sequences` file and BLAST index, up to 12 MB) is hashed. Use `dblock_verify` to check a database itself. One exception: a GTDB-Tk `skani/`
 database of at most 512 MB, such as the one `gtdbprep_ani` builds (9 MB for *B. subtilis*), is
 hashed into `gtdbtk_classify_wf`'s inputs, under the real path of its files, so the record says
 exactly which references the ANI screen compared against.
@@ -766,6 +776,108 @@ Not offered: `--update` and `--force_update` (they change the database outside t
 a pinned one with dblock instead), `--blast_bin`, `--hmmer_bin`, `--pgap`, `--gpipe_org`, `--parm`
 (NCBI's testing options), `--debug`, `--log`, `--quiet`, `--list_organisms`, `--database_version`
 and `--nucleotide_flank5_output` / `_size`.
+
+#### `abricate`
+
+Screens assemblies against one of the databases bundled with abricate (Seemann,
+[github.com/tseemann/abricate](https://github.com/tseemann/abricate)) by BLAST: resistance genes,
+virulence genes, plasmid replicons. One database per call.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `contigs` | list of files (required) | Assemblies, FASTA (plain or gzip). Named after the samples (Shovill's `link_as`, e.g. `genomes/s1.fna`); `contigs.fa` and other fixed assembler names are refused. |
+| `db` | `ncbi` (default), `card`, `resfinder`, `argannot`, `megares`, `vfdb`, `victors`, `ecoli_vf`, `upec_expec_vf`, `plasmidfinder`, `ecoh`, `bacmet2` | Resistance genes (`ncbi`, `card`, `resfinder`, `argannot`, `megares`), virulence genes (`vfdb`, `victors`, `ecoli_vf`, `upec_expec_vf`), plasmid replicons (`plasmidfinder`), *E. coli* O and H antigen genes (`ecoh`), biocide and metal resistance (`bacmet2`, a protein database). |
+| `minid`, `mincov` | percent | Minimum DNA identity and coverage of the reference gene. abricate's defaults 80 and 80. |
+| `nopath` | boolean | Only the file name in the FILE column. |
+| `threads` | integer | BLAST threads. abricate's default 1. |
+| `output` | file (required) | The table, e.g. `amr/s1.abricate-vfdb.tsv`. |
+| `overwrite` | boolean | Default `false`. |
+
+abricate writes its table to stdout only. The server saves stdout to `output` when abricate exits 0;
+the run record says so (`stdout_to`), and `replay.sh` copies the replayed stdout there before it
+checks the hashes. The FILE column holds each assembly's path as given (or its file name with
+`nopath`); hAMRonization turns it into `input_file_name` without folders and extension, which is
+why the assembly must carry the sample's name.
+
+Which database version: the database's row of `abricate --list` (`DATE`, `SEQUENCES`) goes into the
+call's record as `database` and into the result. abricate's `DATE` is when the database's BLAST index
+was built (`blastdbcmd -info`), which for the bundled databases is when the package was made: every
+database of Bioconda's `abricate=1.4.0` says `2026-Apr-3`. The files of `<datadir>/<db>/` (the
+sequences and their index, the folder from abricate's own `--help`) are hashed into the inputs, so
+two installs with the same date but different data can be told apart.
+
+Returns `database`, `output` and `summary`: `hits`, `genes` (each with the files it was found in,
+its best identity and coverage, product and resistance) and `files` (the genes per assembly; an
+assembly without hits isn't listed).
+
+Not offered: `--datadir` and `--setupdb` (the bundled, indexed databases only), `--fofn`,
+`--outfmt`, `--csv` and `--noheader` (hamronize reads the default table), `--summary`
+(`hamronize_summarize` joins reports), `--list`, `--check`, `--quiet`, `--debug`.
+
+Measured (2026-11-21, laptop, 4 threads): two *E. coli* assemblies from the chicken-isolate run
+(BAE-1, BAS-1) against `ncbi` in 22 s; BAE-1 against `vfdb` in 12 s and `plasmidfinder` in 6 s.
+On BAE-1, `ncbi` found 12 genes. AMRFinderPlus 4.2.7 (`organism` Escherichia, `plus`) reported
+11 of them under the same names and the twelfth as `blaEC` (abricate: `blaEC-18`), plus three
+`gyrA` and `parC` point mutations and four more genes (`acrF`, `ariR`, `mdtM`, `qacEdelta1`). `plasmidfinder` found Col(pHAD28) and
+IncY replicons.
+
+#### `hamronize` and `hamronize_summarize`
+
+[hAMRonization](https://github.com/pha4ge/hAMRonization) (PHA4GE) converts the reports of AMR
+tools into one TSV layout, a row per gene, which isotable and nf-core/funcscan read. `hamronize`
+converts one report of abricate or AMRFinderPlus 4.x; `hamronize_summarize` joins several converted
+tables.
+
+`hamronize`:
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `tool` | `abricate` \| `amrfinderplus` (required) | Which tool wrote the report. |
+| `report` | file (required) | abricate's table, or amrfinder's report (AMRFinderPlus 4.x column names; 3.x's `Gene symbol` is refused, hAMRonization 1.3.1 reads 4.x). |
+| `output` | file (required) | The hAMRonization table. Name it `<sample>.<tool>.hamronized.tsv`, e.g. `s1.abricate-vfdb.hamronized.tsv`, `s1.amrfp.hamronized.tsv`. |
+| `analysis_software_version` | text | Default: from the call that wrote the report, else the pinned version (with a warning). |
+| `reference_database_version` | text | Default: from the call that wrote the report; required when there is none. |
+| `input_file_name` | text | `amrfinderplus` only: the sample. Default: from the report's name, else the assembly the call that wrote it was given. abricate's reports name the file themselves. |
+| `overwrite` | boolean | Default `false`. |
+
+hAMRonization needs the tool's version and the database version on the command line (and, for
+AMRFinderPlus, which file the report is about); a report doesn't say them. The server looks for the
+irit-mcp call that wrote the report: a successful call whose outputs list the same path with the
+same SHA-256, in this run, else in the other runs under the runs folder (newest first). From that
+call it takes the version it recorded (`abricate 1.4.0` gives `1.4.0`) and the database version it
+recorded (abricate's `--list` date; AMRFinderPlus's `version.txt`, also kept for calls recorded before
+the `database` field, from the `version.txt` input). For AMRFinderPlus, `input_file_name` is the sample
+part of the report's name (`s1.amrfinder.tsv` gives `s1`), which is how isotable names AMRFinderPlus
+rows too. A value given in the call wins; one that differs from the recorded one adds a warning.
+The result's `metadata` lists each value with where it came from, and `report_written_by` the call.
+A report changed since that call, or made outside irit-mcp, has no such call: then the database
+version must be given.
+
+One report per call: hAMRonization 1.3.1 appends to an existing `--output` when given several
+reports, so a replay would double the rows. hAMRonization leaves out AMRFinderPlus's virulence rows
+and its INTERNAL_STOP hits, and writes a point mutation as the gene plus `p.S83L`. A report without
+hits gives an empty file (no header); isotable reads that as no rows. isotable finds
+hAMRonization tables by their header, but an empty one with `amrfinder` in its name would be taken
+for an AMRFinderPlus report, so such names get a warning.
+
+`hamronize_summarize`:
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `reports` | list of files (required) | Tables from `hamronize`, any tools and samples; empty ones are fine. |
+| `output` | file (required) | The combined table, e.g. `amr/hamronization_combined_report.tsv` (nf-core/funcscan's name). |
+| `overwrite` | boolean | Default `false`. |
+
+`hamronize summarize -t tsv` drops duplicate rows and sorts by input file, tool, versions and gene.
+Both tools return `summary`: per input file, `genes` (with the mutation for variant rows, as isotable
+lists them) and `by_tool`, the genes per tool run (`abricate 1.4.0, vfdb 2026-Apr-3`).
+
+Not offered: the other 15 tools' parsers, JSON output, the interactive HTML summary, `--debug`.
+
+Measured (2026-11-21, laptop): about 2 s per call, mostly Python starting. abricate `ncbi` on
+BAE-1 and BAS-1, abricate `vfdb` and AMRFinderPlus on BAE-1, joined: 139 rows, BAE-1 with 121
+distinct genes and mutations from three tool runs. A second irit-mcp session found the producing calls in the first session's
+record. `replay.sh` of both reproduced every file byte for byte.
 
 #### `kleborate`
 
@@ -1190,6 +1302,66 @@ Crystal Geyser sample's trimmed reads split into two halves of 2.43 million pair
 genomes were detected in both halves. A two-sample stand-in test checks the table's layout; this
 real run checks the layout and the time and memory, not biology (both halves are one sample).
 
+#### `sylph_profile`
+
+Species-level profile of read sets without assembly, with sylph (Shaw & Yu,
+[github.com/bluenote-1577/sylph](https://github.com/bluenote-1577/sylph)): k-mer containment of each
+genome in each sample, corrected for low coverage, with abundances and an ANI estimate. Two uses:
+
+- **Against GTDB.** A metagenome's species, from the prebuilt GTDB database, before or instead of
+  assembly and binning.
+- **Against the MAGs.** With a sample's own MAGs (galah's `representatives.txt` as `genome_list`) and
+  `estimate_unknown`, the sum of `Sequence_abundance` estimates the share of the sample's reads the
+  MAGs account for; the rest is what binning didn't recover.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `databases` | list of files | Prebuilt sylph databases, `*.syldb` (or two-stage `*.syl2db`). dblock: `sylph-gtdb-r232-c1000` (5.2 GB) or `sylph-gtdb-r220-c1000` (2.8 GB); `dblock_env` shows the path. |
+| `genomes` | list of files | Genome FASTA files, sketched on the fly. Names must end in `.fa`, `.fna` or `.fasta` (optionally `.gz`): sylph tells genomes from reads by the name. |
+| `genome_list` | file | A list of genome paths, one per line, e.g. galah's `<outdir>/representatives.txt`. Each one is checked and hashed; read again on replay. Give `databases` and/or `genomes` / `genome_list`. |
+| `r1`, `r2` | lists of files | Paired-end samples, one read pair per sample. |
+| `reads` | list of files | Single-end or long-read samples, one file per sample. Give these and/or `r1`/`r2`. |
+| `sample_names` | list of text | One name per sample: the `r1` samples, then `reads`. Default: the read file's name without folders, extensions and read number. |
+| `output` | file (required) | The profile table (TSV). |
+| `estimate_unknown` | boolean | sylph's `-u` (above). |
+| `minimum_ani` | percent | Smallest adjusted ANI reported. sylph's default 95; below that a warning (sylph's help says profiles become inaccurate). |
+| `c` | integer | Subsampling rate for sketching reads and FASTA genomes (sylph's default 200). A prebuilt database keeps its own (the GTDB ones are c 1000); sylph sketches reads at the denser of the two, and skips FASTA genomes if `c` is above a prebuilt database's. |
+| `threads` | integer | sylph's default 3. |
+| `overwrite` | boolean | Default `false`. |
+
+sylph 1.0.0's `profile` has no sample-name option (only `sylph sketch -S` has), so the table's
+`Sample_file` column holds each sample's read file (read 1 of a pair) as given; the result maps it to
+`sample_names`. Genomes are named by their file (`Genome_file`), and `Contig_name` holds the first
+contig's FASTA header, which for GTDB names the species (`NZ_LN831024.1 Pseudomonas aeruginosa
+strain NCTC10332 ...`). GTDB lineages need [sylph-tax](https://github.com/bluenote-1577/sylph-tax)
+(`sylph-tax taxprof <table> -t GTDB_r232`, after a ~50 MB `sylph-tax download` of its taxonomy
+files); it is not wrapped here.
+
+Returns per sample: `genomes_detected`, `sequence_abundance_sum` and `top`, the ten genomes with the
+highest taxonomic abundance, each with its sequence abundance, adjusted ANI, coverage (`true_cov`
+with `estimate_unknown`, else `eff_cov`) and contig name; and `sequence_abundance_sum_means`, which
+says how to read the sum. Without `estimate_unknown`, `Sequence_abundance` is a share of what was
+detected, so it sums to 100 whenever anything was. A prebuilt database over 512 MB is not hashed into
+the record (5.2 GB took over two minutes, four times sylph's own run); its file name is recorded as
+`database` and returned.
+
+Memory: sylph loads the whole database. sylph's README gives about 15 GB of RAM for the 13 GB
+GTDB R220 `-c 200` database. Measured with sylph 1.0.0 (2026-11-21, laptop, 4 threads, under a 7 GB
+cap): GTDB R232 `-c 1000` peaked at 4.93 GiB for one sample and 4.97 GiB for two, in 22 s and 29 s;
+the same two samples against 12 genomes given as FASTA took 11 s and 0.12 GiB.
+
+Tried on the simulated metagenome of the `galon-sim` test (12 genomes): D01-S1-A (2 × 89 MB of
+gzipped reads) against the 12 genomes with `estimate_unknown` found 11 of them, every one at an ANI
+of 99.9-100%, and `sequence_abundance_sum` 100. Against GTDB R232 it found 10 species at 99.5-100%
+ANI, the same ten genomes; the eleventh is the simulation's novel genome (0.18% of the reads), which
+GTDB doesn't have. Against three of the 12 genomes the sum was 15.1: the other 85% of the reads are
+unknown to them. A second run, and `replay.sh`, gave a byte-identical table.
+
+Not offered: pre-sketched samples (`*.sylsp`; `profile` sketches the reads itself), `-l` for other
+inputs (`genome_list` uses it, checked), `-k` (31, as the prebuilt databases), `-i` (contigs as
+genomes), `--min-spacing`, `-M`, `--min-contain`, `--min-count-correct`, `-I`,
+`--estimate-read-counts`, `--screen-ani`, `-s`, `--log-reassignments`, `--debug`, `--trace`.
+
 #### Example: several samples to a genome × sample table
 
 ```json
@@ -1227,6 +1399,11 @@ A session an agent might run (paths shortened):
 {"name": "mlst", "arguments": {"contigs": ["asm/s1/contigs.fa"], "outfile": "typing/s1.mlst.tsv"}}
 {"name": "amrfinder", "arguments": {"nucleotide": "asm/s1/contigs.fa", "organism": "Staphylococcus_aureus",
   "plus": true, "output": "typing/s1.amrfinder.tsv"}}
+{"name": "abricate", "arguments": {"contigs": ["genomes/s1.fna"], "db": "vfdb", "output": "amr/s1.abricate-vfdb.tsv"}}
+{"name": "hamronize", "arguments": {"tool": "abricate", "report": "amr/s1.abricate-vfdb.tsv", "output": "amr/s1.abricate-vfdb.hamronized.tsv"}}
+{"name": "hamronize", "arguments": {"tool": "amrfinderplus", "report": "typing/s1.amrfinder.tsv", "output": "amr/s1.amrfp.hamronized.tsv"}}
+{"name": "hamronize_summarize", "arguments": {"reports": ["amr/s1.abricate-vfdb.hamronized.tsv", "amr/s1.amrfp.hamronized.tsv"],
+  "output": "amr/hamronization_combined_report.tsv"}}
 {"name": "isotable", "arguments": {"dirs": ["trim", "asm", "checkm2", "gtdbtk", "typing"]}}
 ```
 
@@ -1388,7 +1565,7 @@ sh irit-runs/<run-id>/replay.sh                            # binaries from PATH
 IRIT_BIN_DIR=/opt/irit/bin sh irit-runs/<run-id>/replay.sh # or from a folder
 ```
 
-Third-party tools (fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder, megahit, coverm, metabat2, SemiBin2, galah, kleborate, rasusa) are always taken from
+Third-party tools (fastp, shovill, flye, medaka_consensus, bakta, checkm2, gtdbtk, mlst, amrfinder, megahit, coverm, metabat2, SemiBin2, galah, kleborate, rasusa, sylph, abricate, hamronize) are always taken from
 `PATH`, so activate their conda environment first. `IRIT_BIN_DIR` applies to the irit tools only.
 
 Some third-party outputs differ between two identical runs. They are recorded with
@@ -1416,6 +1593,8 @@ inputs and paths in the real-tools workflow (below) and comparing every file:
 | semibin2, semibin2_concatenate | `SemiBinRun.log` | Times; with the seed (1 unless set) the bins and tables were identical. |
 | galah | `clusters.tsv`, `representatives.txt` with `threads` above 1 | galah writes them in a different order each run with more than one thread (the same clusters); with one they are identical. |
 | coverm_abundance | none | |
+| sylph_profile | none | Byte-identical table on a second run and on replay on the laptop (two samples, against 12 genomes and against GTDB R232, 4 threads). |
+| abricate, hamronize, hamronize_summarize | none | Byte-identical on replay on the laptop. abricate's table is its stdout: `replay.sh` copies the replayed stdout to the file (`cp -- "$OUT/NNN.stdout" <output>`) before the hashes are checked. |
 | metabat2 | none | With the seed irit-mcp passes (1 unless set), a second run gave identical bins and `bin.BinMembers.txt`; `bin.BinInfo.txt` names the output folder. MetaBAT2's own default seed is random. |
 
 The script warns when a tool's `--version` (its first line) differs from the recorded one (a tool whose version

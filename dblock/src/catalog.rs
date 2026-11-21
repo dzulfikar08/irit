@@ -28,6 +28,10 @@ pub struct Entry {
     /// (`<md5>  <file>\n`, sorted by file name), filled in if left out: it names the exact set.
     #[serde(default)]
     pub md5: String,
+    /// The download's SHA-256, checked as well as the MD5 when given. For a single download only;
+    /// parts carry their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
     pub md5_source: String,
     /// Environment variable the tool reads, if any.
     pub env: Option<String>,
@@ -136,7 +140,7 @@ impl Entry {
                 urls: self.urls.clone(),
                 size: self.size,
                 md5: self.md5.clone(),
-                sha256: None,
+                sha256: self.sha256.clone(),
             }];
         }
         self.parts
@@ -296,6 +300,15 @@ pub fn load(extra: Option<&Path>) -> Result<Vec<Entry>> {
         }
         if !is_hex(&e.md5, 32) {
             bail!("catalog entry {} has a malformed md5", e.id);
+        }
+        if let Some(sha) = &mut e.sha256 {
+            if !e.parts.is_empty() {
+                bail!("catalog entry {}: give each part its own sha256, not the entry", e.id);
+            }
+            *sha = sha.to_ascii_lowercase();
+            if !is_hex(sha, 64) {
+                bail!("catalog entry {} has a malformed sha256", e.id);
+            }
         }
         if !e.keep.is_empty() && e.format == Format::File {
             bail!("catalog entry {}: `keep` needs an archive format, not `file`", e.id);
@@ -460,6 +473,24 @@ mod tests {
         assert!(e.sources().iter().all(|s| s.sha256.is_some()
             && s.urls[0].starts_with("https://ftp.ncbi.nlm.nih.gov/pathogen/Antimicrobial_resistance/AMRFinderPlus/database/4.2/2026-10-29.1/")));
         assert_eq!(e.env.as_deref(), Some("AMRFINDER_DB"));
+    }
+
+    #[test]
+    fn sylph_gtdb_entries_are_single_files_with_a_sha256() {
+        let c = load(None).unwrap();
+        for (id, size) in [("sylph-gtdb-r232-c1000", 5_219_051_219), ("sylph-gtdb-r220-c1000", 2_836_800_847)] {
+            let e = find(&c, id).unwrap();
+            assert_eq!((e.format, e.size, e.on_disk(), e.env_points_to.as_str()), (Format::File, size, size, "glob:*.syldb"), "{id}");
+            let s = e.sources();
+            assert_eq!(s.len(), 1);
+            assert_eq!(s[0].sha256.as_ref().map(String::len), Some(64), "{id}");
+            assert!(s[0].urls[0].starts_with("https://faust.compbio.cs.cmu.edu/sylph-stuff/") && s[0].urls[1].starts_with("https://storage.googleapis.com/sylph-stuff/"));
+        }
+        // a malformed SHA-256, or one on an entry with parts, is refused
+        let ok = entry_json("one", &"0".repeat(32));
+        let err = format!("{:#}", user_catalog(&ok.replace(r#""size":1,"#, r#""size":1,"sha256":"xyz","#)).unwrap_err());
+        assert!(err.contains("malformed sha256"), "{err}");
+        assert!(user_catalog(&ok.replace(r#""size":1,"#, &format!(r#""size":1,"sha256":"{}","#, "A".repeat(64)))).is_ok());
     }
 
     #[test]

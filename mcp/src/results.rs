@@ -509,6 +509,161 @@ pub fn gtdbprep_ani_summary(stdout: &str, work: &Path) -> Result<Vec<Value>, Str
     Ok(genomes)
 }
 
+/// Columns of sylph 1.0.0's profile table (`print_header` in src/contain.rs); the coverage column is
+/// `True_cov` with -u, else `Eff_cov`.
+const SYLPH_COLUMNS: [&str; 6] = ["Sample_file", "Genome_file", "Taxonomic_abundance", "Sequence_abundance", "Adjusted_ANI", "Contig_name"];
+
+/// sylph's profile, per sample in the order given (`(Sample_file, name)`, then any other sample in
+/// the table): genomes detected, the sum of Sequence_abundance (with -u the share of the sample the
+/// genomes account for), and the `top` genomes by taxonomic abundance.
+pub fn sylph_summary(path: &Path, samples: &[(String, String)], top: usize) -> Result<Vec<Value>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (header, rows) = parse_table(&text);
+    let col = |name: &str| header.iter().position(|h| h == name);
+    let idx: Vec<usize> = SYLPH_COLUMNS
+        .iter()
+        .map(|c| col(c).ok_or_else(|| format!("{}: no {c} column; not a sylph profile table", path.display())))
+        .collect::<Result<_, _>>()?;
+    let [s_file, g_file, tax, seq, ani, contig] = idx[..] else { unreachable!() };
+    let cov = col("True_cov").or_else(|| col("Eff_cov"));
+    let num = |s: &str| s.parse::<f64>().ok();
+    let rows: Vec<&Vec<String>> = rows.iter().filter(|r| r.len() == header.len()).collect();
+    let mut order: Vec<(String, String)> = samples.to_vec();
+    for r in &rows {
+        if !order.iter().any(|(f, _)| *f == r[s_file]) {
+            order.push((r[s_file].clone(), r[s_file].clone()));
+        }
+    }
+    Ok(order
+        .iter()
+        .map(|(file, name)| {
+            let mut hits: Vec<&&Vec<String>> = rows.iter().filter(|r| r[s_file] == *file).collect();
+            hits.sort_by(|a, b| num(&b[tax]).unwrap_or(0.0).total_cmp(&num(&a[tax]).unwrap_or(0.0)));
+            let sum: f64 = hits.iter().filter_map(|r| num(&r[seq])).sum();
+            json!({
+                "sample": name,
+                "sample_file": file,
+                "genomes_detected": hits.len(),
+                // + 0.0: no `-0.0` when nothing was detected
+                "sequence_abundance_sum": (sum * 1000.0).round() / 1000.0 + 0.0,
+                "top": hits.iter().take(top).map(|r| {
+                    let mut o = json!({
+                        "genome": r[g_file],
+                        "contig_name": r[contig],
+                        "taxonomic_abundance": num(&r[tax]),
+                        "sequence_abundance": num(&r[seq]),
+                        "adjusted_ani": num(&r[ani]),
+                    });
+                    if let Some(c) = cov {
+                        o[header[c].to_lowercase()] = json!(num(&r[c]));
+                    }
+                    o
+                }).collect::<Vec<_>>(),
+            })
+        })
+        .collect())
+}
+
+/// abricate's table (`#FILE SEQUENCE START END STRAND GENE COVERAGE COVERAGE_MAP GAPS %COVERAGE
+/// %IDENTITY DATABASE ACCESSION PRODUCT RESISTANCE`): the genes found per file, and per gene the files
+/// it was found in with its best identity and coverage.
+pub fn abricate_summary(path: &Path) -> Result<Value, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (header, rows) = parse_table(&text);
+    if header.first().map(String::as_str) != Some("#FILE") {
+        return Err(format!("{}: not an abricate table (no #FILE column)", path.display()));
+    }
+    let col = |name: &str| header.iter().position(|h| h == name).ok_or_else(|| format!("{}: no {name} column", path.display()));
+    let (gene, ident, cover, product, resistance) = (col("GENE")?, col("%IDENTITY")?, col("%COVERAGE")?, col("PRODUCT")?, col("RESISTANCE")?);
+    let rows: Vec<&Vec<String>> = rows.iter().filter(|r| r.len() == header.len()).collect();
+    let num = |s: &str| s.parse::<f64>().ok();
+    let mut per_file: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut per_gene: BTreeMap<&str, Vec<&&Vec<String>>> = BTreeMap::new();
+    for r in &rows {
+        per_file.entry(r[0].as_str()).or_default().push(r[gene].as_str());
+        per_gene.entry(r[gene].as_str()).or_default().push(r);
+    }
+    let files: Vec<Value> = per_file
+        .into_iter()
+        .map(|(f, mut genes)| {
+            genes.sort();
+            genes.dedup();
+            json!({"file": f, "genes": genes})
+        })
+        .collect();
+    let genes: Vec<Value> = per_gene
+        .into_iter()
+        .map(|(g, hits)| {
+            let mut in_files: Vec<&str> = hits.iter().map(|r| r[0].as_str()).collect();
+            in_files.dedup();
+            let best = |i: usize| hits.iter().filter_map(|r| num(&r[i])).fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))));
+            json!({
+                "gene": g,
+                "hits": hits.len(),
+                "files": in_files,
+                "best_identity": best(ident),
+                "best_coverage": best(cover),
+                "product": hits[0][product],
+                "resistance": hits[0][resistance],
+            })
+        })
+        .collect();
+    Ok(json!({"hits": rows.len(), "files": files, "genes": genes}))
+}
+
+/// A hAMRonization table (from `hamronize <tool>` or `hamronize summarize`), per input file: the
+/// genes (with the mutation for variant rows, as isotable lists them) and which tool run reported
+/// which. An empty file (a report without hits) has none.
+pub fn hamronized_summary(path: &Path) -> Result<Value, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if text.trim().is_empty() {
+        return Ok(json!({"rows": 0, "samples": []}));
+    }
+    let (header, rows) = parse_table(&text);
+    let col = |name: &str| header.iter().position(|h| h == name).ok_or_else(|| format!("{}: no {name} column; not a hAMRonization table", path.display()));
+    let (file, gene, tool, tool_v, db, db_v, kind) = (
+        col("input_file_name")?,
+        col("gene_symbol")?,
+        col("analysis_software_name")?,
+        col("analysis_software_version")?,
+        col("reference_database_name")?,
+        col("reference_database_version")?,
+        col("genetic_variation_type")?,
+    );
+    let (aa, nt) = (header.iter().position(|h| h == "amino_acid_mutation"), header.iter().position(|h| h == "nucleotide_mutation"));
+    let rows: Vec<&Vec<String>> = rows.iter().filter(|r| r.len() == header.len()).collect();
+    let mut samples: BTreeMap<&str, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+    for r in &rows {
+        let mut name = r[gene].clone();
+        if r[kind] != "gene_presence_detected" {
+            let m = [aa, nt].into_iter().flatten().map(|i| r[i].as_str()).find(|m| !m.is_empty() && *m != "NA");
+            if let Some(m) = m {
+                name = format!("{name} {m}");
+            }
+        }
+        let run = format!("{} {}, {} {}", r[tool], r[tool_v], r[db], r[db_v]);
+        samples.entry(r[file].as_str()).or_default().entry(run).or_default().push(name);
+    }
+    let samples: Vec<Value> = samples
+        .into_iter()
+        .map(|(f, runs)| {
+            let mut all: Vec<String> = runs.values().flatten().cloned().collect();
+            all.sort();
+            all.dedup();
+            let by_tool: Map<String, Value> = runs
+                .into_iter()
+                .map(|(run, mut g)| {
+                    g.sort();
+                    g.dedup();
+                    (run, json!(g))
+                })
+                .collect();
+            json!({"input_file_name": f, "genes": all, "by_tool": by_tool})
+        })
+        .collect();
+    Ok(json!({"rows": rows.len(), "samples": samples}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -710,5 +865,48 @@ mod tests {
         assert!(w[0].contains("Shovill estimated 160x depth, mapping gives 50.3x"), "{w:?}");
         std::fs::write(&c, "Contig\ts1 Mean\nk1\t5\n").unwrap();
         assert!(coverm_genome_summary(&c).is_err());
+    }
+
+    #[test]
+    fn sylph_abricate_and_hamronized_tables() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("profile.tsv");
+        let head = "Sample_file\tGenome_file\tTaxonomic_abundance\tSequence_abundance\tAdjusted_ANI\tTrue_cov\tANI_5-95_percentile\tEff_lambda\tLambda_5-95_percentile\tMedian_cov\tMean_cov_geq1\tContainment_ind\tNaive_ANI\tkmers_reassigned\tContig_name\n";
+        let row = |s: &str, g: &str, tax: f64, seq: f64| format!("{s}\t{g}\t{tax}\t{seq}\t99.5\t3.2\tNA-NA\t3.2\tNA-NA\t3\t3\t100/120\t99.1\t0\t{g}_1 desc\n");
+        let text = format!("{head}{}{}{}", row("r/a_R1.fq", "m/x.fa", 20.0, 10.0), row("r/a_R1.fq", "m/y.fa", 80.0, 15.5), row("r/z.fq", "m/x.fa", 100.0, 40.0));
+        std::fs::write(&p, text).unwrap();
+        let names = [("r/a_R1.fq".to_string(), "a".to_string()), ("r/none.fq".to_string(), "none".to_string())];
+        let v = sylph_summary(&p, &names, 1).unwrap();
+        assert_eq!(v.len(), 3, "a, none, and z which wasn't named");
+        assert_eq!((&v[0]["sample"], &v[0]["genomes_detected"], &v[0]["sequence_abundance_sum"]), (&json!("a"), &json!(2), &json!(25.5)));
+        assert_eq!(v[0]["top"], json!([{"genome": "m/y.fa", "contig_name": "m/y.fa_1 desc", "taxonomic_abundance": 80.0, "sequence_abundance": 15.5, "adjusted_ani": 99.5, "true_cov": 3.2}]));
+        assert_eq!((&v[1]["genomes_detected"], &v[1]["sequence_abundance_sum"]), (&json!(0), &json!(0.0)));
+        assert_eq!(v[2]["sample"], "r/z.fq");
+        std::fs::write(&p, "Genome\tMean\n").unwrap();
+        assert!(sylph_summary(&p, &names, 1).unwrap_err().contains("Sample_file"));
+
+        let a = d.path().join("abricate.tsv");
+        let h = "#FILE\tSEQUENCE\tSTART\tEND\tSTRAND\tGENE\tCOVERAGE\tCOVERAGE_MAP\tGAPS\t%COVERAGE\t%IDENTITY\tDATABASE\tACCESSION\tPRODUCT\tRESISTANCE\n";
+        let hit = |f: &str, g: &str, id: &str| format!("{f}\tc1\t1\t9\t+\t{g}\t1-9/9\t===\t0/0\t100.00\t{id}\tncbi\tNG_1\t{g} product\tTETRACYCLINE\n");
+        std::fs::write(&a, format!("{h}{}{}{}", hit("g/s1.fna", "tet(A)", "99.00"), hit("g/s1.fna", "tet(A)", "100.00"), hit("g/s2.fna", "sul1", "98.50"))).unwrap();
+        let v = abricate_summary(&a).unwrap();
+        assert_eq!(v["hits"], 3);
+        assert_eq!(v["files"], json!([{"file": "g/s1.fna", "genes": ["tet(A)"]}, {"file": "g/s2.fna", "genes": ["sul1"]}]));
+        assert_eq!((&v["genes"][1]["gene"], &v["genes"][1]["hits"], &v["genes"][1]["best_identity"]), (&json!("tet(A)"), &json!(2), &json!(100.0)));
+        std::fs::write(&a, h).unwrap();
+        assert_eq!(abricate_summary(&a).unwrap()["genes"], json!([]));
+
+        let t = d.path().join("h.tsv");
+        std::fs::write(&t, "").unwrap();
+        assert_eq!(hamronized_summary(&t).unwrap(), json!({"rows": 0, "samples": []}));
+        let head = "input_file_name\tgene_symbol\tgene_name\treference_database_name\treference_database_version\treference_accession\tanalysis_software_name\tanalysis_software_version\tgenetic_variation_type\tamino_acid_mutation\tnucleotide_mutation\n";
+        std::fs::write(
+            &t,
+            format!("{head}s1\tgyrA\tgyrase\tNCBI Reference Gene Database\t2026-10-29.1\tWP_1\tamrfinderplus\t4.2.7\tprotein_variant_detected\tp.S83L\t\ns1\ttet(A)\ttet\tncbi\t2026-Apr-3\tNG_1\tabricate\t1.4.0\tgene_presence_detected\t\t\n"),
+        )
+        .unwrap();
+        let v = hamronized_summary(&t).unwrap();
+        assert_eq!(v["samples"][0]["genes"], json!(["gyrA p.S83L", "tet(A)"]));
+        assert_eq!(v["samples"][0]["by_tool"]["amrfinderplus 4.2.7, NCBI Reference Gene Database 2026-10-29.1"], json!(["gyrA p.S83L"]));
     }
 }

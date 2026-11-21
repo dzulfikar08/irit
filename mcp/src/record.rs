@@ -99,6 +99,27 @@ pub struct CallRecord {
     /// What the agent was warned about that did not stop the call.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// The tool's stdout is its result and was saved to this file (abricate writes its table to
+    /// stdout only); replay.sh copies the replayed stdout there before checking it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_to: Option<String>,
+    /// Which version of a database the call searched, as the tool or its files state it
+    /// (abricate's `--list`, AMRFinderPlus's version.txt). hamronize reads it from the call that
+    /// wrote a report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<DatabaseRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DatabaseRecord {
+    /// The database's name as the tool knows it (`vfdb`, `AMRFinderPlus`).
+    pub name: String,
+    /// Its version or date (`2026-Apr-3`, `2026-10-29.1`).
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequences: Option<u64>,
+    /// Where `version` was read from.
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -162,6 +183,9 @@ pub fn call_summary(c: &CallRecord) -> Value {
     }
     if !c.warnings.is_empty() {
         v["warnings"] = json!(c.warnings);
+    }
+    if let Some(d) = &c.database {
+        v["database"] = json!(d);
     }
     v
 }
@@ -609,6 +633,9 @@ pub fn replay_script(log: &RunLog) -> String {
                 } else {
                     s += &step;
                 }
+                if let Some(to) = &c.stdout_to {
+                    s += &format!("cp -- \"$OUT/{n}.stdout\" {} || failed=1\n", sh_quote(&safe_path(to)));
+                }
                 if let Some(a) = &c.assembly {
                     s += &format!("assembly_note {n} {} {} {} {}\n", sh_quote(&safe_path(&a.path)), a.contigs, a.total_length, a.n50);
                 }
@@ -843,6 +870,8 @@ mod tests {
             error: None,
             assembly: None,
             warnings: Vec::new(),
+            stdout_to: None,
+            database: None,
         }
     }
 
@@ -874,6 +903,14 @@ mod tests {
         assert_eq!(s.matches("\ncheck bb /data/x/qc/r.json").count(), 1);
         assert!(s.contains("$ran commands re-run, $checked outputs match"));
         assert!(!s.contains("mkdir -p --"));
+    }
+
+    #[test]
+    fn replay_saves_stdout_where_the_run_did() {
+        let mut c = call(1, Status::Ok);
+        c.stdout_to = Some("/data/x/amr/s 1.tsv".into());
+        let s = replay_script(&log_of(vec![c]));
+        assert!(s.contains("--outdir=qc -- 'my reads'\\''s.fq'\ncp -- \"$OUT/001.stdout\" '/data/x/amr/s 1.tsv' || failed=1\n"), "{s}");
     }
 
     #[test]

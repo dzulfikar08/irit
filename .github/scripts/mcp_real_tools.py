@@ -1,5 +1,5 @@
 """Drives irit-mcp over stdio against the real fastp, Shovill, Bakta, CheckM2, GTDB-Tk, mlst,
-AMRFinderPlus, MEGAHIT, CoverM, MetaBAT2, SemiBin2, galah and Kleborate.
+AMRFinderPlus, MEGAHIT, CoverM, MetaBAT2, SemiBin2, galah, Kleborate, abricate, hAMRonization and sylph.
 
 Used by .github/workflows/mcp-real-tools.yml. Standard library only. The run:
 
@@ -9,8 +9,10 @@ Used by .github/workflows/mcp-real-tools.yml. Standard library only. The run:
 2. Two samples. mg: Mycoplasma genitalium G37 (simulated reads, the published assembly) through
    fastp, bakta, checkm2, gtdbtk_classify_wf and amrfinder on Bakta's proteins. sa: real Illumina reads
    of Staphylococcus aureus (ERR044595, as nf-core/bacass tests with) through fastp, shovill (SKESA),
-   mlst, amrfinder and coverm_genome (depth by mapping), and shovill with SPAdes and its default
-   correction steps, typed again. kp: K. pneumoniae HS11286's published genome through kleborate,
+   mlst, amrfinder, abricate and coverm_genome (depth by mapping), the two AMR reports through
+   hamronize and hamronize_summarize, and shovill with SPAdes and its default correction steps, typed
+   again. sylph_profile of both read sets against the dereplicated bins (how much of each sample
+   they account for) and against the two reference genomes. kp: K. pneumoniae HS11286's published genome through kleborate,
    with M. genitalium as an assembly Kleborate doesn't type; assembly_stats on the M. genitalium
    genome. Then isotable over all results, with mlst and AMR required.
 3. Moves those outputs aside and runs the tools again with the same paths: any output whose
@@ -206,6 +208,8 @@ def main():
                 "nocorr": True,
                 "cpus": 4,
                 "ram": 8,
+                # named after the sample, for abricate (its FILE column becomes hAMRonization's input_file_name)
+                "link_as": "genomes/sa.fna",
             },
             f"shovill sa{suffix}",
         )
@@ -282,6 +286,33 @@ def main():
             f"coverm_abundance{suffix}",
         )
         a = ab.get("abundance", {})
+        # sylph against the same representatives: with estimate_unknown, the share of each sample's
+        # reads they account for. The S. aureus sample is mostly its own bin.
+        sy = call(
+            "sylph_profile",
+            {"genome_list": "mag/derep/representatives.txt", **pairs, "sample_names": ["sa", "mg"], "estimate_unknown": True,
+             "threads": 4, "output": "mag/sylph_bins.tsv"},
+            f"sylph_profile bins{suffix}",
+        )
+        by = {x.get("sample"): x for x in sy.get("samples", [])}
+        expect(
+            f"sylph_profile bins{suffix}",
+            by.get("sa", {}).get("genomes_detected", 0) >= 1 and by.get("sa", {}).get("sequence_abundance_sum", 0) > 50,
+            json.dumps({k: (v.get("genomes_detected"), v.get("sequence_abundance_sum")) for k, v in by.items()}),
+        )
+        # and against two reference genomes as FASTA: M. genitalium is found in its own reads only
+        sy = call(
+            "sylph_profile",
+            {"genomes": ["asm/mg.fna", "kp/HS11286.fna"], **pairs, "sample_names": ["sa", "mg"], "threads": 4, "output": "mag/sylph_refs.tsv"},
+            f"sylph_profile references{suffix}",
+        )
+        by = {x.get("sample"): x for x in sy.get("samples", [])}
+        top = (by.get("mg", {}).get("top") or [{}])[0]
+        expect(
+            f"sylph_profile references{suffix}",
+            top.get("genome") == "asm/mg.fna" and (top.get("adjusted_ani") or 0) > 99 and by.get("sa", {}).get("genomes_detected") == 0,
+            json.dumps(by)[:500],
+        )
         expect(
             f"coverm_abundance{suffix}",
             # the S. aureus sample maps almost entirely; the small M. genitalium sample maps only as
@@ -357,6 +388,27 @@ def main():
         )
         genes = (amr.get("summary") or {}).get("amr_genes", "")
         expect(f"amrfinder sa{suffix}", {"mecA", "blaZ"} <= set(genes.split(",")), genes)
+        # abricate with its bundled NCBI genes, then both reports into hAMRonization's table. The
+        # versions hamronize needs come from the calls that wrote the reports.
+        ab = call("abricate", {"contigs": ["genomes/sa.fna"], "db": "ncbi", "threads": 4, "output": "amr/sa.abricate-ncbi.tsv"}, f"abricate sa{suffix}")
+        found = {g.get("gene") for g in (ab.get("summary") or {}).get("genes", [])}
+        expect(f"abricate sa{suffix}", "mecA" in found and (ab.get("database") or {}).get("name") == "ncbi", f"{sorted(found)} {ab.get('database')}")
+        h1 = call("hamronize", {"tool": "abricate", "report": "amr/sa.abricate-ncbi.tsv", "output": "amr/sa.abricate-ncbi.hamronized.tsv"}, f"hamronize abricate sa{suffix}")
+        h2 = call("hamronize", {"tool": "amrfinderplus", "report": "typing/sa.amrfinder.tsv", "output": "amr/sa.amrfp.hamronized.tsv"}, f"hamronize amrfinderplus sa{suffix}")
+        recorded = all(m.get("from", "").startswith("recorded by") for h in (h1, h2) for m in h.get("metadata") or [] if m.get("field") != "input_file_name")
+        expect(f"hamronize sa{suffix} versions from the record", recorded and bool(h1.get("metadata")) and bool(h2.get("metadata")), json.dumps([h1.get("metadata"), h2.get("metadata")])[:600])
+        summ = call(
+            "hamronize_summarize",
+            {"reports": ["amr/sa.abricate-ncbi.hamronized.tsv", "amr/sa.amrfp.hamronized.tsv"], "output": "amr/hamronization_combined_report.tsv"},
+            f"hamronize_summarize{suffix}",
+        )
+        rows = {x.get("input_file_name"): x for x in (summ.get("summary") or {}).get("samples", [])}
+        by_tool = rows.get("sa", {}).get("by_tool", {})
+        expect(
+            f"hamronize_summarize{suffix}",
+            len(by_tool) == 2 and all("mecA" in g for g in by_tool.values()),
+            json.dumps(rows)[:600],
+        )
         call(
             "bakta",
             {
@@ -406,7 +458,7 @@ def main():
             f"gtdbtk_classify_wf{suffix}",
         )
 
-    dirs = ["trim", "shovill", "typing", "bakta", "checkm2", "gtdbtk", "mag", "kleb"]
+    dirs = ["trim", "shovill", "typing", "bakta", "checkm2", "gtdbtk", "mag", "kleb", "genomes", "amr"]
     run_all()
     table = call(
         "isotable",

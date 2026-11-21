@@ -339,6 +339,64 @@
     "notes": "For gtdbprep ani --index <path>/ani-screen-r232: every R232 species representative's marker count, 32-bit fingerprints of its marker k-mers, where its sketch is in skani's sketches.db (with a SHA-256 prefix), and a seek index into GTDB's own archive (a checkpoint every 4 MiB). It holds no sketches: gtdbprep ani reads the few it needs from an unpacked sketches.db (--source), or, opt-in, range-reads them from GTDB's archive (--source gtdb; about 5.7 times the sketch bytes) into a per-user cache. Also needs GTDB-Tk's taxonomy and radii (gtdbtk-r232-placement-lite) and GTDB-Tk 2.8.0 with skani 0.3.1. See docs/research/ani-laptop.md."
   },
   {
+    "id": "sylph-gtdb-r232-c1000",
+    "name": "sylph database of GTDB R232's 199,923 species representatives (-c 1000)",
+    "version": "R232 (c1000, dbv1)",
+    "tool": "sylph",
+    "urls": [
+      "https://faust.compbio.cs.cmu.edu/sylph-stuff/gtdb-r232-c1000-dbv1.syldb",
+      "https://storage.googleapis.com/sylph-stuff/gtdb-r232-c1000-dbv1.syldb"
+    ],
+    "format": "file",
+    "size": 5219051219,
+    "extracted": 5219051219,
+    "md5": "8cc9bc3ca5eac9ab7b57527a312fd623",
+    "sha256": "52eca49eb0ff322138b2be5ea4a63d5d6b3630d2f15b901bc645acd912d34f68",
+    "md5_source": "the MD5 Google Cloud Storage publishes for the mirror's copy (x-goog-hash md5=jMm8PKXqyat7V1J6MS/WIw==), matched by our download on 2026-11-21; SHA-256 computed by us from that download. The sylph authors publish no checksums",
+    "env": null,
+    "env_points_to": "glob:*.syldb",
+    "compat": {
+      "command": [
+        "sylph",
+        "--version"
+      ],
+      "min": "0.3.0",
+      "source": "https://github.com/bluenote-1577/sylph/wiki/Pre%E2%80%90built-databases (\"All databases work from sylph version 0.3.x onwards\"); listed at https://sylph-docs.github.io/pre%E2%80%90built-databases/"
+    },
+    "licence": "CC BY-SA 4.0. Sketches of the Genome Taxonomy Database's (GTDB, https://gtdb.ecogenomic.org; Parks et al.) R232 species representative genomes, made and hosted by the sylph authors (Shaw & Yu, Nature Biotechnology), not by GTDB.",
+    "non_commercial": false,
+    "notes": "For sylph profile (irit-mcp's sylph_profile databases): the database is loaded whole, and profiling two samples against it peaked at 4.9 GiB of RAM with sylph 1.0.0 (2026-11-21). -c 1000 is the efficient, less sensitive variant: sylph's -c 200 R232 database is 24 GB (19 GB as a two-stage .syl2db for sylph 1.0). Genomes are named by GTDB file path (GCF_/GCA_ accession); for lineages, sylph-tax taxprof with -t GTDB_r232 (its taxonomy files are a separate ~50 MB download)."
+  },
+  {
+    "id": "sylph-gtdb-r220-c1000",
+    "name": "sylph database of GTDB R220's 113,104 species representatives (-c 1000)",
+    "version": "R220 (c1000, dbv1)",
+    "tool": "sylph",
+    "urls": [
+      "https://faust.compbio.cs.cmu.edu/sylph-stuff/gtdb-r220-c1000-dbv1.syldb",
+      "https://storage.googleapis.com/sylph-stuff/gtdb-r220-c1000-dbv1.syldb"
+    ],
+    "format": "file",
+    "size": 2836800847,
+    "extracted": 2836800847,
+    "md5": "a8cf692f13e47f0e23c70de3dac311c6",
+    "sha256": "3c291b4018065fff1647e13d8fa76fe952d0547964ab90817164524ff7e36b5e",
+    "md5_source": "not published (the sylph authors publish no checksums, and Google Cloud Storage gives only a CRC32C for this object); MD5 and SHA-256 computed by us on 2026-11-21 from the mirror URL",
+    "env": null,
+    "env_points_to": "glob:*.syldb",
+    "compat": {
+      "command": [
+        "sylph",
+        "--version"
+      ],
+      "min": "0.3.0",
+      "source": "https://github.com/bluenote-1577/sylph/wiki/Pre%E2%80%90built-databases (\"All databases work from sylph version 0.3.x onwards\")"
+    },
+    "licence": "CC BY-SA 4.0. Sketches of the Genome Taxonomy Database's (GTDB, https://gtdb.ecogenomic.org; Parks et al.) R220 species representative genomes, made and hosted by the sylph authors (Shaw & Yu, Nature Biotechnology), not by GTDB.",
+    "non_commercial": false,
+    "notes": "The smaller, older GTDB release; prefer sylph-gtdb-r232-c1000, which matches irit's GTDB-Tk R232 data. Taxonomy: sylph-tax taxprof -t GTDB_r220."
+  },
+  {
     "id": "checkm2-db-v3",
     "name": "CheckM2 DIAMOND database (UniRef100/KO), version 3",
     "version": "3",

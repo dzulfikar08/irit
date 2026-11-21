@@ -1,5 +1,5 @@
 //! Third-party tools (fastp, Shovill, Flye, Medaka, Bakta, CheckM2, GTDB-Tk, mlst, AMRFinderPlus,
-//! MEGAHIT, CoverM, MetaBAT2, SemiBin2, galah, Kleborate, Rasusa): typed
+//! MEGAHIT, CoverM, MetaBAT2, SemiBin2, galah, Kleborate, Rasusa, sylph, abricate, hAMRonization): typed
 //! parameters, checks before running, and their argument vectors.
 //!
 //! Every flag here exists in the pinned upstream version (see [`PINNED`]); the comment above each
@@ -22,7 +22,7 @@ pub struct Pinned {
     pub url: &'static str,
 }
 
-pub const PINNED: [Pinned; 16] = [
+pub const PINNED: [Pinned; 19] = [
     Pinned { tool: "fastp", version: "1.4.0", bioconda: "fastp=1.4.0", url: "https://github.com/OpenGene/fastp" },
     Pinned { tool: "shovill", version: "1.4.2", bioconda: "shovill=1.4.2", url: "https://github.com/tseemann/shovill" },
     // Flye's --version prints the build too: `2.9.6-b1802` for the 2.9.6 release (and Bioconda's).
@@ -49,6 +49,10 @@ pub const PINNED: [Pinned; 16] = [
     // with TensorFlow (about 1 GB) for --run-checkm2, which irit-mcp doesn't use: `galah=0.6.3
     // --no-deps` plus `skani=0.4.0` is enough.
     Pinned { tool: "galah", version: "0.6.3", bioconda: "galah=0.6.3 skani=0.4.0", url: "https://github.com/wwood/galah" },
+    Pinned { tool: "sylph", version: "1.0.0", bioconda: "sylph=1.0.0", url: "https://github.com/bluenote-1577/sylph" },
+    Pinned { tool: "abricate", version: "1.4.0", bioconda: "abricate=1.4.0", url: "https://github.com/tseemann/abricate" },
+    // The program is `hamronize`; `hamronize --version` prints `hamronize 1.3.1`.
+    Pinned { tool: "hamronize", version: "1.3.1", bioconda: "hamronization=1.3.1", url: "https://github.com/pha4ge/hAMRonization" },
 ];
 
 /// Arguments that make a tool print its version, and whether it prints it on stderr. MetaBAT2
@@ -2550,8 +2554,9 @@ pub fn amrfinder(ctx: &Ctx, p: &AmrfinderParams) -> Check<Invocation> {
         v::text("organism", o)?;
     }
     // version.txt only: the database itself is checked by dblock_verify.
-    let (version_file, _) = amrfinder_db("database", &db_text, &db, p.organism.as_deref(), p.nucleotide.is_some())?;
+    let (version_file, version) = amrfinder_db("database", &db_text, &db, p.organism.as_deref(), p.nucleotide.is_some())?;
     inv.inputs.push(version_file);
+    inv.database = Some(crate::record::DatabaseRecord { name: "AMRFinderPlus".into(), version, sequences: None, source: "version.txt".into() });
     inv.opt("database", &db_text);
     if let Some(o) = &p.organism {
         inv.opt("organism", o);
@@ -4208,6 +4213,649 @@ pub fn kleborate_data(program: &Path, _ctx: &Ctx) -> Vec<PathBuf> {
     files
 }
 
+// ---------- sylph ----------
+// Flags: sylph v1.0.0 `sylph profile --help` of the Bioconda package (clap 3, `ContainArgs` in
+// src/cmdline.rs), https://github.com/bluenote-1577/sylph/blob/v1.0.0/src/cmdline.rs. How inputs
+// are told apart: `contain` in src/contain.rs (names ending .syldb are databases, .syl2db two-stage
+// databases, .fa/.fna/.fasta with optional .gz genomes sketched on the fly, `is_fasta` in
+// src/sketch.rs); reads given with -1/-2/-r are sketched whatever their name. -t and -c have no long
+// form, so each goes as two words. Not offered: pre-sketched samples (*.sylsp, `sylph sketch`:
+// profile sketches the reads itself), -l (any inputs; genome_list goes through it, checked), -k (31,
+// as the prebuilt databases), -i (contigs as genomes), --min-spacing, -M, --min-contain,
+// --min-count-correct, -I, --estimate-read-counts, --screen-ani, -s, --log-reassignments, --debug,
+// --trace.
+
+/// Genome file names sylph 1.0.0 sketches as genomes (`is_fasta` in src/sketch.rs).
+const SYLPH_GENOME_SUFFIXES: [&str; 6] = [".fa", ".fna", ".fasta", ".fa.gz", ".fna.gz", ".fasta.gz"];
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SylphProfileParams {
+    /// Prebuilt sylph databases (*.syldb, or two-stage *.syl2db), e.g. dblock's sylph-gtdb-r232-c1000 (dblock_env shows its path). Give databases and/or genomes / genome_list.
+    #[serde(default)]
+    pub databases: Vec<String>,
+    /// Genome FASTA files, sketched into a database on the fly: a sample's MAGs, galah's representatives, reference genomes. Names must end in .fa, .fna or .fasta (optionally .gz): sylph tells genomes from reads by the name.
+    #[serde(default)]
+    pub genomes: Vec<String>,
+    /// A file listing genome FASTA paths, one per line: galah's `<outdir>/representatives.txt`. Read again on replay, so the genomes follow a re-run galah.
+    #[serde(default)]
+    pub genome_list: Option<String>,
+    /// Read 1 FASTQ files of paired-end samples (plain or gzip), one per sample, paired with r2 in order.
+    #[serde(default)]
+    pub r1: Vec<String>,
+    /// Read 2 FASTQ files, as many as r1.
+    #[serde(default)]
+    pub r2: Vec<String>,
+    /// Single-end or long-read FASTQ files, one per sample.
+    #[serde(default)]
+    pub reads: Vec<String>,
+    /// One name per sample, in order: the r1 samples, then reads. sylph 1.0.0 names a sample after its read file (read 1 of a pair) in the table's Sample_file column; the result shows these names beside it. Default: the read file name without folders, extensions and read number (`s1_R1.fastq.gz` gives s1).
+    #[serde(default)]
+    pub sample_names: Vec<String>,
+    /// Profile table (TSV), inside the root: one row per genome detected per sample.
+    pub output: String,
+    /// sylph's -u: estimate the share of each sample that no genome given accounts for, and scale Sequence_abundance by it, so the column sums to the share of reads the genomes explain instead of 100. Use it with a sample's own MAGs as the database: the sum says how much of the sample they cover.
+    #[serde(default)]
+    pub estimate_unknown: bool,
+    /// Smallest adjusted ANI (percent) to report a genome. sylph's default for profile is 95 (a species); sylph says lower values give inaccurate results.
+    #[serde(default)]
+    pub minimum_ani: Option<f64>,
+    /// Subsampling rate for sketching (sylph's -c, default 200): one k-mer in c is kept. Applies to the reads and to genomes given as FASTA; a prebuilt database keeps its own (dblock's GTDB ones are c 1000), and reads are sketched at the denser of the two. Must not exceed a prebuilt database's c, or sylph skips the FASTA genomes.
+    #[serde(default)]
+    pub c: Option<u32>,
+    /// Threads. sylph's default is 3.
+    #[serde(default)]
+    pub threads: Option<u32>,
+    /// Replace an existing output. Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// The default sample name for a read file: no folders, compression or FASTQ/FASTA extension,
+/// and no read-number suffix (`_R1`, `_1`, `.R1`, `_R1_001`).
+pub fn read_sample_name(file: &str) -> String {
+    let name = Path::new(file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = name.strip_suffix(".gz").unwrap_or(&name);
+    let name = [".fastq", ".fq", ".fasta", ".fa", ".fna"].iter().find_map(|e| name.strip_suffix(e)).unwrap_or(name);
+    let name = name.strip_suffix("_001").unwrap_or(name);
+    ["_R1", "_R2", "_1", "_2", ".R1", ".R2", ".1", ".2"].iter().find_map(|s| name.strip_suffix(s)).filter(|n| !n.is_empty()).unwrap_or(name).to_string()
+}
+
+/// (Sample_file as sylph writes it, sample name), per sample, in the order sylph profiles them:
+/// pairs, then single-end files.
+pub fn sylph_samples(p: &SylphProfileParams) -> Vec<(String, String)> {
+    p.r1.iter()
+        .chain(&p.reads)
+        .enumerate()
+        .map(|(i, f)| (f.clone(), p.sample_names.get(i).cloned().unwrap_or_else(|| read_sample_name(f))))
+        .collect()
+}
+
+pub fn sylph_profile(ctx: &Ctx, p: &SylphProfileParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("sylph");
+    inv.args.push("profile".into());
+    let mut positionals: Vec<String> = Vec::new();
+    let mut unhashed: Vec<String> = Vec::new();
+    for d in &p.databases {
+        if !d.ends_with(".syldb") && !d.ends_with(".syl2db") {
+            return v::invalid("databases", format!("{d}: sylph reads a database only from a name ending .syldb or .syl2db"));
+        }
+        let path = v::existing_file(cwd, "databases", d)?;
+        if inv.inputs.contains(&path) || positionals.contains(d) {
+            return v::invalid("databases", format!("{d} is given twice"));
+        }
+        // As for GTDB-Tk's data: a database of several GB is not hashed on every call (5.2 GB took
+        // over 2 minutes, four times sylph's own run); its file name names the release, and
+        // dblock_verify checks a dblock-managed copy. A small one (own genomes sketched) is hashed.
+        if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > SKANI_HASH_LIMIT {
+            unhashed.push(Path::new(d).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        } else {
+            inv.inputs.push(path);
+        }
+        positionals.push(d.clone());
+    }
+    if !unhashed.is_empty() {
+        inv.database = Some(crate::record::DatabaseRecord {
+            name: unhashed.join(", "),
+            version: unhashed.iter().map(|n| n.trim_end_matches(".syldb").trim_end_matches(".syl2db")).collect::<Vec<_>>().join(", "),
+            sequences: None,
+            source: "file name; over 512 MB, so not hashed into the record (dblock_verify checks a dblock-managed copy)".into(),
+        });
+    }
+    let genome_ok = |field: &str, g: &str, inv: &mut Invocation| -> Check<()> {
+        if !SYLPH_GENOME_SUFFIXES.iter().any(|s| g.ends_with(s)) {
+            return v::invalid(field, format!("{g}: sylph sketches a genome only from a name ending .fa, .fna or .fasta (optionally .gz); link or copy it under such a name"));
+        }
+        let path = v::existing_file(cwd, field, g)?;
+        v::sequence_file(&path, field, g, Seq::Fasta)?;
+        if inv.inputs.contains(&path) {
+            return v::invalid(field, format!("{g} is given twice"));
+        }
+        inv.inputs.push(path);
+        Ok(())
+    };
+    for g in &p.genomes {
+        genome_ok("genomes", g, &mut inv)?;
+        positionals.push(g.clone());
+    }
+    if let Some(l) = &p.genome_list {
+        let list = v::existing_file(cwd, "genome_list", l)?;
+        let text = std::fs::read_to_string(&list).map_err(|e| v::Invalid { field: "genome_list".into(), message: format!("{l}: {e}") })?;
+        let named: Vec<&str> = text.lines().map(str::trim).filter(|x| !x.is_empty()).collect();
+        if named.is_empty() {
+            return v::invalid("genome_list", format!("{l} lists no genomes"));
+        }
+        for g in named {
+            genome_ok("genome_list", g, &mut inv)?;
+        }
+        inv.inputs.push(list);
+    }
+    if p.databases.is_empty() && p.genomes.is_empty() && p.genome_list.is_none() {
+        return v::invalid("databases", "give a database (databases), genome FASTA files (genomes) or a list of them (genome_list)");
+    }
+    read_pairs(&p.r1, &p.r2)?;
+    if p.r1.is_empty() && p.reads.is_empty() {
+        return v::invalid("r1", "give the samples' reads: r1 and r2 for paired-end, reads for single-end");
+    }
+    let samples = p.r1.len() + p.reads.len();
+    if !p.sample_names.is_empty() && p.sample_names.len() != samples {
+        return v::invalid("sample_names", format!("{samples} sample(s) but {} name(s); give one name per sample (the r1 samples, then reads)", p.sample_names.len()));
+    }
+    for n in &p.sample_names {
+        if n.is_empty() || n.contains('\t') || n.chars().any(char::is_control) {
+            return v::invalid("sample_names", format!("{n:?} can't be a sample name (empty, tab or control character)"));
+        }
+    }
+    let names: Vec<(String, String)> = sylph_samples(p);
+    for (i, (file, name)) in names.iter().enumerate() {
+        if let Some((other, _)) = names[..i].iter().find(|(_, n)| n == name) {
+            return v::invalid("sample_names", format!("{other} and {file} would both be sample {name:?}; give sample_names"));
+        }
+    }
+    let mut read_args: Vec<String> = Vec::new();
+    for (field, list, flag) in [("r1", &p.r1, "first-pairs"), ("r2", &p.r2, "second-pairs"), ("reads", &p.reads, "reads")] {
+        for r in list {
+            let path = v::existing_file(cwd, field, r)?;
+            if v::sequence_file(&path, field, r, Seq::Fastq).is_err() {
+                v::sequence_file(&path, field, r, Seq::Fasta).map_err(|e| v::Invalid { message: format!("{r} is neither FASTQ nor FASTA ({})", e.message), ..e })?;
+            }
+            if inv.inputs.contains(&path) {
+                return v::invalid(field, format!("{r} is given twice"));
+            }
+            inv.inputs.push(path);
+            read_args.push(format!("--{flag}={r}"));
+        }
+    }
+    let out = v::output_file(ctx, "output", &p.output, p.overwrite)?;
+    if inv.inputs.contains(&out) {
+        return v::invalid("output", "output is one of the inputs");
+    }
+    inv.outputs.push(out.clone());
+    inv.expect = vec![vec![out]];
+    inv.opt("output-file", &p.output);
+    if let Some(t) = p.threads {
+        v::range("threads", t, 1, 1024)?;
+        inv.args.push("-t".into());
+        inv.args.push(t.to_string());
+    }
+    if let Some(c) = p.c {
+        v::range("c", c, 1, 100_000)?;
+        inv.args.push("-c".into());
+        inv.args.push(c.to_string());
+    }
+    if let Some(m) = p.minimum_ani {
+        v::percent("minimum_ani", m)?;
+        if m < 95.0 {
+            inv.warnings.push(format!("minimum_ani {m}: sylph's help says values under 95 give inaccurate profiles"));
+        }
+        inv.opt("minimum-ani", m);
+    }
+    inv.flag("estimate-unknown", p.estimate_unknown);
+    inv.args.extend(read_args);
+    if let Some(l) = &p.genome_list {
+        inv.opt("list", l);
+    }
+    // After `--`, so a name starting with `-` is a file.
+    if !positionals.is_empty() {
+        inv.args.push("--".into());
+        inv.args.extend(positionals);
+    }
+    Ok(inv)
+}
+
+// ---------- abricate ----------
+// Flags: abricate v1.4.0 bin/abricate (`setOptions` and the main block),
+// https://github.com/tseemann/abricate/blob/v1.4.0/bin/abricate; same list as `abricate --help` of
+// bioconda abricate=1.4.0. The databases come with the package (`abricate --list`). abricate writes
+// its table to stdout only; the server saves it to `output`. Not offered: --datadir and --setupdb
+// (the bundled, indexed databases only), --fofn, --outfmt/--csv/--noheader (hamronize reads the
+// default TSV), --summary (hamronize_summarize joins reports), --list/--check/--help, --quiet/--debug.
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AbricateDb {
+    /// ARG-ANNOT resistance genes.
+    Argannot,
+    /// BacMet2 biocide and metal resistance genes (protein database: abricate searches it with blastx).
+    Bacmet2,
+    /// CARD resistance genes.
+    Card,
+    /// EcOH: E. coli O and H antigen genes (serotype).
+    Ecoh,
+    /// E. coli virulence factors.
+    EcoliVf,
+    /// MEGARes resistance genes.
+    Megares,
+    /// NCBI's AMRFinderPlus nucleotide set (abricate's default).
+    Ncbi,
+    /// PlasmidFinder: plasmid replicons (Enterobacteriaceae and Gram-positive).
+    Plasmidfinder,
+    /// ResFinder acquired resistance genes.
+    Resfinder,
+    /// Uropathogenic / extraintestinal E. coli virulence genes.
+    UpecExpecVf,
+    /// VFDB core virulence factors.
+    Vfdb,
+    /// Victors virulence factors.
+    Victors,
+}
+
+impl AbricateDb {
+    pub fn name(self) -> &'static str {
+        match self {
+            AbricateDb::Argannot => "argannot",
+            AbricateDb::Bacmet2 => "bacmet2",
+            AbricateDb::Card => "card",
+            AbricateDb::Ecoh => "ecoh",
+            AbricateDb::EcoliVf => "ecoli_vf",
+            AbricateDb::Megares => "megares",
+            AbricateDb::Ncbi => "ncbi",
+            AbricateDb::Plasmidfinder => "plasmidfinder",
+            AbricateDb::Resfinder => "resfinder",
+            AbricateDb::UpecExpecVf => "upec_expec_vf",
+            AbricateDb::Vfdb => "vfdb",
+            AbricateDb::Victors => "victors",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AbricateParams {
+    /// Assemblies, FASTA (plain or gzip). Name them after the samples (shovill's link_as, e.g. genomes/s1.fna): abricate's FILE column, and so hamronize's input_file_name and isotable's sample, comes from the file name.
+    pub contigs: Vec<String>,
+    /// Database. Default ncbi. vfdb (and victors, ecoli_vf) are virulence genes, plasmidfinder plasmid replicons, card/resfinder/argannot/megares/ncbi resistance genes.
+    #[serde(default)]
+    pub db: Option<AbricateDb>,
+    /// Minimum DNA identity, percent. abricate's default 80.
+    #[serde(default)]
+    pub minid: Option<f64>,
+    /// Minimum DNA coverage of the reference gene, percent. abricate's default 80.
+    #[serde(default)]
+    pub mincov: Option<f64>,
+    /// Only the file name in the FILE column, not the path as given.
+    #[serde(default)]
+    pub nopath: bool,
+    /// BLAST threads. abricate's default 1.
+    #[serde(default)]
+    pub threads: Option<u32>,
+    /// Result table (TSV, abricate's stdout), inside the root, e.g. `amr/s1.abricate-vfdb.tsv`.
+    pub output: String,
+    /// Replace an existing output. Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+pub fn abricate(ctx: &Ctx, p: &AbricateParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("abricate");
+    inv.database_probe = Some(abricate_probe);
+    v::non_empty_list("contigs", &p.contigs)?;
+    let mut names: Vec<String> = Vec::new();
+    for c in &p.contigs {
+        let path = v::existing_file(cwd, "contigs", c)?;
+        v::sequence_file(&path, "contigs", c, Seq::Fasta)?;
+        let name = kleborate_strain(c);
+        if GENERIC_ASSEMBLY_NAMES.contains(&name.as_str()) {
+            return v::invalid(
+                "contigs",
+                format!("{c}: abricate's FILE column (hamronize's input_file_name, isotable's sample) would say {name:?}, not the sample; give the assembly a sample name (shovill's link_as, e.g. genomes/s1.fna)"),
+            );
+        }
+        if names.contains(&name) || inv.inputs.contains(&path) {
+            return v::invalid("contigs", format!("two assemblies would both be named {name:?}"));
+        }
+        names.push(name);
+        inv.inputs.push(path);
+    }
+    inv.opt("db", p.db.unwrap_or(AbricateDb::Ncbi).name());
+    for (field, val) in [("minid", p.minid), ("mincov", p.mincov)] {
+        if let Some(x) = val {
+            v::percent(field, x)?;
+            inv.opt(field, x);
+        }
+    }
+    inv.flag("nopath", p.nopath);
+    if let Some(t) = p.threads {
+        v::range("threads", t, 1, 1024)?;
+        inv.opt("threads", t);
+    }
+    let out = v::output_file(ctx, "output", &p.output, p.overwrite)?;
+    if inv.inputs.contains(&out) {
+        return v::invalid("output", "output is one of the inputs");
+    }
+    inv.outputs.push(out.clone());
+    inv.expect = vec![vec![out.clone()]];
+    inv.stdout_to = Some(out);
+    inv.args.extend(p.contigs.iter().map(|c| list_item(c)));
+    Ok(inv)
+}
+
+/// The databases folder in abricate 1.4.0's --help: `  --datadir [X]   Databases folder [/path/db].`
+fn abricate_help_datadir(help: &str) -> Option<PathBuf> {
+    let line = help.lines().find(|l| l.trim_start().starts_with("--datadir"))?;
+    let (_, rest) = line.rsplit_once('[')?;
+    let (path, _) = rest.split_once(']')?;
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// One row of `abricate --list` (DATABASE, SEQUENCES, DBTYPE, DATE; abricate's `list_databases`).
+/// DATE is when the database's BLAST index was built (`blastdbcmd -info`), which for the bundled
+/// databases is when the package was made.
+pub fn abricate_list_row(list: &str, db: &str) -> Option<crate::record::DatabaseRecord> {
+    list.lines().map(|l| l.split('\t').collect::<Vec<_>>()).find(|f| f.len() >= 4 && f[0] == db).map(|f| crate::record::DatabaseRecord {
+        name: db.to_string(),
+        version: f[3].trim().to_string(),
+        sequences: f[1].trim().parse().ok(),
+        source: "abricate --list (DATE: when the database's BLAST index was built)".into(),
+    })
+}
+
+/// The database an abricate call searches: the files of `<datadir>/<db>/` (the sequences and
+/// their BLAST index) to hash, and its `abricate --list` row. The folder comes from abricate's own
+/// --help, so a wrapper script or another install is followed.
+pub fn abricate_probe(program: &Path, ctx: &Ctx, args: &[String]) -> (Vec<PathBuf>, Option<crate::record::DatabaseRecord>) {
+    let db = args.iter().find_map(|a| a.strip_prefix("--db=")).unwrap_or("ncbi");
+    let run = |arg: &str| {
+        std::process::Command::new(program)
+            .arg(arg)
+            .current_dir(&ctx.cwd)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    let datadir = abricate_help_datadir(&run("--help"))
+        .or_else(|| std::fs::canonicalize(program).ok().and_then(|r| Some(r.parent()?.parent()?.join("db"))));
+    let mut files: Vec<PathBuf> = datadir
+        .and_then(|d| std::fs::read_dir(d.join(db)).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    files.sort();
+    (files, abricate_list_row(&run("--list"), db))
+}
+
+// ---------- hAMRonization ----------
+// Flags: hAMRonization v1.3.1 hAMRonization/Interfaces.py (`generate_tool_subparser`,
+// `generic_cli_interface`) and each tool's `required_metadata` (AbricateIO.py: the two versions;
+// AmrFinderPlusIO.py: also input_file_name), https://github.com/pha4ge/hAMRonization/tree/v1.3.1;
+// same as `hamronize <tool> --help` of bioconda hamronization=1.3.1. One report per call: with an
+// existing --output and several reports, 1.3.1 appends the first report to the old file
+// (`write`, "appending if more than one report"). Not offered: the other 15 tools' parsers,
+// --format json (isotable reads the TSV), summarize's json and interactive types, --debug.
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum HamronizeTool {
+    /// An abricate report (any database).
+    Abricate,
+    /// An AMRFinderPlus 4.x report (amrfinder's output).
+    Amrfinderplus,
+}
+
+impl HamronizeTool {
+    pub fn name(self) -> &'static str {
+        match self {
+            HamronizeTool::Abricate => "abricate",
+            HamronizeTool::Amrfinderplus => "amrfinderplus",
+        }
+    }
+    /// The irit-mcp tool (and program) that writes such a report.
+    pub fn producer(self) -> &'static str {
+        match self {
+            HamronizeTool::Abricate => "abricate",
+            HamronizeTool::Amrfinderplus => "amrfinder",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HamronizeParams {
+    /// Which tool wrote the report.
+    pub tool: HamronizeTool,
+    /// The report: abricate's output table, or amrfinder's (AMRFinderPlus 4.x columns).
+    pub report: String,
+    /// hAMRonization table (TSV), inside the root. Name it `<sample>.<tool>.hamronized.tsv` (e.g. s1.abricate-vfdb.hamronized.tsv, s1.amrfp.hamronized.tsv); isotable reads it by its header. A report with no hits gives an empty file.
+    pub output: String,
+    /// The version of the tool that wrote the report. Default: the version recorded by the irit-mcp call that wrote it (found by path and SHA-256 in this run or an earlier one under the runs folder), else the version irit-mcp is pinned to (with a warning).
+    #[serde(default)]
+    pub analysis_software_version: Option<String>,
+    /// The database version the report was made with. Default: the one recorded by the call that wrote it (abricate's `--list` date, AMRFinderPlus's version.txt); needed when no such call is found.
+    #[serde(default)]
+    pub reference_database_version: Option<String>,
+    /// amrfinderplus only: the sample, which isotable joins on. Default: the sample part of the report's name (`s1.amrfinder.tsv` gives s1), else the assembly the call that wrote it was given. abricate reports name the file themselves (FILE column).
+    #[serde(default)]
+    pub input_file_name: Option<String>,
+    /// Replace an existing output. Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// One of hamronize's metadata values and where it came from.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HamronizeValue {
+    pub field: &'static str,
+    pub value: String,
+    pub from: String,
+}
+
+/// The metadata hamronize needs for this report: given, else read from the call that wrote it,
+/// else (software version only) the pinned version. Warnings for values that disagree or are
+/// assumed.
+pub fn hamronize_metadata(p: &HamronizeParams, producer: Option<&crate::record::CallRecord>) -> Check<(Vec<HamronizeValue>, Vec<String>)> {
+    let mut out = Vec::new();
+    let mut warnings = Vec::new();
+    let tool = p.tool.producer();
+    if let Some(c) = producer
+        && c.mcp_tool != tool
+    {
+        return v::invalid("report", format!("{} was written by a {} call, not {tool}; set tool to match", p.report, c.mcp_tool));
+    }
+    let from_call = |c: &crate::record::CallRecord| format!("recorded by the {} call (id {}) that wrote the report", c.mcp_tool, c.id);
+    // analysis_software_version
+    let recorded = producer.and_then(|c| c.version.as_deref().and_then(version_number).map(|v| (v.to_string(), from_call(c))));
+    let pinned_version = pinned(tool).map(|x| x.version).unwrap_or("");
+    let software = match (&p.analysis_software_version, recorded) {
+        (Some(g), rec) => {
+            v::text("analysis_software_version", g)?;
+            if let Some((r, _)) = rec.filter(|(r, _)| r != g) {
+                warnings.push(format!("analysis_software_version {g} was given, but the call that wrote the report recorded {tool} {r}"));
+            }
+            (g.clone(), "given".to_string())
+        }
+        (None, Some(rec)) => rec,
+        (None, None) => {
+            warnings.push(format!(
+                "no irit-mcp call that wrote {} was found, so analysis_software_version is taken as {pinned_version}, the version irit-mcp is pinned to; give it if the report came from another version",
+                p.report
+            ));
+            (pinned_version.to_string(), "pinned version (assumed)".to_string())
+        }
+    };
+    out.push(HamronizeValue { field: "analysis_software_version", value: software.0, from: software.1 });
+    // reference_database_version
+    let recorded = producer.and_then(|c| {
+        let db = c.database.as_ref().map(|d| d.version.clone()).or_else(|| {
+            // AMRFinderPlus calls recorded before the database field: its version.txt input.
+            c.inputs.iter().find(|i| i.path.ends_with("/version.txt")).and_then(|i| std::fs::read_to_string(&i.path).ok()).map(|t| t.trim().to_string())
+        })?;
+        Some((db, from_call(c)))
+    });
+    let database = match (&p.reference_database_version, recorded) {
+        (Some(g), rec) => {
+            v::text("reference_database_version", g)?;
+            if let Some((r, _)) = rec.filter(|(r, _)| r != g) {
+                warnings.push(format!("reference_database_version {g} was given, but the call that wrote the report recorded {r}"));
+            }
+            (g.clone(), "given".to_string())
+        }
+        (None, Some(rec)) => rec,
+        (None, None) => {
+            return v::invalid(
+                "reference_database_version",
+                format!("no irit-mcp call that wrote {} was found (by path and SHA-256), so the database version isn't known; give reference_database_version", p.report),
+            );
+        }
+    };
+    out.push(HamronizeValue { field: "reference_database_version", value: database.0, from: database.1 });
+    // input_file_name
+    match (p.tool, &p.input_file_name) {
+        (HamronizeTool::Abricate, Some(_)) => {
+            return v::invalid("input_file_name", "abricate reports name the assembly in their FILE column; hamronize takes it from there");
+        }
+        (HamronizeTool::Abricate, None) => {}
+        (HamronizeTool::Amrfinderplus, given) => {
+            let from_input = || {
+                let c = producer?;
+                let f = c.params.get("nucleotide").or_else(|| c.params.get("protein"))?.as_str()?;
+                Some(kleborate_strain(f)).filter(|n| !GENERIC_ASSEMBLY_NAMES.contains(&n.as_str())).map(|n| (n, format!("the assembly given to the amrfinder call (id {}) that wrote the report", c.id)))
+            };
+            let name = match given {
+                Some(g) => {
+                    v::text("input_file_name", g)?;
+                    (g.clone(), "given".to_string())
+                }
+                None => match sample_from_output(&p.report, "amrfinder") {
+                    Some(s) => (s, "the report's name".to_string()),
+                    None => from_input().ok_or_else(|| v::Invalid {
+                        field: "input_file_name".into(),
+                        message: format!("{} doesn't say which sample it is (name it <sample>.amrfinder.tsv); give input_file_name", p.report),
+                    })?,
+                },
+            };
+            out.push(HamronizeValue { field: "input_file_name", value: name.0, from: name.1 });
+        }
+    }
+    Ok((out, warnings))
+}
+
+/// The first line of a file ("" for an empty one).
+fn first_line(path: &Path, field: &str, value: &str) -> Check<String> {
+    use std::io::BufRead;
+    let f = std::fs::File::open(path).map_err(|e| v::Invalid { field: field.into(), message: format!("{value}: {e}") })?;
+    let mut line = String::new();
+    std::io::BufReader::new(f).read_line(&mut line).map_err(|e| v::Invalid { field: field.into(), message: format!("{value}: {e}") })?;
+    Ok(line.trim_end_matches(['\n', '\r']).to_string())
+}
+
+pub fn hamronize(ctx: &Ctx, p: &HamronizeParams, producer: Option<&crate::record::CallRecord>) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("hamronize");
+    inv.args.push(p.tool.name().into());
+    let report = v::existing_file(cwd, "report", &p.report)?;
+    let head = first_line(&report, "report", &p.report)?;
+    let cols: Vec<&str> = head.split('\t').collect();
+    match p.tool {
+        // AbricateIO.py's field map: the default TSV header.
+        HamronizeTool::Abricate if !(cols.first() == Some(&"#FILE") && cols.contains(&"GENE") && cols.contains(&"DATABASE")) => {
+            return v::invalid("report", format!("{} is not an abricate table (its header must start #FILE and have GENE and DATABASE)", p.report));
+        }
+        // AmrFinderPlusIO.py 1.3.1 maps AMRFinderPlus 4.x's column names.
+        HamronizeTool::Amrfinderplus if !cols.contains(&"Element symbol") => {
+            let why = if cols.contains(&"Gene symbol") { " (it has AMRFinderPlus 3.x's `Gene symbol`; hAMRonization 1.3.1 reads 4.x reports)" } else { "" };
+            return v::invalid("report", format!("{} is not an AMRFinderPlus 4.x report: no `Element symbol` column{why}", p.report));
+        }
+        _ => {}
+    }
+    let (values, warnings) = hamronize_metadata(p, producer)?;
+    inv.warnings.extend(warnings);
+    let out = v::output_file(ctx, "output", &p.output, p.overwrite)?;
+    if v::resolve(&out) == v::resolve(&report) {
+        return v::invalid("output", "output is the report itself");
+    }
+    let name = Path::new(&p.output).file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if !name.ends_with(".tsv") && !name.ends_with(".txt") {
+        inv.warnings.push(format!("{}: isotable reads hAMRonization tables ending in .tsv or .txt", p.output));
+    }
+    if name.contains("amrfinder") {
+        inv.warnings.push(format!(
+            "{}: a name with \"amrfinder\" in it is read by isotable as an AMRFinderPlus report when it has no header (a report without hits gives an empty table); name it like s1.amrfp.hamronized.tsv",
+            p.output
+        ));
+    }
+    inv.inputs.push(report);
+    inv.outputs.push(out.clone());
+    inv.expect = vec![vec![out]];
+    inv.opt("format", "tsv");
+    inv.opt("output", &p.output);
+    for v in &values {
+        inv.opt(v.field, &v.value);
+    }
+    inv.args.push(list_item(&p.report));
+    Ok(inv)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HamronizeSummarizeParams {
+    /// hAMRonization tables (TSV) from hamronize, any tools and samples. Empty ones (reports without hits) are allowed.
+    pub reports: Vec<String>,
+    /// The combined table (TSV), inside the root, e.g. `amr/hamronization_combined_report.tsv` (nf-core/funcscan's name); isotable reads it by its header.
+    pub output: String,
+    /// Replace an existing output. Default false.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// The columns isotable and `hamronize summarize` need in a hAMRonization table.
+const HAMRONIZED_COLUMNS: [&str; 3] = ["input_file_name", "gene_symbol", "analysis_software_name"];
+
+pub fn hamronize_summarize(ctx: &Ctx, p: &HamronizeSummarizeParams) -> Check<Invocation> {
+    let cwd = ctx.cwd.as_path();
+    let mut inv = external("hamronize");
+    inv.args.push("summarize".into());
+    v::non_empty_list("reports", &p.reports)?;
+    for r in &p.reports {
+        let path = v::existing_file(cwd, "reports", r)?;
+        let head = first_line(&path, "reports", r)?;
+        let cols: Vec<&str> = head.split('\t').collect();
+        // summarize.py reads a file starting `{` or `[` as JSON; irit-mcp makes TSV only.
+        if !head.is_empty() && !HAMRONIZED_COLUMNS.iter().all(|c| cols.contains(c)) {
+            return v::invalid("reports", format!("{r} is not a hAMRonization table (TSV with input_file_name, gene_symbol and analysis_software_name); make it with hamronize"));
+        }
+        if inv.inputs.contains(&path) {
+            return v::invalid("reports", format!("{r} is given twice"));
+        }
+        inv.inputs.push(path);
+    }
+    let out = v::output_file(ctx, "output", &p.output, p.overwrite)?;
+    if inv.inputs.contains(&out) {
+        return v::invalid("output", "output is one of the reports");
+    }
+    inv.outputs.push(out.clone());
+    inv.expect = vec![vec![out]];
+    inv.opt("summary_type", "tsv");
+    inv.opt("output", &p.output);
+    inv.args.extend(p.reports.iter().map(|r| list_item(r)));
+    Ok(inv)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5109,6 +5757,203 @@ mod tests {
         assert_eq!(bad(json!({"reads": ["reads/ont.fastq"], "outputs": ["reads/r1.fq"], "num": 5})), "outputs"); // exists
         assert!(rasusa_size("x", "5500000").is_ok() && rasusa_size("x", "4.1MB").is_ok() && rasusa_size("x", "7Tb").is_ok());
         assert!(rasusa_size("x", "mb").is_err() && rasusa_size("x", "5m").is_err());
+    }
+
+    #[test]
+    fn sylph_profile_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        let fq = "@a\nACGT\n+\nIIII\n";
+        for f in ["reads/s1_R1.fastq.gz", "reads/s1_R2.fastq.gz", "reads/s2_1.fq", "reads/s2_2.fq", "reads/ont.fastq", "-odd_R1.fq", "-odd_R2.fq"] {
+            write(d.path(), f, fq);
+        }
+        write(d.path(), "db/gtdb-r232-c1000-dbv1.syldb", "sketches");
+        write(d.path(), "mags/a.fa", ">c\nACGT\n");
+        write(d.path(), "mags/b.fna.gz", ">c\nACGT\n");
+        write(d.path(), "mags/c.fasta", ">c\nACGT\n");
+        write(d.path(), "mags/bin.1", ">c\nACGT\n");
+        write(d.path(), "derep/representatives.txt", "mags/a.fa\nmags/c.fasta\n\n");
+        let p: SylphProfileParams = parse(json!({
+            "databases": ["db/gtdb-r232-c1000-dbv1.syldb"], "genomes": ["mags/a.fa"],
+            "r1": ["reads/s1_R1.fastq.gz", "reads/s2_1.fq"], "r2": ["reads/s1_R2.fastq.gz", "reads/s2_2.fq"], "reads": ["reads/ont.fastq"],
+            "output": "sylph/profile.tsv", "estimate_unknown": true, "minimum_ani": 97, "c": 200, "threads": 4
+        }));
+        let inv = sylph_profile(&cx, &p).unwrap();
+        assert_eq!(
+            inv.args,
+            [
+                "profile", "--output-file=sylph/profile.tsv", "-t", "4", "-c", "200", "--minimum-ani=97", "--estimate-unknown",
+                "--first-pairs=reads/s1_R1.fastq.gz", "--first-pairs=reads/s2_1.fq", "--second-pairs=reads/s1_R2.fastq.gz",
+                "--second-pairs=reads/s2_2.fq", "--reads=reads/ont.fastq", "--", "db/gtdb-r232-c1000-dbv1.syldb", "mags/a.fa"
+            ]
+        );
+        assert_eq!(inv.expect, [vec![cx.cwd.join("sylph/profile.tsv")]]);
+        // a small database is hashed; samples are named after read 1 (or the single-end file)
+        assert!(inv.inputs.contains(&cx.cwd.join("db/gtdb-r232-c1000-dbv1.syldb")) && inv.database.is_none());
+        assert_eq!(
+            sylph_samples(&p),
+            [("reads/s1_R1.fastq.gz", "s1"), ("reads/s2_1.fq", "s2"), ("reads/ont.fastq", "ont")].map(|(a, b)| (a.to_string(), b.to_string()))
+        );
+        // galah's list: each genome is checked and hashed, the list goes as -l
+        let inv = sylph_profile(&cx, &parse(json!({"genome_list": "derep/representatives.txt", "reads": ["-odd_R1.fq"], "sample_names": ["odd"], "output": "o.tsv"}))).unwrap();
+        assert_eq!(inv.args, ["profile", "--output-file=o.tsv", "--reads=-odd_R1.fq", "--list=derep/representatives.txt"]);
+        assert!(inv.inputs.contains(&cx.cwd.join("mags/c.fasta")));
+        // a name starting with `-` after `--`
+        let inv = sylph_profile(&cx, &parse(json!({"genomes": ["mags/b.fna.gz"], "r1": ["-odd_R1.fq"], "r2": ["-odd_R2.fq"], "output": "o.tsv"}))).unwrap();
+        assert!(inv.args.ends_with(&["--".to_string(), "mags/b.fna.gz".to_string()]), "{:?}", inv.args);
+
+        let bad = |j: serde_json::Value| sylph_profile(&cx, &parse(j)).unwrap_err().field;
+        let reads = json!({"reads": ["reads/ont.fastq"], "output": "o.tsv"});
+        let with = |extra: serde_json::Value| {
+            let mut j = reads.clone();
+            j.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            j
+        };
+        assert_eq!(bad(reads.clone()), "databases"); // nothing to profile against
+        assert_eq!(bad(with(json!({"databases": ["mags/a.fa"]}))), "databases"); // not .syldb
+        assert_eq!(bad(with(json!({"genomes": ["mags/bin.1"]}))), "genomes"); // sylph wouldn't see a genome
+        assert_eq!(bad(with(json!({"genomes": ["derep/representatives.txt"]}))), "genomes");
+        assert_eq!(bad(with(json!({"genomes": ["mags/a.fa", "mags/a.fa"]}))), "genomes");
+        assert_eq!(bad(json!({"genomes": ["mags/a.fa"], "output": "o.tsv"})), "r1"); // no reads
+        assert_eq!(bad(json!({"genomes": ["mags/a.fa"], "r1": ["reads/s2_1.fq"], "output": "o.tsv"})), "r2");
+        assert_eq!(bad(with(json!({"genomes": ["mags/a.fa"], "sample_names": ["a", "b"]}))), "sample_names");
+        assert_eq!(bad(json!({"genomes": ["mags/a.fa"], "reads": ["reads/s2_1.fq", "reads/s2_2.fq"], "output": "o.tsv"})), "sample_names"); // both s2
+        assert_eq!(bad(with(json!({"genomes": ["mags/a.fa"], "minimum_ani": 101}))), "minimum_ani");
+        assert_eq!(bad(with(json!({"genomes": ["mags/a.fa"], "c": 0}))), "c");
+        assert_eq!(bad(json!({"genomes": ["mags/a.fa"], "reads": ["reads/ont.fastq"], "output": "reads/ont.fastq", "overwrite": true})), "output");
+        assert!(sylph_profile(&cx, &parse(with(json!({"genomes": ["mags/a.fa"], "minimum_ani": 90})))).unwrap().warnings[0].contains("under 95"));
+        assert_eq!(read_sample_name("x/D01-S1-A_R1_001.fastq.gz"), "D01-S1-A");
+        assert_eq!(read_sample_name("x/ont.fq"), "ont");
+    }
+
+    #[test]
+    fn abricate_args_checks_and_database_probe() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        write(d.path(), "genomes/s1.fna", ">c\nACGT\n");
+        write(d.path(), "-s2.fna", ">c\nACGT\n");
+        write(d.path(), "asm/s1/contigs.fa", ">c\nACGT\n");
+        let p: AbricateParams = parse(json!({"contigs": ["genomes/s1.fna", "-s2.fna"], "db": "plasmidfinder", "minid": 90, "mincov": 60, "nopath": true, "threads": 2, "output": "amr/x.tsv"}));
+        let inv = abricate(&cx, &p).unwrap();
+        assert_eq!(inv.args, ["--db=plasmidfinder", "--minid=90", "--mincov=60", "--nopath", "--threads=2", "genomes/s1.fna", "./-s2.fna"]);
+        assert_eq!(inv.stdout_to, Some(cx.cwd.join("amr/x.tsv")));
+        assert!(inv.database_probe.is_some());
+        let inv = abricate(&cx, &parse(json!({"contigs": ["genomes/s1.fna"], "output": "amr/y.tsv"}))).unwrap();
+        assert_eq!(inv.args, ["--db=ncbi", "genomes/s1.fna"]);
+        let bad = |j: serde_json::Value| abricate(&cx, &parse(j)).unwrap_err().field;
+        assert_eq!(bad(json!({"contigs": ["asm/s1/contigs.fa"], "output": "o.tsv"})), "contigs"); // FILE would say `contigs`
+        assert_eq!(bad(json!({"contigs": ["genomes/s1.fna", "genomes/s1.fna"], "output": "o.tsv"})), "contigs");
+        assert_eq!(bad(json!({"contigs": [], "output": "o.tsv"})), "contigs");
+        assert_eq!(bad(json!({"contigs": ["genomes/s1.fna"], "minid": 120, "output": "o.tsv"})), "minid");
+        assert_eq!(bad(json!({"contigs": ["genomes/s1.fna"], "output": "genomes/s1.fna", "overwrite": true})), "output");
+        assert!(serde_json::from_value::<AbricateParams>(json!({"contigs": ["a"], "db": "nope", "output": "o"})).is_err());
+        assert_eq!(serde_json::to_value(AbricateDb::UpecExpecVf).unwrap(), "upec_expec_vf");
+        assert_eq!(serde_json::to_value(AbricateDb::EcoliVf).unwrap(), AbricateDb::EcoliVf.name());
+
+        // the probe asks abricate itself: --help for the data folder, --list for the date
+        let data = d.path().join("env/db/vfdb");
+        write(&data, "sequences", ">v\nACGT\n");
+        write(&data, "sequences.nin", "x");
+        let prog = d.path().join("env/bin/abricate");
+        write(d.path(), "env/bin/abricate", &format!(
+            "#!/bin/sh\ncase \"$1\" in\n--help) echo '  --datadir [X]   Databases folder [{}].' ;;\n--list) printf 'DATABASE\\tSEQUENCES\\tDBTYPE\\tDATE\\nncbi\\t8232\\tnucl\\t2026-Apr-3\\nvfdb\\t4592\\tnucl\\t2026-Apr-3\\n' ;;\nesac\n",
+            d.path().join("env/db").display()
+        ));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let (files, db) = abricate_probe(&prog, &cx, &["--db=vfdb".to_string()]);
+            assert_eq!(files, [data.join("sequences"), data.join("sequences.nin")]);
+            let db = db.unwrap();
+            assert_eq!((db.name.as_str(), db.version.as_str(), db.sequences), ("vfdb", "2026-Apr-3", Some(4592)));
+            let (files, db) = abricate_probe(&prog, &cx, &["--db=card".to_string()]);
+            assert!(files.is_empty() && db.is_none());
+        }
+    }
+
+    fn producer(tool: &str, version: &str, db: Option<&str>, params: serde_json::Value) -> crate::record::CallRecord {
+        let mut v: serde_json::Value = json!({
+            "id": 3, "mcp_tool": tool, "status": "ok", "params": params, "argv": [tool], "version": version, "cwd": "/w",
+            "started": "t", "ended": "t", "inputs": [], "outputs": []
+        });
+        if let Some(db) = db {
+            v["database"] = json!({"name": "x", "version": db, "source": "test"});
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn hamronize_fills_in_what_the_producing_call_recorded() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        write(d.path(), "amr/s1.abricate-vfdb.tsv", "#FILE\tSEQUENCE\tSTART\tEND\tSTRAND\tGENE\tCOVERAGE\tCOVERAGE_MAP\tGAPS\t%COVERAGE\t%IDENTITY\tDATABASE\tACCESSION\tPRODUCT\tRESISTANCE\n");
+        write(d.path(), "typing/s1.amrfinder.tsv", "Protein id\tContig id\tStart\tStop\tStrand\tElement symbol\tElement name\n");
+        write(d.path(), "typing/old.amrfinder.tsv", "Protein identifier\tContig id\tStart\tStop\tStrand\tGene symbol\tSequence name\n");
+        write(d.path(), "typing/x.tsv", "Protein id\tContig id\tStart\tStop\tStrand\tElement symbol\tElement name\n");
+        let abr = producer("abricate", "abricate 1.4.0", Some("2026-Apr-3"), json!({}));
+        let p: HamronizeParams = parse(json!({"tool": "abricate", "report": "amr/s1.abricate-vfdb.tsv", "output": "amr/s1.abricate-vfdb.hamronized.tsv"}));
+        let inv = hamronize(&cx, &p, Some(&abr)).unwrap();
+        assert_eq!(
+            inv.args,
+            ["abricate", "--format=tsv", "--output=amr/s1.abricate-vfdb.hamronized.tsv", "--analysis_software_version=1.4.0", "--reference_database_version=2026-Apr-3", "amr/s1.abricate-vfdb.tsv"]
+        );
+        assert!(inv.warnings.is_empty(), "{:?}", inv.warnings);
+        let (m, _) = hamronize_metadata(&p, Some(&abr)).unwrap();
+        assert!(m.iter().all(|v| v.from.contains("abricate call (id 3)")), "{m:?}");
+        // without a producing call: the pinned version (with a warning), and the database version must be given
+        assert_eq!(hamronize(&cx, &p, None).unwrap_err().field, "reference_database_version");
+        let given: HamronizeParams = parse(json!({"tool": "abricate", "report": "amr/s1.abricate-vfdb.tsv", "output": "o.tsv", "reference_database_version": "2025-Jan-1"}));
+        let inv = hamronize(&cx, &given, None).unwrap();
+        assert!(inv.args.contains(&"--analysis_software_version=1.4.0".to_string()) && inv.warnings[0].contains("pinned"), "{:?}", inv.warnings);
+        // given and recorded differ: the given value wins, with a warning
+        let inv = hamronize(&cx, &given, Some(&abr)).unwrap();
+        assert!(inv.args.contains(&"--reference_database_version=2025-Jan-1".to_string()) && inv.warnings[0].contains("recorded 2026-Apr-3"));
+
+        // AMRFinderPlus: the sample from the report's name, the database from the record
+        let afp = producer("amrfinder", "4.2.7", Some("2026-10-29.1"), json!({"nucleotide": "genomes/s9.fna"}));
+        let p: HamronizeParams = parse(json!({"tool": "amrfinderplus", "report": "typing/s1.amrfinder.tsv", "output": "amr/s1.amrfp.hamronized.tsv"}));
+        let inv = hamronize(&cx, &p, Some(&afp)).unwrap();
+        assert_eq!(
+            inv.args,
+            ["amrfinderplus", "--format=tsv", "--output=amr/s1.amrfp.hamronized.tsv", "--analysis_software_version=4.2.7", "--reference_database_version=2026-10-29.1", "--input_file_name=s1", "typing/s1.amrfinder.tsv"]
+        );
+        // a report named otherwise: the assembly the call was given
+        let p: HamronizeParams = parse(json!({"tool": "amrfinderplus", "report": "typing/x.tsv", "output": "amr/x.hamronized.tsv"}));
+        assert!(hamronize(&cx, &p, Some(&afp)).unwrap().args.contains(&"--input_file_name=s9".to_string()));
+        assert_eq!(hamronize(&cx, &p, None).unwrap_err().field, "reference_database_version");
+        let p: HamronizeParams = parse(json!({"tool": "amrfinderplus", "report": "typing/x.tsv", "output": "amr/x.hamronized.tsv", "reference_database_version": "d"}));
+        assert_eq!(hamronize(&cx, &p, None).unwrap_err().field, "input_file_name");
+
+        let bad = |j: serde_json::Value, prod: Option<&crate::record::CallRecord>| hamronize(&cx, &parse(j), prod).unwrap_err().field;
+        // the wrong parser for the report, or a report from another tool's call
+        assert_eq!(bad(json!({"tool": "abricate", "report": "typing/s1.amrfinder.tsv", "output": "o.tsv"}), Some(&afp)), "report");
+        assert_eq!(bad(json!({"tool": "amrfinderplus", "report": "amr/s1.abricate-vfdb.tsv", "output": "o.tsv"}), Some(&afp)), "report");
+        assert_eq!(bad(json!({"tool": "amrfinderplus", "report": "typing/s1.amrfinder.tsv", "output": "o.tsv"}), Some(&abr)), "report");
+        // AMRFinderPlus 3.x column names, which hAMRonization 1.3.1 doesn't read
+        let e = hamronize(&cx, &parse(json!({"tool": "amrfinderplus", "report": "typing/old.amrfinder.tsv", "output": "o.tsv"})), Some(&afp)).unwrap_err();
+        assert!(e.message.contains("3.x"), "{e:?}");
+        assert_eq!(bad(json!({"tool": "abricate", "report": "amr/s1.abricate-vfdb.tsv", "output": "o.tsv", "input_file_name": "s1"}), Some(&abr)), "input_file_name");
+        assert_eq!(bad(json!({"tool": "abricate", "report": "amr/s1.abricate-vfdb.tsv", "output": "amr/s1.abricate-vfdb.tsv", "overwrite": true}), Some(&abr)), "output");
+        // a name isotable would take for an AMRFinderPlus report
+        let inv = hamronize(&cx, &parse(json!({"tool": "amrfinderplus", "report": "typing/s1.amrfinder.tsv", "output": "amr/s1.amrfinder.h.tsv"})), Some(&afp)).unwrap();
+        assert!(inv.warnings.iter().any(|w| w.contains("\"amrfinder\"")), "{:?}", inv.warnings);
+    }
+
+    #[test]
+    fn hamronize_summarize_args_and_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let cx = ctx(d.path());
+        write(d.path(), "amr/a.hamronized.tsv", "input_file_name\tgene_symbol\tgene_name\tanalysis_software_name\n");
+        write(d.path(), "amr/empty.hamronized.tsv", "");
+        write(d.path(), "amr/raw.tsv", "#FILE\tSEQUENCE\tGENE\n");
+        let inv = hamronize_summarize(&cx, &parse(json!({"reports": ["amr/a.hamronized.tsv", "amr/empty.hamronized.tsv"], "output": "amr/combined.tsv"}))).unwrap();
+        assert_eq!(inv.args, ["summarize", "--summary_type=tsv", "--output=amr/combined.tsv", "amr/a.hamronized.tsv", "amr/empty.hamronized.tsv"]);
+        let bad = |j: serde_json::Value| hamronize_summarize(&cx, &parse(j)).unwrap_err().field;
+        assert_eq!(bad(json!({"reports": ["amr/raw.tsv"], "output": "o.tsv"})), "reports");
+        assert_eq!(bad(json!({"reports": [], "output": "o.tsv"})), "reports");
+        assert_eq!(bad(json!({"reports": ["amr/a.hamronized.tsv", "amr/a.hamronized.tsv"], "output": "o.tsv"})), "reports");
+        assert_eq!(bad(json!({"reports": ["amr/a.hamronized.tsv"], "output": "amr/a.hamronized.tsv", "overwrite": true})), "output");
     }
 
     #[test]

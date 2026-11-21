@@ -490,6 +490,115 @@ done
 echo "harmonized" > "$out/klebsiella_pneumo_complex_hAMRonization_output.txt"
 "#;
 
+/// sylph 1.0.0's profile: options with `=` (or `-t N`, `-c N` as two words), genomes after `--`
+/// or in `--list`; one row per genome per sample, `True_cov` with -u.
+const SYLPH: &str = r#"
+[ "${1:-}" = --version ] && { echo "sylph 1.0.0"; exit 0; }
+[ "${1:-}" = profile ] || die "expected profile"
+shift
+out= ; u=0 ; samples= ; genomes=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output-file=*) out=${1#--output-file=} ;;
+    -t|-c) shift ;;
+    --minimum-ani=*) ;;
+    --estimate-unknown) u=1 ;;
+    --first-pairs=*) samples="$samples ${1#--first-pairs=}" ;;
+    --second-pairs=*) ;;
+    --reads=*) r=${1#--reads=}; [ -f "$r" ] || die "no $r"; samples="$samples $r" ;;
+    --list=*) for g in $(cat "${1#--list=}"); do genomes="$genomes $g"; done ;;
+    --) shift; genomes="$genomes $*"; break ;;
+    *) die "unknown option $1" ;;
+  esac
+  shift
+done
+for g in $genomes; do case "$g" in *.syldb|*.fa|*.fna|*.fasta) [ -f "$g" ] || die "no $g" ;; *) die "not a genome: $g" ;; esac; done
+cov=Eff_cov; [ $u = 1 ] && cov=True_cov
+printf 'Sample_file\tGenome_file\tTaxonomic_abundance\tSequence_abundance\tAdjusted_ANI\t%s\tANI_5-95_percentile\tEff_lambda\tLambda_5-95_percentile\tMedian_cov\tMean_cov_geq1\tContainment_ind\tNaive_ANI\tkmers_reassigned\tContig_name\n' $cov > "$out"
+n=0
+for g in $genomes; do n=$((n + 1)); done
+for s in $samples; do
+  for g in $genomes; do
+    seq=$((100 / n)); [ $u = 1 ] && seq=$((30 / n))
+    printf '%s\t%s\t%s\t%s\t99.50\t10.0\tNA-NA\t10.0\tNA-NA\t10\t10\t500/500\t99.5\t0\t%s_contig1 a genome\n' "$s" "$g" $((100 / n)) $seq "$(basename "$g")" >> "$out"
+  done
+done
+"#;
+
+/// abricate 1.4.0: `--help` names the data folder, `--list` its databases; a table on stdout, one
+/// hit per assembly.
+const ABRICATE: &str = r#"
+here=$(cd "$(dirname "$0")" && pwd)
+case "${1:-}" in
+  --version) echo "abricate 1.4.0"; exit 0 ;;
+  --help) echo "  --datadir [X]   Databases folder [$here/../abricate-db]."; exit 0 ;;
+  --list) printf 'DATABASE\tSEQUENCES\tDBTYPE\tDATE\nncbi\t8232\tnucl\t2026-Apr-3\nvfdb\t4592\tnucl\t2026-Apr-3\n'; exit 0 ;;
+esac
+db=ncbi ; nopath=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --db=*) db=${1#--db=} ;;
+    --minid=*|--mincov=*|--threads=*) ;;
+    --nopath) nopath=1 ;;
+    -*) die "unknown option $1" ;;
+    *) break ;;
+  esac
+  shift
+done
+[ -f "$here/../abricate-db/$db/sequences" ] || die "no database $db"
+printf '#FILE\tSEQUENCE\tSTART\tEND\tSTRAND\tGENE\tCOVERAGE\tCOVERAGE_MAP\tGAPS\t%%COVERAGE\t%%IDENTITY\tDATABASE\tACCESSION\tPRODUCT\tRESISTANCE\n'
+for f in "$@"; do
+  [ -f "$f" ] || die "no $f"
+  name=$f; [ $nopath = 1 ] && name=$(basename "$f")
+  printf '%s\tcontig_1\t1\t8\t+\tfimH\t1-8/8\t========\t0/0\t100.00\t99.10\t%s\tAJ_1\tType 1 fimbriae\t\n' "$name" "$db"
+done
+echo "Done." >&2
+"#;
+
+/// hAMRonization 1.3.1: the two converters (argparse refuses an option a tool doesn't take, and
+/// amrfinderplus needs input_file_name) and summarize. Rows carry a few of the 36 columns.
+const HAMRONIZE: &str = r#"
+[ "${1:-}" = --version ] && { echo "hamronize 1.3.1"; exit 0; }
+tool=$1; shift
+out= ; sv= ; dv= ; name=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --format=tsv|--summary_type=tsv) ;;
+    --output=*) out=${1#--output=} ;;
+    --analysis_software_version=*) sv=${1#--analysis_software_version=} ;;
+    --reference_database_version=*) dv=${1#--reference_database_version=} ;;
+    --input_file_name=*) [ "$tool" = amrfinderplus ] || die "unrecognized arguments: $1"; name=${1#--input_file_name=} ;;
+    -*) die "unrecognized arguments: $1" ;;
+    *) break ;;
+  esac
+  shift
+done
+h='input_file_name\tgene_symbol\tgene_name\treference_database_name\treference_database_version\treference_accession\tanalysis_software_name\tanalysis_software_version\tgenetic_variation_type\tamino_acid_mutation\n'
+case "$tool" in
+  abricate)
+    [ -n "$sv" ] && [ -n "$dv" ] || die "the following arguments are required"
+    : > "$out"
+    tail -n +2 "$1" | while IFS="$(printf '\t')" read -r f _ _ _ _ g _ _ _ _ _ db acc product _; do
+      [ -s "$out" ] || printf "$h" > "$out"
+      b=$(basename "$f"); printf '%s\t%s\t%s\t%s\t%s\t%s\tabricate\t%s\tgene_presence_detected\t\n' "${b%.*}" "$g" "$product" "$db" "$dv" "$acc" "$sv" >> "$out"
+    done ;;
+  amrfinderplus)
+    [ -n "$sv" ] && [ -n "$dv" ] && [ -n "$name" ] || die "the following arguments are required"
+    : > "$out"
+    tail -n +2 "$1" | while IFS="$(printf '\t')" read -r _ _ _ _ _ g gn _ type _; do
+      [ "$type" = VIRULENCE ] && continue
+      [ -s "$out" ] || printf "$h" > "$out"
+      printf '%s\t%s\t%s\tNCBI Reference Gene Database\t%s\tWP\tamrfinderplus\t%s\tgene_presence_detected\t\n' "$name" "$g" "$gn" "$dv" "$sv" >> "$out"
+    done ;;
+  summarize)
+    first=; for f in "$@"; do [ -s "$f" ] && { first=$f; break; }; done
+    if [ -n "$first" ]; then head -n 1 "$first" > "$out"; else printf "$h" > "$out"; fi
+    for f in "$@"; do [ -s "$f" ] && tail -n +2 "$f"; done | sort -u >> "$out"
+    echo "Written $# reports" >&2 ;;
+  *) die "unknown tool $tool" ;;
+esac
+"#;
+
 /// The irit binaries (isotable): `$IRIT_BIN_DIR`, else the workspace's target/release or target/debug.
 fn irit_bin_dir() -> PathBuf {
     let exe = format!("isotable{}", std::env::consts::EXE_SUFFIX);
@@ -528,9 +637,14 @@ fn setup() -> Setup {
         ("metabat2", METABAT2),
         ("SemiBin2", SEMIBIN2),
         ("galah", GALAH),
+        ("sylph", SYLPH),
+        ("abricate", ABRICATE),
+        ("hamronize", HAMRONIZE),
     ] {
         script(&tools, n, b);
     }
+    write(&work, "abricate-db/vfdb/sequences", ">fimH\nACGT\n");
+    write(&work, "abricate-db/vfdb/sequences.nin", "index");
     fake_amrfinder_db(&work.join("db/amrfinderplus/2026-10-29.1"));
     // mlst's bundled data, where the stand-in's `../db` is (as in Bioconda's package).
     for (f, text) in [("VERSION.txt", "2025-12-29\n"), ("scheme_species_map.tab", "#SCHEME\tGENUS\tSPECIES\n"),
@@ -1293,6 +1407,115 @@ fn assembly_typing_and_amr_with_stand_ins_join_in_isotable_and_replay() {
             assert!(p.is_file());
             continue;
         }
+        assert_eq!(&sha256(p), h, "{} differs after replay", p.display());
+    }
+}
+
+/// abricate and AMRFinderPlus on one assembly, both reports hAMRonized with the versions their
+/// calls recorded (a second session finds the producing call in the first session's record), joined
+/// with hamronize_summarize; sylph profiles reads against genomes; then everything is replayed from
+/// a clean folder, abricate's table (its stdout) included.
+#[test]
+fn abricate_hamronize_and_sylph_with_stand_ins_replay() {
+    let s = setup();
+    let work = &s.work;
+    let amr_db = work.join("db/amrfinderplus/2026-10-29.1");
+    let env = [("PATH", s.path.as_str()), ("AMRFINDER_DB", amr_db.to_str().unwrap())];
+    let mut c = Client::spawn(work, &[], &env);
+    let tools = c.request("tools/list", json!({}));
+    let list = tools["result"]["tools"].as_array().unwrap();
+    for want in ["sylph_profile", "abricate", "hamronize", "hamronize_summarize"] {
+        let t = list.iter().find(|t| t["name"] == want).unwrap_or_else(|| panic!("{want} missing"));
+        assert_eq!(t["inputSchema"]["additionalProperties"], false, "{want}");
+    }
+    // 1: abricate; its database's --list row goes into the result and the record
+    let r = c.call("abricate", json!({"contigs": ["asm/s1.fna"], "db": "vfdb", "nopath": true, "output": "amr/s1.abricate-vfdb.tsv"}));
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    assert_eq!(v["database"]["version"], "2026-Apr-3", "{v}");
+    assert_eq!(v["database"]["sequences"], 4592, "{v}");
+    assert_eq!(v["summary"]["genes"][0]["gene"], "fimH", "{v}");
+    assert_eq!(v["summary"]["files"][0]["file"], "s1.fna", "{v}");
+    assert_eq!(v["version"], "abricate 1.4.0");
+    assert_eq!(v["warnings"], json!([]), "{v}");
+    // the assembly must be named after the sample
+    write(work, "asm/s3/contigs.fa", ">c\nACGT\n");
+    let r = c.call("abricate", json!({"contigs": ["asm/s3/contigs.fa"], "output": "amr/x.tsv"}));
+    assert_eq!(r["structuredContent"]["field"], "contigs", "{r}");
+    // 2: AMRFinderPlus
+    let r = c.call("amrfinder", json!({"nucleotide": "asm/s1.fna", "plus": true, "output": "typing/s1.amrfinder.tsv"}));
+    assert_ne!(r["isError"], true, "{r}");
+    // 3: sylph against two genomes, single-end and paired samples
+    let r = c.call(
+        "sylph_profile",
+        json!({"genomes": ["asm/s1.fna", "asm/s2.fna"], "r1": ["reads/s1_R1.fastq"], "r2": ["reads/s1_R2.fastq"], "reads": ["reads/fail_R1.fastq"],
+               "sample_names": ["s1", "f"], "estimate_unknown": true, "threads": 2, "output": "sylph/profile.tsv"}),
+    );
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    assert_eq!(v["samples"][0]["sample"], "s1", "{v}");
+    assert_eq!(v["samples"][0]["genomes_detected"], 2, "{v}");
+    assert_eq!(v["samples"][0]["sequence_abundance_sum"], 30.0, "{v}");
+    assert_eq!(v["samples"][1]["sample"], "f", "{v}");
+    assert_eq!(v["samples"][0]["top"][0]["true_cov"], 10.0, "{v}");
+    assert_eq!(v["version"], "sylph 1.0.0");
+    let r = c.call("sylph_profile", json!({"genomes": ["db/VERSION.txt"], "reads": ["reads/s1_R1.fastq"], "output": "sylph/x.tsv"}));
+    assert_eq!(r["structuredContent"]["field"], "genomes", "{r}");
+    c.close();
+
+    // 4: a second session: the reports' producing calls are found in the first session's record
+    let mut c = Client::spawn(work, &["--run-id", "second"], &env);
+    let r = c.call("hamronize", json!({"tool": "abricate", "report": "amr/s1.abricate-vfdb.tsv", "output": "amr/s1.abricate-vfdb.hamronized.tsv"}));
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    let cmd = v["command"].as_str().unwrap();
+    assert!(cmd.contains("--analysis_software_version=1.4.0 --reference_database_version=2026-Apr-3"), "{cmd}");
+    assert_eq!(v["report_written_by"]["call_id"], 1, "{v}");
+    assert!(v["metadata"][1]["from"].as_str().unwrap().contains("abricate call (id 1)"), "{v}");
+    assert_eq!(v["summary"]["samples"][0]["input_file_name"], "s1", "{v}");
+    let r = c.call("hamronize", json!({"tool": "amrfinderplus", "report": "typing/s1.amrfinder.tsv", "output": "amr/s1.amrfp.hamronized.tsv"}));
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    let cmd = v["command"].as_str().unwrap();
+    assert!(cmd.contains("--analysis_software_version=4.2.7 --reference_database_version=2026-10-29.1 --input_file_name=s1"), "{cmd}");
+    // hAMRonization leaves out AMRFinderPlus's virulence rows
+    assert_eq!(v["summary"]["samples"][0]["genes"], json!(["blaZ", "mecA"]), "{v}");
+    // a report no call wrote (changed since) needs the database version
+    let text = std::fs::read_to_string(work.join("amr/s1.abricate-vfdb.tsv")).unwrap();
+    write(work, "elsewhere/s1.abricate.tsv", &text);
+    let r = c.call("hamronize", json!({"tool": "abricate", "report": "elsewhere/s1.abricate.tsv", "output": "amr/e.hamronized.tsv"}));
+    assert_eq!(r["structuredContent"]["field"], "reference_database_version", "{r}");
+    let r = c.call("hamronize_summarize", json!({"reports": ["amr/s1.abricate-vfdb.hamronized.tsv", "amr/s1.amrfp.hamronized.tsv"], "output": "amr/hamronization_combined_report.tsv"}));
+    assert_ne!(r["isError"], true, "{r}");
+    let v = &r["structuredContent"];
+    assert_eq!(v["summary"]["samples"][0]["genes"], json!(["blaZ", "fimH", "mecA"]), "{v}");
+    assert_eq!(v["summary"]["samples"][0]["by_tool"]["abricate 1.4.0, vfdb 2026-Apr-3"], json!(["fimH"]), "{v}");
+    c.close();
+
+    // run records: the first holds abricate's database and where its stdout went
+    let first: Value = serde_json::from_slice(&std::fs::read(work.join("irit-runs/test-run/run.json")).unwrap()).unwrap();
+    let call = |tool: &str| first["calls"].as_array().unwrap().iter().find(|c| c["mcp_tool"] == tool && c["status"] == "ok").unwrap().clone();
+    let abr = call("abricate");
+    assert_eq!(abr["database"]["name"], "vfdb", "{abr}");
+    assert_eq!(abr["stdout_to"], work.join("amr/s1.abricate-vfdb.tsv").to_str().unwrap(), "{abr}");
+    assert!(abr["inputs"].as_array().unwrap().iter().any(|i| i["path"].as_str().unwrap().ends_with("abricate-db/vfdb/sequences")), "{abr}");
+    assert_eq!(call("amrfinder")["database"]["version"], "2026-10-29.1");
+    // replay both sessions from a clean folder
+    let mut all: Vec<(PathBuf, String)> = Vec::new();
+    for run in ["test-run", "second"] {
+        let log: Value = serde_json::from_slice(&std::fs::read(work.join("irit-runs").join(run).join("run.json")).unwrap()).unwrap();
+        all.extend(log["calls"].as_array().unwrap().iter().filter(|c| c["status"] == "ok").flat_map(outputs));
+    }
+    for d in ["amr", "typing", "sylph"] {
+        std::fs::remove_dir_all(work.join(d)).unwrap();
+    }
+    for run in ["test-run", "second"] {
+        let out = Command::new("sh").arg(work.join("irit-runs").join(run).join("replay.sh")).env("PATH", &s.path).current_dir(work).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "replay of {run} failed: {err}");
+        assert!(err.contains("outputs match"), "{err}");
+    }
+    for (p, h) in &all {
         assert_eq!(&sha256(p), h, "{} differs after replay", p.display());
     }
 }

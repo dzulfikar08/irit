@@ -42,7 +42,18 @@ pub struct Invocation {
     pub assembly: Option<PathBuf>,
     /// Notes for the agent and the record that don't stop the call (data the record can't vouch for).
     pub warnings: Vec<String>,
+    /// A file the tool's stdout is saved to (it is also in `outputs`), for a tool that writes its
+    /// result only to stdout (abricate). Written only when the tool exits 0.
+    pub stdout_to: Option<PathBuf>,
+    /// The database version the call uses, when the checks before running already know it.
+    pub database: Option<crate::record::DatabaseRecord>,
+    /// Asks the resolved program about the database a call uses (it gets the call's arguments):
+    /// files to hash with the inputs, and its version for the record. abricate's `--list`.
+    pub database_probe: Option<DatabaseProbe>,
 }
+
+/// See [`Invocation::database_probe`].
+pub type DatabaseProbe = fn(&Path, &Ctx, &[String]) -> (Vec<PathBuf>, Option<crate::record::DatabaseRecord>);
 
 impl Invocation {
     pub(crate) fn new(tool: &'static str) -> Self {
@@ -60,6 +71,9 @@ impl Invocation {
             links: Vec::new(),
             assembly: None,
             warnings: Vec::new(),
+            stdout_to: None,
+            database: None,
+            database_probe: None,
         }
     }
     pub(crate) fn opt(&mut self, name: &str, value: impl ToString) {

@@ -2311,6 +2311,30 @@ pub(crate) mod tests {
         assert!(!store.path().join("mydb").exists());
     }
 
+    /// A single plain file (a sylph database) with a SHA-256 in the catalog: a download that
+    /// matches the MD5 but not the SHA-256 is refused, and nothing is kept.
+    #[test]
+    fn a_plain_file_is_checked_against_its_sha256_too() {
+        let body = b"a sylph database stand-in".to_vec();
+        let md5 = hex(&Md5::digest(&body));
+        let plain = |url: &str, sha: String| {
+            let mut e = entry(url, &md5, body.len(), "glob:*.gz");
+            e.format = Format::File;
+            e.extracted = body.len() as u64;
+            e.sha256 = Some(sha);
+            e
+        };
+        let (url, _) = serve(body.clone());
+        let store = tempfile::tempdir().unwrap();
+        let err = format!("{:#}", obtain(store.path(), &plain(&url, "0".repeat(64)), &opts()).unwrap_err());
+        assert!(err.contains("checksum mismatch") && err.contains("sha256"), "{err}");
+        assert!(!store.path().join("mydb").exists());
+        let (url, _) = serve(body.clone());
+        let e = plain(&url, hex(&Sha256::digest(&body)));
+        obtain(store.path(), &e, &opts()).unwrap();
+        assert_eq!(fs::read(target_dir(store.path(), &e).join("mydb.tar.gz")).unwrap(), body);
+    }
+
     /// A `.tar.zst` of the given files, compressed with a 2^28 window: above libzstd's default
     /// decoder limit (2^27), like `zstd --long=28`. Plain `zstd -d` refuses it without `--long=28`.
     fn zst_archive(files: &[(&str, &[u8])]) -> Vec<u8> {

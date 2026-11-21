@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### irit-mcp
+- **`sylph_profile`** (sylph 1.0.0): species profile of read sets against GTDB without assembly
+  (4.9 GiB peak with the R232 c1000 database), or against the study's own MAGs with
+  `estimate_unknown`, which gives the share of each sample the MAGs account for.
+- **`abricate`** (1.4.0): its bundled databases, among them vfdb (virulence) and plasmidfinder
+  (plasmid replicons). The database row from `abricate --list` and its files' hashes go into the
+  call record.
+- **`hamronize`** and **`hamronize_summarize`** (hAMRonization 1.3.1): abricate and AMRFinderPlus
+  reports to one format; the tool and database versions are taken from the call that wrote the
+  report. isotable reads the result.
+- amrfinder records its database version in the call record.
+
+### dblock
+- `sylph-gtdb-r232-c1000` (4.9 GB) and `sylph-gtdb-r220-c1000` (2.6 GB), sylph's prebuilt GTDB
+  databases; single-file entries can carry a SHA-256.
+
 ### isotable
 - Reads **hAMRonization** tables (per-tool and `summarize` TSV; columns matched against 1.1.9–1.4.1),
   so the resistance genes of any tool hAMRonization supports reach the table; a new `amr_by_tool`
