@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-11-21)
+
+New irit-mcp tools (sylph, abricate, hAMRonization), isotable reads hAMRonization and nf-core/mag
+results, and fixes from an end-to-end test on a simulated water-depot study: results kept under
+the client's size limit, progress messages for long calls, and calls recorded as soon as they start.
 
 ### irit-mcp
 - **`sylph_profile`** (sylph 1.0.0): species profile of read sets against GTDB without assembly
