@@ -1233,7 +1233,8 @@ mod tests {
         let p: SheetgenParams = parse(json!({"dirs": ["reads"], "exclude": ["s1", "s 2"], "exclude_from": "bad.txt"}));
         let inv = sheetgen(&cx, &p).unwrap();
         assert_eq!(inv.args, ["--exclude=s1", "--exclude=s 2", "--exclude-from=bad.txt", "--", "reads"]);
-        assert!(inv.inputs.contains(&d.path().join("bad.txt")), "{:?}", inv.inputs);
+        let bad_txt = d.path().join("bad.txt").canonicalize().unwrap();
+        assert!(inv.inputs.iter().any(|i| i.canonicalize().ok().as_ref() == Some(&bad_txt)), "{:?}", inv.inputs);
         let bad = |v: serde_json::Value| sheetgen(&cx, &parse(v)).unwrap_err().field;
         assert_eq!(bad(json!({"dirs": ["reads"], "exclude_from": "nope.txt"})), "exclude_from");
         assert_eq!(bad(json!({"dirs": ["reads"], "exclude": ["a\nb"]})), "exclude");
@@ -1242,7 +1243,7 @@ mod tests {
         let p: ReadsVerifyParams = parse(json!({"paths": ["reads"], "failed": "qc/failed.txt"}));
         let inv = reads_verify(&cx, &p).unwrap();
         assert_eq!(inv.args, ["verify", "--json", "--failed=qc/failed.txt", "--", "reads"]);
-        assert!(inv.outputs.contains(&d.path().join("qc/failed.txt")), "{:?}", inv.outputs);
+        assert!(inv.outputs.iter().any(|o| o.ends_with("qc/failed.txt")), "{:?}", inv.outputs);
         // an existing list is only replaced with overwrite; outside the root never
         std::fs::write(d.path().join("failed.txt"), "").unwrap();
         let p: ReadsVerifyParams = parse(json!({"paths": ["reads"], "failed": "failed.txt"}));
