@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### dock
+New tool: molecular docking with AutoDock Vina, with a validation step the usual workflow leaves out.
+
+- **`dock validate`** redocks a ligand whose crystal pose is already known and reports the
+  symmetry-corrected RMSD. On sorafenib in VEGFR-2 (PDB 4ASD) the top-ranked pose lands 0.78 A from
+  the crystal pose in about 30 seconds on six cores, and the contacts it finds are the published
+  binding mode: the Cys919 hinge bond, Glu885, and the DFG motif Asp1046/Phe1047. A method that
+  cannot reproduce a pose it has been shown has no business ranking novel compounds.
+- **`dock run`** docks a ligand from SMILES or a 3D file into a box given by `--center` or taken
+  from a bound reference ligand.
+- **Every pose is reported, not just the best.** In the 4ASD run six of nine poses sit more than
+  5 A from the top one -- in a different part of the same pocket, or flipped end to end -- while
+  still scoring -8.8 to -9.9 kcal/mol. A report that prints one affinity hides how little the
+  search preferred its winner.
+- **`dock env`** builds the tools: a `uv` virtualenv with pinned versions, plus the AutoDock Vina
+  binary checked against a recorded SHA-256. No conda. Two traps are handled because both cost an
+  afternoon: `openbabel` and `openbabel-wheel` together clobber the same module and kill the
+  interpreter on import, and MDAnalysis's distance-based bond guessing produces impossible
+  hydrogen valences on protonated proteins at every fudge factor, so the protein is read with
+  RDKit instead -- which bonds by proximity too, but respects covalent radii and valence limits.
+- **Reports are self-contained** — SVG written into the file, no JavaScript and no network.
+  ProLIF's own diagram fetches vis-network from a CDN and renders an empty box offline, which is
+  not a property you want in a figure attached to a thesis.
+- `manifest.json` records tool versions, every command in argv form, the box, the seed and output
+  hashes, so a score can be reproduced rather than just quoted.
+- The four stages are traits. `chematic` and `pdbtbx` already cover SMILES parsing, 3D embedding,
+  Gasteiger charges and structure I/O in pure Rust, so each stage can move over, but a replacement
+  only becomes the default once it is diffed against the Python one on the same inputs -- a harness
+  that still has to be built.
+- **Known limits, stated in the docs rather than discovered later:** the ligand is docked in the
+  protonation state its SMILES describes (`--receptor-ph` protonates only the receptor); undefined
+  stereocentres are resolved arbitrarily and warned about; metal ions and cofactors are removed with
+  the waters; only one protein chain is kept; and a run reproduces on the same machine with the same
+  `--cpus`, since Vina splits the seeded RNG across threads.
+- **Asp and Glu are given the charge they carry at physiological pH.** RDKit reads a carboxylate from
+  a PDB as a neutral acid while Arg/Lys/His come out correctly charged, so without this no negative
+  charge exists in the receptor and an ionic contact between a protonated amine and an Asp or Glu is
+  invisible -- the most common salt bridge in natural product work. Keyed off pdb2pqr's own residue
+  naming, not a guess. Carboxylate groups the fingerprint can see go from 0 to 84 on VEGFR-2; the
+  sorafenib control is unchanged at 0.78 A and the same 23 contacts.
+
+
 ## 0.7.0 (2026-11-21)
 
 New irit-mcp tools (sylph, abricate, hAMRonization), isotable reads hAMRonization and nf-core/mag
