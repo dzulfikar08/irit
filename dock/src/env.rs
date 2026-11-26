@@ -6,7 +6,7 @@
 //! stack from PyPI in one step, so that is what we use.
 //!
 //! Versions are pinned, not floated. The pins below are the set the pipeline was validated
-//! against (redocking sorafenib into VEGFR-2, PDB 4ASD, 0.75 A RMSD). Floating them would
+//! against (redocking sorafenib into VEGFR-2, PDB 4ASD, 0.78 A RMSD on six cores). Floating them would
 //! mean the tool silently changes its answers when a dependency releases.
 
 use anyhow::{Context, Result, bail};
@@ -75,6 +75,7 @@ impl Env {
     /// Locate an already-prepared environment without building one.
     pub fn open(root: PathBuf, vina_override: Option<PathBuf>) -> Result<Self> {
         let python = root.join("venv/bin/python");
+        let vina_override_was_none = vina_override.is_none();
         let vina = match vina_override {
             Some(v) => v,
             None => root.join("bin/vina"),
@@ -93,11 +94,20 @@ impl Env {
                 vina.display()
             );
         }
-        // Rewrite every time, not only in `ensure`. The script is embedded in the binary, so
+        // Check the managed binary every time. An interrupted `dock env` can leave a file
+        // here that passes `is_file()` and is not Vina. A binary supplied with --vina is the
+        // caller's business and is only checked for existence.
+        if vina_override_was_none && !verify(&vina)? {
+            bail!(
+                "{} does not match the recorded checksum for AutoDock Vina {VINA_VERSION}. \
+                 It is probably a partial download. Delete it and run `dock env` again.",
+                vina.display()
+            );
+        }
+        // Refresh every time, not only in `ensure`: the script is embedded in the binary, so
         // an upgraded dock against an existing DOCK_HOME would otherwise keep executing the
         // previous version's Python and report failures that were already fixed.
-        std::fs::write(&stages, STAGES_PY)
-            .with_context(|| format!("writing {}", stages.display()))?;
+        write_stages(&stages)?;
         Ok(Env { root, python, vina, stages, recorded: Default::default() })
     }
 
@@ -126,8 +136,7 @@ impl Env {
         // Always rewrite: the script ships inside the binary, so an upgraded dock
         // must not keep running the previous version's Python.
         let stages = root.join("stages.py");
-        std::fs::write(&stages, STAGES_PY)
-            .with_context(|| format!("writing {}", stages.display()))?;
+        write_stages(&stages)?;
 
         let vina = match vina_override {
             Some(v) => {
@@ -154,6 +163,7 @@ impl Env {
             .with_context(|| format!("running the {stage} stage"))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
+            let err = if err.trim().is_empty() { String::from_utf8_lossy(&out.stdout).to_string() } else { err.to_string() };
             let tail: Vec<&str> = err.lines().rev().take(12).collect();
             let tail: Vec<&str> = tail.into_iter().rev().collect();
             bail!("{stage} failed:\n{}", tail.join("\n"));
@@ -177,7 +187,12 @@ impl Env {
 
     /// Everything run so far, in order.
     pub fn commands(&self) -> Vec<Vec<String>> {
-        self.recorded.lock().map(|r| r.clone()).unwrap_or_default()
+        // Recover rather than return an empty list: a manifest that claims to hold every
+        // command and holds none is worse than one that is missing.
+        match self.recorded.lock() {
+            Ok(r) => r.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     pub fn versions(&self) -> Result<serde_json::Value> {
@@ -206,13 +221,22 @@ fn ensure_vina(root: &Path) -> Result<PathBuf> {
     );
     eprintln!("dock: downloading AutoDock Vina {VINA_VERSION}");
     let curl = which("curl").context("`curl` is needed to download AutoDock Vina")?;
-    run(
-        Command::new(curl).arg("-sSL").arg("--fail").arg("-o").arg(&path).arg(&url),
+    // Download to a side name and rename only once the checksum matches. Writing straight to
+    // `bin/vina` leaves a truncated binary at the final name when a transfer is interrupted,
+    // and `Env::open` would then hand that to the user as if it were Vina.
+    let partial = bin.join("vina.partial");
+    let _ = std::fs::remove_file(&partial);
+    let outcome = run(
+        Command::new(curl).arg("-sSL").arg("--fail").arg("-o").arg(&partial).arg(&url),
         "downloading vina",
-    )?;
-    let got = sha256(&path)?;
+    );
+    if let Err(e) = outcome {
+        let _ = std::fs::remove_file(&partial);
+        return Err(e);
+    }
+    let got = sha256(&partial)?;
     if got != build.sha256 {
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&partial);
         bail!(
             "downloaded Vina does not match its recorded checksum.\n  expected {}\n  got      {}\n\
              The release asset changed, or the download was tampered with. Not using it.",
@@ -220,7 +244,9 @@ fn ensure_vina(root: &Path) -> Result<PathBuf> {
             got
         );
     }
-    make_executable(&path)?;
+    make_executable(&partial)?;
+    std::fs::rename(&partial, &path)
+        .with_context(|| format!("installing {}", path.display()))?;
     Ok(path)
 }
 
@@ -252,9 +278,38 @@ fn make_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Put the embedded Python where the interpreter can read it.
+///
+/// Unchanged content is left alone, and a change is staged next to the target and renamed:
+/// a plain `write` truncates the file, and docking several ligands in parallel against one
+/// DOCK_HOME would then let one process blank the script another is mid-read, surfacing as a
+/// SyntaxError that looks like it came from the user's input.
+fn write_stages(stages: &Path) -> Result<()> {
+    if std::fs::read_to_string(stages).is_ok_and(|cur| cur == STAGES_PY) {
+        return Ok(());
+    }
+    let tmp = stages.with_extension(format!("py.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, STAGES_PY)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, stages)
+        .with_context(|| format!("installing {}", stages.display()))?;
+    Ok(())
+}
+
 pub fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(name)).find(|c| c.is_file())
+    std::env::split_paths(&path).map(|d| d.join(name)).find(|c| is_executable(c))
+}
+
+#[cfg(unix)]
+fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(p: &Path) -> bool {
+    p.is_file()
 }
 
 fn run(cmd: &mut Command, what: &str) -> Result<()> {

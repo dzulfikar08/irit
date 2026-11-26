@@ -8,8 +8,9 @@
 //! SMARTS matching and PDB/mmCIF I/O, so each stage can be reimplemented one at a time —
 //! but a conformer can have flawless bond lengths and still be the wrong shape, so a swap
 //! is only allowed to land when it is checked against the Python implementation on the same
-//! inputs. `dock validate --compare` exists for exactly that: it runs both backends and
-//! diffs them. Do not retire a Python stage without that diff.
+//! inputs. The mechanism for that -- running both backends over a set of ligands and diffing
+//! them -- is not built yet, and must be before the first stage moves. Do not retire a
+//! Python stage on the strength of a passing test suite alone.
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,9 @@ pub struct PreparedLigand {
     pub rotatable_bonds: usize,
     /// How the 3D coordinates were produced, for the manifest.
     pub source: String,
+    /// Things the user needs to know about this ligand: undefined stereocentres, a
+    /// force field that had no parameters. Shown and recorded, never swallowed.
+    pub warnings: Vec<String>,
 }
 
 /// A receptor ready for docking.
@@ -60,7 +64,9 @@ pub trait LigandPrep {
     /// From SMILES: embed 3D coordinates, then write PDBQT.
     fn prepare_smiles(&self, smiles: &str, out: &Path) -> Result<PreparedLigand>;
     /// From a file that already carries 3D coordinates (SDF/MOL2/PDB).
-    fn prepare_file(&self, input: &Path, out: &Path) -> Result<PreparedLigand>;
+    /// `template_smiles` restores bond orders; a PDB cannot be read without one.
+    fn prepare_file(&self, input: &Path, out: &Path, template_smiles: Option<&str>)
+        -> Result<PreparedLigand>;
 }
 
 /// Protonate a receptor and write its PDBQT.
@@ -100,12 +106,29 @@ pub trait Profiler {
     fn profile(&self, receptor: &PreparedReceptor, docked: &Path, pose: usize) -> Result<Vec<Contact>>;
 }
 
+/// Reading structures: splitting a complex, and placing a box around a bound ligand.
+pub trait Structure {
+    /// Box around a reference ligand, padded.
+    fn box_from_reference(&self, reference: &Path, padding: f64) -> Result<Box3>;
+    /// Separate a named ligand from the protein. Returns the chain kept and the copies found.
+    fn split(&self, input: &Path, ligand: &str, out_receptor: &Path, out_ligand: &Path)
+        -> Result<SplitResult>;
+}
+
+#[derive(Debug, Clone)]
+pub struct SplitResult {
+    pub ligand_copies: Vec<String>,
+    pub receptor_chain: String,
+}
+
 /// Symmetry-aware RMSD between a docked pose and a reference ligand.
 ///
 /// Symmetry matters: a phenyl ring flipped 180 degrees is the same structure, and an
 /// implementation that compares atoms by index reports a large RMSD for an identical pose.
 pub trait Rmsd {
-    fn rmsd_to_reference(&self, docked: &Path, reference: &Path, smiles: &str) -> Result<Vec<f64>>;
+    /// `smiles` restores the bond orders a PDB does not carry; `None` skips that.
+    fn rmsd_to_reference(&self, docked: &Path, reference: &Path, smiles: Option<&str>)
+        -> Result<Vec<f64>>;
 }
 
 /// Everything a run needs. Swapping a stage to Rust means swapping one field.
@@ -115,4 +138,5 @@ pub struct Backend {
     pub engine: Box<dyn Engine>,
     pub profiler: Box<dyn Profiler>,
     pub rmsd: Box<dyn Rmsd>,
+    pub structure: Box<dyn Structure>,
 }

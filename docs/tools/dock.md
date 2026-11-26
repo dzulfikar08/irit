@@ -19,9 +19,10 @@ Three failure modes show up again and again in that output:
   fitted to a training set. It ranks poses of one molecule well. It ranks *different*
   molecules against each other much less well, and it is not a measured affinity. A
   difference of 0.5 kcal/mol between two compounds is not evidence that one binds tighter.
-* **Only the best pose is shown.** Vina returns several, and in a typical run some of them
-  are not in the binding site at all — they are in whatever surface groove scored next best.
-  A report that prints one number hides that the search found nothing convincing.
+* **Only the best pose is shown.** Vina returns several, and in a typical run a good few sit
+  well away from the top one — in a different part of the same pocket, or the molecule
+  flipped end to end. A report that prints one number hides how little the search preferred
+  its winner.
 * **Nothing is validated.** If the protein has a known inhibitor with a solved structure,
   redocking it is a free control: a method that cannot reproduce a pose it has already been
   shown has no business ranking novel compounds.
@@ -40,6 +41,29 @@ whether it is soluble, whether it reaches the target in a cell, or whether the p
 adopts this conformation in solution. Docking searches a rigid receptor with no water. It
 answers "does this shape fit here", and that is all.
 
+**What this implementation in particular does not do**, each of which can change a result
+without any error appearing:
+
+* **The ligand is docked exactly as written.** `--receptor-ph` protonates the receptor and
+  nothing else. A carboxylic acid given as `C(=O)O` docks neutral, an amine as `NH2` docks
+  neutral. Vina decides hydrogen-bond donors and acceptors from the hydrogens present, so
+  for anything that ionises near physiological pH you must write the charged form yourself.
+  This is the most common way to get a confidently wrong pose out of this tool.
+* **Undefined stereocentres are resolved arbitrarily.** The seed makes the choice repeatable,
+  not correct. `dock` warns when it finds any; do not ignore the warning.
+* **Metal ions and cofactors are removed with the waters.** `dock validate` strips every
+  non-polymer residue, so zinc, magnesium, heme, NADPH and FAD are gone. For a
+  metalloenzyme or a cofactor-dependent pocket the result is a hole where the chemistry was,
+  and the score still looks ordinary. Those targets need manual preparation this tool does
+  not provide.
+* **Only one protein chain is kept.** A site that forms at a dimer interface is built
+  half-missing.
+* **Salt bridges are not reported.** The receptor is read without formal charges, so the
+  fingerprint's ionic terms do not fire. Absence of an ionic contact in the report is not
+  evidence of its absence in the pose.
+* **One conformer is embedded per ligand.** Vina searches torsions itself, but the ring
+  pucker it starts from is fixed for the whole run.
+
 Reviewers increasingly want a molecular dynamics run and a binding free energy calculation
 on top. Those are a different scale of computation — a 100 ns trajectory is tens of millions
 of sequential force evaluations — and `dock` does not do them.
@@ -56,7 +80,9 @@ dock validate --structure 4asd.cif --ligand-code BAX \
   --out runs/sorafenib-control
 
 # dock a new compound into the same pocket
-dock run --receptor 4asd.cif --smiles 'O1c2c(cc(O)cc2O)CC(O)C1c1ccc(O)c(O)c1' \
+# note the stereocentres: without @ markers this is "catechin or epicatechin, pick one"
+dock run --receptor 4asd.cif \
+  --smiles 'O[C@@H]1Cc2c(O)cc(O)cc2O[C@@H]1c1ccc(O)c(O)c1' \
   --name epicatechin --reference runs/sorafenib-control/crystal_ligand.pdb \
   --out runs/epicatechin
 ```
@@ -90,9 +116,10 @@ change when a dependency releases.
 | `--padding <a>` | Padding around `--reference`. Default 5 Å |
 | `--exhaustiveness <n>` | How hard Vina searches. Default 16 |
 | `--num-modes <n>` | How many poses to keep. Default 9 |
-| `--seed <n>` | Random seed. Fixed at 42 by default so a run repeats exactly |
+| `--seed <n>` | Random seed. Fixed at 42 by default. Reproduces a run on the same machine with the same `--cpus`; Vina splits the seeded RNG across threads, so a different core count gives different poses |
 | `--cpus <n>` | Threads. Defaults to every core |
-| `--ph <n>` | pH used to decide protonation states. Default 7.4 |
+| `--receptor-ph <n>` | pH used to protonate the **receptor**. Default 7.4. Does not touch the ligand |
+| `--template-smiles <s>` | SMILES for `--ligand-file`, to restore bond orders. Required for a `.pdb` ligand |
 | `--out <dir>` | Where to write results |
 | `--overwrite` | Replace an existing output directory |
 
@@ -142,16 +169,29 @@ replacements available now: `chematic` covers SMILES parsing, 3D embedding and G
 charges, and `pdbtbx` reads PDB and mmCIF. Moving a stage over removes a large dependency
 and is considerably faster. It is also a good way to introduce a subtle chemistry error, so
 a replacement is only allowed to become the default once it has been diffed against the
-Python stage on the same inputs.
+Python stage on the same inputs. That diffing harness does not exist yet and has to be built
+before the first stage moves.
 
 ## Validation
 
 The pipeline reproduces the crystallographic pose of sorafenib in VEGFR-2 (PDB 4ASD) at
-**0.78 Å** RMSD, with the top-ranked pose being the correct one, in about 30 seconds on six
-cores. The contacts it finds are the published binding mode: the hinge hydrogen bond to
-Cys919, the αC-helix glutamate Glu885, and the DFG motif Asp1046 and Phe1047 that mark a
-type-II inhibitor.
+**0.78 Å** RMSD in about 30 seconds on six cores. The pose that matches is the top-ranked
+one, which is the honest benchmark — most sub-Ångström figures in the literature are
+best-of-N across the returned poses.
 
-Six of the nine returned poses sit more than 5 Å from the best one, in other pockets, while
-still scoring between −8.8 and −9.9 kcal/mol. That is normal, and it is the reason the
-report prints every pose rather than the winner alone.
+The contacts recovered are sorafenib's published binding mode: two hydrogen bonds to the
+Cys919 **backbone** at the hinge, the urea to Glu885, the urea carbonyl to the Asp1046
+backbone NH, and the chloro-trifluoromethylphenyl group packed into the allosteric back
+pocket (Leu889, Ile892, Leu1019, Ile1044) that the DFG-out conformation opens. That last
+part is what makes sorafenib a type-II inhibitor — contacting Asp1046 and Phe1047 alone does
+not, since plenty of type-I inhibitors touch the DFG aspartate too.
+
+Six of the nine returned poses sit more than 5 Å from the best one — in a different part of
+the same pocket, or flipped end to end — while still scoring between −8.8 and −9.9 kcal/mol.
+That is normal, and it is the reason the report prints every pose rather than the winner.
+
+Two caveats on what this control does and does not establish. The box is placed around the
+crystal ligand itself, so the search is told where to look; that is standard practice for a
+redocking control but it is not a blind test. And `dock validate` splits the structure with
+gemmi before protonating, which `dock run` does not do, so the two paths do not prepare the
+receptor identically.

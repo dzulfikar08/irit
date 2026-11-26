@@ -12,8 +12,11 @@ Two traps are handled here on purpose, because both cost an afternoon to find:
 
   * MDAnalysis guesses bonds by distance, and on a protonated protein that produces
     hydrogens with two bonds, which RDKit then refuses to sanitize. No fudge factor fixes
-    it (0.45-0.70 all fail, in different places). We build the protein through RDKit's PDB
-    reader instead, which uses standard residue connectivity templates.
+    it (0.45-0.70 all fail, in different places). We use RDKit's PDB reader instead.
+    Note what that is and is not: RDKit also bonds by proximity ("connect the dots"), not
+    from residue templates -- only bond *orders* for recognised standard residues come from
+    a table. It works here because it respects covalent radii and valence limits, not
+    because it knows what a residue looks like.
 """
 
 import argparse, json, sys, warnings
@@ -50,19 +53,34 @@ def prep_ligand(a):
     from rdkit.Chem import AllChem, rdMolDescriptors
     from meeko import MoleculePreparation, PDBQTWriterLegacy
 
+    warnings_out = []
     if a.smiles:
         mol = Chem.MolFromSmiles(a.smiles)
         if mol is None:
             raise SystemExit(f"could not parse SMILES: {a.smiles}")
+        warnings_out += _stereo_warnings(mol)
         mol = Chem.AddHs(mol)
         ps = AllChem.ETKDGv3()
         ps.randomSeed = a.seed
         if AllChem.EmbedMolecule(mol, ps) != 0:
             raise SystemExit("3D embedding failed; the molecule may be over-constrained")
-        AllChem.MMFFOptimizeMolecule(mol, maxIters=2000)
-        source = f"SMILES, ETKDGv3 seed {a.seed}, MMFF94 minimised"
+        # -1 means MMFF has no parameters for this molecule and nothing was minimised;
+        # 1 means it ran out of iterations. Saying "MMFF94 minimised" either way is a lie.
+        rc = AllChem.MMFFOptimizeMolecule(mol, maxIters=2000)
+        if rc == -1:
+            source = f"SMILES, ETKDGv3 seed {a.seed}, NOT minimised (no MMFF94 parameters)"
+            warnings_out.append(
+                "MMFF94 has no parameters for this molecule; the conformer is the raw "
+                "ETKDG embedding. Check the geometry before trusting the pose."
+            )
+        elif rc == 1:
+            source = f"SMILES, ETKDGv3 seed {a.seed}, MMFF94 not converged in 2000 steps"
+            warnings_out.append("MMFF94 minimisation did not converge in 2000 steps.")
+        else:
+            source = f"SMILES, ETKDGv3 seed {a.seed}, MMFF94 minimised"
     else:
-        mol = _read_3d(a.input)
+        mol = _read_3d(a.input, a.template_smiles)
+        warnings_out += _stereo_warnings(mol)
         mol = Chem.AddHs(mol, addCoords=True)
         source = f"3D coordinates from {a.input}"
 
@@ -78,11 +96,43 @@ def prep_ligand(a):
         "heavy_atoms": mol.GetNumHeavyAtoms(),
         "rotatable_bonds": rdMolDescriptors.CalcNumRotatableBonds(mol),
         "source": source,
+        "warnings": warnings_out,
     })
 
 
-def _read_3d(path):
+def _stereo_warnings(mol):
+    """Undefined stereocentres are resolved arbitrarily, so say so.
+
+    ETKDG honours assigned stereochemistry and invents the rest. The seed makes the choice
+    reproducible, not correct: docking (2R,3R)-epicatechin and (2R,3S)-catechin are different
+    experiments, and a SMILES without @ markers silently picks one.
+    """
+    from rdkit.Chem import FindMolChiralCenters
+
+    out = []
+    unassigned = [c for c in FindMolChiralCenters(mol, includeUnassigned=True, useLegacyImplementation=False)
+                  if c[1] == "?"]
+    if unassigned:
+        idx = ", ".join(str(i) for i, _ in unassigned)
+        out.append(
+            f"{len(unassigned)} stereocentre(s) are undefined (atom {idx}); one diastereomer "
+            f"was chosen arbitrarily. Give the stereochemistry in the SMILES if it matters."
+        )
+    return out
+
+
+
+def _read_3d(path, template_smiles=None):
+    """Read a ligand that already has 3D coordinates.
+
+    A PDB carries no bond orders: RDKit's parser bonds HETATM ligands by proximity and makes
+    every bond single, so a benzene ring comes back as cyclohexane, AddHs fills the invented
+    valences, and Meeko then types an aromatic ring as sp3 with rotatable bonds. Nothing
+    errors. So a .pdb ligand needs a template SMILES to restore the bond orders, and without
+    one we refuse rather than dock a molecule that is not the one the user meant.
+    """
     from rdkit import Chem
+    from rdkit.Chem import AllChem
 
     p = path.lower()
     if p.endswith(".sdf") or p.endswith(".mol"):
@@ -90,7 +140,22 @@ def _read_3d(path):
     elif p.endswith(".mol2"):
         mol = Chem.MolFromMol2File(path, removeHs=False)
     elif p.endswith(".pdb"):
+        if not template_smiles:
+            raise SystemExit(
+                f"{path} is a PDB, which carries no bond orders: every bond would be read as "
+                f"single and the ligand docked as the wrong molecule. Pass --template-smiles "
+                f"with the ligand's SMILES, or supply an SDF instead."
+            )
         mol = Chem.MolFromPDBFile(path, removeHs=False)
+        if mol is not None:
+            try:
+                mol = AllChem.AssignBondOrdersFromTemplate(Chem.MolFromSmiles(template_smiles), mol)
+            except ValueError as e:
+                raise SystemExit(
+                    f"--template-smiles does not match the atoms in {path} ({e}). The template "
+                    f"must be the same molecule, atom for atom; check for missing atoms in the "
+                    f"structure or a different protonation state."
+                )
     else:
         raise SystemExit(f"unsupported ligand format: {path} (use .sdf, .mol2 or .pdb)")
     if mol is None:
@@ -111,6 +176,9 @@ def prep_receptor(a):
     cmd = [
         sys.executable, "-I", "-m", "pdb2pqr",
         "--ff=AMBER", f"--with-ph={a.ph}", "--titration-state-method=propka",
+        # pdb2pqr keeps waters unless told otherwise, and a docking receptor is rigid and
+        # dry by construction; leaving them in puts HOH contacts in the interaction report.
+        "--drop-water",
         f"--pdb-output={protonated}", a.input, pqr,
     ]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -143,7 +211,12 @@ def prep_receptor(a):
 
 
 def _protein(path):
-    """Protein as an RDKit mol. See the module docstring for why not MDAnalysis."""
+    """Protein as an RDKit mol. See the module docstring for why not MDAnalysis.
+
+    Formal charges are not assigned here, so ProLIF's Anionic/Cationic terms -- which key off
+    explicit formal charges -- may not fire. Salt bridges are therefore not something this
+    report can be trusted to list. Documented as a limitation rather than papered over.
+    """
     from rdkit import Chem, RDLogger
 
     RDLogger.DisableLog("rdApp.*")
@@ -179,8 +252,9 @@ def profile(a):
     contacts = []
     for (_lres, pres), inters in fp.ifp[0].items():
         for kind, metas in inters.items():
-            d = min((m.get("distance") or 0.0) for m in metas) if metas else 0.0
-            contacts.append({"residue": str(pres), "kind": kind, "distance": round(float(d), 2)})
+            known = [m["distance"] for m in metas if m.get("distance") is not None]
+            d = round(float(min(known)), 2) if known else None
+            contacts.append({"residue": str(pres), "kind": kind, "distance": d})
     contacts.sort(key=lambda c: (c["residue"], c["kind"]))
     _out({"contacts": contacts})
 
@@ -194,7 +268,13 @@ def rmsd(a):
     if ref is None:
         raise SystemExit(f"could not read reference {a.reference}")
     if a.smiles:
-        ref = AllChem.AssignBondOrdersFromTemplate(Chem.MolFromSmiles(a.smiles), ref)
+        try:
+            ref = AllChem.AssignBondOrdersFromTemplate(Chem.MolFromSmiles(a.smiles), ref)
+        except ValueError as e:
+            raise SystemExit(
+                f"--smiles does not match the deposited ligand atom for atom ({e}). Check for "
+                f"unresolved atoms in the structure, or a different protonation state."
+            )
     ref = Chem.RemoveHs(ref)
 
     _, mol = _pose(a.docked, 0)
@@ -232,30 +312,45 @@ def split(a):
     st.setup_entities()
     st.remove_alternative_conformations()
     st.remove_hydrogens()
+    # Only the first model, and only the chain we are going to keep. Collecting every copy
+    # across every chain would put 2+ ligands in the reference file, which makes box_from
+    # span two sites and gives rmsd a reference with twice the atoms.
     found = []
+    for model in st:
+        for chain in model:
+            for res in chain:
+                if res.name == a.ligand:
+                    found.append(f"{chain.name}/{res.seqid.num}")
+        break
+    if not found:
+        raise SystemExit(f"ligand {a.ligand} not found in {a.input}")
+    keep = a.chain or found[0].split("/")[0]
+    kept = [f for f in found if f.split("/")[0] == keep]
+    if not kept:
+        raise SystemExit(f"ligand {a.ligand} is not in chain {keep}; it is in {found}")
     lig = gemmi.Structure()
     lig.add_model(gemmi.Model("1"))
     ch = gemmi.Chain("L")
     for model in st:
         for chain in model:
+            if chain.name != keep:
+                continue
             for res in chain:
-                if res.name == a.ligand:
+                if res.name == a.ligand and f"{chain.name}/{res.seqid.num}" == kept[0]:
                     ch.add_residue(res)
-                    found.append(f"{chain.name}/{res.seqid.num}")
-    if not found:
-        raise SystemExit(f"ligand {a.ligand} not found in {a.input}")
+        break
     lig[0].add_chain(ch)
     lig.setup_entities()
     lig.write_pdb(a.out_ligand)
+    # Removes every non-polymer residue: waters, but also metal ions and cofactors.
     st.remove_ligands_and_waters()
-    keep = a.chain or found[0].split("/")[0]
     for model in st:
         for chain in list(model):
             if chain.name != keep:
                 model.remove_chain(chain.name)
     st.setup_entities()
     st.write_pdb(a.out_receptor)
-    _out({"ligand_copies": found, "receptor_chain": keep})
+    _out({"ligand_copies": found, "receptor_chain": keep, "ligand_used": kept[0]})
 
 
 def main():
@@ -267,6 +362,7 @@ def main():
     p = sub.add_parser("prep-ligand"); p.set_defaults(fn=prep_ligand)
     p.add_argument("--smiles"); p.add_argument("--input")
     p.add_argument("--out", required=True); p.add_argument("--seed", type=int, default=0xC0FFEE)
+    p.add_argument("--template-smiles", dest="template_smiles")
 
     p = sub.add_parser("prep-receptor"); p.set_defaults(fn=prep_receptor)
     p.add_argument("--input", required=True); p.add_argument("--out-dir", required=True)

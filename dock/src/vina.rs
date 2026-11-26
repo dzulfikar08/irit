@@ -47,6 +47,13 @@ impl Engine for Vina {
                 if err.trim().is_empty() { stdout.to_string() } else { err.to_string() }
             );
         }
+        if !out.exists() {
+            bail!(
+                "vina exited successfully but wrote no pose file at {}. \
+                 Treating that as a failure rather than carrying on with nothing.",
+                out.display()
+            );
+        }
         let poses = parse_table(&stdout)?;
         if poses.is_empty() {
             bail!(

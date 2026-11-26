@@ -13,14 +13,15 @@ New tool: molecular docking with AutoDock Vina, with a validation step the usual
 - **`dock run`** docks a ligand from SMILES or a 3D file into a box given by `--center` or taken
   from a bound reference ligand.
 - **Every pose is reported, not just the best.** In the 4ASD run six of nine poses sit more than
-  5 A from the top one, in other pockets, while still scoring -8.8 to -9.9 kcal/mol. A report that
-  prints one affinity hides that.
+  5 A from the top one -- in a different part of the same pocket, or flipped end to end -- while
+  still scoring -8.8 to -9.9 kcal/mol. A report that prints one affinity hides how little the
+  search preferred its winner.
 - **`dock env`** builds the tools: a `uv` virtualenv with pinned versions, plus the AutoDock Vina
   binary checked against a recorded SHA-256. No conda. Two traps are handled because both cost an
   afternoon: `openbabel` and `openbabel-wheel` together clobber the same module and kill the
   interpreter on import, and MDAnalysis's distance-based bond guessing produces impossible
-  hydrogen valences on protonated proteins at every fudge factor, so the protein is built through
-  RDKit's residue templates instead.
+  hydrogen valences on protonated proteins at every fudge factor, so the protein is read with
+  RDKit instead -- which bonds by proximity too, but respects covalent radii and valence limits.
 - **Reports are self-contained** — SVG written into the file, no JavaScript and no network.
   ProLIF's own diagram fetches vis-network from a CDN and renders an empty box offline, which is
   not a property you want in a figure attached to a thesis.
@@ -28,7 +29,13 @@ New tool: molecular docking with AutoDock Vina, with a validation step the usual
   hashes, so a score can be reproduced rather than just quoted.
 - The four stages are traits. `chematic` and `pdbtbx` already cover SMILES parsing, 3D embedding,
   Gasteiger charges and structure I/O in pure Rust, so each stage can move over, but a replacement
-  only becomes the default once it is diffed against the Python one on the same inputs.
+  only becomes the default once it is diffed against the Python one on the same inputs -- a harness
+  that still has to be built.
+- **Known limits, stated in the docs rather than discovered later:** the ligand is docked in the
+  protonation state its SMILES describes (`--receptor-ph` protonates only the receptor); undefined
+  stereocentres are resolved arbitrarily and warned about; metal ions and cofactors are removed with
+  the waters; only one protein chain is kept; salt bridges are not detected; and a run reproduces on
+  the same machine with the same `--cpus`, since Vina splits the seeded RNG across threads.
 
 
 ## 0.7.0 (2026-11-21)

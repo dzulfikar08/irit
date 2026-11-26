@@ -55,6 +55,39 @@ pub fn clean_version(v: &str) -> Option<String> {
     }
 }
 
+/// Replace the user's home directory with `~` wherever it appears.
+///
+/// The manifest is meant to be publishable. Recorded argv and parameters are full paths,
+/// which on a personal machine carry the account name, so they are rewritten before they
+/// are written out. This is not anonymisation — a path below the home directory still shows
+/// the layout of someone's disk — it only keeps the account name out of a published file.
+pub fn redact_home(s: &str) -> String {
+    match std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        Some(home) => {
+            let home = home.to_string_lossy().to_string();
+            if home.is_empty() || home == "/" {
+                s.to_string()
+            } else {
+                s.replace(&home, "~")
+            }
+        }
+        None => s.to_string(),
+    }
+}
+
+/// Apply [`redact_home`] to every string in a JSON value.
+pub fn redact_value(v: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::String(s) => Value::String(redact_home(s)),
+        Value::Array(a) => Value::Array(a.iter().map(redact_value).collect()),
+        Value::Object(o) => {
+            Value::Object(o.iter().map(|(k, x)| (k.clone(), redact_value(x))).collect())
+        }
+        other => other.clone(),
+    }
+}
+
 pub fn hash_file(path: &Path) -> Result<FileEntry> {
     let bytes = std::fs::read(path).with_context(|| format!("hashing {}", path.display()))?;
     let mut h = Sha256::new();
@@ -81,6 +114,29 @@ mod tests {
         assert_eq!(clean_version(" 2026.9.2 "), Some("2026.9.2".to_string()));
         assert_eq!(clean_version("/home/someone/.cache/dock/venv"), None);
         assert_eq!(clean_version(""), None);
+    }
+
+    #[test]
+    fn home_is_replaced_in_recorded_paths() {
+        // SAFETY: single-threaded test, restored immediately.
+        let prev = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", "/home/someone") };
+        assert_eq!(redact_home("/home/someone/data/x.pdb"), "~/data/x.pdb");
+        assert_eq!(redact_home("/opt/shared/x.pdb"), "/opt/shared/x.pdb");
+        let v = serde_json::json!({
+            "receptor": "/home/someone/r.pdb",
+            "nested": ["/home/someone/a", 3, {"b": "/home/someone/b"}],
+            "number": 7,
+        });
+        let r = redact_value(&v);
+        assert_eq!(r["receptor"], "~/r.pdb");
+        assert_eq!(r["nested"][0], "~/a");
+        assert_eq!(r["nested"][2]["b"], "~/b");
+        assert_eq!(r["number"], 7, "non-strings must survive untouched");
+        match prev {
+            Some(p) => unsafe { std::env::set_var("HOME", p) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
     }
 
     #[test]

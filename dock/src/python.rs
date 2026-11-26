@@ -18,6 +18,13 @@ fn s(v: &serde_json::Value, k: &str) -> Result<String> {
         .with_context(|| format!("stage result has no string field `{k}`"))
 }
 
+fn warnings_of(v: &serde_json::Value) -> Vec<String> {
+    v.get("warnings")
+        .and_then(|w| w.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
 fn u(v: &serde_json::Value, k: &str) -> Result<usize> {
     v.get(k)
         .and_then(|x| x.as_u64())
@@ -34,17 +41,26 @@ impl LigandPrep for Py {
             heavy_atoms: u(&v, "heavy_atoms")?,
             rotatable_bonds: u(&v, "rotatable_bonds")?,
             source: s(&v, "source")?,
+            warnings: warnings_of(&v),
         })
     }
 
-    fn prepare_file(&self, input: &Path, out: &Path) -> Result<PreparedLigand> {
+    fn prepare_file(&self, input: &Path, out: &Path, template_smiles: Option<&str>)
+        -> Result<PreparedLigand>
+    {
         let (i, o) = (input.display().to_string(), out.display().to_string());
-        let v = self.0.stage("prep-ligand", &["--input", &i, "--out", &o])?;
+        let mut args = vec!["--input", i.as_str(), "--out", o.as_str()];
+        if let Some(t) = template_smiles.filter(|t| !t.is_empty()) {
+            args.push("--template-smiles");
+            args.push(t);
+        }
+        let v = self.0.stage("prep-ligand", &args)?;
         Ok(PreparedLigand {
             pdbqt: PathBuf::from(s(&v, "pdbqt")?),
             heavy_atoms: u(&v, "heavy_atoms")?,
             rotatable_bonds: u(&v, "rotatable_bonds")?,
             source: s(&v, "source")?,
+            warnings: warnings_of(&v),
         })
     }
 }
@@ -82,26 +98,32 @@ impl Profiler for Py {
 }
 
 impl Rmsd for Py {
-    fn rmsd_to_reference(&self, docked: &Path, reference: &Path, smiles: &str) -> Result<Vec<f64>> {
+    fn rmsd_to_reference(&self, docked: &Path, reference: &Path, smiles: Option<&str>)
+        -> Result<Vec<f64>>
+    {
         let (d, r) = (docked.display().to_string(), reference.display().to_string());
         let mut args = vec!["--docked", d.as_str(), "--reference", r.as_str()];
-        if !smiles.is_empty() {
+        if let Some(sm) = smiles.filter(|s| !s.is_empty()) {
             args.push("--smiles");
-            args.push(smiles);
+            args.push(sm);
         }
         let v = self.0.stage("rmsd", &args)?;
-        Ok(v.get("rmsd")
+        // Every entry must be a number. Dropping an unreadable one would shift the rest and
+        // silently pair rmsd[i] with the wrong pose in the report.
+        v.get("rmsd")
             .and_then(|x| x.as_array())
             .context("no rmsd array returned")?
             .iter()
-            .filter_map(|x| x.as_f64())
-            .collect())
+            .enumerate()
+            .map(|(i, x)| {
+                x.as_f64().with_context(|| format!("rmsd[{i}] is not a number: {x}"))
+            })
+            .collect()
     }
 }
 
-impl Py {
-    /// Docking box centred on a reference ligand.
-    pub fn box_from_reference(&self, reference: &Path, padding: f64) -> Result<Box3> {
+impl Structure for Py {
+    fn box_from_reference(&self, reference: &Path, padding: f64) -> Result<Box3> {
         let r = reference.display().to_string();
         let p = padding.to_string();
         let v = self.0.stage("box", &["--reference", &r, "--padding", &p])?;
@@ -110,25 +132,32 @@ impl Py {
             if a.len() != 3 {
                 anyhow::bail!("`{k}` is not three numbers");
             }
-            Ok([
-                a[0].as_f64().unwrap_or_default(),
-                a[1].as_f64().unwrap_or_default(),
-                a[2].as_f64().unwrap_or_default(),
-            ])
+            let mut out = [0.0; 3];
+            for (i, slot) in out.iter_mut().enumerate() {
+                *slot = a[i].as_f64().with_context(|| format!("`{k}[{i}]` is not a number"))?;
+            }
+            Ok(out)
         };
         Ok(Box3 { center: get("center")?, size: get("size")? })
     }
 
-    /// Split a structure into protein and a named ligand.
-    pub fn split(&self, input: &Path, ligand: &str, out_receptor: &Path, out_ligand: &Path)
-        -> Result<serde_json::Value>
+    fn split(&self, input: &Path, ligand: &str, out_receptor: &Path, out_ligand: &Path)
+        -> Result<SplitResult>
     {
         let i = input.display().to_string();
         let r = out_receptor.display().to_string();
         let l = out_ligand.display().to_string();
-        self.0.stage(
+        let v = self.0.stage(
             "split",
             &["--input", &i, "--ligand", ligand, "--out-receptor", &r, "--out-ligand", &l],
-        )
+        )?;
+        Ok(SplitResult {
+            ligand_copies: v
+                .get("ligand_copies")
+                .and_then(|c| c.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            receptor_chain: s(&v, "receptor_chain")?,
+        })
     }
 }
