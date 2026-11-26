@@ -1511,6 +1511,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dock"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "humantime",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

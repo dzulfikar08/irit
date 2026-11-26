@@ -76,6 +76,11 @@ Sizes are the Linux x86_64 binaries of 0.6.1.
 <dd class="size">1.2 MB</dd>
 </div>
 <div>
+<dt>[`dock`](/irit/tools/dock/)</dt>
+<dd>Molecular docking with AutoDock Vina, with the control step the usual workflow skips: redock a ligand whose crystal pose is known and see how far the method lands before trusting it on a new compound. Fetches its own tools; reports are a single file with no network.</dd>
+<dd class="size">1.1 MB</dd>
+</div>
+<div>
 <dt>[`fieldsheet`](/irit/fieldsheet/)</dt>
 <dd>Offline phone worksheet for sample metadata in the field; exports a sample sheet for sheetgen and isotable.</dd>
 <dd class="size">web app</dd>
@@ -118,7 +123,7 @@ your `PATH`. The Linux builds are statically linked, so they run on old distribu
 ```sh
 cargo install \
   --git https://github.com/dzulfikar08/irit \
-  sheetgen leanqc isotable dblock seqplan cooccur irit-mcp gtdbprep
+  sheetgen leanqc isotable dblock seqplan cooccur irit-mcp gtdbprep dock
 ```
 
 Or run `cargo build --release` in a checkout; the binaries land in `target/release/`.

@@ -1,0 +1,22 @@
+[package]
+name = "dock"
+description = "Molecular docking with AutoDock Vina: ligand and receptor prep, redocking validation, and an interaction report that stands on its own."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+repository = "https://github.com/dzulfikar08/irit"
+
+[[bin]]
+name = "dock"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+humantime = "2"
+
+[dev-dependencies]
+tempfile = "3.27"

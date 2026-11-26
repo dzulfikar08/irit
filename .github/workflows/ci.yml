@@ -8,7 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CLIS: -p sheetgen -p leanqc -p isotable -p dblock -p seqplan -p cooccur
+  CLIS: -p sheetgen -p leanqc -p isotable -p dblock -p seqplan -p cooccur -p dock
 
 jobs:
   # Linux: every crate, including msascope's GPUI viewer.

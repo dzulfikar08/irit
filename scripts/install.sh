@@ -27,7 +27,7 @@ prefix="${PREFIX:-$HOME/.local}"
 bindir="$prefix/bin"
 apps="${IRIT_APPS:-$HOME/Applications}"
 manifest="$prefix/share/irit/installed-files"
-clis="sheetgen leanqc isotable dblock seqplan cooccur irit-mcp gtdbprep irit-gtdb-prep"
+clis="sheetgen leanqc isotable dblock seqplan cooccur irit-mcp gtdbprep irit-gtdb-prep dock"
 # Viewer names: msascope in releases after v0.2.1, msaview up to v0.2.1. The bundle id goes
 # with the name.
 viewers="msascope msaview"

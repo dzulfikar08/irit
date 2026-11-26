@@ -45,8 +45,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   # Packages and binaries in the command-line archives (Windows: WIN_PKGS, binaries of the same name).
-  CLI_PKGS: sheetgen leanqc isotable dblock seqplan cooccur irit-mcp gtdbprep
-  CLI_BINS: sheetgen leanqc isotable dblock seqplan cooccur irit-mcp gtdbprep irit-gtdb-prep
+  CLI_PKGS: sheetgen leanqc isotable dblock seqplan cooccur irit-mcp gtdbprep dock
+  CLI_BINS: sheetgen leanqc isotable dblock seqplan cooccur irit-mcp gtdbprep irit-gtdb-prep dock
   WIN_PKGS: sheetgen leanqc isotable dblock seqplan cooccur
 
 jobs:

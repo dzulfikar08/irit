@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["sheetgen", "leanqc", "dblock", "isotable", "mcp", "gtdbprep", "seqplan", "msascope", "cooccur"]
+members = ["sheetgen", "leanqc", "dblock", "isotable", "mcp", "gtdbprep", "seqplan", "msascope", "cooccur", "dock"]
 # msascope's GUI needs GPUI and its system libraries; build it explicitly with `-p msascope`.
-default-members = ["sheetgen", "leanqc", "dblock", "isotable", "mcp", "gtdbprep", "seqplan", "cooccur"]
+default-members = ["sheetgen", "leanqc", "dblock", "isotable", "mcp", "gtdbprep", "seqplan", "cooccur", "dock"]
 
 [workspace.package]
 edition = "2024"
