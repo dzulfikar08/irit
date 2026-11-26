@@ -58,9 +58,9 @@ without any error appearing:
   not provide.
 * **Only one protein chain is kept.** A site that forms at a dimer interface is built
   half-missing.
-* **Salt bridges are not reported.** The receptor is read without formal charges, so the
-  fingerprint's ionic terms do not fire. Absence of an ionic contact in the report is not
-  evidence of its absence in the pose.
+* **Histidine protonation comes from PROPKA, not from you.** `dock` takes pdb2pqr's call on
+  whether each histidine is neutral or charged at the given pH. For a site where that is the
+  question, check it rather than assume it.
 * **One conformer is embedded per ligand.** Vina searches torsions itself, but the ring
   pucker it starts from is fixed for the whole run.
 
@@ -156,6 +156,21 @@ identical pose.
 The report deliberately embeds its figure as SVG rather than loading a graph library at view
 time. ProLIF's own diagram fetches `vis-network` from a CDN, which renders an empty box with
 no error when offline — not a property you want in a file attached to a thesis.
+
+### A note on charges
+
+RDKit reads a carboxylate out of a PDB as a neutral acid — the standard-residue table gives
+OD1 its double bond and OD2 is left picking up an implicit hydrogen — while Arg, Lys and His
+arrive correctly charged because their hydrogens are written out. Left alone that asymmetry
+means no negative charge exists anywhere in the receptor, and an ionic contact between a
+protonated amine and an Asp or Glu is invisible: the most common salt bridge in natural
+product work, silently absent from the report.
+
+`dock` restores the charge, keying off pdb2pqr's own naming rather than guessing — a residue
+pdb2pqr chose to protonate is renamed `ASH`/`GLH` and given its hydrogen, so a plain `ASP`
+with a bare OD2 is deprotonated by its determination. On the VEGFR-2 receptor this takes the
+carboxylate groups the fingerprint can see from 0 to 84. It changes nothing for a neutral
+ligand: the sorafenib control returns the same 23 contacts and the same 0.78 Å.
 
 ## How it is put together
 

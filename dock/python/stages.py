@@ -211,12 +211,7 @@ def prep_receptor(a):
 
 
 def _protein(path):
-    """Protein as an RDKit mol. See the module docstring for why not MDAnalysis.
-
-    Formal charges are not assigned here, so ProLIF's Anionic/Cationic terms -- which key off
-    explicit formal charges -- may not fire. Salt bridges are therefore not something this
-    report can be trusted to list. Documented as a limitation rather than papered over.
-    """
+    """Protein as an RDKit mol. See the module docstring for why not MDAnalysis."""
     from rdkit import Chem, RDLogger
 
     RDLogger.DisableLog("rdApp.*")
@@ -224,7 +219,51 @@ def _protein(path):
     if mol is None:
         raise SystemExit(f"could not read receptor {path}")
     Chem.SanitizeMol(mol)
+    _deprotonate_acids(mol)
     return mol
+
+
+# Side-chain and terminal carboxylate oxygens, by the names pdb2pqr writes.
+_ACID_OXYGENS = {("ASP", "OD2"), ("GLU", "OE2")}
+
+
+def _deprotonate_acids(mol):
+    """Give Asp/Glu carboxylates the -1 they carry at physiological pH.
+
+    RDKit reads a carboxylate from a PDB as a neutral acid: OD1 takes the double bond from
+    the standard-residue table, OD2 is left with one single bond and picks up an implicit
+    hydrogen. So Asp and Glu arrive as COOH while Arg, Lys and His -- which have their
+    hydrogens written out -- arrive correctly charged. The asymmetry is what matters: with
+    no negative charge anywhere, ProLIF's Anionic term can never fire, and a ligand with a
+    protonated amine against an Asp or Glu shows no ionic contact at all. That is the most
+    common salt bridge in the kind of work this tool is for.
+
+    This is safe to do because pdb2pqr has already decided the protonation states: an Asp it
+    chose to protonate is renamed ASH and given an HD2, so a residue still called ASP with
+    no hydrogen on OD2 is deprotonated by pdb2pqr's own determination, not by our guess.
+    """
+    from rdkit import Chem
+
+    changed = 0
+    for atom in mol.GetAtoms():
+        info = atom.GetPDBResidueInfo()
+        if info is None:
+            continue
+        res = info.GetResidueName().strip()
+        name = info.GetName().strip()
+        if (res, name) not in _ACID_OXYGENS and name != "OXT":
+            continue
+        if any(n.GetAtomicNum() == 1 for n in atom.GetNeighbors()):
+            continue  # pdb2pqr wrote a hydrogen here: leave its decision alone
+        if atom.GetFormalCharge() != 0:
+            continue
+        atom.SetNoImplicit(True)
+        atom.SetNumExplicitHs(0)
+        atom.SetFormalCharge(-1)
+        changed += 1
+    if changed:
+        Chem.SanitizeMol(mol)
+    return changed
 
 
 def _pose(docked, index):

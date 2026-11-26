@@ -34,8 +34,14 @@ New tool: molecular docking with AutoDock Vina, with a validation step the usual
 - **Known limits, stated in the docs rather than discovered later:** the ligand is docked in the
   protonation state its SMILES describes (`--receptor-ph` protonates only the receptor); undefined
   stereocentres are resolved arbitrarily and warned about; metal ions and cofactors are removed with
-  the waters; only one protein chain is kept; salt bridges are not detected; and a run reproduces on
-  the same machine with the same `--cpus`, since Vina splits the seeded RNG across threads.
+  the waters; only one protein chain is kept; and a run reproduces on the same machine with the same
+  `--cpus`, since Vina splits the seeded RNG across threads.
+- **Asp and Glu are given the charge they carry at physiological pH.** RDKit reads a carboxylate from
+  a PDB as a neutral acid while Arg/Lys/His come out correctly charged, so without this no negative
+  charge exists in the receptor and an ionic contact between a protonated amine and an Asp or Glu is
+  invisible -- the most common salt bridge in natural product work. Keyed off pdb2pqr's own residue
+  naming, not a guess. Carboxylate groups the fingerprint can see go from 0 to 84 on VEGFR-2; the
+  sorafenib control is unchanged at 0.78 A and the same 23 contacts.
 
 
 ## 0.7.0 (2026-11-21)
